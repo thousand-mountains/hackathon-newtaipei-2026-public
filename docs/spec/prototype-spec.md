@@ -2,6 +2,7 @@
 
 > 選題已過雙引擎對抗驗證（Codex gpt-5.6-sol xhigh ＋ Fable，均裁決修改版組合）。
 > 本規格是修改版的落地。**這是 30 小時競賽版（v1）**；
+> User Story ＋ AC 版（驗收的 SOT）：`user-stories-ac.md`；
 > 今晚討論用的一夜版見 `prototype-v0-tonight.md`（v0，期間引擎程式碼與 v1 共用）。
 > 憲法 `CONSTITUTION.md` 優先於本文；衝突時憲法贏。
 
