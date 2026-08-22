@@ -34,7 +34,7 @@ function runDeadline() {
   const filing = $("#f-filing").value || null;
   const transit = parseInt($("#f-transit").value || "0", 10);
   const r = computeDeadline({ method, service, filing, transit });
-  const out = $("#f-out"); out.hidden = false;
+  const out = $("#f-out"); out.hidden = false; out.classList.remove("flash"); void out.offsetWidth; out.classList.add("flash");
   const steps = $("#f-steps"); steps.innerHTML = "";
   r.steps.forEach((s, i) => {
     const li = document.createElement("li");
@@ -94,7 +94,7 @@ function checkCitations(text) {
 function runCite() {
   const text = $("#c-text").value;
   const res = checkCitations(text);
-  const out = $("#c-out"); out.hidden = false;
+  const out = $("#c-out"); out.hidden = false; out.classList.remove("flash"); void out.offsetWidth; out.classList.add("flash");
   const bad = res.filter((r) => r.cls === "bad").length, warn = res.filter((r) => r.cls === "warn").length;
   $("#c-summary").textContent = res.length
     ? `找到 ${res.length} 個引用：${res.length - bad - warn} 在庫、${warn} 需注意、${bad} 攔下`
@@ -140,9 +140,9 @@ function renderScenario(sc) {
   const body = $("#d-body");
   let html = `<div class="facts"><b>事實摘要（synthetic）：</b>${sc.facts}<br><span style="font:11px var(--mono);color:var(--subtle)">${sc.basis_note}</span></div>`;
   if (sc.draft.main) html += `<div class="mainline">主文（草擬）：${sc.draft.main}</div>`;
-  sc.draft.reasoning.forEach((s) => {
+  sc.draft.reasoning.forEach((s, si) => {
     const tier = sc.tier === "red" ? (s.cites.length ? "a" : "a") : sc.tier === "green" ? "g" : "a";
-    html += `<div class="sent ${tier}">${s.text}${s.cites.length ? `<div class="chips">${s.cites.map(citeChip).join("")}</div>` : ""}</div>`;
+    html += `<div class="sent ${tier}" style="animation-delay:${si * 60}ms">${s.text}${s.cites.length ? `<div class="chips">${s.cites.map(citeChip).join("")}</div>` : ""}</div>`;
   });
   if (sc.engine_input) {
     const r = computeDeadline(sc.engine_input);
