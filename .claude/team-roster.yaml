@@ -1,0 +1,51 @@
+# AI 開發團隊配置 — 由 dev-team-creator 產生（2026-08-22）
+# 註：本專案為 sprint 模式，不用 prospec；plan-guardian 取代 prospec-expert。
+
+project:
+  name: "appeal-ai-prototype"
+  display_name: "訴願 AI Prototype（新北黑客松 2026・法制局命題）"
+  complexity: "medium"
+  created: "2026-08-22"
+  prefix: "HACK"
+
+workflow:
+  backlog_file: backlog.md
+  plan_dir: plans/
+  constitution: CONSTITUTION.md
+  sdd: none          # sprint：superpowers 式 plan 文件，非 prospec
+
+team:
+  - role: tech-lead
+    file: .claude/agents/tech-lead.md
+    phase: [plan, review]
+    model: opus
+    active: true
+    specialization: "plan 審查、模組介面拍板、30 小時砍功能決策"
+
+  - role: backend-dev
+    file: .claude/agents/backend-dev.md
+    phase: [implement]
+    model: sonnet
+    active: true
+    specialization: "抽取層(Bedrock)、分流層、規則引擎、RAG"
+
+  - role: frontend-dev
+    file: .claude/agents/frontend-dev.md
+    phase: [implement]
+    model: sonnet
+    active: true
+    specialization: "承辦人工作台 UI、三級視覺語言、demo 頁序"
+
+  - role: qa-legal
+    file: .claude/agents/qa-legal.md
+    phase: [verify]
+    model: opus
+    active: true
+    specialization: "引用驗證、期間計算回放、對抗餵食；uncertain→NO"
+
+  - role: plan-guardian
+    file: .claude/agents/plan-guardian.md
+    phase: [plan, verify]
+    model: sonnet
+    active: true
+    specialization: "plan 存在性與驗收證據把關、時數記帳"

@@ -10,9 +10,22 @@
 - 拉最新：`git submodule update --remote knowledge/team-brain`
 - 要新增或修改筆記：到 team-brain repo 開 PR（`/brain-note`），不要在這裡改 submodule 內容。
 
-## 這個專案
+## 這個專案（2026-08-22 更新：prototype 開工）
 
-- 部署走 **AWS**（賽制限定 Bedrock／KIRO）；**不碰** GCP `<other-gcp-project>`、不借用其他專案的任何 secret。
-- Linear team `HACK`（一週 Cycle）；branch 命名 `hack-<issue>-<slug>`，PR 標題帶 issue ID。
+**做什麼**：法制局命題「訴願案件審理 AI 輔助」的 prototype。選題決策與規格見 `docs/spec/`。
+
+| 檔案 | 是什麼 |
+|---|---|
+| `CONSTITUTION.md` | 八原則（分層誠實/引用必可驗/不編造測資/規則引擎零 LLM/plan 先行/資料隔離/secret/30h 紀律） |
+| `docs/tech-stack-decision.md` | ADR：Bedrock + KB/S3 + FastAPI + Vue3；**不用 prospec**，用 plans/ |
+| `backlog.md` | 使用者價值句 stories（overnight-loop 讀這份） |
+| `plans/` | superpowers 式計畫文件，開工前必有、含可執行驗收條件 |
+| `.claude/agents/` + `team-roster.yaml` | 5 agents：tech-lead/backend/frontend/qa-legal/plan-guardian |
+| `prototype/` | 程式碼 |
+
+**規矩**：
+- 部署走 **AWS**（賽制：僅限 AWS 服務提供之基礎模型）；**不碰** GCP `<other-gcp-project>`、不借用其他專案的任何 secret。
+- 賽方資料集「僅供競賽之用」：**不進 git**、S3 不公開。實體檔問 Ci（`C_法制局-資料集.zip`）。
+- Linear team `HACK`；branch `hack-<issue>-<slug>`，小改可直推 main，要 demo 的走 PR。
 - Slack：`#hack-general`（人）／`#hack-dev`（通知）。
-- 賽制原文、日期、交付物**尚未查證**，見 `knowledge/team-brain/projects/hack/`。
+- 時程：9/8 決賽名單、9/12–13 決賽（30 小時內交付，內容以 9/12 現場公告為主）。
