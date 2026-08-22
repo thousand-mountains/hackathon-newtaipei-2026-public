@@ -76,6 +76,21 @@
 - 三態：✓／⚠已修正（附新條號）／✗查無（阻擋送出）
 - demo 必含一個故意的假判例字號被攔下
 
+## 4.6 Multi-Agent 定調（2026-08-22 Ci 拍板）
+
+**一句話：多代理分工，單一責任鏈——agentic 在節點，deterministic 在編排。**
+
+| 層 | 做法 | 為什麼 |
+|---|---|---|
+| 敘事 | 節點以 agent 稱呼（抽取代理／涵攝代理／守門代理），各有輸出契約、過不了守門不放行 | 對齊工作坊教學（Bedrock AgentCore）與評審期待，成本為零 |
+| 實作 | **僅**抽取與草稿兩節點用 Bedrock AgentCore 包；**編排層是普通程式碼**，不做 agent 呼叫 agent | AgentCore 是加分不是地基；30h 內 agent 間編排＝除錯地獄 |
+| 不變 | 規則引擎與引用守門維持零 LLM；C 型結論永遠人寫 | 可追溯是產品主張，自主代理鏈與它自相矛盾 |
+| 備援 | AgentCore 異常 → 退回裸 Bedrock invoke，介面不變 | demo 不賭在框架上 |
+
+**明確不是**：不做「multi-agent platform」產品定位（兩輪對抗審查已判死：做太大＋信任敘事矛盾）。
+
+**隱藏牌**：本專案的開發 harness 本身就是同一套紀律（5 agents＋plan-guardian＋qa-legal「uncertain→NO」），簡報收尾可用「先用在自己身上，才敢做給法制局用」。
+
 ## 5. 資料與誠信（憲法 §2 §3 §6 落地）
 - 測資檔名 `synthetic-*`；demo 首頁常駐「合成測資聲明」badge；簡報有測資出處 slide
 - 資料集 → S3 私有 bucket（僅供競賽之用）；repo 只進合成測資
