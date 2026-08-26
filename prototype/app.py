@@ -1,4 +1,4 @@
-"""v0 本地伺服器：serve dist/ 靜態頁 + /api/deadline（Python 引擎，與頁內 JS 引擎同測試集鎖定）。
+"""本地伺服器：serve dist/ 靜態頁 + /api/deadline（Python 引擎，與頁內 JS 引擎同測試集鎖定）。
 
 跑法：uv run --with fastapi --with uvicorn app.py  → http://127.0.0.1:8787
 """
@@ -15,7 +15,7 @@ from pydantic import BaseModel
 from engine.deadline import compute
 
 ROOT = pathlib.Path(__file__).parent
-app = FastAPI(title="訴願承辦工作台 v0", docs_url="/api/docs")
+app = FastAPI(title="訴願決定書 AI 輔助撰擬系統", docs_url="/api/docs")
 
 
 class DeadlineIn(BaseModel):

@@ -1,0 +1,17 @@
+# secret（CONSTITUTION §7：明文 key 進 git ＝ 事故，不分分支）
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+
+# Node
+node_modules/
+
+# 賽方資料集僅供競賽之用，不進 git（CONSTITUTION §6）
+prototype/data/dataset/
+*.zip
