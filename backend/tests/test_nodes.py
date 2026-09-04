@@ -175,6 +175,26 @@ def test_requires_human_conclusion_switch():
     assert_eq(ok3, True, "高風險事實爭點單獨即可封鎖結論")
 
 
+def test_unknown_case_type_fails_safe_to_blocked():
+    """P1（對抗審查抓到）：案型辨識不出來時，原本會**解除**結論封鎖。
+
+    把 case_type 換成系統不認得的值，requires_human_conclusion 就從 True 變 False——
+    等於「分類失敗 = 放行」。方向完全相反：分類不出來代表系統更不了解這個案子。
+    """
+    unknown_procedural = {"requires_substantive_review": True, "clause": None}
+    ok, signals = requires_human_conclusion(unknown_procedural, "未能分類", [], SUBSTANTIVE_TYPES)
+    assert_eq(ok, True, "案型不明且程序未定案時必須保守封鎖結論")
+    assert_true(signals, "必須說明為什麼被封鎖")
+
+    ok_empty, _ = requires_human_conclusion(unknown_procedural, "", [], SUBSTANTIVE_TYPES)
+    assert_eq(ok_empty, True, "案型空白同樣要封鎖")
+
+    # 但逾期不受理是期間引擎直接算出來的（可驗算層），不該被這條 fail-safe 誤攔
+    overdue = {"requires_substantive_review": False, "clause": "77-2"}
+    ok_overdue, _ = requires_human_conclusion(overdue, "未能分類", [], SUBSTANTIVE_TYPES)
+    assert_eq(ok_overdue, False, "程序上已由引擎算出不受理事由者，不因案型不明而封鎖")
+
+
 # ── N4 檢索 ────────────────────────────────────────────────────────
 def test_n4_similar_case_channel_returns_empty_and_labels_unverified():
     """CONSTITUTION §2：沒有資料集就誠實回空，不編造案號。"""
@@ -362,19 +382,112 @@ def test_citation_boundary_article_numbers():
     assert_eq(ck.check_text("建築法第0條")[0].state, STATE_MISSING, "第 0 條不存在")
 
 
-def test_relative_law_reference_is_not_silently_passed():
-    """「本法第14條」「同法第74條」這種相對指稱抓不到，是**已知限制**。
+def test_anaphoric_law_reference_resolves_to_antecedent():
+    """「同法／本法第X條」必須綁回前文的法規，不能變成一部叫「又同法」的未知法規。
 
-    重點是它的失敗模式安全：抓不到 → 該句沒有引用 → 燈號黃（無引用之涵攝句，交人工），
-    **不會**被誤標成綠燈「已驗證」。這條測試把這個行為釘住，避免將來有人「順手」
-    把無引用句改成預設綠燈。
+    這是編造條號最自然的後門：把假條號寫成「同法第999條」，若不做回指解析就只拿
+    黃燈（庫外未驗證）而不擋。對抗審查實際打到這個洞。
     """
+    ck = CitationChecker(SNAPSHOT)
+
+    r = ck.check_text("按建築法第73條規定；又同法第999條、本法第888條亦有明文。")
+    states = {c.raw: c.state for c in r}
+    assert_eq(states.get("建築法第73條"), STATE_OK)
+    assert_eq(states.get("建築法第999條"), STATE_MISSING, "「同法第999條」必須解析回建築法並判查無此號")
+    assert_eq(states.get("建築法第888條"), STATE_MISSING, "「本法第888條」同樣要解析回建築法")
+    assert_true(
+        all("同法" not in c.raw and "本法" not in c.raw for c in r),
+        "回指詞不得洩漏成法規名（先前會產生「又同法」這種假法規名）",
+    )
+
+    ok = ck.check_text("按建築法第73條規定；又同法第99條亦有明文。")
+    assert_eq([c.state for c in ok], [STATE_OK, STATE_OK], "回指到真實存在的條號要判在庫，不得誤攔")
+
+
+def test_anaphora_without_antecedent_is_visible_not_silent():
+    """找不到前行詞時不猜是哪部法，但也不能靜靜放過——要留在畫面上是黃的。"""
     from backend.gate.lamps import lamp_for_states
 
     ck = CitationChecker(SNAPSHOT)
-    assert_eq(ck.check_text("本法第14條"), [], "相對指稱目前抓不到（已知限制）")
-    assert_eq(ck.check_text("同法第74條"), [], "相對指稱目前抓不到（已知限制）")
+    r = ck.check_text("又同法第999條亦有明文。")
+    assert_eq(len(r), 1, "沒有前行詞的回指仍要被抽出來，不得整個消失")
+    assert_eq(r[0].state, STATE_OUT_OF_SCOPE, "無法解析時標庫外未驗證（黃），不冒充已驗證")
     assert_eq(lamp_for_states([]), "y", "沒有引用的句子必須是黃燈交人工，絕不可預設綠燈")
+
+
+def test_chinese_numeral_articles_are_detected():
+    """P0（對抗審查抓到）：國字條號原本完全漏抓。
+
+    訴願決定書大量使用國字條號。漏抓的後果不只是少一筆引用——系統會回
+    「本句未附引用」然後放行，也就是把「沒抓到」講成「沒有引用」。
+    """
+    ck = CitationChecker(SNAPSHOT)
+    bad = ck.check_text("另參建築法第九百九十九條之規定。")
+    assert_eq(len(bad), 1, "國字條號必須被抽出來")
+    assert_eq(bad[0].state, STATE_MISSING, "國字寫的假條號一樣要判查無此號並阻擋")
+    assert_eq(bad[0].raw, "建築法第999條", "顯示字串要正規化成阿拉伯數字")
+
+    good = ck.check_text("按建築法第七十三條規定。")
+    assert_eq(good[0].state, STATE_OK, "國字寫的真條號不得被誤攔")
+
+
+def test_cn_numeral_parser():
+    from backend.retrieval.lawtable import cn_to_int
+
+    for s, want in [("七十三", 73), ("九百九十九", 999), ("十四", 14), ("二十", 20),
+                    ("一百零五", 105), ("一百", 100), ("五", 5), ("一百零一", 101)]:
+        assert_eq(cn_to_int(s), want, f"國字數字 {s} 轉換錯誤")
+    assert_eq(cn_to_int("不是數字"), None, "非數字要回 None，不得亂猜")
+
+
+def test_directive_citations_are_visible_not_silent():
+    """P0（對抗審查抓到）：CONSTITUTION §2 明列函釋要可驗，但原本零檢查通道。
+
+    快照沒有函釋白名單，所以正確行為是「庫外，未驗證」（黃燈、不擋、但看得見），
+    **不是**整個抽不到然後綠燈放行。
+    """
+    ck = CitationChecker(SNAPSHOT)
+    r = ck.check_text("參內政部112年5月1日台內營字第1120801234號函釋。")
+    directives = [c for c in r if c.kind == "directive"]
+    assert_eq(len(directives), 1, "函釋必須被抽出來")
+    assert_eq(directives[0].state, STATE_OUT_OF_SCOPE)
+    assert_eq(directives[0].lamp, "y")
+    assert_eq(directives[0].blocking, False, "無法驗證不等於偽造，不阻擋但要標明")
+    assert_true(
+        all(c.kind != "precedent" for c in r),
+        "函釋裡的「112年5月1日」不得被判解 regex 誤讀成幽靈判解字號",
+    )
+
+
+def test_precedent_type_coverage_includes_kang():
+    """P1（對抗審查抓到）：字別白名單漏「抗」，那種引用會完全隱形。"""
+    ck = CitationChecker(SNAPSHOT)
+    r = ck.check_text("參最高行政法院112年度抗字第123號裁定。")
+    assert_eq(len(r), 1, "抗字號必須被抽出來")
+    assert_eq(r[0].state, STATE_OUT_OF_SCOPE)
+
+
+def test_law_name_split_by_whitespace_still_detected():
+    """PDF 抽取常把法規名用空白或換行拆開，不能因此漏抓。"""
+    ck = CitationChecker(SNAPSHOT)
+    for text in ("依 建 築 法 第 999 條", "另參建築\n法第999條"):
+        r = ck.check_text(text)
+        assert_true(r, f"{text!r} 應該要抽到引用")
+        assert_eq(r[0].state, STATE_MISSING, f"{text!r} 的假條號要照樣被攔")
+
+
+def test_conclusion_like_text_detection():
+    from backend.gate.lamps import detect_conclusion_like
+
+    assert_true(
+        detect_conclusion_like("綜上，原處分認事用法均有違誤，應予撤銷，由原處分機關另為適法之處分。"),
+        "主文型語句必須被偵測到",
+    )
+    assert_eq(
+        detect_conclusion_like("查原處分認定之違規事實，有現場勘查紀錄附卷可稽。"),
+        [],
+        "一般理由段句子不得被誤判為主文",
+    )
 
 
 def test_lamp_severity_ordering():

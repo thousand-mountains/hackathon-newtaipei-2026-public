@@ -45,12 +45,28 @@ STATE_TO_MARK = {
 
 BLOCKING_STATES = (STATE_MISSING,)
 
-# 判解字號 regex，沿用 prototype/static/app.js:61 的模式
+# 判解字號 regex，沿用 prototype/static/app.js:61 的模式，並補上 v0 漏掉的字別。
+# 字別漏一個就等於那種引用完全隱形（抽不到 → 系統回「本句未附引用」→ 綠燈放行）。
+PREC_TYPES = "簡上|裁聲|抗|判|裁|訴|上|簡|聲|再|更"
 PREC_RE = re.compile(
     r"(最高行政法院|臺北高等行政法院|高雄高等行政法院|臺中高等行政法院|臺灣新北地方法院)?"
-    r"\s*(\d{1,3})\s*年?\s*度?\s*(判|裁|訴|上|簡上|簡)\s*字\s*第\s*(\d+)\s*號"
+    rf"\s*([0-9０-９]{{1,3}})\s*年?\s*度?\s*({PREC_TYPES})\s*字\s*第\s*([0-9０-９]+)\s*號"
 )
-INTERP_RE = re.compile(r"釋字第\s*(\d+)\s*號")
+INTERP_RE = re.compile(r"釋字第\s*([0-9０-９]+)\s*號")
+
+# 函釋：CONSTITUTION §2 明列「每一個法條、判解字號、**函釋**」都必須可驗。
+# 快照沒有函釋白名單，所以本系統一律無法驗證——但必須讓它在畫面上是黃的，不是隱形的。
+# 典型形式：「內政部112年5月1日台內營字第1120801234號函」。
+DIRECTIVE_RE = re.compile(
+    r"([一-龥]{2,12}?(?:部|署、|署|局|府|會|委員會))?\s*"
+    r"(?:[0-9０-９]{2,3}\s*年\s*[0-9０-９]{1,2}\s*月\s*[0-9０-９]{1,2}\s*日\s*)?"
+    r"([一-龥]{2,8}字)\s*第\s*([0-9０-９]+)\s*號\s*(?:函釋|函|令)"
+)
+
+
+def _int(s: str) -> int:
+    """int() 本身吃全形數字，這層只是把意圖寫明白。"""
+    return int(s.translate(str.maketrans("０１２３４５６７８９", "0123456789")))
 
 
 def current_roc_year(today: dt.date | None = None) -> int:
@@ -211,17 +227,43 @@ class CitationChecker:
             payload={"no": no},
         )
 
+    # ── 函釋 ────────────────────────────────────────────────────────
+    def check_directive(self, agency: str | None, word: str, no: str, raw: str) -> Citation:
+        """快照沒有函釋白名單，所以一律「庫外，未驗證」——黃燈、不擋、但必須可見。
+
+        刻意不做「看起來合理就通過」：本系統從來沒有函釋資料，任何宣稱都是假的。
+        """
+        return Citation(
+            raw=raw,
+            kind="directive",
+            state=STATE_OUT_OF_SCOPE,
+            lamp=STATE_TO_LAMP[STATE_OUT_OF_SCOPE],
+            note=(
+                "函釋不在本系統的驗證範圍（laws-snapshot.json 沒有函釋白名單），"
+                "無法確認其存在、發文日期與現行有效性，請人工向發文機關或法規資料庫查證。"
+            ),
+            payload={"agency": agency, "word": word, "no": no},
+        )
+
     # ── 全文掃描 ────────────────────────────────────────────────────
     def check_text(self, text: str) -> list[Citation]:
         """抽出全部引用並逐一定狀態。同一段文字重複的引用不去重（逐句守門要逐筆對應）。"""
         out: list[Citation] = []
         for law, key, display, _known in extract_all_law_refs(text, self._law_names):
             out.append(self.check_law(law, key, display))
+        # 函釋先掃，並記下佔用區間——「台內營字第1120801234號函」裡的
+        # 「112年5月1日」會被判解 regex 誤讀成年度，不排除會產生幽靈判解引用。
+        directive_spans: list[tuple[int, int]] = []
+        for m in DIRECTIVE_RE.finditer(text):
+            directive_spans.append((m.start(), m.end()))
+            out.append(self.check_directive(m.group(1), m.group(2), m.group(3), m.group(0)))
         for m in PREC_RE.finditer(text):
-            court, year, typ, no = m.group(1), int(m.group(2)), m.group(3), int(m.group(4))
+            if any(s <= m.start() < e for s, e in directive_spans):
+                continue
+            court, year, typ, no = m.group(1), _int(m.group(2)), m.group(3), _int(m.group(4))
             out.append(self.check_precedent(court, year, typ, no, m.group(0)))
         for m in INTERP_RE.finditer(text):
-            out.append(self.check_interpretation(int(m.group(1)), m.group(0)))
+            out.append(self.check_interpretation(_int(m.group(1)), m.group(0)))
         return out
 
 

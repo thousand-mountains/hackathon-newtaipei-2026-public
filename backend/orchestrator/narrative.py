@@ -26,13 +26,21 @@ def _sentence(
     basis: str | None = None,
     engine: str | None = None,
     placeholder: bool = False,
+    adversarial: bool = False,
+    adversarial_note: str | None = None,
 ) -> dict[str, Any]:
-    """一句話的骨架。`l`／`why`／`refs` 留給 N6 填——模型不產燈號。"""
+    """一句話的骨架。`l`／`why`／`refs` 留給 N6 填——模型不產燈號。
+
+    `adversarial` 必須一路帶到 `doc[]`：對抗測資裡刻意注入的假引用如果在輸出 JSON 裡
+    沒有標記，任何人只截 `doc[]`（或把它貼進簡報）就會看到一句沒有註記的假法條。
+    """
     return {
         "id": sid,
         "t": text,
         "origin": origin,
         "slot": slot,
+        "adversarial": adversarial,
+        "adversarial_note": adversarial_note,
         "cite_ids": list(cite_ids or []),
         "basis": basis,
         "engine": engine,
@@ -119,6 +127,8 @@ def build_doc_skeleton(
                 slot="reasoning",
                 cite_ids=s.get("cite_ids"),
                 basis=s.get("basis"),
+                adversarial=bool(s.get("adversarial")),
+                adversarial_note=s.get("adversarial_note"),
             )
         )
     doc.append(reasoning_block)
@@ -163,6 +173,8 @@ def build_doc_skeleton(
                     slot="conclusion",
                     cite_ids=s.get("cite_ids"),
                     basis=s.get("basis"),
+                    adversarial=bool(s.get("adversarial")),
+                    adversarial_note=s.get("adversarial_note"),
                 )
             )
     doc.append(conclusion_block)

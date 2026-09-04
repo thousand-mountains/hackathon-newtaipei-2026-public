@@ -71,32 +71,62 @@ def scan_redlines() -> list[str]:
     return problems
 
 
+# 本 branch 的基準 commit。prototype/ 相對於它必須零變更。
+BASE_COMMIT = "ce558a85a36ebaf173aacb35d8d7ef09fada472a"
+
+
 def scan_prototype_untouched() -> list[str]:
-    """prototype/ 目錄不得變更一個位元組（本 Phase 的硬約束）。"""
+    """prototype/ 目錄不得變更一個位元組（本 Phase 的硬約束）。
+
+    查兩層——只查未提交變更是不夠的，**已經 commit 的改動會被判為乾淨**：
+    1. 工作區與索引：`git status --porcelain -- prototype/`
+    2. 相對於基準 commit 的累積差異：`git diff BASE..HEAD -- prototype/`
+    """
     import subprocess
 
-    try:
-        r = subprocess.run(
-            ["git", "status", "--porcelain", "--", "prototype/"],
-            cwd=ROOT,
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-    except (OSError, subprocess.SubprocessError) as e:
-        return [f"無法執行 git status 檢查 prototype/：{e}"]
-    if r.returncode != 0:
-        return [f"git status 失敗：{r.stderr.strip()}"]
-    dirty = [l for l in r.stdout.splitlines() if l.strip()]
-    return [f"prototype/ 有未預期的變更：{l}" for l in dirty]
+    def _git(args: list[str]) -> tuple[bool, str]:
+        try:
+            r = subprocess.run(["git", *args], cwd=ROOT, capture_output=True, text=True, timeout=30)
+        except (OSError, subprocess.SubprocessError) as e:
+            return False, str(e)
+        if r.returncode != 0:
+            return False, r.stderr.strip()
+        return True, r.stdout
+
+    problems: list[str] = []
+    ok, out = _git(["status", "--porcelain", "--", "prototype/"])
+    if not ok:
+        problems.append(f"無法執行 git status 檢查 prototype/：{out}")
+    else:
+        problems += [f"prototype/ 有未提交的變更：{l}" for l in out.splitlines() if l.strip()]
+
+    ok, out = _git(["diff", "--stat", f"{BASE_COMMIT}..HEAD", "--", "prototype/"])
+    if not ok:
+        problems.append(f"無法比對 prototype/ 與基準 commit：{out}")
+    else:
+        problems += [
+            f"prototype/ 相對基準 commit {BASE_COMMIT[:7]} 有已提交的變更：{l.strip()}"
+            for l in out.splitlines()
+            if l.strip()
+        ]
+    return problems
 
 
-def scan_test_path_dependencies() -> list[str]:
-    """測試路徑不得 import 任何第三方套件（stdlib only）。"""
+# `backend/api/` 是 Web 介面層，依任務指定的範圍升級使用 fastapi/uvicorn/pydantic。
+# 這個豁免是**具名的**：檢查項名稱與下面的訊息都會把例外講出來，
+# 不能用「零外部依賴」的名字掩蓋一個已經存在的例外。
+DEPENDENCY_EXEMPT_DIRS = ("api",)
+
+
+def scan_core_path_dependencies() -> list[str]:
+    """核心與測試路徑不得 import 第三方套件（`backend/api/` 為具名例外）。"""
     stdlib = set(sys.stdlib_module_names)
     allowed_local = {"backend"}
     problems: list[str] = []
-    targets = [p for p in _scan_files() if p.suffix == ".py" and "api" not in p.parts]
+    targets = [
+        p for p in _scan_files()
+        if p.suffix == ".py" and not any(d in p.parts for d in DEPENDENCY_EXEMPT_DIRS)
+    ]
     for p in targets:
         text = p.read_text(encoding="utf-8")
         for m in re.finditer(r"^\s*(?:from|import)\s+([A-Za-z_][A-Za-z0-9_]*)", text, re.M):
@@ -104,7 +134,10 @@ def scan_test_path_dependencies() -> list[str]:
             if mod in stdlib or mod in allowed_local or mod == "__future__":
                 continue
             line = text[: m.start()].count("\n") + 1
-            problems.append(f"{p.relative_to(ROOT)}:{line}：測試路徑 import 了非 stdlib 模組 {mod!r}")
+            problems.append(
+                f"{p.relative_to(ROOT)}:{line}：核心/測試路徑 import 了非 stdlib 模組 {mod!r}"
+                f"（唯一豁免是 backend/{'/'.join(DEPENDENCY_EXEMPT_DIRS)}/）"
+            )
     return problems
 
 
@@ -132,7 +165,7 @@ def main() -> int:
     checks = [
         ("secret／禁用雲端字樣", scan_redlines),
         ("prototype/ 未被變更", scan_prototype_untouched),
-        ("測試路徑零外部依賴", scan_test_path_dependencies),
+        ("核心與測試路徑零外部依賴（backend/api/ 為具名例外：Web 介面層）", scan_core_path_dependencies),
     ]
     for label, fn in checks:
         problems = fn()

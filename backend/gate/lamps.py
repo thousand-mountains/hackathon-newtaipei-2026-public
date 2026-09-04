@@ -32,6 +32,7 @@ WHY_MISSING = "引用在資料集內查無此號，可能為誤植，已阻擋�
 WHY_NO_CITE = "本句未附引用，屬涵攝或評價語句，請承辦人確認其法律依據。"
 WHY_UNRESOLVED_REF = "本句標註的引用編號在檢索結果中解析不到，已阻擋送出。"
 WHY_PLACEHOLDER = "結論涉及法律判斷，系統不生成，僅提供交接問題清單。"
+WHY_CONCLUSION_LEAK = "結論段已封鎖，但本句出現主文型語句。實質結論不得因為換個槽位就繞過封鎖，已阻擋送出。"
 
 
 def lamp_for_states(states: list[str]) -> str:
@@ -91,7 +92,50 @@ def requires_human_conclusion(
     high = [i for i in fact_issues if i.get("severity") == "high"]
     for i in high:
         signals.append(f"存在高風險事實認定爭點 {i['id']}：{i['t']}")
+
+    # Fail-safe：**案型辨識不出來、而且程序上也沒有可直接算出的不受理事由時，一律封鎖結論。**
+    #
+    # 這是對抗審查打出來的洞：原本只要把 case_type 換成系統不認得的值，
+    # requires_human_conclusion 就從 True 變 False——「分類失敗」反而變成「解除封鎖」。
+    # 方向完全相反：分類不出來代表系統**更**不了解這個案子，應該更保守。
+    #
+    # 為什麼要加「程序上沒有不受理事由」這個條件：逾期不受理（77-2）是期間引擎直接算出來的，
+    # 屬可驗算層，那種案子不需要靠案型判斷就能寫結論（synthetic-ordinary-01 就是）。
+    unknown_type = case_type not in substantive_types
+    procedurally_resolved = bool(art77.get("clause"))
+    if unknown_type and not procedurally_resolved:
+        signals.append(
+            f"案型「{case_type or '（空白）'}」不在已知需事實認定型清單內，"
+            f"且程序上未命中可直接算出的不受理事由——系統無法判斷是否需實體審查，"
+            f"保守封鎖結論段交人工。"
+        )
+        return True, signals
+
     return (substantive or bool(high)), signals
+
+
+# 決定書主文型語句。C 型封鎖只把 `conclusion` 槽位刪掉，擋不住「把主文寫進理由段」——
+# 模型（接上 Bedrock 後）完全可能在理由段末尾寫「綜上，原處分應予撤銷」，
+# 那實質上就是結論，卻因為 slot 標成 reasoning 而整個穿過封鎖。
+# 這裡做的是**全槽位**的主文語句偵測，不限 slot（純字串比對，刻意保守：寧可多攔）。
+CONCLUSION_PHRASES = (
+    "原處分撤銷",
+    "原處分應予撤銷",
+    "應予撤銷",
+    "撤銷原處分",
+    "訴願駁回",
+    "訴願不受理",
+    "應不受理",
+    "駁回訴願",
+    "另為適法之處分",
+    "另為適法處分",
+    "由原處分機關另為",
+)
+
+
+def detect_conclusion_like(text: str) -> list[str]:
+    """回傳句中命中的主文型語句（空 list = 不像主文）。"""
+    return [p for p in CONCLUSION_PHRASES if p in text]
 
 
 def lamp_stats(doc: list[dict[str, Any]]) -> dict[str, int]:

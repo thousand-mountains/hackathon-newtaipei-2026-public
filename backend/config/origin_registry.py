@@ -10,8 +10,18 @@
 | （中介）     | `llm`                    | 模型寫的句子，必須經 N6 守門才出場   |
 | （中介）     | `static`                 | 設定檔常數（聲明、卡片名稱）        |
 
-`llm` 永遠不准出現在燈號 `l`、`why`、`citations[].state`、`deadline.*` 這四個位置——
-`check_payload()` 會把它擋下來。
+`llm` 永遠不准出現在燈號 `l`、`why`、`citations[].state`、`deadline.*` 這四個位置。
+
+**這份檔案目前實際強制到什麼程度（誠實說明，別看名字就以為都做了）**：
+
+| 東西 | 狀態 |
+|---|---|
+| `check_payload()` | ✅ **真的有跑**，掛在 `graph.build_payload()` 與 API／CLI 上。逐句檢查 origin 是否存在、是否在值域內，以及 `l_origin`／`why_origin`／`citations[].state_origin` 有沒有被標成 `llm`。 |
+| `ORIGIN`（JSON path 對照表） | ⚠️ **目前是文件，不是程式**。沒有任何程式碼按 JSON path 逐欄比對它。它記錄的是「每個欄位應該是什麼 origin」的意圖，等 `scripts/contract_check.py`（qa-legal 的工作包）寫出來才會被真正執行。 |
+| `LLM_FORBIDDEN_PATHS` | ⚠️ **同上，目前未被引用**。`check_payload()` 是用 `*_origin` 欄位做等價檢查，不是走這份 path 清單。 |
+
+不把它們刪掉是因為介面已經對外講定（architecture §6.4），刪了下一個人會重新發明；
+但也不能讓 docstring 宣稱「會擋下來」而實際沒接上——那正是這個系統要防的那種謊。
 """
 from __future__ import annotations
 
@@ -29,6 +39,7 @@ ORIGIN_TO_TIER = {
     "record": TIER_SOURCED,
     "human_required": TIER_HUMAN,
     "llm": TIER_SOURCED,  # 模型句子必須帶引用才出得去；沒帶引用的會被 N6 打紅燈
+    "llm_derived": TIER_SOURCED,  # 規則算出來的，但輸入是模型輸出——不算可驗算層
     "static": TIER_VERIFIABLE,
 }
 
@@ -37,7 +48,15 @@ ORIGIN = {
     "intake.*": "llm",  # 人工修改後由 intake_origin[field] 覆寫為 human
     "intake_conf.*": "llm",
     "facts_excerpt[].text": "record",
-    "classification.class.*": "rule",
+    # ⚠ 標 rule 是「分類**演算法**是規則式」的意思，但它的輸入 `intake.type` 來自 N1（llm）。
+    # 也就是說 case_type 實際上是 llm 衍生值，而 case_type 又餵給
+    # `screen.requires_human_conclusion`（C 型結論封鎖的開關）。
+    # 換句話說：**封鎖開關的上游有一個未經人工確認的模型輸出**。
+    # 正確做法是接上 US-10 的人工確認表單後把 intake_origin[type] 轉成 human 再往下傳；
+    # Phase 0 還沒有那道表單，所以這裡誠實標成 llm_derived，不假裝它是純規則。
+    "classification.class.case_type": "llm_derived",
+    "classification.class.method": "rule",
+    "classification.class.law_hits": "rule",
     "classification.knn[]": "retrieval",
     "classification.agreement.*": "rule",
     "screen.deadline.*": "rule",

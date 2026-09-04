@@ -88,6 +88,28 @@ def test_ordinary_every_sentence_has_origin():
     assert_eq(p["origin_violations"], [], "分層誠實檢查必須零違規")
 
 
+def test_origin_violation_checker_actually_catches_violations():
+    """對抗審查指出：`origin_violations` 恆為空，上面那條斷言其實恆真、不是防線。
+
+    這條測試反過來驗**檢查器本身**——餵它一份違規 payload，它必須抓到。
+    檢查器抓不到違規時，「零違規」這個結果就沒有意義。
+    """
+    from backend.config.origin_registry import check_payload
+
+    clean = {"doc": [{"ss": [{"id": "s1", "origin": "llm", "l_origin": "rule", "why_origin": "rule"}]}]}
+    assert_eq(check_payload(clean), [], "合規的 payload 不該被誤報")
+
+    for bad, expect in [
+        ({"doc": [{"ss": [{"id": "s1", "origin": "llm", "l_origin": "llm"}]}]}, "燈號標為 llm"),
+        ({"doc": [{"ss": [{"id": "s1", "origin": "llm", "why_origin": "llm"}]}]}, "why 標為 llm"),
+        ({"doc": [{"ss": [{"id": "s1"}]}]}, "缺 origin"),
+        ({"doc": [{"ss": [{"id": "s1", "origin": "made_up"}]}]}, "origin 不在值域"),
+        ({"citations": [{"raw": "x", "state_origin": "llm"}]}, "引用狀態標為 llm"),
+    ]:
+        got = check_payload(bad)
+        assert_true(got, f"檢查器沒抓到違規：{expect}")
+
+
 def test_ordinary_passes_the_gate():
     p = _payload(ORDINARY)
     assert_eq(p["blockers"], [], "正常案例不該有阻擋項")
@@ -143,6 +165,56 @@ def test_blocked_case_fixture_conclusion_text_never_leaks():
     p = _payload(BLOCKED)
     dumped = json.dumps(p["doc"], ensure_ascii=False)
     assert_true(leaked not in dumped, f"被封鎖的結論句 {leaked!r} 洩漏進 doc[]")
+
+
+def test_conclusion_block_cannot_be_bypassed_via_reasoning_slot():
+    """P0（對抗審查抓到）：把主文寫進理由段可以整個穿過 C 型結論封鎖。
+
+    原本的封鎖只把 `conclusion` 這個 key 從 slots 刪掉，只檢查 `slot == "conclusion"`。
+    模型（接上 Bedrock 後）在理由段末尾寫「綜上，原處分應予撤銷」就實質完成了結論，
+    而 `submit_allowed` 照樣是 true。fixture 檔位下不會爆，一接 live 就是真破口。
+
+    這條測試直接複現那個攻擊：把主文句塞進 reasoning，斷言必須被擋下來。
+    """
+    import json
+    import pathlib
+    import tempfile
+
+    fx = load_case(BLOCKED)
+    fx["draft_fixture"]["reasoning"].append(
+        {
+            "t": "綜上，原處分認事用法均有違誤，應予撤銷，由原處分機關另為適法之處分。",
+            "cite_ids": [],
+            "basis": None,
+            "source_kind": "law",
+            "adversarial": True,
+            "adversarial_note": "刻意把主文寫進理由段，測試結論封鎖能否被繞過。",
+        }
+    )
+    tmp = pathlib.Path(tempfile.mkdtemp())
+    (tmp / "synthetic-bypass-01.json").write_text(json.dumps(fx, ensure_ascii=False), encoding="utf-8")
+    p = build_payload(run_case("synthetic-bypass-01", mode="fixture", data_dir=tmp))
+
+    assert_eq(p["submit_allowed"], False, "把主文寫進理由段必須照樣被阻擋")
+    reasons = {b["reason"] for b in p["blockers"]}
+    assert_in("conclusion_like_text_outside_conclusion_slot", reasons)
+    leaked = [s for b in p["doc"] for s in b["ss"] if "應予撤銷" in (s["t"] or "")]
+    assert_eq(len(leaked), 1)
+    assert_eq(leaked[0]["l"], "r", "洩漏的主文句必須打紅燈")
+    assert_eq(leaked[0]["tier"], "請人工判斷")
+
+
+def test_adversarial_flag_is_carried_into_doc():
+    """對抗測資裡刻意注入的假引用，在輸出 doc[] 裡必須帶著標記。
+
+    否則任何人只截 doc[]（或把它貼進簡報）就會看到一句沒有註記的假法條。
+    """
+    p = _payload(BLOCKED)
+    adv = [s for b in p["doc"] for s in b["ss"] if s.get("adversarial")]
+    assert_true(adv, "對抗注入的句子必須在 doc[] 裡帶 adversarial 旗標")
+    assert_true(any("999" in (s["t"] or "") for s in adv), "帶旗標的應該是那句假法條")
+    for s in adv:
+        assert_true(s.get("adversarial_note"), "帶旗標的句子必須說明為什麼是刻意注入")
 
 
 def test_blocked_case_has_handoff_with_three_questions():

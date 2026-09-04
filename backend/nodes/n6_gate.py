@@ -26,8 +26,10 @@ from backend.gate.citations import (
     CitationChecker,
 )
 from backend.gate.lamps import (
+    WHY_CONCLUSION_LEAK,
     attach_issue_refs,
     citation_states_for,
+    detect_conclusion_like,
     lamp_for_states,
     lamp_stats,
     tier_for_lamp,
@@ -132,6 +134,25 @@ def run(state: CaseState, ctx: NodeCtx) -> NodeResult:
                         "severity": "P0",
                     }
                 )
+            # 同上，但**不限 slot**：把主文寫進理由段是繞過結論封鎖最自然的路徑。
+            # 只查模型產的句子——卷證直錄與引擎算式句不會是主文。
+            if needs_human and origin == "llm" and s.get("slot") != "conclusion":
+                phrases = detect_conclusion_like(text)
+                if phrases:
+                    s["l"] = "r"
+                    s["why"] = WHY_CONCLUSION_LEAK
+                    s["tier"] = tier_of("human_required")
+                    blockers.append(
+                        {
+                            "sentence_id": s["id"],
+                            "reason": "conclusion_like_text_outside_conclusion_slot",
+                            "detail": (
+                                f"結論段已封鎖，但 slot={s.get('slot')} 的句子出現主文型語句"
+                                f"（命中：{'、'.join(phrases)}）。實質結論不得因為換個槽位就繞過封鎖。"
+                            ),
+                            "severity": "P0",
+                        }
+                    )
 
     issue_refs = attach_issue_refs(doc, fact_issues)
 

@@ -94,10 +94,14 @@ class LawTableRetriever:
         }
 
 
+# 條號可以是阿拉伯數字、全形數字或國字數字（三種在決定書裡都會出現）
+_NUM = r"(?:[0-9０-９]+|[〇零一二兩三四五六七八九十百千]+)"
+
+
 def build_law_regex(law_names: list[str]) -> re.Pattern[str]:
     names = sorted(law_names, key=len, reverse=True)
     joined = "|".join(re.escape(n) for n in names)
-    return re.compile(rf"({joined})\s*第\s*(\d+)\s*條(?:\s*之\s*(\d+))?")
+    return re.compile(rf"({joined})\s*第\s*({_NUM})\s*條(?:\s*之\s*({_NUM}))?")
 
 
 # 泛用法規名：中文字 + 法規常見結尾。用來抓**快照涵蓋範圍以外**的法規引用，
@@ -105,8 +109,13 @@ def build_law_regex(law_names: list[str]) -> re.Pattern[str]:
 # 這條很重要：Claire 量測決定書引用的 479 個法條有 17% 對不回資料集
 #（政府資訊公開法、行政訴訟法、檔案法…），只認 11 部法規等於這 17% 全部靜默消失。
 GENERIC_LAW_RE = re.compile(
-    r"([一-龥]{2,14}?(?:法|條例|準則|辦法|細則|規則|通則))\s*第\s*(\d+)\s*條(?:\s*之\s*(\d+))?"
+    rf"([一-龥]{{2,14}}?(?:法|條例|準則|辦法|細則|規則|通則))\s*第\s*({_NUM})\s*條(?:\s*之\s*({_NUM}))?"
 )
+
+# 「同法／本法／該法／前法」是決定書引用第二條以後的標準寫法，指的是前文最近提到的法規。
+# 不做回指解析的話，「又同法第999條」會被當成一部叫「又同法」的未知法規 → 只拿黃燈不擋，
+# 等於給了編造條號一條後門（把假條號寫成「同法第X條」就繞過紅燈）。
+ANAPHORA_RE = re.compile(rf"(同法|本法|該法|前開法律)\s*第\s*({_NUM})\s*條(?:\s*之\s*({_NUM}))?")
 
 # 泛用比對會把前導虛詞一起吃進法規名（例：「依民事訴訟法」），逐字剝掉。
 STOP_PREFIX = set("依按查據參另及與暨爰本該之以由自如逾違反同前上並且或者其惟至揆諸準用適用核符即則故是有無得應照")
@@ -124,9 +133,45 @@ def _trim_law_name(name: str) -> str:
 # 誤攔比漏抓更常見也更難察覺（architecture §8.1 明確警告過誤攔問題）。
 _FULLWIDTH_DIGITS = str.maketrans("０１２３４５６７８９", "0123456789")
 
+# 國字數字 → 阿拉伯數字。**訴願決定書大量使用國字條號**（「建築法第七十三條」），
+# 只吃 `\d+` 等於守門對最常見的引用寫法全盲：抽不到引用 → 系統回「本句未附引用」
+# → 綠燈放行。那是把「沒抓到」講成「沒有引用」，比漏抓本身更糟。
+_CN_DIGITS = {"〇": 0, "零": 0, "一": 1, "二": 2, "兩": 2, "三": 3, "四": 4, "五": 5,
+              "六": 6, "七": 7, "八": 8, "九": 9}
+_CN_UNITS = {"十": 10, "百": 100, "千": 1000}
+CN_NUMERAL_CHARS = "".join(_CN_DIGITS) + "".join(_CN_UNITS)
+
+
+def cn_to_int(s: str) -> int | None:
+    """把國字數字轉成整數（支援到四位數，足夠涵蓋所有條號）。轉不了回 None。"""
+    s = s.strip()
+    if not s or any(c not in _CN_DIGITS and c not in _CN_UNITS for c in s):
+        return None
+    total = 0
+    section = 0
+    last_digit: int | None = None
+    for c in s:
+        if c in _CN_DIGITS:
+            last_digit = _CN_DIGITS[c]
+            section = section * 10 + last_digit if last_digit == 0 else last_digit
+        else:
+            unit = _CN_UNITS[c]
+            # 「十四」這種省略前導一的寫法
+            section = (last_digit if last_digit is not None else 1) * unit
+            total += section
+            section = 0
+            last_digit = None
+    total += section if last_digit is not None else 0
+    return total if total > 0 else None
+
 
 def normalize_digits(s: str) -> str:
-    return s.translate(_FULLWIDTH_DIGITS)
+    """全形轉半形；純國字數字則轉成阿拉伯數字。已是阿拉伯數字者原樣回傳。"""
+    s = s.translate(_FULLWIDTH_DIGITS)
+    if s.isdigit():
+        return s
+    n = cn_to_int(s)
+    return str(n) if n is not None else s
 
 
 def extract_law_refs(text: str, law_names: list[str]) -> list[tuple[str, str, str]]:
@@ -143,27 +188,57 @@ def extract_all_law_refs(text: str, law_names: list[str]) -> list[tuple[str, str
     found: list[tuple[int, str, str, str, bool]] = []
     known_ends: set[int] = set()
 
+    def _key_display(law: str, g_art: str, g_sub: str | None) -> tuple[str, str]:
+        art = normalize_digits(g_art)
+        sub = normalize_digits(g_sub) if g_sub else None
+        return (f"{art}之{sub}" if sub else art), (f"{law}第{art}條" + (f"之{sub}" if sub else ""))
+
     if law_names:
         for m in build_law_regex(law_names).finditer(text):
             law = m.group(1)
-            art = normalize_digits(m.group(2))
-            sub = normalize_digits(m.group(3)) if m.group(3) else None
-            key = f"{art}之{sub}" if sub else art
-            display = f"{law}第{art}條" + (f"之{sub}" if sub else "")
+            key, display = _key_display(law, m.group(2), m.group(3))
             found.append((m.start(), law, key, display, True))
             known_ends.add(m.end())
 
+    # ── 回指解析：「同法／本法／該法第X條」綁到前文最近一次出現的法規名 ──
+    # **必須跑在泛用比對之前**，否則「又同法第999條」會先被當成一部叫「又同法」的
+    # 未知法規吃掉，只拿到黃燈——那等於給編造條號開了後門（假條號寫成「同法第X條」
+    # 就繞過紅燈）。
+    for m in ANAPHORA_RE.finditer(text):
+        if m.end() in known_ends:
+            continue
+        antecedent = None
+        for pos, law, _k, _d, known in sorted(found, key=lambda x: x[0]):
+            if pos < m.start() and known:
+                antecedent = law
+        key, display = _key_display(antecedent or m.group(1), m.group(2), m.group(3))
+        if antecedent is None:
+            # 找不到前行詞：不猜是哪部法，但也不能靜靜放過。標成未知法規讓它至少是黃的。
+            found.append((m.start(), m.group(1), key, display, False))
+        else:
+            found.append((m.start(), antecedent, key, display, True))
+        known_ends.add(m.end())
+
     for m in GENERIC_LAW_RE.finditer(text):
         if m.end() in known_ends:
-            continue  # 同一筆引用已由已知法規名精準命中
+            continue  # 同一筆引用已由已知法規名或回指解析命中
         law = _trim_law_name(m.group(1))
         if law in law_names:
             continue  # 保險：剝完前綴後其實是已知法規
-        art = normalize_digits(m.group(2))
-        sub = normalize_digits(m.group(3)) if m.group(3) else None
-        key = f"{art}之{sub}" if sub else art
-        display = f"{law}第{art}條" + (f"之{sub}" if sub else "")
+        key, display = _key_display(law, m.group(2), m.group(3))
         found.append((m.start(), law, key, display, False))
+        known_ends.add(m.end())
+
+    # ── 安全網：法規名被空白／換行拆開（PDF 抽取常見）──────────────
+    # 只在壓縮空白後的副本上再掃一次，位置對不回原文，所以一律排到最後。
+    # 這一輪只會**增加**偵測，不會移除任何既有結果。
+    squeezed = re.sub(r"\s+", "", text)
+    if squeezed != text:
+        seen = {(law, key) for _, law, key, _d, _k in found}
+        for law, key, display, known in extract_all_law_refs(squeezed, law_names):
+            if (law, key) not in seen:
+                seen.add((law, key))
+                found.append((len(text), law, key, display, known))
 
     found.sort(key=lambda x: x[0])
     return [(law, key, disp, known) for _, law, key, disp, known in found]
