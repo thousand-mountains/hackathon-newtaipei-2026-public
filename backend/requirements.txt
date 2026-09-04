@@ -1,0 +1,17 @@
+# 部署期套件（Phase 0）。
+#
+# 重要：**核心流程與測試路徑零外部依賴**——backend/tests/run_all.py 與
+# `python3 -m backend.cli` 只用 Python 標準庫，不需要安裝下列任何一項。
+# 這裡宣告的只有 Web 介面層（backend/api/app.py）需要的東西。
+# `backend/tests/run_all.py` 有一道靜態掃描會擋住任何把第三方 import 混進
+# 測試路徑的改動。
+#
+# 版本策略：釘 minor（~=），避免 30 小時內被上游 breaking change 咬到。
+
+fastapi~=0.115.0
+uvicorn[standard]~=0.32.0
+pydantic~=2.9.0
+
+# ── 尚未加入，等憑證與 model access 到位再開 ──────────────────────
+# boto3~=1.35.0        # N1/N5 呼叫 Bedrock Converse、N4 呼叫 Knowledge Bases 時才需要。
+#                      # Phase 0 刻意不裝：沒有憑證，裝了也只會製造「看起來能跑」的錯覺。
