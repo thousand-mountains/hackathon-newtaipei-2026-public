@@ -1,203 +1,634 @@
 <!DOCTYPE html>
 <html lang="zh-Hant">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<meta name="robots" content="noindex,nofollow">
-<title>訴願承辦工作台 v0</title>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>訴願決定書 AI 輔助撰擬系統｜新北市政府法制局</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700;900&family=Noto+Serif+TC:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20,400,0,0&display=swap" rel="stylesheet">
 <style>
-/* ── 設計系統：IBM Carbon 語彙（awesome-design-md/ibm 參考）──
-   主色 #0f62fe（互動）・副色 #00224e（結構深帶）・方角 0-2px・細框無陰影
-   動效：全 CSS 零依賴；ease-out 進場、單次脈衝、reduced-motion 全降級 */
 :root{
-  --primary:#0f62fe;--primary-hover:#0050e6;--primary-press:#002d9c;--primary-weak:#edf5ff;
-  --navy:#00224e;--navy-2:#001a3c;--on-navy:#ffffff;--on-navy-muted:#9db6d9;
-  --canvas:#ffffff;--surface:#f4f4f4;--ink:#161616;--muted:#525252;--subtle:#8c8c8c;
-  --line:#e0e0e0;--line-strong:#8c8c8c;
-  --green:#24a148;--green-ink:#0e6027;--green-bg:#defbe6;
-  --gold:#b28600;--gold-ink:#684e00;--gold-bg:#fcf4d6;
-  --red:#da1e28;--red-ink:#a2191f;--red-bg:#fff1f1;
-  --mono:"IBM Plex Mono",ui-monospace,"SF Mono",Menlo,Consolas,monospace;
-  --sans:"IBM Plex Sans",-apple-system,"PingFang TC","Noto Sans TC","Microsoft JhengHei",sans-serif;
-  --ease-out:cubic-bezier(0.23,1,0.32,1);
+  --navy:#123B63;
+  --navy-d:#0C2A48;
+  --navy-l:#1E5B93;
+  --seal:#9E2A2B;
+  --green:#1B7A4B;
+  --amber:#B07206;
+  --paper:#FAF8F3;
+  --paper-2:#F2EEE4;
+  --line:#D8D1C3;
+  --line-2:#E8E3D8;
+  --ink:#1B1B1B;
+  --ink-2:#4A4A4A;
+  --ink-3:#7A7568;
+  --white:#fff;
+  --sans:"Noto Sans TC",system-ui,"Microsoft JhengHei",sans-serif;
+  --serif:"Noto Serif TC","PMingLiU",serif;
+  --mono:"IBM Plex Mono","Consolas",monospace;
+  --shadow:0 1px 2px rgba(18,59,99,.08),0 8px 24px rgba(18,59,99,.06);
 }
-*{box-sizing:border-box;margin:0;padding:0}
-html{scroll-behavior:smooth}
-body{background:var(--canvas);color:var(--ink);font-family:var(--sans);line-height:1.7;font-size:15px}
-.wrap{max-width:1000px;margin:0 auto;padding:0 24px}
-/* ── 頁首：副色深帶 ── */
-header{background:var(--navy);color:var(--on-navy)}
-.hbar{display:flex;align-items:center;gap:14px;min-height:64px;flex-wrap:wrap;padding:10px 0}
-.hbar h1{font-size:17px;font-weight:600;letter-spacing:.01em}
-.hbar h1::before{content:"";display:inline-block;width:10px;height:10px;background:var(--primary);margin-right:10px;transform:translateY(-1px)}
-.hbar .v{font:400 12px var(--mono);color:var(--on-navy-muted)}
-.badge-syn{margin-left:auto;border:1px solid rgba(255,255,255,.35);color:#ffd66b;font:600 11px/1 var(--mono);padding:6px 10px;white-space:nowrap}
-.badge-test{border:1px solid rgba(255,255,255,.35);color:#6fdc8c;font:600 11px/1 var(--mono);padding:6px 10px;white-space:nowrap}
-.badge-test.fail{color:#ff8389}
-.subline{background:var(--navy-2);color:var(--on-navy-muted);font-size:13px}
-.subline .wrap{padding-top:9px;padding-bottom:9px}
-.subline b{color:var(--on-navy);font-weight:600}
-/* ── 分頁列 ── */
-nav{background:var(--canvas);border-bottom:1px solid var(--line);position:sticky;top:0;z-index:10}
-nav .wrap{display:flex;gap:0}
-.tabbtn{appearance:none;border:0;background:none;font:600 14px var(--sans);color:var(--muted);padding:14px 18px;cursor:pointer;border-bottom:2px solid transparent;transition:color 150ms var(--ease-out),border-color 200ms var(--ease-out),background 150ms}
-.tabbtn:active{transform:translateY(1px)}
-.tabbtn.on{color:var(--ink);border-bottom-color:var(--primary)}
-@media (hover:hover) and (pointer:fine){.tabbtn:hover{background:var(--surface);color:var(--ink)}}
-main{padding:30px 0 64px;background:var(--canvas)}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0}
+body{
+  font-family:var(--sans);
+  color:var(--ink);
+  background:var(--paper-2);
+  font-size:15px;
+  line-height:1.75;
+  -webkit-font-smoothing:antialiased;
+}
+button{font-family:inherit;font-size:inherit;cursor:pointer}
+a{color:var(--navy-l)}
+
+/* ---------- 政府網站標準頁首 ---------- */
+
+header.masthead{background:var(--navy);color:#fff;border-bottom:4px solid var(--seal)}
+.masthead .in{max-width:1280px;margin:0 auto;padding:14px 20px;display:flex;align-items:center;gap:16px;flex-wrap:wrap}
+.crest{font-size:34px;color:#A9C6E0;flex:none;line-height:1}
+.brand{line-height:1.35}
+.brand .org{font-size:12.5px;letter-spacing:.18em;color:#A9C6E0}
+.brand .sys{font-size:20px;font-weight:700;letter-spacing:.04em}
+.masthead .spacer{flex:1}
+.who{text-align:right;font-size:12.5px;color:#C9DCEE;line-height:1.5}
+.who b{color:#fff;font-size:14px;font-weight:500;display:block}
+
+.crumb{background:var(--white);border-bottom:1px solid var(--line)}
+.crumb .in{max-width:1280px;margin:0 auto;padding:8px 20px;font-size:12.5px;color:var(--ink-3);
+  display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.crumb b{color:var(--ink-2);font-weight:500}
+.prov{margin-left:auto;font-size:11.5px;letter-spacing:.02em;color:var(--seal);
+  border:1px solid rgba(158,42,43,.35);background:#FDF4F4;border-radius:2px;padding:1px 9px;white-space:nowrap}
+
+/* ---------- 步驟列 ---------- */
+.steps{background:var(--white);border-bottom:1px solid var(--line);position:sticky;top:0;z-index:40;box-shadow:0 1px 0 rgba(0,0,0,.02)}
+.steps .in{max-width:1280px;margin:0 auto;padding:0 20px;display:flex;overflow-x:auto}
+.step{flex:1;min-width:150px;border:0;background:none;padding:13px 8px 11px;text-align:left;color:var(--ink-3);border-bottom:3px solid transparent;display:flex;gap:9px;align-items:flex-start;opacity:.55}
+.step[data-on="1"]{opacity:1;color:var(--ink-2)}
+.step[aria-current="step"]{color:var(--navy);border-bottom-color:var(--seal);opacity:1}
+.step[data-on="0"]{cursor:not-allowed}
+.step[data-on="1"]{cursor:pointer}
+.step .n{width:22px;height:22px;flex:none;border-radius:50%;border:1.5px solid currentColor;display:grid;place-items:center;font-family:var(--mono);font-size:11px;margin-top:2px}
+.step[aria-current="step"] .n{background:var(--navy);border-color:var(--navy);color:#fff}
+.step[data-done="1"] .n{background:var(--green);border-color:var(--green);color:#fff}
+.step .t{font-size:14px;font-weight:500;line-height:1.55}
+.step:focus-visible{outline:2px solid var(--navy-l);outline-offset:-2px}
+
+/* icons */
+.mi{font-family:'Material Symbols Outlined';font-weight:400;font-style:normal;line-height:1;
+  letter-spacing:normal;text-transform:none;display:inline-block;white-space:nowrap;direction:ltr;
+  -webkit-font-feature-settings:'liga';-webkit-font-smoothing:antialiased;user-select:none;flex:none;
+  visibility:hidden}
+/* 字型未就緒／離線載不到時，圖示保持隱藏，不會露出 "account_balance" 這種字面 ligature 名。
+   icons-off 再以 ::after 補上純文字替代符號，讓提示鈕與識別章仍可點、可聚焦。 */
+html.icons-ready .mi{visibility:visible}
+html.icons-off .mi{visibility:visible;font-size:0!important}
+html.icons-off .mi::after{font-family:var(--sans);color:inherit;line-height:1}
+html.icons-off .tip::after{content:"\24D8";font-size:15px}
+html.icons-off .crest::after{content:"\25C8";font-size:30px}
+.tip{font-size:16px;color:var(--ink-3);cursor:help;vertical-align:-3px}
+.tip:hover,.tip:focus-visible{color:var(--navy-l);outline:none}
+/* tooltip：fixed 定位，不受任何 overflow 容器裁切 */
+#tt{position:fixed;z-index:9999;background:#0C1C2C;color:#E4EEF7;font-size:11.5px;font-weight:400;
+  line-height:1.7;letter-spacing:.01em;padding:7px 10px;border-radius:3px;max-width:260px;text-align:left;
+  pointer-events:none;opacity:0;transition:opacity .13s;box-shadow:0 6px 22px rgba(0,0,0,.3);font-family:var(--sans)}
+#tt.on{opacity:1}
+
+main{max-width:1280px;margin:0 auto;padding:22px 20px 80px}
 .panel{display:none}
-.panel.on{display:block;animation:enter 260ms var(--ease-out)}
-@keyframes enter{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
-/* ── 卡片：白面、細框、方角、無陰影；動作時頂緣藍光掃過 ── */
-.card{position:relative;background:var(--canvas);border:1px solid var(--line);padding:24px 26px;margin-bottom:20px;overflow:hidden}
-.card::before{content:"";position:absolute;top:0;left:0;right:0;height:2px;background:var(--primary);transform:scaleX(0);transform-origin:left}
-.card.flash::before{animation:sweep 500ms var(--ease-out)}
-@keyframes sweep{from{transform:scaleX(0)}to{transform:scaleX(1)}}
-.card h2{font-size:19px;font-weight:600;letter-spacing:-.01em;margin-bottom:4px}
-.card .sub{color:var(--muted);font-size:13.5px;margin-bottom:16px}
-.formrow{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:14px;margin-bottom:16px}
-label{display:block;font:600 12px var(--sans);color:var(--muted);margin-bottom:6px;letter-spacing:.02em}
-input,select{width:100%;font:14px var(--mono);color:var(--ink);background:var(--surface);border:none;border-bottom:1px solid var(--line-strong);padding:10px 12px;transition:border-color 150ms,background 150ms}
-input:focus-visible,select:focus-visible,textarea:focus-visible,button:focus-visible{outline:2px solid var(--primary);outline-offset:-2px}
-textarea{width:100%;min-height:150px;font:13px/1.7 var(--mono);color:var(--ink);background:var(--surface);border:none;border-bottom:1px solid var(--line-strong);padding:14px;resize:vertical}
-.btn{appearance:none;border:none;background:var(--primary);color:#fff;font:500 14px var(--sans);padding:11px 18px;cursor:pointer;letter-spacing:.01em;transition:background 140ms var(--ease-out),transform 120ms var(--ease-out)}
-@media (hover:hover) and (pointer:fine){.btn:hover{background:var(--primary-hover)}}
-.btn:active{background:var(--primary-press);transform:scale(0.98)}
-.btn.ghost{background:var(--canvas);color:var(--primary);box-shadow:inset 0 0 0 1px var(--primary)}
-.btn.ghost:active{background:var(--primary-weak)}
-.btn+.btn{margin-left:10px}
-/* ── 算式卡 ── */
-.steps{list-style:none;margin-top:8px;counter-reset:s}
-.step{display:grid;grid-template-columns:30px 1fr;gap:12px;padding:12px 0;border-bottom:1px solid var(--line);opacity:0;transform:translateY(6px);animation:enter 240ms var(--ease-out) forwards}
-.step:last-child{border-bottom:0}
-.step .n{font:600 12px/24px var(--mono);color:var(--primary);background:var(--primary-weak);text-align:center;height:24px;margin-top:2px}
-.step .rule{font-size:14.5px}
-.step .basis{font:12px var(--mono);color:var(--subtle);margin-top:2px}
-.step .val{font:600 13.5px var(--mono);color:var(--ink);margin-top:4px}
-.verdict{margin-top:16px;padding:14px 18px;font-weight:600;font-size:14.5px;border-left:3px solid;opacity:0;transform:translateY(4px) scale(.985);animation:enter 300ms var(--ease-out) 150ms forwards}
-.verdict.overdue{background:var(--red-bg);border-color:var(--red);color:var(--red-ink)}
-.verdict.ontime{background:var(--green-bg);border-color:var(--green);color:var(--green-ink)}
-.caveat{margin-top:10px;background:var(--gold-bg);border-left:3px solid var(--gold);padding:11px 15px;font-size:13px;color:var(--gold-ink)}
-.caveat b{color:var(--gold-ink)}
-/* ── 引用檢查 ── */
-.cites{margin-top:10px}
-.cite{display:flex;gap:12px;align-items:flex-start;padding:11px 0;border-bottom:1px solid var(--line);font-size:13.5px;opacity:0;transform:translateY(5px);animation:enter 220ms var(--ease-out) forwards}
-.cite:last-child{border-bottom:0}
-.cite .mark{font:600 12px/22px var(--mono);padding:0 8px;white-space:nowrap;margin-top:1px;border-left:3px solid}
-.cite.ok .mark{background:var(--green-bg);color:var(--green-ink);border-color:var(--green)}
-.cite.warn .mark{background:var(--gold-bg);color:var(--gold-ink);border-color:var(--gold)}
-.cite.bad .mark{background:var(--red-bg);color:var(--red-ink);border-color:var(--red)}
-.cite .what{font-family:var(--mono);font-weight:600}
-.cite .note{color:var(--muted);font-size:12.5px}
-/* ── 草稿工作台 ── */
-.tierbar{display:flex;gap:10px;margin-bottom:16px;flex-wrap:wrap}
-.tier{font:600 12px var(--mono);padding:5px 12px;border-left:3px solid}
-.tier.g{background:var(--green-bg);color:var(--green-ink);border-color:var(--green)}
-.tier.a{background:var(--gold-bg);color:var(--gold-ink);border-color:var(--gold)}
-.tier.r{background:var(--red-bg);color:var(--red-ink);border-color:var(--red)}
-.scen-tabs{display:flex;gap:10px;margin-bottom:18px;flex-wrap:wrap}
-.scen{appearance:none;border:1px solid var(--line-strong);background:var(--canvas);font:600 13px var(--sans);color:var(--muted);padding:9px 16px;cursor:pointer;transition:all 140ms var(--ease-out)}
-.scen:active{transform:scale(0.98)}
-.scen.on{border-color:var(--primary);color:var(--primary);background:var(--primary-weak);box-shadow:inset 0 0 0 1px var(--primary)}
-.sent{padding:12px 14px;margin-bottom:8px;font-size:14px;border-left:3px solid var(--line);background:var(--surface);opacity:0;transform:translateY(5px);animation:enter 240ms var(--ease-out) forwards}
-.sent.g{background:var(--green-bg);border-color:var(--green)}
-.sent.a{background:var(--gold-bg);border-color:var(--gold)}
-.sent .chips{margin-top:8px;display:flex;gap:6px;flex-wrap:wrap}
-.chip{font:600 11px var(--mono);background:var(--canvas);border:1px solid var(--line);padding:3px 8px;color:var(--muted);cursor:help}
-.redzone{background:var(--red-bg);border:1px solid var(--red);border-left-width:4px;padding:18px 20px;margin-top:14px;animation:pulse-once 700ms var(--ease-out) 250ms}
-@keyframes pulse-once{0%{box-shadow:0 0 0 0 rgba(218,30,40,.25)}60%{box-shadow:0 0 0 10px rgba(218,30,40,0)}100%{box-shadow:0 0 0 0 rgba(218,30,40,0)}}
-.redzone h4{color:var(--red-ink);font-size:15px;margin-bottom:8px}
-.redzone p{font-size:13.5px;color:#750e13;margin-bottom:8px}
-.redzone ul{margin:6px 0 12px 18px;font-size:13.5px;color:#750e13}
-.redzone .prov{font:11.5px var(--mono);color:var(--muted);border-top:1px dashed var(--red);padding-top:9px}
-.handover{background:var(--canvas);border:1px solid var(--red);padding:14px 16px;margin-top:10px}
-.handover b{font-size:13px;color:var(--red-ink)}
-.handover ol{margin:8px 0 0 18px;font-size:13.5px}
-.facts{background:var(--surface);border-left:3px solid var(--navy);padding:14px 16px;font-size:13.5px;color:var(--muted);margin-bottom:16px}
-.mainline{font-weight:600;font-size:15px;padding:12px 16px;background:var(--navy);color:var(--on-navy);margin-bottom:12px}
-footer{background:var(--navy);color:var(--on-navy-muted);padding:20px 0;font:12px var(--mono);text-align:center}
-@media (prefers-reduced-motion: reduce){
-  *{animation-duration:1ms!important;transition-duration:1ms!important}
-  .step,.cite,.sent,.verdict{opacity:1;transform:none}
+.panel.on{display:block;animation:fade .3s ease}
+@keyframes fade{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+
+.card{background:var(--white);border:1px solid var(--line);border-radius:3px;box-shadow:var(--shadow)}
+.card>h2{margin:0;font-size:15px;font-weight:700;color:var(--navy);padding:11px 16px;border-bottom:1px solid var(--line-2);background:linear-gradient(var(--white),#FBFAF7);letter-spacing:.02em;display:flex;align-items:center;gap:9px}
+.card>h2 .bar{width:3px;height:15px;background:var(--seal);border-radius:2px}
+.card>h2 .tip{margin-left:2px}
+.card .body{padding:16px}
+.hint{font-size:12.5px;color:var(--ink-3);margin:0 0 12px}
+
+.page-head{display:flex;align-items:center;gap:14px;margin-bottom:16px;flex-wrap:wrap}
+.page-title{margin:0;font-family:var(--serif);font-size:23px;font-weight:600;color:var(--navy-d);letter-spacing:.03em}
+.page-nav{margin-left:auto;display:flex;gap:9px;align-items:center;flex-wrap:wrap}
+.page-sub{margin:0 0 18px;font-size:13px;color:var(--ink-3)}
+
+/* ---------- 上傳 ---------- */
+.grid2{display:grid;grid-template-columns:1.05fr .95fr;gap:18px}
+.drop{border:2px dashed var(--line);border-radius:4px;background:var(--paper);padding:30px 20px;text-align:center;transition:.18s}
+.drop.hot{border-color:var(--navy-l);background:#F0F6FB}
+.drop svg{opacity:.5}
+.drop .big{font-size:15px;font-weight:500;margin:8px 0 3px}
+.drop .sm{font-size:12.5px;color:var(--ink-3)}
+.files{list-style:none;margin:14px 0 0;padding:0;display:grid;gap:7px}
+.files li{display:flex;align-items:center;gap:9px;border:1px solid var(--line-2);border-radius:3px;padding:8px 11px;background:var(--white);font-size:13px;animation:fade .25s}
+.files .doc{font-size:21px;color:var(--seal);flex:none}
+.files .meta{flex:1;min-width:0}
+.files .meta b{display:block;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.files .meta span{font-size:11.5px;color:var(--ink-3)}
+.files .ok{color:var(--green);font-size:12px;font-weight:500;white-space:nowrap}
+.files button{border:0;background:none;color:var(--ink-3);font-size:16px;line-height:1;padding:2px 4px}
+
+.field{margin-bottom:13px}
+.field label{display:block;font-size:12.5px;font-weight:500;color:var(--ink-2);margin-bottom:4px}
+.field label .req{color:var(--seal);margin-left:3px}
+.field .auto{float:right;font-size:11px;color:var(--navy-l);font-weight:400}
+input[type=text],input[type=date],select,textarea{
+  width:100%;padding:7px 10px;border:1px solid var(--line);border-radius:3px;
+  font-family:inherit;font-size:14px;color:var(--ink);background:var(--white);
 }
-@media (max-width:640px){.hbar h1{font-size:14px}.badge-syn,.badge-test{font-size:10px}.tabbtn{padding:12px 12px;font-size:13px}}
+input:focus,select:focus,textarea:focus{outline:2px solid var(--navy-l);outline-offset:-1px;border-color:var(--navy-l)}
+.row2{display:grid;grid-template-columns:1fr 1fr;gap:11px}
+textarea{resize:vertical;line-height:1.7}
+
+.btn{border:1px solid var(--navy);background:var(--navy);color:#fff;padding:9px 20px;border-radius:3px;font-weight:500;letter-spacing:.04em;transition:.15s}
+.btn:hover{background:var(--navy-l);border-color:var(--navy-l)}
+.btn:disabled{opacity:.4;cursor:not-allowed}
+.btn.ghost{background:none;color:var(--navy);border-color:var(--line)}
+.btn.ghost:hover{background:var(--paper);color:var(--navy)}
+.btn.seal{background:var(--seal);border-color:var(--seal)}
+.btn.seal:hover{background:#B23334;border-color:#B23334}
+.btn.sm{padding:5px 12px;font-size:12.5px}
+.actions{display:flex;gap:10px;align-items:center;margin-top:18px;flex-wrap:wrap}
+.actions .gap{flex:1}
+
+/* ---------- 幕僚團 ---------- */
+.agents{display:grid;grid-template-columns:repeat(auto-fill,minmax(232px,1fr));gap:12px}
+.agent{border:1px solid var(--line);border-radius:3px;background:var(--white);padding:13px;position:relative;overflow:hidden;transition:.25s}
+.agent .pill{position:absolute;top:0;left:0;width:3px;height:100%;background:var(--line)}
+.agent[data-s=run]{border-color:var(--navy-l);box-shadow:0 0 0 3px rgba(30,91,147,.09)}
+.agent[data-s=run] .pill{background:var(--navy-l)}
+.agent[data-s=done] .pill{background:var(--green)}
+.agent[data-s=idle]{opacity:.55}
+.agent .hd{display:flex;align-items:center;gap:8px;margin-bottom:5px}
+.agent .ico{width:26px;height:26px;flex:none;border-radius:3px;background:var(--paper-2);display:grid;place-items:center}
+.agent[data-s=done] .ico{background:#E6F2EB}
+.agent h3{margin:0;font-size:13.5px;font-weight:700;letter-spacing:.02em}
+.agent p{margin:0;font-size:12.5px;color:var(--ink-2);line-height:1.6;min-height:38px}
+.agent .st{margin-top:8px;font-size:11.5px;font-weight:500;display:flex;align-items:center;gap:6px}
+.agent[data-s=idle] .st{color:var(--ink-3)}
+.agent[data-s=run] .st{color:var(--navy-l)}
+.agent[data-s=done] .st{color:var(--green)}
+.spin{width:11px;height:11px;border:2px solid rgba(30,91,147,.25);border-top-color:var(--navy-l);border-radius:50%;animation:sp .7s linear infinite}
+@keyframes sp{to{transform:rotate(360deg)}}
+.bar-out{height:3px;background:var(--line-2);border-radius:2px;overflow:hidden;margin-top:8px}
+.bar-in{display:block;height:100%;width:0;background:var(--navy-l);transition:width .45s cubic-bezier(.4,0,.2,1)}
+.agent[data-s=done] .bar-in{background:var(--green)}
+
+.console{background:#0C1C2C;color:#B9D4E8;border-radius:3px;padding:12px 14px;font-family:var(--mono);font-size:12px;line-height:1.85;height:196px;overflow:auto}
+.console .t{color:#5C7E9C}
+.console .g{color:#6FD39B}
+.console .y{color:#E8B75A}
+.console .r{color:#E88B8B}
+
+/* ---------- 編輯器（左參考 / 右草稿） ---------- */
+.split{display:grid;grid-template-columns:.92fr 6px 1.08fr;height:calc(100vh - 268px);min-height:560px}
+.pane{background:var(--white);border:1px solid var(--line);border-radius:3px;display:flex;flex-direction:column;overflow:hidden;box-shadow:var(--shadow)}
+.pane .hd{padding:8px 13px;border-bottom:1px solid var(--line-2);display:flex;align-items:center;gap:9px;background:linear-gradient(var(--white),#FBFAF7);flex:none;flex-wrap:wrap}
+.pane .hd .ttl{font-size:13.5px;font-weight:700;color:var(--navy);letter-spacing:.02em}
+.pane .hd .gap{flex:1}
+.grip{cursor:col-resize;background:transparent;display:grid;place-items:center}
+.grip::after{content:"";width:2px;height:44px;background:var(--line);border-radius:2px}
+.grip:hover::after{background:var(--navy-l)}
+
+/* 稿紙：格線綁在內容層，隨文字一起捲動 */
+.editor{flex:1;min-height:0;overflow:auto;background:var(--paper-2);padding:18px 0}
+.sheet{
+  --lh:34px;
+  width:calc(100% - 36px);margin:0 auto;background:var(--paper);
+  border:1px solid var(--line);box-shadow:0 1px 3px rgba(0,0,0,.05);
+  padding:var(--lh) 30px calc(var(--lh)*2);
+  background-image:repeating-linear-gradient(var(--paper),var(--paper) calc(var(--lh) - 1px),#EAE4D6 calc(var(--lh) - 1px),#EAE4D6 var(--lh));
+  background-origin:content-box;background-clip:content-box;background-repeat:repeat;
+  font-family:var(--serif);font-size:15.5px;line-height:var(--lh);letter-spacing:.04em;color:var(--ink);
+}
+.sheet .doc-title{text-align:center;font-size:20px;font-weight:600;letter-spacing:.62em;text-indent:.62em;margin:0 0 var(--lh)}
+.sheet .meta{font-size:14px;color:var(--ink-2)}
+.sheet h4{font-size:16px;font-weight:600;letter-spacing:.5em;text-indent:.5em;margin:var(--lh) 0 0}
+.sheet p{margin:0;text-align:justify;overflow-wrap:break-word;word-break:break-word}
+.sheet p.ind{text-indent:2em}
+
+.sent{
+  border-radius:2px;padding:1px 1px 2px;cursor:text;position:relative;
+  box-decoration-break:clone;-webkit-box-decoration-break:clone;
+  border-bottom:2px solid transparent;transition:background .15s;outline:none;
+}
+.sent[data-l=r]{border-bottom-color:rgba(158,42,43,.55)}
+.sent[data-l=y]{border-bottom-color:rgba(176,114,6,.5)}
+.sent[data-l=g]{border-bottom-color:rgba(27,122,75,.42)}
+.sent:hover{background:#EDF3F9}
+.sent.sel{background:#DCEAF6;border-bottom-color:var(--navy)}
+.sent.edited{background:#FBF0F0}
+.sent.flash{animation:fl 1.1s ease}
+.sheet.clean .sent{border-bottom-color:transparent!important;background:transparent!important;cursor:default}
+.rvdoc.clean .rs{border-bottom-color:transparent!important;background:transparent!important}
+.rvdoc.clean .rs::before{display:none}
+.rvbar{display:flex;align-items:center;gap:9px;margin-bottom:9px;font-size:12.5px;color:var(--ink-3)}
+.rvbar .gap{flex:1}
+@keyframes fl{0%,100%{background:transparent}30%{background:#FFF1C9}}
+
+.inspect{flex:none;border-top:1px solid var(--line-2);background:#FBFAF7;padding:9px 13px;font-size:12.5px;color:var(--ink-2);
+  min-height:52px;max-height:118px;overflow-y:auto;line-height:1.65;transition:max-height .2s}
+/* 展開算式時讓出高度，5 步的算式卡才不會擠在 118px 裡 */
+.inspect:has(.calc[open]){max-height:min(46vh,360px)}
+.inspect .ln{display:flex;gap:7px;align-items:center;flex-wrap:wrap;margin-bottom:3px}
+.inspect .k{color:var(--ink-3);white-space:nowrap}
+.inspect .why{display:block;word-break:break-word}
+.inspect .lk{display:flex;gap:6px;flex-wrap:wrap;margin-top:5px}
+.lk button{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.lk button{border:1px solid var(--line);background:var(--white);border-radius:2px;padding:2px 8px;font-size:11.5px;color:var(--navy-l)}
+.lk button:hover{background:#EDF3F9;border-color:var(--navy-l)}
+
+.tabs{display:flex;gap:2px;padding:0 8px;border-bottom:1px solid var(--line-2);background:#FBFAF7;flex:none}
+.tab{border:0;background:none;padding:9px 12px;font-size:13px;color:var(--ink-3);border-bottom:2.5px solid transparent;font-weight:500}
+.tab[aria-selected=true]{color:var(--navy);border-bottom-color:var(--seal)}
+.tab .badge{background:var(--line-2);color:var(--ink-2);border-radius:9px;padding:0 6px;font-size:11px;margin-left:4px;font-family:var(--mono)}
+.tab[aria-selected=true] .badge{background:var(--navy);color:#fff}
+.tabbody{flex:1;min-height:0;overflow:auto;padding:13px}
+.tabpane{display:none}
+.tabpane.on{display:block}
+
+.ref{border:1px solid var(--line-2);border-left:3px solid var(--navy-l);border-radius:3px;padding:11px 13px;margin-bottom:10px;background:var(--white);transition:.15s;scroll-margin-top:8px}
+.ref:hover{border-color:var(--line);border-left-color:var(--navy);box-shadow:var(--shadow)}
+.ref.hit{border-left-color:var(--seal);background:#FFFDF6;box-shadow:0 0 0 3px rgba(158,42,43,.09)}
+.ref.dim{opacity:.42}
+.ref .top{display:flex;align-items:flex-start;gap:8px;margin-bottom:5px}
+.ref .nm{font-size:13.5px;font-weight:700;color:var(--navy-d);flex:1;line-height:1.5}
+.ref q{display:block;font-family:var(--serif);font-size:13px;color:var(--ink-2);line-height:1.85;background:var(--paper);border-radius:2px;padding:8px 10px;margin:6px 0;quotes:none}
+.ref .foot{display:flex;align-items:center;gap:8px;font-size:11.5px;color:var(--ink-3);flex-wrap:wrap}
+.ref .foot .gap{flex:1}
+.ref .foot>span{overflow-wrap:anywhere}
+.tag{font-size:11px;border-radius:2px;padding:1px 6px;font-weight:500;white-space:nowrap;letter-spacing:.02em}
+.tag.g{background:#E6F2EB;color:var(--green)}
+.tag.y{background:#FBF1DC;color:var(--amber)}
+.tag.r{background:#F8E7E7;color:var(--seal)}
+.tag.n{background:#E9F0F7;color:var(--navy-l)}
+.tag.k{background:var(--paper-2);color:var(--ink-3)}
+.sim{font-family:var(--mono);font-size:11.5px;color:var(--ink-3)}
+.simbar{height:4px;width:60px;background:var(--line-2);border-radius:2px;overflow:hidden;display:inline-block;vertical-align:middle;margin-right:5px}
+.simbar i{display:block;height:100%;background:var(--navy-l)}
+
+/* ---------- 紅綠燈：全文預覽 ---------- */
+.lampsum{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:16px}
+.lampsum .b{border:1px solid var(--line);border-radius:3px;padding:12px 14px;background:var(--white);
+  display:flex;gap:12px;align-items:center;box-shadow:var(--shadow);text-align:left;transition:.15s;font-family:inherit}
+.lampsum .b:hover{border-color:var(--navy-l);transform:translateY(-1px)}
+.lampsum .b[aria-pressed=true]{box-shadow:0 0 0 2px var(--navy),var(--shadow)}
+.lampsum .b .num{font-family:var(--mono);font-size:27px;font-weight:500;line-height:1}
+.lampsum .b .lb{font-size:13.5px;color:var(--ink);font-weight:700;line-height:1.4;display:flex;align-items:center;gap:6px}
+.lampsum .r{border-top:3px solid var(--seal)} .lampsum .r .num{color:var(--seal)}
+.lampsum .y{border-top:3px solid var(--amber)} .lampsum .y .num{color:var(--amber)}
+.lampsum .g{border-top:3px solid var(--green)} .lampsum .g .num{color:var(--green)}
+.lampsum .t{border-top:3px solid var(--navy-l)} .lampsum .t .num{color:var(--navy-l)}
+
+.review{display:grid;grid-template-columns:1fr 360px;gap:16px;align-items:start}
+.rvdoc{background:var(--white);border:1px solid var(--line);border-radius:3px;box-shadow:var(--shadow);max-height:calc(100vh - 300px);overflow:auto}
+.rvdoc .inner{padding:30px 34px 40px;font-family:var(--serif);font-size:15.5px;line-height:2.25;letter-spacing:.04em;position:relative}
+.rvdoc .doc-title{text-align:center;font-size:20px;font-weight:600;letter-spacing:.62em;text-indent:.62em;margin:0 0 18px}
+.rvdoc h4{font-size:16px;font-weight:600;letter-spacing:.5em;text-indent:.5em;margin:20px 0 4px}
+.rvdoc p{margin:0;text-align:justify;overflow-wrap:break-word;word-break:break-word}
+.rvdoc p.ind{text-indent:2em}
+.rvdoc .meta{font-size:14px;color:var(--ink-2);line-height:1.9}
+.rvdoc .stamp{position:absolute;top:10px;right:14px;width:74px;height:74px;border:2.5px solid var(--seal);border-radius:3px;color:var(--seal);display:grid;place-items:center;text-align:center;font-size:11.5px;line-height:1.45;font-weight:600;letter-spacing:.1em;transform:rotate(-7deg);opacity:.65}
+
+.rs{cursor:pointer;border-radius:2px;padding:1px 2px 2px;box-decoration-break:clone;-webkit-box-decoration-break:clone;border-bottom:2.5px solid transparent;transition:background .15s}
+.rs::before{content:"";display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:5px;vertical-align:.06em;background:#BBB}
+.rs[data-l=r]{border-bottom-color:rgba(158,42,43,.6)} .rs[data-l=r]::before{background:#E5484D;box-shadow:0 0 5px rgba(229,72,77,.6)}
+.rs[data-l=y]{border-bottom-color:rgba(176,114,6,.5)} .rs[data-l=y]::before{background:#E8B75A;box-shadow:0 0 5px rgba(232,183,90,.55)}
+.rs[data-l=g]{border-bottom-color:rgba(27,122,75,.4)} .rs[data-l=g]::before{background:#3CBB73}
+.rs[data-ack="1"]::before{background:#3CBB73;box-shadow:0 0 5px rgba(60,187,115,.6)}
+.rs[data-ack="1"]{border-bottom-color:rgba(27,122,75,.5)}
+.rs:hover{background:#EDF3F9}
+.rs.sel{background:#DCEAF6}
+.rvdoc.f-r .rs:not([data-l=r]),.rvdoc.f-y .rs:not([data-l=y]),.rvdoc.f-g .rs:not([data-l=g]){opacity:.22;border-bottom-color:transparent}
+.rvdoc.f-r .rs:not([data-l=r])::before,.rvdoc.f-y .rs:not([data-l=y])::before,.rvdoc.f-g .rs:not([data-l=g])::before{background:#D8D8D8;box-shadow:none}
+
+.sidebox{position:sticky;top:78px;display:grid;gap:12px}
+.det{background:var(--white);border:1px solid var(--line);border-radius:3px;box-shadow:var(--shadow);overflow:hidden}
+.det .hdd{padding:10px 14px;border-bottom:1px solid var(--line-2);background:linear-gradient(var(--white),#FBFAF7);font-size:13.5px;font-weight:700;color:var(--navy);display:flex;gap:8px;align-items:center}
+.det .bd{padding:13px 14px}
+.det .q{font-family:var(--serif);font-size:13.5px;line-height:1.95;background:var(--paper);border-left:3px solid var(--line);padding:9px 11px;border-radius:2px;margin:0 0 10px}
+.det .why{font-size:12.5px;color:var(--ink-2);line-height:1.7;margin:0 0 10px}
+.det .src{font-size:11.5px;color:var(--ink-3);font-family:var(--mono);word-break:break-all;line-height:1.7;margin-bottom:10px}
+.det .empty{font-size:12.5px;color:var(--ink-3);text-align:center;padding:22px 8px;line-height:1.8}
+.ack{font-size:12px;color:var(--green);font-weight:500}
+
+/* ---------- 算式卡：規則引擎逐步展開 ---------- */
+.calc{margin-top:9px;border:1px solid var(--line-2);border-left:3px solid var(--green);border-radius:2px;background:var(--paper)}
+.calc>summary{cursor:pointer;padding:6px 10px;font-size:12px;font-weight:500;color:var(--green);list-style:none;user-select:none}
+.calc>summary::-webkit-details-marker{display:none}
+.calc>summary::before{content:"▸ ";font-family:var(--mono)}
+.calc[open]>summary::before{content:"▾ "}
+.calc>summary:hover{background:#F1F6F2}
+.calc>summary:focus-visible{outline:2px solid var(--navy-l);outline-offset:-2px}
+.calc ol{margin:0;padding:2px 12px 10px 30px;counter-reset:cs}
+.calc li{margin:0 0 7px;font-size:12px;line-height:1.6;color:var(--ink-2)}
+.calc li b{display:block;font-weight:500;color:var(--ink)}
+.calc li .basis{display:block;font-family:var(--mono);font-size:10.5px;color:var(--ink-3)}
+.calc li .val{display:block;font-family:var(--mono);font-size:11.5px;color:var(--navy)}
+.calc .cav{border-top:1px dashed var(--line);padding:7px 12px 8px}
+.calc .cav p{margin:0 0 4px;font-size:11.5px;line-height:1.65;color:var(--amber)}
+.calc .cav p:last-child{margin:0}
+.nav-r{display:flex;gap:6px;align-items:center;font-size:12px;color:var(--ink-3)}
+
+.gate{margin-top:16px;border:1px solid var(--line);border-radius:3px;background:var(--white);padding:15px 17px;display:flex;gap:14px;align-items:center;flex-wrap:wrap;box-shadow:var(--shadow)}
+.gate .msg{flex:1;min-width:240px;font-size:13px;color:var(--ink-2)}
+.gate .msg b{display:block;font-size:14.5px;color:var(--ink);font-weight:700;margin-bottom:2px}
+
+/* ---------- 完成 ---------- */
+.done-wrap{max-width:620px;margin:40px auto;text-align:center}
+.done-seal{width:104px;height:104px;margin:0 auto 20px;border:3px solid var(--seal);border-radius:4px;color:var(--seal);display:grid;place-items:center;font-family:var(--serif);font-size:19px;font-weight:600;letter-spacing:.25em;text-indent:.25em;line-height:1.4;transform:rotate(-5deg);animation:pop .5s cubic-bezier(.2,1.4,.4,1)}
+@keyframes pop{from{transform:rotate(-5deg) scale(.5);opacity:0}to{transform:rotate(-5deg) scale(1);opacity:1}}
+.done-wrap h2{font-family:var(--serif);font-size:23px;margin:0 0 6px;color:var(--navy-d);letter-spacing:.05em}
+.done-wrap p{color:var(--ink-2);font-size:13.5px;margin:0 0 26px}
+.receipt{text-align:left;border:1px solid var(--line);border-radius:3px;background:var(--white);box-shadow:var(--shadow)}
+.receipt dl{margin:0;padding:4px 0}
+.receipt dt{font-size:12px;color:var(--ink-3);padding:9px 18px 0}
+.receipt dd{margin:0;padding:0 18px 9px;font-size:14px;font-family:var(--mono);border-bottom:1px solid var(--line-2)}
+.receipt dd:last-child{border:0}
+
+.stat{display:grid;grid-template-columns:repeat(4,1fr);gap:1px;margin:34px 0 0;
+  background:var(--line-2);border:1px solid var(--line);border-radius:3px;overflow:hidden;box-shadow:var(--shadow)}
+.stat div{text-align:center;background:var(--white);padding:18px 12px 16px;display:grid;gap:7px;align-content:center}
+.stat b{display:block;font-family:var(--mono);font-size:25px;color:var(--navy);font-weight:500;line-height:1.1}
+.stat span{font-size:11.5px;color:var(--ink-3);line-height:1.5}
+
+footer{background:var(--navy-d);color:#8FAECA;font-size:12px;padding:18px 20px;text-align:center;line-height:1.9}
+footer b{color:#C9DCEE;font-weight:500}
+
+/* modal */
+.mask{position:fixed;inset:0;background:rgba(12,28,44,.55);display:grid;place-items:center;z-index:200;padding:20px;opacity:0;pointer-events:none;transition:opacity .16s}
+.mask.on{opacity:1;pointer-events:auto}
+.modal{background:var(--white);border-radius:4px;max-width:520px;width:100%;box-shadow:0 20px 60px rgba(0,0,0,.35);border-top:4px solid var(--seal);transform:translateY(8px);transition:transform .16s}
+.mask.on .modal{transform:none}
+.modal .mh{padding:15px 20px 0;display:flex;gap:10px;align-items:center}
+.modal .mh .mi{font-size:22px;color:var(--seal)}
+.modal .mh h3{margin:0;font-size:16.5px;color:var(--navy-d);font-family:var(--serif);letter-spacing:.03em}
+.modal .mb{padding:12px 20px 4px;font-size:13.5px;color:var(--ink-2);line-height:1.8}
+.modal .mb ol{margin:10px 0;padding-left:20px;font-size:12.5px;color:var(--ink-2)}
+.modal .mb li{margin-bottom:4px}
+.modal .warn{background:#FDF4F4;border-left:3px solid var(--seal);padding:9px 12px;border-radius:2px;font-size:12.5px;color:var(--ink-2);margin:10px 0}
+.modal .confirmline{display:flex;gap:8px;align-items:center;padding:10px 12px;border:1px solid var(--line);border-radius:3px;margin-top:12px;font-size:13px}
+.modal .confirmline input{width:16px;height:16px;accent-color:var(--seal);flex:none}
+.modal .mf{padding:14px 20px 18px;display:flex;gap:10px;justify-content:flex-end}
+
+.toast{position:fixed;bottom:22px;left:50%;transform:translateX(-50%) translateY(80px);background:var(--navy-d);color:#fff;padding:10px 20px;border-radius:3px;font-size:13.5px;box-shadow:0 8px 28px rgba(0,0,0,.28);opacity:0;transition:.28s;z-index:99;border-left:3px solid var(--green)}
+.toast.on{opacity:1;transform:translateX(-50%)}
+
+@media(max-width:980px){
+  .grid2{grid-template-columns:1fr}
+  .split{grid-template-columns:1fr;height:auto;gap:14px}
+  .grip{display:none}
+  .pane{height:460px}
+  .lampsum{grid-template-columns:1fr 1fr}
+  .stat{grid-template-columns:1fr 1fr}
+  .review{grid-template-columns:1fr}
+  .sidebox{position:static}
+}
+@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
 </style>
 </head>
 <body>
-<header><div class="wrap hbar">
-  <h1>訴願承辦工作台</h1><span class="v">v0 prototype</span>
-  <span class="badge-syn">⚠ 合成測資 SYNTHETIC</span>
-  <span class="badge-test" id="selftest">引擎自測中…</span>
+
+
+<header class="masthead"><div class="in">
+  <span class="mi crest" aria-hidden="true">account_balance</span>
+  <div class="brand">
+    <div class="org">新北市政府法制局　訴願審議會</div>
+    <div class="sys">訴願決定書 AI 輔助撰擬系統</div>
+  </div>
+  <div class="spacer"></div>
+  <div class="who">承辦人<b>法制局 訴願科　林○玲</b></div>
 </div></header>
-<div class="subline"><div class="wrap">能算的<b>攤開算式</b>・有出處的<b>逐句標引用</b>・沒把握的<b>交還給人</b>｜新北黑客松 2026・法制局命題</div></div>
-<nav><div class="wrap">
-  <button class="tabbtn on" data-tab="t1">期間計算器</button>
-  <button class="tabbtn" data-tab="t2">引用檢查器</button>
-  <button class="tabbtn" data-tab="t3">草稿工作台</button>
+
+<nav class="crumb"><div class="in"><span>首頁 ／ 訴願案件管理 ／ <b>決定書撰擬</b></span>
+  <span class="prov" id="prov" tabindex="0">示範案件・去識別化資料</span>
 </div></nav>
-<main class="wrap">
 
-<section id="t1" class="panel on">
-  <div class="card">
-    <h2>訴願期間計算</h2>
-    <div class="sub">純規則引擎（零 LLM）。每一步附法條依據，結果可驗算。</div>
-    <div class="formrow">
-      <div><label>送達方式</label><select id="f-method">
-        <option value="personal">本人簽收</option>
-        <option value="deposit" selected>寄存送達</option>
-        <option value="public">公示送達</option></select></div>
-      <div><label>送達／寄存日</label><input type="date" id="f-service" value="2024-06-13"></div>
-      <div><label>訴願提起日（可留空）</label><input type="date" id="f-filing" value="2024-07-20"></div>
-      <div><label>在途期間（日）</label><input type="number" id="f-transit" value="0" min="0" max="30"></div>
+<nav class="steps" aria-label="撰擬流程"><div class="in" id="stepbar">
+  <button class="step" data-i="0" data-on="1" aria-current="step" title="上傳訴願書、原處分書與答辯書，並補充卷內未載事項"><span class="n">1</span><span class="t">收文與補充</span></button>
+  <button class="step" data-i="1" data-on="0" disabled title="七名 AI 幕僚分工：收文、分類、程序、法規、案例、撰稿、品管"><span class="n">2</span><span class="t">幕僚團分析</span></button>
+  <button class="step" data-i="2" data-on="0" disabled title="逐句編輯，即時連結法規與相似案例"><span class="n">3</span><span class="t">草稿編輯</span></button>
+  <button class="step" data-i="3" data-on="0" disabled title="全文逐句標示紅黃綠燈，紅燈須人工確認"><span class="n">4</span><span class="t">燈號審核</span></button>
+  <button class="step" data-i="4" data-on="0" disabled title="陳核並排入訴願審議委員會議程"><span class="n">5</span><span class="t">送出審議</span></button>
+</div></nav>
+
+<main id="main">
+
+<!-- ===================== 1 上傳 ===================== -->
+<section class="panel on" data-p="0">
+  <div class="page-head"><h1 class="page-title">收文與案件補充</h1>
+    <div class="page-nav"><span id="go1hint" style="font-size:12.5px;color:var(--ink-3)">請先上傳卷證</span><button class="btn" id="go1" disabled>啟動幕僚團分析 →</button></div></div>
+  
+
+  <div class="grid2">
+    <div class="card">
+      <h2><span class="bar"></span>卷證上傳</h2>
+      <div class="body">
+        <div class="drop" id="drop" tabindex="0" role="button" aria-label="上傳卷證檔案">
+          <span class="mi" style="font-size:38px;color:var(--navy);opacity:.55">upload_file</span>
+          <div class="big">拖曳檔案至此，或點擊選擇</div>
+          <div class="sm">PDF／DOCX／掃描影像，單檔 20MB</div>
+          <input type="file" id="filein" multiple hidden>
+        </div>
+        <ul class="files" id="filelist"></ul>
+        <div class="actions">
+          <button class="btn ghost sm" id="demoload">載入示範案件（洗錢防制法 書面告誡）</button>
+        </div>
+      </div>
     </div>
-    <button class="btn" id="f-run">計算</button>
-    <button class="btn ghost" id="f-load-hist">載入歷史案 113年/03</button>
-  </div>
-  <div class="card" id="f-out" hidden>
-    <h2>算式卡</h2>
-    <div class="sub">逐步展開，每步可對照法條。</div>
-    <ol class="steps" id="f-steps"></ol>
-    <div id="f-verdict"></div>
-    <div id="f-caveats"></div>
+
+    <div class="card">
+      <h2><span class="bar"></span>案件資訊<span class="mi tip" tabindex="0" data-tip="標示「自動擷取」者由卷證解析取得，可直接覆寫更正。">info</span></h2>
+      <div class="body">
+        <div class="row2">
+          <div class="field"><label>收文案號<span class="req">*</span></label><input type="text" id="f_no" placeholder="1147061xxx"></div>
+          <div class="field"><label>案件類型<span class="req">*</span><span class="auto" id="a_type"></span></label>
+            <select id="f_type">
+              <option value="">請選擇</option>
+              <option>違反洗錢防制法事件</option>
+              <option>違反廢棄物清理法事件</option>
+              <option>違反空氣汙染防制法事件</option>
+              <option>違反噪音管制法事件</option>
+              <option>違反建築法事件</option>
+              <option>申請提供政府資訊事件</option>
+              <option>其他</option>
+            </select>
+          </div>
+        </div>
+        <div class="row2">
+          <div class="field"><label>訴願人<span class="auto" id="a_p"></span></label><input type="text" id="f_person" placeholder="姓名／名稱（去識別化）"></div>
+          <div class="field"><label>原處分機關<span class="auto" id="a_org"></span></label><input type="text" id="f_org" placeholder="例：新北市政府警察局○○分局"></div>
+        </div>
+        <div class="row2">
+          <div class="field"><label>原處分日期<span class="auto" id="a_d1"></span></label><input type="date" id="f_d1"></div>
+          <div class="field"><label>合法送達日期<span class="auto" id="a_d2"></span></label><input type="date" id="f_d2"></div>
+        </div>
+        <div class="row2">
+          <div class="field"><label>提起訴願日期<span class="auto" id="a_d3"></span></label><input type="date" id="f_d3"></div>
+          <div class="field"><label>有無委任代理人</label><select id="f_agent"><option>無</option><option>有（律師）</option><option>有（非律師）</option></select></div>
+        </div>
+        <div class="field"><label>承辦人補充說明<span style="font-weight:400;color:var(--ink-3)">（卷內未載、或需幕僚團特別注意之事項）</span></label>
+          <textarea id="f_note" rows="3" placeholder="例：原處分機關答辯書未附證據資料，已二次函請補充答辯仍未提出。"></textarea></div>
+      </div>
+    </div>
   </div>
 </section>
 
-<section id="t2" class="panel">
+<!-- ===================== 2 幕僚團 ===================== -->
+<section class="panel" data-p="1">
+  <div class="page-head"><h1 class="page-title">幕僚團分析</h1>
+    <div class="page-nav"><button class="btn ghost" data-back="0">← 上一步</button>
+    <button class="btn" id="go2" disabled>進入草稿編輯 →</button></div></div>
+  
+
+  <div class="card" style="margin-bottom:16px">
+    <h2><span class="bar"></span>分工看板<span class="mi tip" tabindex="0" data-tip="七名幕僚依序作業，每項產出皆回填來源供燈號查核。">info</span><span style="flex:1"></span><span id="agprog" style="font-family:var(--mono);font-size:12.5px;color:var(--ink-3);font-weight:400">0 / 7</span></h2>
+    <div class="body"><div class="agents" id="agents"></div></div>
+  </div>
+
   <div class="card">
-    <h2>引用檢查</h2>
-    <div class="sub">貼上草稿或決定書段落。法條對照 11 部法規之真實條號快照（2026-08-22），判解對照資料集 19 份白名單。</div>
-    <textarea id="c-text" placeholder="貼上文字…"></textarea>
-    <div style="margin-top:12px">
-      <button class="btn" id="c-run">檢查引用</button>
-      <button class="btn ghost" id="c-load-real">載入真實段落（114年/15 節錄）</button>
-      <button class="btn ghost" id="c-load-fake">載入含假字號段落</button>
+    <h2><span class="bar"></span>作業紀錄</h2>
+    <div class="body" style="padding:12px"><div class="console" id="console"></div></div>
+  </div>
+
+</section>
+
+<!-- ===================== 3 編輯 ===================== -->
+<section class="panel" data-p="2">
+  <div class="page-head"><h1 class="page-title">草稿編輯</h1>
+    <div class="page-nav"><button class="btn ghost" data-back="1">← 上一步</button>
+    <button class="btn" id="go3">送交燈號審核 →</button></div></div>
+  
+
+  <div class="split" id="split">
+    <div class="pane">
+      <div class="tabs" role="tablist">
+        <button class="tab" role="tab" aria-selected="true" data-t="law">法規依據<span class="badge">6</span></button>
+        <button class="tab" role="tab" aria-selected="false" data-t="case">相似案例<span class="badge">5</span></button>
+        <button class="tab" role="tab" aria-selected="false" data-t="issue">爭點與函釋<span class="badge">4</span></button>
+      </div>
+      <div class="tabbody">
+        <div class="tabpane on" id="tp-law"></div>
+        <div class="tabpane" id="tp-case"></div>
+        <div class="tabpane" id="tp-issue"></div>
+      </div>
+      <div class="inspect" id="reffoot"><div class="ln"><span class="k">參考資料</span><span class="mi tip" tabindex="0" data-tip="點右側句子可篩出其依據；點依據卡片可反查引用它的句子。">info</span></div></div>
+    </div>
+
+    <div class="grip" id="grip" role="separator" aria-orientation="vertical" tabindex="0" aria-label="調整左右寬度"></div>
+
+    <div class="pane">
+      <div class="hd">
+        <span class="ttl">決定書草稿</span>
+        <span class="tag n" id="wc">0 字</span>
+        <span class="tag r" id="editcount" style="display:none">0 句已修改</span>
+        <span class="gap"></span>
+        <button class="btn ghost sm" id="cleanview"><span class="mi" style="font-size:15px;vertical-align:-3px">visibility</span> 純文預覽</button>
+        <span class="nav-r">句 <b id="sentpos" style="font-family:var(--mono)">—</b> / <span id="senttotal" style="font-family:var(--mono)">—</span></span>
+      </div>
+      <div class="editor" id="editorwrap"><div class="sheet" id="sheet"></div></div>
+      <div class="inspect" id="inspect"><div class="ln"><span class="k">尚未選取</span><span class="mi tip" tabindex="0" data-tip="點任一句檢視燈號與依據；改寫任一句，其燈號即轉紅待複核。">info</span></div></div>
     </div>
   </div>
-  <div class="card" id="c-out" hidden>
-    <h2>檢查結果</h2>
-    <div class="sub" id="c-summary"></div>
-    <div class="cites" id="c-list"></div>
-    <div class="caveat" style="margin-top:14px"><b>誠實邊界：</b>「在庫」僅代表存在於本 prototype 之離線快照（快照日 2026-08-22）。標示「庫外」不代表引用錯誤，代表本庫無法驗證、需人工查證。</div>
+
+</section>
+
+<!-- ===================== 4 燈號 ===================== -->
+<section class="panel" data-p="3">
+  <div class="page-head"><h1 class="page-title">燈號審核</h1>
+    <div class="page-nav"><button class="btn ghost" data-back="2">← 上一步</button>
+    <button class="btn seal" id="go4" disabled>送出審議 →</button></div></div>
+  
+
+  <div class="lampsum">
+    <button class="b r" data-lf="r" aria-pressed="false"><span class="num" id="n_r">0</span><span class="lb">紅燈<span class="mi tip" tabindex="0" data-tip="事實認定、裁量，或承辦人已改寫之句。AI 不代為判斷，須逐句核閱確認。">info</span></span></button>
+    <button class="b y" data-lf="y" aria-pressed="false"><span class="num" id="n_y">0</span><span class="lb">黃燈<span class="mi tip" tabindex="0" data-tip="已找到出處，請確認引用版本與適用射程。">info</span></span></button>
+    <button class="b g" data-lf="g" aria-pressed="false"><span class="num" id="n_g">0</span><span class="lb">綠燈<span class="mi tip" tabindex="0" data-tip="期間、條次、版式等可由規則自動驗算。">info</span></span></button>
+    <button class="b t" data-lf="all" aria-pressed="true"><span class="num" id="n_t">0</span><span class="lb">全文句數<span class="mi tip" tabindex="0" data-tip="逐句溯源覆蓋率 100%，點此顯示全文。">info</span></span></button>
+  </div>
+
+  <div class="review">
+    <div>
+      <div class="rvbar">
+        <span class="gap"></span>
+        <button class="btn ghost sm" id="cleanview2"><span class="mi" style="font-size:15px;vertical-align:-3px">visibility</span> 純文預覽</button>
+      </div>
+      <div class="rvdoc" id="rvdoc"><div class="inner" id="rvinner"></div></div>
+    </div>
+    <div class="sidebox">
+      <div class="det">
+        <div class="hdd"><span style="width:3px;height:15px;background:var(--seal);border-radius:2px"></span>句次查核</div>
+        <div class="bd" id="detbody"><div class="empty">點選左側任一句<br>檢視燈號理由與來源</div></div>
+      </div>
+      <div class="det">
+        <div class="hdd">紅燈進度<span style="flex:1"></span><span style="font-family:var(--mono);font-weight:400;font-size:12px;color:var(--ink-3)" id="redprog">0 / 0</span></div>
+        <div class="bd" style="padding:11px 14px">
+          <div id="redlist" style="display:grid;gap:6px"></div>
+          <button class="btn seal sm" id="ackall" style="width:100%;margin-top:9px">一鍵確認</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="gate">
+    <div class="msg"><b id="gatetitle">尚有紅燈項目待確認</b><span id="gatemsg">紅燈項目全部確認後，才會開放送出審議。</span></div>
   </div>
 </section>
 
-<section id="t3" class="panel">
-  <div class="card">
-    <h2>草稿工作台</h2>
-    <div class="sub" id="d-disclaimer"></div>
-    <div class="tierbar">
-      <span class="tier g">綠＝可驗算（規則引擎）</span>
-      <span class="tier a">金＝有出處（每句標引用）</span>
-      <span class="tier r">紅＝請人工判斷（不生成結論）</span>
+<!-- ===================== 5 完成 ===================== -->
+<section class="panel" data-p="4">
+  <div class="done-wrap">
+    <div class="done-seal">陳核<br>完成</div>
+    <h2>已送出審議</h2>
+    <p>決定書草稿與查核紀錄已陳送訴願審議委員會，並排入最近一次審議會議程。</p>
+    <div class="receipt">
+      <dl>
+        <dt>收文案號</dt><dd id="r_no">—</dd>
+        <dt>案由</dt><dd id="r_type">—</dd>
+        <dt>擬辦</dt><dd id="r_result">訴願駁回（訴願法第 79 條第 1 項）</dd>
+        <dt>查核結果</dt><dd id="r_lamp">—</dd>
+        <dt>送出時間</dt><dd id="r_time">—</dd>
+      </dl>
     </div>
-    <div class="scen-tabs" id="d-tabs"></div>
-    <div id="d-body"></div>
+    <div class="stat">
+      <div><b id="s_min">—</b><span>本案撰擬耗時</span></div>
+      <div><b>約 3.5 天</b><span>原人工作業平均</span></div>
+      <div><b id="s_cite">—</b><span>自動引註筆數</span></div>
+      <div><b>1,566</b><span>114 年度案量</span></div>
+    </div>
+    <div class="actions" style="justify-content:center;margin-top:28px">
+      <button class="btn ghost" id="restart">再跑一次示範</button>
+    </div>
   </div>
 </section>
+
 </main>
-<footer>訴願承辦工作台 v0（prototype）・新北黑客松 2026 法制局命題・千山鳥飛絕</footer>
+
+<footer>
+  <b>新北市政府法制局</b>　22001 新北市板橋區中山路一段161號　·　訴願專線 (02)2960-3456
+  <br>本頁為 AI 黑客松競賽原型，所引資料僅供展示之用，非正式行政文書。
+</footer>
+
+<div class="mask" id="mask" role="dialog" aria-modal="true" aria-labelledby="mtitle">
+  <div class="modal">
+    <div class="mh"><span class="mi">warning</span><h3 id="mtitle">確認全部紅燈句</h3></div>
+    <div class="mb">
+      <p style="margin:0">你即將一次確認 <b id="m_n" style="color:var(--seal)">0</b> 句紅燈，包含：</p>
+      <ol id="m_list"></ol>
+      <div class="warn">紅燈代表事實認定、裁量或人工改寫，系統無法代為驗證。一次確認等同承辦人已逐句核閱卷證，紀錄會併同決定書陳送審議委員會。</div>
+      <label class="confirmline"><input type="checkbox" id="m_chk"><span>我已逐句核閱卷內證據，確認上列論述與卷證相符。</span></label>
+    </div>
+    <div class="mf">
+      <button class="btn ghost" id="m_cancel">取消</button>
+      <button class="btn seal" id="m_ok" disabled>確認全部</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script id="case-data" type="application/json">__CASE__</script>
 <script id="snapshot-data" type="application/json">__SNAPSHOT__</script>
-<script id="fixtures-data" type="application/json">__FIXTURES__</script>
 <script>
 /*__ENGINE__*/
 </script>
