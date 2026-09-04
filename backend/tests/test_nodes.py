@@ -323,6 +323,60 @@ def test_interpretation_states():
     assert_eq(out.blocking, False)
 
 
+def test_citation_survives_fullwidth_digits():
+    """全形數字不得造成誤攔。
+
+    法規 PDF 轉出來的文字常帶全形數字。若不正規化，「訴願法第１４條」這種**正確的引用**
+    會被判成查無此號並阻擋送出——誤攔比漏抓更難察覺，因為它看起來像系統在認真把關。
+    這條測試是實際構造對抗輸入時抓到真 bug 後補的。
+    """
+    ck = CitationChecker(SNAPSHOT)
+    ok = ck.check_text("訴願法第１４條")
+    assert_eq(len(ok), 1)
+    assert_eq(ok[0].state, STATE_OK, "全形數字的合法引用不得被誤判為查無此號")
+    assert_eq(ok[0].raw, "訴願法第14條", "顯示字串應正規化成半形，方便前端比對")
+
+    sub = ck.check_text("廢棄物清理法第３９條之１")
+    assert_eq(sub[0].state, STATE_OK, "全形數字的『之N』條號也要正規化")
+
+    bad = ck.check_text("建築法第９９９條")
+    assert_eq(bad[0].state, STATE_MISSING, "正規化不得讓真的不存在的條號變成通過")
+
+    prec = ck.check_text("最高行政法院１０８年度判字第５３１號")
+    assert_eq(prec[0].state, STATE_OK, "判解字號的全形數字同樣不得誤攔")
+
+
+def test_citation_tolerates_spacing_and_newlines():
+    ck = CitationChecker(SNAPSHOT)
+    for text in ("訴願法第 14 條", "訴願法\n第14條", "最高行政法院 108 年度 判 字 第 531 號"):
+        r = ck.check_text(text)
+        assert_true(r, f"{text!r} 應該要抽到引用")
+        assert_eq(r[0].state, STATE_OK, f"{text!r} 不得因空白或換行被誤判")
+
+
+def test_citation_boundary_article_numbers():
+    """邊界條號：max 之內通過、超過一號即查無。"""
+    ck = CitationChecker(SNAPSHOT)
+    assert_eq(ck.check_text("建築法第105條")[0].state, STATE_OK, "最大條號本身應在庫")
+    assert_eq(ck.check_text("建築法第106條")[0].state, STATE_MISSING, "超過最大條號一號即查無")
+    assert_eq(ck.check_text("建築法第0條")[0].state, STATE_MISSING, "第 0 條不存在")
+
+
+def test_relative_law_reference_is_not_silently_passed():
+    """「本法第14條」「同法第74條」這種相對指稱抓不到，是**已知限制**。
+
+    重點是它的失敗模式安全：抓不到 → 該句沒有引用 → 燈號黃（無引用之涵攝句，交人工），
+    **不會**被誤標成綠燈「已驗證」。這條測試把這個行為釘住，避免將來有人「順手」
+    把無引用句改成預設綠燈。
+    """
+    from backend.gate.lamps import lamp_for_states
+
+    ck = CitationChecker(SNAPSHOT)
+    assert_eq(ck.check_text("本法第14條"), [], "相對指稱目前抓不到（已知限制）")
+    assert_eq(ck.check_text("同法第74條"), [], "相對指稱目前抓不到（已知限制）")
+    assert_eq(lamp_for_states([]), "y", "沒有引用的句子必須是黃燈交人工，絕不可預設綠燈")
+
+
 def test_lamp_severity_ordering():
     assert_eq(lamp_for_states([STATE_OK, STATE_OK]), "g")
     assert_eq(lamp_for_states([STATE_OK, STATE_AMENDED]), "y")

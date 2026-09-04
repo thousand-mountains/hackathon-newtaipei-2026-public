@@ -119,6 +119,16 @@ def _trim_law_name(name: str) -> str:
     return name
 
 
+# 全形數字 → 半形。法規 PDF 轉出來的文字常帶全形數字（「訴願法第１４條」），
+# 不正規化的話快照比對會查不到，把**正確的引用誤判成查無此號**並阻擋送出——
+# 誤攔比漏抓更常見也更難察覺（architecture §8.1 明確警告過誤攔問題）。
+_FULLWIDTH_DIGITS = str.maketrans("０１２３４５６７８９", "0123456789")
+
+
+def normalize_digits(s: str) -> str:
+    return s.translate(_FULLWIDTH_DIGITS)
+
+
 def extract_law_refs(text: str, law_names: list[str]) -> list[tuple[str, str, str]]:
     """只抓快照涵蓋的法規（查表用）。回傳 [(法規名, 條號 key, 顯示字串)]。"""
     return [(law, key, disp) for law, key, disp, known in extract_all_law_refs(text, law_names) if known]
@@ -135,7 +145,9 @@ def extract_all_law_refs(text: str, law_names: list[str]) -> list[tuple[str, str
 
     if law_names:
         for m in build_law_regex(law_names).finditer(text):
-            law, art, sub = m.group(1), m.group(2), m.group(3)
+            law = m.group(1)
+            art = normalize_digits(m.group(2))
+            sub = normalize_digits(m.group(3)) if m.group(3) else None
             key = f"{art}之{sub}" if sub else art
             display = f"{law}第{art}條" + (f"之{sub}" if sub else "")
             found.append((m.start(), law, key, display, True))
@@ -147,7 +159,8 @@ def extract_all_law_refs(text: str, law_names: list[str]) -> list[tuple[str, str
         law = _trim_law_name(m.group(1))
         if law in law_names:
             continue  # 保險：剝完前綴後其實是已知法規
-        art, sub = m.group(2), m.group(3)
+        art = normalize_digits(m.group(2))
+        sub = normalize_digits(m.group(3)) if m.group(3) else None
         key = f"{art}之{sub}" if sub else art
         display = f"{law}第{art}條" + (f"之{sub}" if sub else "")
         found.append((m.start(), law, key, display, False))
