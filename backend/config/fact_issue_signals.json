@@ -1,0 +1,62 @@
+{
+  "_note": "事實認定爭點訊號清單 v0（architecture §4.3 的 fact_issue_signals）。架構文件原本指定 YAML，Phase 0 為守住『測試路徑零外部依賴』（不引入 PyYAML）改用等價的 JSON，欄位名一致，之後要換回 YAML 只需改讀取器。",
+  "_ownership": "正式版由 qa-legal（Jacky）從 114年/19、113年/20 兩份真實 C 型決定書反推訊號詞，賽前交。以下為 Phase 0 的骨架版，訊號詞取自公開法條用語，不含任何真實案件內容。",
+  "_severity_policy": "severity 只允許人工在此檔標註，不做自動分級——自動分級等於讓程式替法律判斷定輕重，超出本系統的分層。high = 該爭點的結論必須由人寫（封鎖結論段）；medium = 提醒但不封鎖。",
+  "signals": [
+    {
+      "id": "penalty_limitation",
+      "title": "裁處權時效之起算與行為終了時點認定",
+      "severity": "high",
+      "applies_to": {
+        "case_type": ["違反建築法事件", "違反空氣污染防制法事件", "違反廢棄物清理法事件"],
+        "art77_clause": [null]
+      },
+      "any_of": ["時效", "裁處權", "三年期間", "行為終了", "繼續性違規"],
+      "question": "違規之「行為終了時」如何認定？擅自變更使用屬繼續性行為或一次性行為？卷內有無行為持續之事證？"
+    },
+    {
+      "id": "acct_control",
+      "title": "帳戶「交付、提供他人使用」之認定",
+      "severity": "high",
+      "applies_to": {
+        "case_type": ["違反洗錢防制法事件"],
+        "art77_clause": ["77-2", null]
+      },
+      "any_of": ["管領", "交付帳戶", "提供帳戶", "遭詐騙", "非本人使用"],
+      "question": "帳戶於處分時是否仍在訴願人實際管領？請核對卷附交易明細與警詢筆錄。"
+    },
+    {
+      "id": "actor_identity",
+      "title": "處罰主體是否為實際行為人",
+      "severity": "high",
+      "applies_to": {
+        "case_type": [],
+        "art77_clause": [null]
+      },
+      "any_of": ["非本人所為", "實際行為人", "承租人所為", "第三人行為", "處罰主體"],
+      "question": "原處分認定之受處分人是否為實際行為人？有無事證顯示違規係他人所為？"
+    },
+    {
+      "id": "standing_interest",
+      "title": "訴願人是否具法律上利害關係",
+      "severity": "medium",
+      "applies_to": {
+        "case_type": [],
+        "art77_clause": ["77-3", null]
+      },
+      "any_of": ["承租人", "利害關係", "經濟上利益", "反射利益"],
+      "question": "訴願人主張之利益屬法律上利害關係，或僅為事實上、經濟上之利害關係？"
+    },
+    {
+      "id": "service_dispute",
+      "title": "送達生效日之爭執",
+      "severity": "medium",
+      "applies_to": {
+        "case_type": [],
+        "art77_clause": ["77-2", null]
+      },
+      "any_of": ["未實際收受", "他人代收", "地址錯誤", "遷離", "拒收"],
+      "question": "訴願人是否爭執送達生效日？寄存送達之處所與應受送達處所是否相符？"
+    }
+  ]
+}

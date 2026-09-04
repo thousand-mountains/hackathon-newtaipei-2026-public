@@ -1,0 +1,99 @@
+{
+  "id": "synthetic-blocked-01",
+  "label": "對抗案例：C 型結論封鎖 + 引用查無此號（用來驗證守門真的會攔）",
+  "provenance": {
+    "kind": "synthetic-adversarial",
+    "declaration": "本檔為合成對抗測資（synthetic adversarial）。案情結構自公開決定書之『先合後破・裁處權時效』型態反推改寫；案號、人名、地址均為虛構，不對應任何真實案件，亦未使用賽方競賽資料集。",
+    "constitution": "CONSTITUTION §3（不編造測資背景）、§6（Demo 資產隔離）",
+    "why_this_case": "這份案例刻意做壞，用來證明 N6 守門是真邏輯而不是擺好看的。它同時觸發兩道防線：(1) C 型結論封鎖——程序合法須進實體審查且存在高風險事實認定爭點，結論段必須由承辦人寫；(2) 引用查無此號——草稿中植入一個不存在的條號，守門必須攔下並阻擋送出。",
+    "adversarial_injections": [
+      {
+        "where": "draft_fixture.reasoning[2]",
+        "what": "引用「建築法第999條」——快照中建築法最大條號為 105，此條號不存在。",
+        "why": "這是**刻意注入的錯誤引用**，不是本系統對法律的認知。用途是驗證 CONSTITUTION §2『生成一個查無此號的判例＝P0 bug』的守門有沒有真的接住。期望結果：citation state=missing、lamp=r、進 blockers、submit_allowed=false。若這條沒被攔下，視同 P0。"
+      }
+    ]
+  },
+  "files": [
+    { "n": "synthetic-訴願書-建築法.pdf", "s": "—", "x": "訴願人 · 4 頁（合成）" },
+    { "n": "synthetic-原處分裁處書-建築法.pdf", "s": "—", "x": "原處分機關 · 3 頁（合成）" }
+  ],
+  "case_digest": "訴願人所有本市三重區建物，經工務局認定於 109 年間擅自變更使用，並於民國 114 年 3 月裁處罰鍰。訴願人主張違規行為距裁處已逾三年，裁處權時效業已消滅，且該變更使用行為早已終了，非屬繼續性違規。",
+  "extraction": {
+    "_note": "N1 抽取節點在 fixture 檔位重播本區塊。conf 為合成案例既有標註，不是本次執行實測到的信心值。",
+    "intake": {
+      "no": "synthetic-1140000002",
+      "type": "違反建築法事件",
+      "person": "（合成）林○安",
+      "org": "新北市政府（合成測資）",
+      "d1": "2025-03-10",
+      "d2": "2025-03-14",
+      "d3": "2025-04-07",
+      "agent": "有（律師）",
+      "service_method": "personal",
+      "transit_days": 0,
+      "interested_party": false,
+      "note": "訴願人主張裁處權時效已消滅，違規行為於 109 年間即已終了，非繼續性違規。"
+    },
+    "conf": {
+      "no": 0.96,
+      "type": 0.92,
+      "person": 0.89,
+      "org": 0.94,
+      "d1": 0.9,
+      "d2": 0.93,
+      "d3": 0.95,
+      "service_method": 0.88
+    },
+    "quotes": {
+      "d2": { "page": 1, "text": "本件裁處書於民國 114 年 3 月 14 日由訴願人本人簽收。（合成卷證原文）" }
+    },
+    "facts_excerpt": [
+      {
+        "text": "訴願人所有本市三重區建物，經工務局於民國 114 年 2 月現場勘查，認定該建物一樓原核准用途為停車空間，實際作為餐飲業使用，屬擅自變更使用。（合成卷證原文摘錄）",
+        "page": 2,
+        "quote_ref": "synthetic-原處分裁處書-建築法.pdf#p2"
+      },
+      {
+        "text": "訴願人於陳述意見時陳稱，該處自民國 109 年間即由前承租人改作餐飲使用，其後未再變更，主張裁處權時效已消滅。（合成卷證原文摘錄）",
+        "page": 3,
+        "quote_ref": "synthetic-訴願書-建築法.pdf#p3"
+      }
+    ]
+  },
+  "draft_fixture": {
+    "_note": "N5 主筆節點在 fixture 檔位重播本區塊。注意 conclusion 槽位雖然寫在這裡，但當 requires_human_conclusion=true 時，N5 會把它從 slots 陣列刪掉，根本不會組進 doc[]——這是結構性封鎖，不是叫模型別寫。",
+    "reasoning": [
+      {
+        "t": "查原處分認定之違規事實，有現場勘查紀錄、照片及使用執照存根附卷可稽，事實認定尚無違誤。",
+        "cite_ids": ["L1"],
+        "basis": "建築法第73條",
+        "source_kind": "law"
+      },
+      {
+        "t": "惟按行政罰之裁處權，因三年期間之經過而消滅；期間自違反行政法上義務之行為終了時起算。",
+        "cite_ids": ["L2"],
+        "basis": "行政罰法第27條",
+        "source_kind": "law"
+      },
+      {
+        "t": "至擅自變更使用之處罰要件，另參建築法第999條之規定。",
+        "cite_ids": ["L3"],
+        "basis": "建築法第999條",
+        "source_kind": "law",
+        "adversarial": true,
+        "adversarial_note": "刻意注入的錯誤引用，用來驗證守門會攔。快照中建築法無第 999 條（最大條號 105）。"
+      }
+    ],
+    "conclusion": [
+      {
+        "t": "原處分撤銷。",
+        "cite_ids": ["L2"],
+        "basis": "行政罰法第27條",
+        "source_kind": "law",
+        "adversarial": true,
+        "adversarial_note": "刻意留一個結論句在 fixture 裡。期望結果：因 requires_human_conclusion=true，N5 會把 conclusion 從 slots 刪掉，這句永遠不會出現在 doc[] 裡。若它出現了，state.assert_verified_invariant() 會炸，視同 P0。"
+      }
+    ]
+  }
+}
