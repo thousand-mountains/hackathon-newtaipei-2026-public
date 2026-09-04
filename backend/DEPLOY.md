@@ -86,6 +86,12 @@ docker push <account>.dkr.ecr.ap-northeast-1.amazonaws.com/<repo>:phase0
 docker build --platform linux/amd64 -f backend/Dockerfile -t hack-appeal-backend:phase0 .
 ```
 
+**已在本機實測過（2026-09-05）**：上面這行 `--platform linux/amd64` 建置成功；
+`docker run -p 18080:8080 -e RUN_MODE=fixture` 起容器後 `/api/health` 回 200、
+兩個合成案例都跑得完（對抗案例照樣 `submit_allowed=false`）、內建 HEALTHCHECK 轉為
+`healthy`、容器內以 `appuser` 執行且 `/app/prototype` 不存在（映像檔確實沒帶進去）。
+**尚未實測的是 ECR 推送與 ECS 部署本身**——那需要 AWS 帳號，見 §0。
+
 ---
 
 ## 3. ECS 部署步驟
