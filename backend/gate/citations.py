@@ -22,7 +22,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
-from backend.retrieval.lawtable import build_law_regex
+from backend.retrieval.lawtable import extract_all_law_refs
 
 STATE_OK = "ok"
 STATE_AMENDED = "amended"
@@ -94,7 +94,7 @@ class CitationChecker:
         self.amendments: list[dict[str, Any]] = snapshot.get("amendments", [])
         self.precedents: list[dict[str, Any]] = snapshot.get("precedents", [])
         self.interpretations: list[int] = snapshot.get("interpretations", [])
-        self._law_re = build_law_regex(list(self.laws.keys())) if self.laws else None
+        self._law_names = list(self.laws.keys())
         self._max_roc_year = current_roc_year(today)
 
     # ── 法條 ────────────────────────────────────────────────────────
@@ -215,11 +215,8 @@ class CitationChecker:
     def check_text(self, text: str) -> list[Citation]:
         """抽出全部引用並逐一定狀態。同一段文字重複的引用不去重（逐句守門要逐筆對應）。"""
         out: list[Citation] = []
-        if self._law_re:
-            for m in self._law_re.finditer(text):
-                law, art, sub = m.group(1), m.group(2), m.group(3)
-                key = f"{art}之{sub}" if sub else art
-                out.append(self.check_law(law, key, m.group(0)))
+        for law, key, display, _known in extract_all_law_refs(text, self._law_names):
+            out.append(self.check_law(law, key, display))
         for m in PREC_RE.finditer(text):
             court, year, typ, no = m.group(1), int(m.group(2)), m.group(3), int(m.group(4))
             out.append(self.check_precedent(court, year, typ, no, m.group(0)))
