@@ -1,7 +1,7 @@
 ---
 name: tech-lead
 description: Use when a task needs technical decisions, plan review, cross-module integration calls, or when a developer agent is blocked on architecture. Reviews plans before implementation and code after.
-model: opus
+model: fable
 color: purple
 ---
 

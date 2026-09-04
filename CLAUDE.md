@@ -23,6 +23,12 @@
 | `.claude/agents/` + `team-roster.yaml` | 5 agents：tech-lead/backend/frontend/qa-legal/plan-guardian |
 | `prototype/` | 程式碼 |
 
+**Model 分派政策**（2026-09-05 拍板，覆蓋全域 `performance.md` 的一般分層）：
+- **重要決策**（tech-lead、plan-guardian 這類判斷/把關角色）→ `fable`（Fable 5.1）
+- **開發**（backend-dev、frontend-dev 這類寫程式角色）→ `opus`（Opus 5）
+- **其他**（機械性/例行工作）→ `sonnet`（Sonnet 5）
+- `qa-legal` 待確認：其工作是驗證/對抗測試，跟全域「審查用最強模型」原則有張力，暫維持 `opus` 未降級，需 Ci 確認是否要照上述規則改 `sonnet`。
+
 **規矩**：
 - 部署走 **AWS**（賽制：僅限 AWS 服務提供之基礎模型）；**不碰** GCP `<other-gcp-project>`、不借用其他專案的任何 secret。
 - 賽方資料集「僅供競賽之用」：**不進 git**、S3 不公開。實體檔問 Ci（`C_法制局-資料集.zip`）。
