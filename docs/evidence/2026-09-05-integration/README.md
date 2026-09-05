@@ -14,7 +14,11 @@ uv run --with fastapi --with "uvicorn[standard]" --with pydantic -- \
 
 再跑瀏覽器驗證（headless Chromium）：
 
+> 2026-09-05 追加：多一支 `verify_recalc.py`，驗 live 模式改日期即時重算。
+
 ```bash
+uv run --with playwright -- python docs/evidence/2026-09-05-integration/verify_recalc.py \
+    synthetic-blocked-01 2025-06-30 /tmp/shots
 uv run --with playwright -- python docs/evidence/2026-09-05-integration/verify_ui.py \
     synthetic-ordinary-01 /tmp/shots
 uv run --with playwright -- python docs/evidence/2026-09-05-integration/verify_ui.py \
@@ -32,6 +36,10 @@ uv run --with playwright -- python docs/evidence/2026-09-05-integration/verify_o
 |---|---|
 | `verify_ui.py` | live 模式五步逐步驗證（載入案件 → 幕僚團 → 草稿 → 燈號審核 → 送出） |
 | `verify_offline.py` | `file://` 直開的離線 fixture 模式驗證 |
+| `verify_recalc.py` | live 模式改提起訴願日 → 打 `POST /api/deadline` 重算 → 該句轉紅（自帶 PASS/FAIL 判定） |
+| `recalc-blocked-01.json` | 重算前後的燈號、判定句、程序審查官卡片與閘門狀態 |
+| `synthetic-blocked-01-step2.png` | 左欄兩份清單：獨立檢索結果 vs 草稿實際引用 + 落差說明 |
+| `synthetic-blocked-01-recalc-after.png` | 改日期重算後的燈號審核頁 |
 | `synthetic-ordinary-01.json` | 一般案例的完整 DOM 節錄（本次執行輸出） |
 | `synthetic-blocked-01.json` | 對抗案例：blockers、交接卡、對抗測資標記、送出鎖定 |
 | `offline.json` | 離線模式：徽章、v0 行為照常、零 console error |

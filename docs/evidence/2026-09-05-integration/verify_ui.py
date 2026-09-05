@@ -73,6 +73,10 @@ def main() -> int:
             "law_tags": pg.eval_on_selector_all("#tp-law .ref .foot .tag", "es=>es.map(e=>e.textContent)"),
             "issue_cards": pg.eval_on_selector_all("#tp-issue .ref .nm", "es=>es.map(e=>e.textContent)"),
             "case_pane": pg.inner_text("#tp-case")[:160],
+            "law_section_header": pg.inner_text("#tp-law .refsec-h") if pg.locator("#tp-law .refsec-h").count() else None,
+            "draft_citations": pg.eval_on_selector_all(
+                "#tp-law .cite-row", "es=>es.map(e=>e.textContent.replace(/\\s+/g,' ').trim())"),
+            "divergence": pg.inner_text("#tp-law .diverge") if pg.locator("#tp-law .diverge").count() else None,
             "sent_count": pg.inner_text("#senttotal"),
             "wc": pg.inner_text("#wc"),
             "doc_title": pg.inner_text("#sheet .doc-title"),
@@ -104,6 +108,8 @@ def main() -> int:
             "handoff_visible": pg.is_visible("#handoffcard"),
             "handoff_questions": pg.eval_on_selector_all("#handoffbody ol li", "es=>es.map(e=>e.textContent)"),
             "handoff_signals": pg.eval_on_selector_all("#handoffbody .handoff-s span", "es=>es.map(e=>e.textContent)"),
+            "handoff_criterion": pg.inner_text("#handoffbody .crit") if pg.locator("#handoffbody .crit").count() else None,
+            "handoff_observation_label": pg.eval_on_selector_all("#handoffbody .obs-h", "es=>es.map(e=>e.textContent)"),
             "advmarks": pg.eval_on_selector_all("#rvinner .advmark",
                                                 "es=>es.map(e=>({t:e.textContent,tip:e.dataset.tip}))"),
             "redlist": pg.eval_on_selector_all("#redlist button", "es=>es.map(e=>e.textContent.trim())"),
@@ -125,8 +131,12 @@ def main() -> int:
                 "no": pg.inner_text("#r_no"), "type": pg.inner_text("#r_type"),
                 "result": pg.inner_text("#r_result"), "lamp": pg.inner_text("#r_lamp"),
                 "s_min": pg.inner_text("#s_min"),
-                "s_min_label": pg.eval_on_selector("#s_min", "e=>e.nextElementSibling.textContent"),
+                "s_min_label": pg.inner_text("#s_min_lb"),
+                "s_sent": pg.inner_text("#s_sent"),
                 "s_cite": pg.inner_text("#s_cite"),
+                "s_cite_label": pg.inner_text("#s_cite_lb"),
+                "s_lamp": pg.inner_text("#s_lamp"),
+                "s_note": pg.inner_text("#s_note"),
             }
             pg.screenshot(path=f"{OUT}/{CASE}-step4.png", full_page=True)
         else:

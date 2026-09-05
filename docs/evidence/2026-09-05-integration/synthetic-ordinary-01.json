@@ -2,9 +2,9 @@
  "url": "http://127.0.0.1:8080/?case=synthetic-ordinary-01",
  "badge_mode": "live",
  "badge_text": "live 後端・synthetic-ordinary-01",
- "badge_tip": "本頁資料來自後端六節點的一次實際執行（run_id run-synthetic-ordinary-01-428e69955724，RUN_MODE=fixture）。燈號、引用狀態、送出許可全部由後端守門節點判定，前端不重算。",
+ "badge_tip": "本頁資料來自後端六節點的一次實際執行（run_id run-synthetic-ordinary-01-5b254cc8d7cc，RUN_MODE=fixture）。燈號、引用狀態、送出許可全部由後端守門節點判定，前端不重算。",
  "prov_text": "合成測資：案情自公開決定書之結構反推改寫，人名、地址、案號均為虛構，不對應任何真實案件。",
- "sourcenote": "資料來源：後端 POST /api/cases/synthetic-ordinary-01/runs（run_id run-synthetic-ordinary-01-428e69955724）。燈號與引用狀態由後端守門節點判定，本頁不重算。",
+ "sourcenote": "資料來源：後端 POST /api/cases/synthetic-ordinary-01/runs（run_id run-synthetic-ordinary-01-5b254cc8d7cc）。燈號與引用狀態由後端守門節點判定，本頁不重算。",
  "case_options": [
   "synthetic-blocked-01",
   "synthetic-ordinary-01"
@@ -50,7 +50,7 @@
    },
    {
     "name": "法規檢索官",
-    "out": "命中 4 筆法規依據，其中 4 筆條號可對回快照。",
+    "out": "以案情獨立檢索命中 6 筆法規依據，其中 6 筆條號可對回快照。（查詢句來自案型與程序審查結果，未參考草稿內容）",
     "state": "done"
    },
    {
@@ -70,37 +70,48 @@
    }
   ],
   "console_head": [
-   "17:32:57 幕僚團啟動 · 案號 synthetic-1130000001",
-   "17:32:57 資料來源：後端六節點執行結果 run_id run-synthetic-ordinary-01-428e69955724（前端不重算燈號）",
-   "17:32:58 ▶ 卷證書記官 開始作業"
+   "18:13:41 幕僚團啟動 · 案號 synthetic-1130000001",
+   "18:13:41 資料來源：後端六節點執行結果 run_id run-synthetic-ordinary-01-5b254cc8d7cc（前端不重算燈號）",
+   "18:13:41 ▶ 卷證書記官 開始作業"
   ]
  },
  "step2": {
   "tab_badges": [
-   "法規依據4",
+   "法規依據6+4",
    "相似案例0",
    "爭點與函釋1"
   ],
   "law_cards": [
-   "訴願法第14條",
+   "訴願法第77條",
    "行政程序法第74條",
-   "訴願法第15條",
-   "訴願法第77條"
+   "訴願法第14條",
+   "民法第120條",
+   "訴願法第17條",
+   "民法第122條"
   ],
   "law_tags": [
    "✓ 在庫",
-   "本稿引用 1 句",
+   "本稿引用 2 句",
    "✓ 在庫",
    "本稿引用 1 句",
    "✓ 在庫",
    "本稿引用 1 句",
    "✓ 在庫",
-   "本稿引用 2 句"
+   "✓ 在庫",
+   "✓ 在庫"
   ],
   "issue_cards": [
    "爭點1：送達生效日之爭執"
   ],
   "case_pane": "相似歷史案通道不可用（無資料集），本次回空並非「查無相似案」",
+  "law_section_header": "獨立檢索結果（查詢句由案情組成，未參考草稿）",
+  "draft_citations": [
+   "✓ 在庫 訴願法第14條 第 3 句 條號存在於快照（該法最大條號 101）。",
+   "✓ 在庫 行政程序法第74條 第 4 句 條號存在於快照（該法最大條號 175）。",
+   "✓ 在庫 訴願法第15條 第 5 句 條號存在於快照（該法最大條號 101）。",
+   "✓ 在庫 訴願法第77條 第 6、13 句 條號存在於快照（該法最大條號 101）。"
+  ],
+  "divergence": "兩份清單的落差\n草稿引用、獨立檢索未命中：訴願法第15條\n獨立檢索命中、草稿未引用：民法第120條、訴願法第17條、民法第122條\nN4 的檢索是獨立進行的（查詢句只由案情組成），所以它找到的法條與草稿實際引用的不會一一對應。落差不等於錯誤：引用對錯看 citations[] 的四態，這裡只說明兩份清單為什麼長得不一樣。實體法條號目前無法由案情自動判定（缺 PDF 視覺抽取），所以 cited_not_retrieved 會偏長，這是已知限制不是 bug。",
   "sent_count": "13",
   "wc": "540 字",
   "doc_title": "新北市政府（合成測資） 訴願決定書（合成測資草稿）",
@@ -134,6 +145,8 @@
   "handoff_visible": false,
   "handoff_questions": [],
   "handoff_signals": [],
+  "handoff_criterion": null,
+  "handoff_observation_label": [],
   "advmarks": [],
   "redlist": [],
   "placeholder_sent": []
@@ -143,9 +156,13 @@
   "type": "因違反空氣污染防制法事件提起訴願",
   "result": "訴願不受理。",
   "lamp": "紅 0（已確認）／黃 0／綠 13　共 13 句",
-  "s_min": "2 ms",
-  "s_min_label": "後端六節點實測（RUN_MODE=fixture）",
-  "s_cite": "5 筆"
+  "s_min": "0 ms",
+  "s_min_label": "後端六節點合計（6 節點）",
+  "s_sent": "13 句",
+  "s_cite": "5 筆",
+  "s_cite_label": "引用查核筆數（四態）",
+  "s_lamp": "0 / 0 / 13",
+  "s_note": "以上四項均為本次執行實際量到的值（run_id run-synthetic-ordinary-01-5b254cc8d7cc，RUN_MODE=fixture）。fixture 檔位是離線重播，耗時不代表接上模型後的處理時間，也不是與人工作業的對照。"
  },
  "js_errors": [],
  "console_all": []

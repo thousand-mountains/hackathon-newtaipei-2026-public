@@ -45,6 +45,7 @@ from fastapi.responses import FileResponse, JSONResponse  # noqa: E402
 from fastapi.staticfiles import StaticFiles  # noqa: E402
 from pydantic import BaseModel  # noqa: E402
 
+from backend.config import settings  # noqa: E402
 from backend.config.settings import PROVENANCE, load_snapshot, run_mode  # noqa: E402
 from backend.engine.deadline import compute  # noqa: E402
 from backend.orchestrator.graph import (  # noqa: E402
@@ -187,10 +188,63 @@ def create_run(case_id: str) -> dict:
     return payload
 
 
+def _roc(d: dt.date | None) -> str:
+    """西元 → 民國。純算術，不涉判斷。"""
+    return f"{d.year - 1911}年{d.month}月{d.day}日" if d else "—"
+
+
+def _deadline_verdict(result: dict, body: DeadlineIn) -> dict:
+    """期間判定的燈號與說法（origin=rule）。
+
+    **為什麼燈號要由後端給**：前端在收文頁改日期時會即時重算期間，
+    如果讓前端自己決定「逾期就轉紅」，燈號就變成前端產出的——
+    CONSTITUTION §1 說燈號不是模型產出，它同樣不該是前端產出。
+    這裡把「逾期 → 紅燈」這條規則連同說法一起回給前端，前端只負責畫。
+
+    純日期規則，零 LLM，同輸入必同輸出。
+    """
+    deadline = result.get("deadline")
+    overdue = result.get("overdue")
+    days = (body.filing - body.service).days if body.filing else None
+
+    if deadline is None or overdue is None or body.filing is None:
+        tpl = settings.DEADLINE_VERDICT_UNDECIDABLE
+    elif overdue:
+        tpl = settings.DEADLINE_VERDICT_OVERDUE
+    else:
+        tpl = settings.DEADLINE_VERDICT_IN_TIME
+
+    fields = {
+        "service_roc": _roc(body.service),
+        "filing_roc": _roc(body.filing),
+        "deadline_roc": _roc(dt.date.fromisoformat(deadline)) if deadline else "—",
+        "deadline": deadline or "—",
+        "filing": body.filing.isoformat() if body.filing else "—",
+        "days": days if days is not None else "—",
+    }
+    return {
+        "lamp": tpl["lamp"],
+        "text": tpl["text"].format(**fields),
+        "why": tpl["why"].format(**fields),
+        "basis": settings.DEADLINE_VERDICT_BASIS,
+        "origin": "rule",
+        "l_origin": "rule",
+        "why_origin": "rule",
+        "days": days,
+    }
+
+
 @app.post("/api/deadline")
 def api_deadline(body: DeadlineIn) -> dict:
+    """期間計算（§6.1 #5）。
+
+    回傳沿用 `Result.as_dict()` 的欄位不改（`effective_date`／`deadline`／`overdue`／
+    `steps`／`caveats`），**額外加一個 `verdict` 區塊**——那是「逾期 → 紅燈」這條規則
+    的判定結果與說法。§6.1 沒有寫這一塊；加它的理由見 `_deadline_verdict()` 的說明，
+    是為了讓前端即時重算時不必自己判斷燈號。既有欄位一個都沒動，舊呼叫端不受影響。
+    """
     try:
-        return compute(
+        result = compute(
             service_method=body.method,
             service_date=body.service,
             filing_date=body.filing,
@@ -199,6 +253,8 @@ def api_deadline(body: DeadlineIn) -> dict:
         ).as_dict()
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
+    result["verdict"] = _deadline_verdict(result, body)
+    return result
 
 
 # ── 前端：同一個 process serve 五步動線 ────────────────────────────

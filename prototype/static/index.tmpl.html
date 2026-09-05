@@ -353,6 +353,24 @@ textarea{resize:vertical;line-height:1.7}
 .handoff-q li{margin-bottom:6px}
 .handoff-s{display:grid;gap:5px;margin-bottom:9px}
 .handoff-s span{font-size:11.5px;line-height:1.65;color:var(--ink-3);background:var(--paper);border-radius:2px;padding:5px 8px}
+/* 封鎖判準（本案真正的原因）vs 另外偵測到的（提醒）——視覺上必須分得開 */
+.crit{font-size:12.5px;line-height:1.75;color:var(--ink);background:#FDF4F4;
+  border-left:3px solid var(--seal);border-radius:2px;padding:8px 11px;margin:0 0 10px}
+.crit b{display:block;font-size:11.5px;letter-spacing:.06em;color:var(--seal);margin-bottom:3px}
+.obs-h{font-size:11px;letter-spacing:.04em;color:var(--ink-3);font-weight:700;margin:0 0 5px}
+
+/* 草稿實際引用清單（§6.2 citations[]）與兩份清單的落差 */
+.refsec{margin-top:16px;border-top:1px dashed var(--line);padding-top:12px}
+.refsec>h4{margin:0 0 8px;font-size:12.5px;letter-spacing:.04em;color:var(--navy-d)}
+.refsec-h{font-size:11px;letter-spacing:.04em;color:var(--ink-3);font-weight:700;margin:0 0 8px}
+.cite-row{border:1px solid var(--line-2);border-left:3px solid var(--line);border-radius:3px;
+  padding:8px 11px;margin-bottom:7px;background:var(--white);display:flex;gap:7px;align-items:center;flex-wrap:wrap}
+.cite-row .nm{font-size:13px;font-weight:700;color:var(--navy-d)}
+.cite-row .note{flex-basis:100%;font-size:11.5px;color:var(--ink-3);line-height:1.6}
+.diverge{margin-top:10px;font-size:11.5px;line-height:1.7;color:var(--ink-2);
+  background:var(--paper);border-left:3px solid var(--amber);border-radius:2px;padding:8px 11px}
+.diverge b{display:block;color:var(--amber);margin-bottom:3px}
+.diverge .why{color:var(--ink-3);margin-top:5px}
 
 .gate{margin-top:16px;border:1px solid var(--line);border-radius:3px;background:var(--white);padding:15px 17px;display:flex;gap:14px;align-items:center;flex-wrap:wrap;box-shadow:var(--shadow)}
 .gate .msg{flex:1;min-width:240px;font-size:13px;color:var(--ink-2)}
@@ -499,6 +517,8 @@ footer b{color:#C9DCEE;font-weight:500}
         </div>
         <div class="field"><label>承辦人補充說明<span style="font-weight:400;color:var(--ink-3)">（卷內未載、或需幕僚團特別注意之事項）</span></label>
           <textarea id="f_note" rows="3" placeholder="例：原處分機關答辯書未附證據資料，已二次函請補充答辯仍未提出。"></textarea></div>
+        <!-- live 模式：改送達／提起日期會打 POST /api/deadline 重算，結果與限制寫在這裡 -->
+        <p class="hint" id="recalcnote" style="display:none;margin:2px 0 0"></p>
       </div>
     </div>
   </div>
@@ -628,12 +648,17 @@ footer b{color:#C9DCEE;font-weight:500}
         <dt>送出時間</dt><dd id="r_time">—</dd>
       </dl>
     </div>
+    <!-- 這一區只放「這次執行真的量到的東西」。
+         原本有「約 3.5 天（原人工作業平均）」與「1,566（114 年度案量）」兩格，
+         已移除：那兩個數字在本專案內沒有出處也沒有量測，跟旁邊的實測毫秒數並排，
+         會被讀成「我們把 3.5 天縮成幾毫秒」——那不是真的（fixture 檔位是離線重播）。 -->
     <div class="stat">
-      <div><b id="s_min">—</b><span>本案撰擬耗時</span></div>
-      <div><b>約 3.5 天</b><span>原人工作業平均</span></div>
-      <div><b id="s_cite">—</b><span>自動引註筆數</span></div>
-      <div><b>1,566</b><span>114 年度案量</span></div>
+      <div><b id="s_min">—</b><span id="s_min_lb">本次執行耗時</span></div>
+      <div><b id="s_sent">—</b><span>逐句溯源句數</span></div>
+      <div><b id="s_cite">—</b><span id="s_cite_lb">引用查核筆數</span></div>
+      <div><b id="s_lamp">—</b><span>燈號分布（紅／黃／綠）</span></div>
     </div>
+    <p style="font-size:11.5px;color:var(--ink-3);margin:12px 0 0;line-height:1.7" id="s_note"></p>
     <div class="actions" style="justify-content:center;margin-top:28px">
       <button class="btn ghost" id="restart">再跑一次示範</button>
     </div>

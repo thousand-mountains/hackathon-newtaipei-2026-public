@@ -312,7 +312,22 @@ function fillTokens(str){
 /* ================= 文件模型：以「句」為單位 ================= */
 /* lamp: g 可被計算 / y 有證據 / r 需人工審核　refs 對應左欄卡片 id */
 const DOC=CASE.doc||[];
-const SENTS=[]; DOC.forEach(bk=>(bk.ss||[]).forEach(s=>{s.orig=s.t;s.baseL=s.l;s.refs=s.refs||[];SENTS.push(s)}));
+const SENTS=[];
+/* live 模式改日期會由後端重算期間，整段期間計算的句子會換掉（步數可能從 6 變 5），
+   所以句子清單要能重建。**原地改陣列內容**，不重新指派——所有 closure 都抓著同一個參考。 */
+function rebuildSents(){
+  SENTS.length=0;
+  DOC.forEach(bk=>(bk.ss||[]).forEach(s=>{
+    if(s.orig===undefined)s.orig=s.t;
+    if(s.baseL===undefined)s.baseL=s.l;
+    s.refs=s.refs||[];
+    SENTS.push(s);
+  }));
+}
+rebuildSents();
+/* 期間句的 why 由後端給。重算時沿用同一句說明，不由前端另外寫一句。 */
+const ENGINE_WHY=(DOC.flatMap(b=>b.ss||[]).find(s=>s.engine==='deadline')||{}).why
+  ||'期間由日期規則直接驗算，攤開算式可逐步覆核，無詮釋空間。';
 const byId=id=>SENTS.find(s=>s.id===id);
 const sentNo=id=>{const s=byId(id);return s?SENTS.indexOf(s)+1:null};
 const LAMPNAME={r:'紅燈　需人工審核',y:'黃燈　有證據',g:'綠燈　可被計算'};
@@ -365,6 +380,94 @@ function applyLiveDeadline(){
     if(!s.caveats&&dl.caveats)s.caveats=dl.caveats;
   });
 }
+/* ================= live 模式：改日期 → 後端重算期間 ================= */
+/* PR #2 的賣點是「收文頁改日期，決定書那句與燈號跟著變」。整合後不能讓它消失，
+   但也不能讓前端自己判斷逾期——燈號不准是前端產出（CONSTITUTION §1）。
+   做法：打 `POST /api/deadline`，**算式、燈號、句子文字全部用後端回的**，
+   前端只負責把它畫出來，以及誠實標明「只有期間這一段重算過，其餘仍是原始執行結果」。 */
+let recalcSeq=0, recalcTimer=null;
+
+function setRecalcNote(kind,msg){
+  const el=$('#recalcnote'); if(!el)return;
+  el.style.display=msg?'':'none';
+  el.innerHTML=msg||'';
+  el.style.color=kind==='error'?'var(--seal)':'var(--ink-3)';
+}
+
+function calcBlock(){
+  return DOC.find(bk=>(bk.ss||[]).some(s=>s.engine==='deadline'));
+}
+
+function applyDeadlineRecompute(r,svc,fil){
+  const bk=calcBlock();
+  if(!bk){setRecalcNote('error','找不到期間計算段，無法套用重算結果。');return false;}
+  const v=r.verdict||{};
+  const steps=r.steps||[];
+  bk.ss=steps.map((st,i)=>({
+    id:'d'+(i+1), t:`${st.rule}：${st.value}`,
+    origin:'engine', slot:'calculation', engine:'deadline',
+    basis:st.basis, src:st.basis, l:'g', baseL:'g', why:ENGINE_WHY,
+    refs:[], citations:[], placeholder:false, adversarial:false,
+    steps:steps, caveats:r.caveats||[], recomputed:true
+  }));
+  /* 期間判定句：燈號、文字、理由全部來自後端 verdict，前端一個字都沒改寫 */
+  if(v.text){
+    bk.ss.push({
+      id:'dv', t:v.text, origin:'engine', slot:'calculation', engine:'deadline',
+      basis:v.basis, src:v.basis, l:v.lamp||'g', baseL:v.lamp||'g', why:v.why||'',
+      refs:[], citations:[], placeholder:false, adversarial:false,
+      steps:steps, caveats:r.caveats||[], recomputed:true, verdict:true
+    });
+  }
+  rebuildSents();
+  buildDraft(); buildRefs();
+  if($('#rvinner').children.length)buildReview();
+  /* 程序審查官卡片跟著更新，不然看板還停在原始那次的期滿日 */
+  const ag=$('#ag-proc');
+  if(ag&&ag.querySelector('.out'))
+    ag.querySelector('.out').textContent=
+      `期間已依修改後日期重算：期滿日 ${r.deadline||'—'}。${v.text||''}`;
+  setRecalcNote('ok',
+    `期間已由後端重算（<code>POST /api/deadline</code>）：`+
+    `送達 ${esc(svc)} → 提起 ${esc(fil||'—')}，期滿日 <b>${esc(r.deadline||'—')}</b>，`+
+    `本段 ${steps.length} 步算式與燈號皆為後端回傳。`+
+    `<br><b>只有期間這一段重算過</b>——案型、檢索、引用查核、送出許可仍是原始那次執行的結果。`);
+  toast('期間已依修改後日期重算');
+  return true;
+}
+
+async function recomputeDeadlineLive(){
+  if(!isLive)return;
+  const svc=$('#f_d2').value, fil=$('#f_d3').value;
+  if(!svc){setRecalcNote('error','合法送達日期未填，期間無從計算（系統不猜）。');return;}
+  const K=CASE.intake||{};
+  const seq=++recalcSeq;
+  setRecalcNote('ok','重算中…');
+  let r;
+  try{
+    const res=await fetch('api/deadline',{
+      method:'POST',
+      headers:{'Content-Type':'application/json','Accept':'application/json'},
+      body:JSON.stringify({
+        method:K.service_method||'personal', service:svc, filing:fil||null,
+        transit:K.transit_days||0, interested:!!K.interested_party})});
+    if(!res.ok)throw new Error('HTTP '+res.status);
+    r=await res.json();
+  }catch(e){
+    setRecalcNote('error','期間重算失敗（'+esc(String(e&&e.message||e))+'）。畫面仍顯示原始執行結果，未自行改算。');
+    return;
+  }
+  if(seq!==recalcSeq)return;   /* 舊請求慢回來就丟掉，不要蓋掉新的結果 */
+  applyDeadlineRecompute(r,svc,fil);
+}
+
+if(isLive){
+  ['#f_d2','#f_d3'].forEach(sel=>$(sel).addEventListener('change',()=>{
+    clearTimeout(recalcTimer);
+    recalcTimer=setTimeout(recomputeDeadlineLive,250);
+  }));
+}
+
 /* 算式卡：把引擎每一步攤開，附法條依據（分層誠實第一級） */
 function stepsHTML(s){
   if(!s.steps||!s.steps.length)return '';
@@ -415,13 +518,45 @@ function refHTML(o){
     </div>
   </div>`;
 }
+/* 「草稿實際引用」清單（§6.2 citations[]：步驟2 側欄可列全案引用清單）。
+   N4 改成獨立檢索之後，左欄的法規卡是「案情查出來的」，跟「草稿實際引用的」是兩份清單。
+   只顯示前者的話，草稿引用了什麼、查核結果如何就整個看不到了——對抗案例那條假法條
+   也會從左欄消失。兩份都列出來，並把差集講清楚。 */
+function citationsHTML(){
+  if(!isLive||!LIVE)return '';
+  const cs=LIVE.citations||[], div=LIVE.retrieval_divergence||{};
+  const seen=new Set(), rows=[];
+  cs.forEach(c=>{
+    if(seen.has(c.raw))return; seen.add(c.raw);
+    const users=SENTS.filter(s=>(s.citations||[]).some(x=>x.raw===c.raw));
+    rows.push(`<div class="cite-row" data-cite="${esc(c.raw)}">
+      <span class="tag ${esc(c.lamp||'y')}">${esc(c.mark||c.state)}</span>
+      <span class="nm">${esc(c.raw)}</span>
+      ${users.length?`<span class="tag n">第 ${users.map(s=>SENTS.indexOf(s)+1).join('、')} 句</span>`:''}
+      <div class="note">${esc(c.note||'')}</div></div>`);
+  });
+  const cnr=div.cited_not_retrieved||[], rnc=div.retrieved_not_cited||[];
+  const divHTML=(cnr.length||rnc.length)?`<div class="diverge">
+      <b>兩份清單的落差</b>
+      ${cnr.length?`<div>草稿引用、獨立檢索未命中：${cnr.map(esc).join('、')}</div>`:''}
+      ${rnc.length?`<div>獨立檢索命中、草稿未引用：${rnc.map(esc).join('、')}</div>`:''}
+      <div class="why">${esc(div.note||'')}</div></div>`:'';
+  return `<div class="refsec"><h4>草稿實際引用（守門逐句查核）</h4>
+    ${rows.join('')||'<span style="font-size:12.5px;color:var(--ink-3)">草稿未附任何引用</span>'}
+    ${divHTML}</div>`;
+}
+
 function buildRefs(){
-  $('#tp-law').innerHTML=LAWS.map(refHTML).join('')||'<span style="font-size:12.5px;color:var(--ink-3)">本次執行無法規檢索結果</span>';
+  $('#tp-law').innerHTML=
+    (isLive?'<div class="refsec-h">獨立檢索結果（查詢句由案情組成，未參考草稿）</div>':'')+
+    (LAWS.map(refHTML).join('')||'<span style="font-size:12.5px;color:var(--ink-3)">本次執行無法規檢索結果</span>')
+    +citationsHTML();
   $('#tp-case').innerHTML=CASES.map(refHTML).join('')
     ||'<span style="font-size:12.5px;color:var(--ink-3)">相似歷史案通道不可用（無資料集），本次回空並非「查無相似案」</span>';
   $('#tp-issue').innerHTML=ISSUES.map(refHTML).join('')||'<span style="font-size:12.5px;color:var(--ink-3)">未偵測到事實認定爭點</span>';
   /* 分頁上的數字跟著實際資料走，不寫死 */
-  const counts={law:LAWS.length,case:CASES.length,issue:ISSUES.length};
+  const nCite=(isLive&&LIVE)?new Set((LIVE.citations||[]).map(c=>c.raw)).size:0;
+  const counts={law:isLive?`${LAWS.length}+${nCite}`:LAWS.length,case:CASES.length,issue:ISSUES.length};
   $$('.tab').forEach(b=>{const bd=b.querySelector('.badge');if(bd)bd.textContent=counts[b.dataset.t]});
 }
 $$('.tab').forEach(b=>b.onclick=()=>{
@@ -556,13 +691,19 @@ function renderRedList(){
 function renderHandoff(){
   const card=$('#handoffcard'); if(!card)return;
   const ho=(isLive&&LIVE&&LIVE.handoff)||{};
-  const qs=ho.questions||[], sg=ho.signals||[];
-  if(!qs.length&&!sg.length){card.style.display='none';return;}
+  const qs=ho.questions||[], cr=ho.criterion||null, obs=ho.observations||[];
+  if(!qs.length&&!(cr&&cr.blocked)){card.style.display='none';return;}
   card.style.display='';
+  /* 封鎖判準與「另外偵測到的」分開講。
+     覆核實測：把對抗案例的事實爭點全部拿掉，結論段仍然封鎖——真正的判準是
+     「程序審查通過且須進入實體審查」。兩者並排列出會讀成「兩個都是原因」，那是不實的。
+     criterion / observations / observations_label 全部由後端算好，前端不分類、不改寫。 */
   $('#handoffbody').innerHTML=
-    (ho.note?`<p class="why" style="font-size:12.5px;color:var(--ink-2);margin:0 0 9px;line-height:1.7">${esc(ho.note)}</p>`:'')+
-    (sg.length?`<div class="handoff-s">${sg.map(x=>`<span>▸ ${esc(x)}</span>`).join('')}</div>`:'')+
-    (qs.length?`<ol class="handoff-q">${qs.map(q=>`<li>${esc(q)}</li>`).join('')}</ol>`:'');
+    (cr&&cr.blocked?`<div class="crit"><b>封鎖判準</b>${esc(cr.text)}</div>`:'')+
+    (obs.length?`<div class="obs-h">${esc(ho.observations_label||'另外偵測到（提醒）')}</div>
+       <div class="handoff-s">${obs.map(x=>`<span>▸ ${esc(x)}</span>`).join('')}</div>`:'')+
+    (qs.length?`<div class="obs-h">請承辦人核對卷證後自行認定</div>
+       <ol class="handoff-q">${qs.map(q=>`<li>${esc(q)}</li>`).join('')}</ol>`:'');
 }
 /* 送出閘門的阻擋原因（§6.2 blockers[]）：不能只 disable 按鈕，要說為什麼擋 */
 function renderBlockers(){
@@ -678,18 +819,31 @@ $('#go4').onclick=()=>{
   $('#r_type').textContent='因'+($('#f_type').value||'—')+'提起訴願';
   $('#r_lamp').textContent=`紅 ${SENTS.filter(s=>s.l==='r').length}（已確認）／黃 ${SENTS.filter(s=>s.l==='y').length}／綠 ${SENTS.filter(s=>s.l==='g').length}　共 ${SENTS.length} 句`;
   $('#r_time').textContent=new Date().toLocaleString('zh-TW',{hour12:false});
+  const lampTxt=`${SENTS.filter(s=>s.l==='r').length} / ${SENTS.filter(s=>s.l==='y').length} / ${SENTS.filter(s=>s.l==='g').length}`;
+  $('#s_sent').textContent=SENTS.length+' 句';
+  $('#s_lamp').textContent=lampTxt;
   if(isLive){
-    /* 步驟 5 的統計改吃後端權威值（§6.2 run_meta），不由前端自己算 startTime */
+    /* 步驟 5 的統計吃後端權威值（§6.2 run_meta），不由前端自己算 startTime。
+       只列這次執行真的量到的東西，不放沒有出處的對照數字。 */
     const rm=(LIVE&&LIVE.run_meta)||{};
-    $('#s_min').textContent=(rm.elapsed_ms!=null?rm.elapsed_ms+' ms':'—');
-    const lb=$('#s_min').nextElementSibling; if(lb)lb.textContent='後端六節點實測（RUN_MODE='+(rm.run_mode||'?')+'）';
+    const nt=rm.node_timings||{};
+    const total=Object.keys(nt).reduce((a,k)=>a+(nt[k]||0),0);
+    $('#s_min').textContent=total+' ms';
+    $('#s_min_lb').textContent='後端六節點合計（'+Object.keys(nt).length+' 節點）';
     $('#s_cite').textContent=((LIVE&&LIVE.citations)||[]).length+' 筆';
+    $('#s_cite_lb').textContent='引用查核筆數（四態）';
     const con=SENTS.find(s=>s.slot==='conclusion');
     $('#r_result').textContent=con?con.t.slice(0,44):'—';
+    $('#s_note').innerHTML='以上四項均為本次執行實際量到的值（run_id <code>'+esc(rm.run_id||'—')+
+      '</code>，RUN_MODE='+esc(rm.run_mode||'?')+'）。'+
+      '<b>fixture 檔位是離線重播，耗時不代表接上模型後的處理時間</b>，也不是與人工作業的對照。';
   }else{
-    const mins=Math.max(6,Math.round((Date.now()-S.startTime)/60000))||8;
-    $('#s_min').textContent='約 '+mins+' 分';
+    const secs=Math.max(1,Math.round((Date.now()-S.startTime)/1000));
+    $('#s_min').textContent=secs+' 秒';
+    $('#s_min_lb').textContent='前端動線耗時（含展示動畫）';
     $('#s_cite').textContent=SENTS.reduce((n,s)=>n+s.refs.length,0)+' 筆';
+    $('#s_cite_lb').textContent='逐句依據連結數';
+    $('#s_note').textContent='離線 fixture 模式：以上為前端在本頁量到的值，不是後端執行結果。';
   }
   goto(4);
 };
