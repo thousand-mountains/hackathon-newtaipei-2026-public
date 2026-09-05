@@ -132,6 +132,9 @@ $ uv run --with playwright -- python docs/evidence/2026-09-05-integration/verify
 
 ### AC5 — ✅ `python3 backend/tests/run_all.py` 全綠 91/91
 
+> **已被第二輪取代**：現在是 **98/98**。下面是第一輪當下的紀錄，保留供追溯；
+> 新增的 7 條與逐條理由見「追加變更」那一節。
+
 ```
 $ python3 backend/tests/run_all.py
    7/7 通過    期間引擎搬遷與測試向量
@@ -265,20 +268,29 @@ exit=1        ← 無殘留
 
 ## 五、我拿不準的判斷（請你裁決）
 
-### ⚠ 1. 我換掉了一條紅線檢查
+### ✅ 1. 我換掉了一條紅線檢查 —— **指揮官已追認（2026-09-05）**
+
+> 追認理由：那條是 Phase 0 的**範圍約束**，不是 CONSTITUTION 的紅線；整合工作包本來就要動 `prototype/`。
+> 以下保留原始說明供追溯。
+
 
 見 AC5 的說明框。我的判斷是「那條的前提已經不成立、而且開工前就是紅的，換成一條仍然
 有意義的比留著永遠紅的好」。但**改紅線本來就該先問**，我在無人值守的情況下做了決定並
 把理由寫在 plan 與程式碼註解裡。你如果認為不該換，`git revert` 對應 commit 即可，
 代價是 `run_all.py` 會固定停在 90/91。
 
-### ⚠ 2. 兩份 `test-vectors.json` 已經分岔（15 vs 16 條）
+### ✅ 2. 兩份 `test-vectors.json` 已經分岔（15 vs 16 條）—— **第二輪已修（Ci 拍板同步成 16 條）**
+
+> 見「追加變更／追加-3」。以下保留原始說明。
 
 `prototype/data/test-vectors.json` 16 條、`backend/data/test-vectors.json` 15 條，
 `test_vector_count_is_15` 鎖著後端那份。兩邊各自的測試都是綠的，**所以沒有人會發現它們不同步**。
 哪一份是基準、要不要合併，我沒有替你決定。
 
-### ⚠ 3. live 模式下 v0 的「改日期即時重算」互動消失了
+### ✅ 3. live 模式下 v0 的「改日期即時重算」互動消失了 —— **第二輪已補回（Ci 選了 (b)）**
+
+> 見「追加變更／追加-4」：後端 `/api/deadline` 多回一個 `verdict`，燈號與文字仍由後端給。
+> 以下保留原始說明。
 
 這是 CONSTITUTION §1 的直接後果（燈號不是前端產出），但它砍掉了一個 demo 上很好看的互動：
 v0 可以當場改送達日期，看句子文字與燈號跟著變、逾期時跳出與主文的矛盾。
@@ -289,7 +301,9 @@ live 模式改日期不會有任何反應。
 重算——**我不建議 (c)**，那正是「兩個真相來源」。
 建議 (b)，但那是新功能，30 小時紀律下要不要排由你決定。
 
-### ⚠ 4. 步驟5 那三個寫死的數字還在
+### ✅ 4. 步驟5 那三個寫死的數字還在 —— **第二輪已移除**
+
+> 見「追加變更／追加-5」。以下保留原始說明。
 
 `約 3.5 天`（原人工作業平均）、`1,566`（114 年度案量）是 v0 就有的靜態字串，
 現在旁邊放了一個「後端六節點實測 0 ms」。**0 ms vs 3.5 天並排放在同一列，
@@ -305,7 +319,256 @@ demo 時被追問「所以你們把 3.5 天縮成 0 毫秒？」會很難看**�
 
 ---
 
-## 六、commit 清單
+---
+
+# 追加變更（2026-09-05，Ci 拍板後第二輪）
+
+指揮官轉達 Ci 兩項設計拍板 + 三項修補。以下逐項附證據。
+**這一節之後的 commit 是 `1967b0e`、`97ec1f5`。**
+
+## 追加-1：N4 改為獨立檢索（Ci 拍板）— ✅
+
+### 改了什麼
+
+`build_query()` 現在只吃案情：N2 案型與命中法規名、N3 的 77 條款與期間引擎逐步援引的法源、
+N1 的卷證原文摘錄與承辦人補充。**刪掉了從 fixture 草稿倒推查詢句的整條路徑**
+（`graph._collect_cited_law_strings()` 已移除，`_dispatch` 不再傳 `cited_laws`）。
+
+連帶處理一個同源問題：fixture 草稿手寫的 `cite_ids`（`"L1"`、`"L3"`）也不再帶進 `doc[]`
+（`narrative.CARRY_DRAFT_CITE_IDS_DEFAULT = False`）。那些 id 是在 N4 跑之前手填的，
+獨立檢索後只會**靠序號巧合對上不相干的法條**，或對不上而讓 N6 產生假 blocker。
+接上真實 N5（它看得到 N4 的候選清單）時把開關打開即可。
+
+`retrieval_meta` 新增 `query_sources`：查詢句的每個詞從哪個節點來，逐項可稽核。
+
+### 燈號分布前後對照
+
+| | 檢索 `laws[]` | 燈號 紅/黃/綠 | `submit_allowed` | blockers |
+|---|---|---|---|---|
+| **ordinary 改前** | 4 筆（訴願法14、行政程序法74、訴願法15、訴願法77）全 ✓ 在庫 | 0 / 0 / 13 | true | 0 |
+| **ordinary 改後** | 6 筆（訴願法77、行政程序法74、訴願法14、民法120、訴願法17、民法122）全 ✓ 在庫 | **0 / 0 / 13（不變）** | true | 0 |
+| **blocked 改前** | 3 筆（建築法73 ✓、行政罰法27 ✓、建築法999 ✗查無） | 2 / 0 / 10 | false | 1（citation_missing） |
+| **blocked 改後** | 5 筆（行政程序法72、訴願法14、民法120、訴願法17、民法122）全 ✓ 在庫 | **2 / 0 / 10（不變）** | false | 1（citation_missing，不變） |
+
+**為什麼燈號沒變——這件事本身要講清楚，不要被讀成「改了等於沒改」**：
+
+燈號來自**引用四態**，而四態是 N6 從句子本文抽引用、對 `laws-snapshot.json` 查條號得到的，
+**從來就沒有依賴檢索結果**。所以換掉檢索的查詢來源，燈號當然不動。
+真正變的是 `laws[]` 的內容（從「草稿要引用什麼」變成「案情指向什麼」），
+以及一個原本被掩蓋的事實浮出來：**對抗案例的 3 筆草稿引用，獨立檢索一筆都沒命中**。
+
+這條性質有測試釘住：`test_gate_catches_the_fake_citation_even_though_retrieval_never_found_it`
+——`建築法第999條` 不在 `laws[]` 裡，但照樣被判 `missing`、照樣擋下送出。
+如果哪天有人把引用查核改成「比對檢索結果」，這條會紅。
+
+### 新增 `retrieval_divergence`
+
+落差如果只是讓左欄少幾張卡片，看的人會以為「系統檢索過了、沒意見」。所以 payload 直接講：
+
+```
+cited_not_retrieved:  建築法第73條、行政罰法第27條、建築法第999條
+retrieved_not_cited:  行政程序法第72條、訴願法第14條、民法第120條、訴願法第17條、民法第122條
+note: ……實體法條號目前無法由案情自動判定（缺 PDF 視覺抽取），
+      所以 cited_not_retrieved 會偏長，這是已知限制不是 bug。
+```
+
+前端左欄也照這個結構分兩區顯示（截圖 `synthetic-blocked-01-step2.png`）：
+**「獨立檢索結果（查詢句由案情組成，未參考草稿）」** 與 **「草稿實際引用（守門逐句查核）」**，
+下面接落差說明。對抗案例的假法條仍然看得到，標 `✗ 查無此號`。
+
+### `test_ordinary_cite_ids_all_resolve` 的處置：刪掉，換 4 條有鑑別力的
+
+那條斷言「草稿標的 L* 都解析得到檢索結果」，但**在舊架構下它是恆真的**——
+查詢句就是拿草稿引用組的，草稿引用什麼就一定查得到什麼。它看起來在驗「引用可驗」，
+實際上只驗到「我們把答案抄進了題目」。改成獨立檢索後更沒有鑑別力（`cite_ids` 已不帶入，
+迴圈根本不執行）。換成：
+
+| 新測試 | 它會因為什麼而變紅 |
+|---|---|
+| `test_retrieval_query_is_not_derived_from_the_draft` | `query_sources` 出現 n1/n2/n3 以外的來源 |
+| `test_adversarial_citation_never_enters_the_query` | 查詢句裡出現只存在於草稿的 `建築法第999條` |
+| `test_gate_catches_the_fake_citation_even_though_retrieval_never_found_it` | 引用查核改成依賴檢索結果 |
+| `test_fixture_draft_cite_ids_are_not_carried_into_doc` | fixture 的 cite_ids 又被帶進 doc[] |
+| `test_retrieval_divergence_is_reported_not_hidden` | 落差被藏起來不外顯 |
+
+**突變測試證明它們不是空轉**：把倒推路徑接回去（讓 N4 收草稿引用當查詢詞），
+前三條同時變紅（`22/25`）。
+
+## 追加-2：C 型話術改誠實（Ci 拍板）— ✅
+
+### 事實
+
+`gate/lamps.requires_human_conclusion()` 的回傳是 `(substantive or bool(high)), signals`，
+外加一個 fail-safe 早退。對抗案例的 `substantive` 本身就是 True，所以事實爭點在那一案裡
+**是多餘條件**——覆核實測「拿掉爭點仍然封鎖」是對的。
+
+### 改法（**沒有動 `gate/lamps.py`**）
+
+封鎖邏輯是守門 agent 的範圍，我只加描述層：
+
+- `narrative.conclusion_block_criterion()`：把守門已經做完的判斷重新講一遍人話，
+  判斷順序刻意對齊 lamps 的 early-return（fail-safe → substantive → 高風險爭點），
+  這樣「哪一條才是操作判準」才會講對。
+- `graph._handoff_view()`：**additively** 加三個欄位，`signals` 原樣保留不動：
+  - `criterion`：本案真正的操作判準
+  - `observations`：事實爭點訊號（用 fact_issue 的 id 比對切出來的，不是字串樣式猜的）
+  - `observations_label`：那份清單該用什麼標題
+
+實際輸出（`synthetic-blocked-01`）：
+
+```
+criterion.reason_id = "procedurally_valid_needs_substantive_review"
+criterion.text      = 「程序審查通過（未逾訴願法第14條之30日法定期間，無可直接算出的
+                       不受理事由），且案型「違反建築法事件」屬需事實認定型——本案須進入
+                       實體審查，結論涉及法律判斷，結論段交由承辦人判斷。」
+observations_label  = 「另外偵測到的事實認定爭點（提醒，非本案封鎖原因）」
+```
+
+前端交接卡照這個結構分三塊呈現（DOM 節錄見 `synthetic-blocked-01.json` 的
+`step3.handoff_criterion` 與 `handoff_observation_label`）。
+
+### 防漂移
+
+描述在 `orchestrator/narrative.py`、邏輯在 `gate/lamps.py`，兩個模組常常是不同人在改。
+兩條契約測試盯著：
+
+- `test_block_criterion_matches_the_actual_gate_decision`：`criterion.blocked` 必須等於
+  `screen.requires_human_conclusion`。
+- `test_fact_issue_is_not_presented_as_the_blocking_reason_when_it_is_not`：
+  含一個**反事實**斷言——把爭點全拿掉重算，`blocked` 仍為 True、`reason_id` 不變。
+  覆核的發現就這樣被釘進測試裡，不會再退化成口耳相傳。
+
+## 追加-3：測試向量同步成 16 條 — ✅
+
+```
+$ cmp prototype/data/test-vectors.json backend/data/test-vectors.json ; echo $?
+0
+$ node prototype/tests/parity.mjs
+✓ JS 引擎 16/16 向量全過（與 Python 零分歧）
+$ python3 backend/tests/run_all.py    # 含 test_vectors_zero_divergence（16 條）
+全綠：98/98 通過
+```
+
+- 內容是**直接複製 prototype 那份**，沒有自己造向量。差的那一條是 PR #2 的
+  `demo-114-1147061268`（示範案件：本人簽收 114/7/13、提起 114/8/1、19 日未逾期）。
+- 鎖法改了：`test_vector_count_is_15` → `test_vector_count_is_16`，
+  並**新增 `test_vector_file_is_byte_identical_to_prototype`（比 sha256）**。
+  數量鎖只鎖得住縮水，鎖不住分岔——這次就是分岔躲過去的（兩邊各自都綠）。
+
+## 追加-4：live 模式改日期即時重算 — ✅
+
+### 怎麼做到「燈號仍以後端為準」
+
+`POST /api/deadline` 的回傳**加了一個 `verdict` 區塊**（既有欄位一個都沒動）：
+
+```json
+{"lamp":"r","text":"本件原處分於民國 114年3月14日 送達，訴願人於民國 114年6月30日 提起訴願，
+  計 108 日，已逾訴願法第14條所定 30 日之法定期間（期間至民國 114年4月14日 屆滿）。",
+ "why":"…逾期屬訴願法第77條第2款之不受理事由…屬承辦人裁量，系統不代為決定。",
+ "basis":"訴願法 14 I／14 III；民法 120 II、122；行政程序法 72、74",
+ "origin":"rule","l_origin":"rule","why_origin":"rule","days":108}
+```
+
+前端只負責把它畫出來。§6.1 沒有寫這一塊，這是**保守的加法**：加它的替代方案是讓前端
+自己判斷「逾期就轉紅」，那燈號就變成前端產出的，違反 CONSTITUTION §1 的同一條理由。
+
+### headless 實測（`verify_recalc.py`，自帶 PASS/FAIL）
+
+```
+$ uv run --with playwright -- python docs/evidence/2026-09-05-integration/verify_recalc.py       synthetic-blocked-01 2025-06-30 /tmp/shots
+VERDICT: PASS
+$ echo $?
+0
+```
+
+| | 改日期前（提起 2025-04-07） | 改日期後（提起 2025-06-30） |
+|---|---|---|
+| 燈號 紅/黃/綠 | 2 / 0 / 10（共 12 句） | **3** / 0 / 10（共 13 句） |
+| 新增的紅燈句 | — | 第 12 句「本件原處分於民國 114年3月14日 送達…**已逾**訴願法第14條所定 30 日之法定期間…」 |
+| 程序審查官卡片 | 期滿日 2025-04-14，未逾期 | 「期間已依修改後日期重算：期滿日 2025-04-14。本件…計 108 日，已逾…」 |
+| 送出閘門 | disabled | disabled（守門的 citation_missing 仍在） |
+| JS error | `[]` | `[]` |
+
+畫面上常駐一行說明：**「只有期間這一段重算過——案型、檢索、引用查核、送出許可仍是
+原始那次執行的結果。」** 不讓人以為整條產線重跑了。
+
+離線模式維持 v0 的 `engine.js` 行為，一個字沒改。
+
+## 追加-5：步驟 5 文案 — ✅
+
+移除「約 3.5 天（原人工作業平均）」與「1,566（114 年度案量）」兩格。
+理由：那兩個數字在本專案內**沒有出處也沒有量測**，跟旁邊的「後端六節點合計 0 ms」並排，
+會被讀成「我們把 3.5 天縮成幾毫秒」——那不是真的（fixture 檔位是離線重播）。
+
+改成四格全部是本次執行實際量到的值，並加一行註記：
+
+```
+後端六節點合計（6 節點）  0 ms
+逐句溯源句數              13 句
+引用查核筆數（四態）      5 筆
+燈號分布（紅／黃／綠）    0 / 0 / 13
+
+以上四項均為本次執行實際量到的值（run_id run-synthetic-ordinary-01-…，RUN_MODE=fixture）。
+fixture 檔位是離線重播，耗時不代表接上模型後的處理時間，也不是與人工作業的對照。
+```
+
+離線模式改成「前端動線耗時（含展示動畫）」＋「離線 fixture 模式：以上為前端在本頁量到的值，
+不是後端執行結果」。
+
+## 追加輪的完整驗收
+
+```
+$ python3 backend/tests/run_all.py            → 全綠：98/98 通過（exit 0）
+$ node prototype/tests/parity.mjs             → ✓ 16/16
+$ uv run --with pytest -- python -m pytest prototype/tests -q   → 4 passed
+$ python3 prototype/build.py                  → dist/index.html 127 KB（assert 無殘留注入點）
+headless：ordinary / blocked / offline / recalc 四種情境，零 JS error，四支腳本 exit 0
+$ pgrep -fl "uvicorn backend.api.app" ; echo $?   → 1（無殘留）
+```
+
+91 → 98 的 7 條：test_deadline +1（向量檔 sha256）、test_e2e +4（獨立檢索四條，
+另刪 1 條恆真式）、test_contract +2（封鎖判準防漂移、反事實）。
+
+## 追加輪的判斷卡（留給 Ci）
+
+### ⚠ A. `fact_issue_signals.json` 仍是骨架版，還沒換
+
+`docs/architecture.md` §4.3 說正式版要由 Jacky 從 114年/19、113年/20 兩份真實 C 型決定書反推。
+現在那份的訊號詞取自公開法條用語（時效、裁處權、行為終了…），**不是從真實案件反推的**。
+這一輪只改了「怎麼描述封鎖原因」，沒有動偵測清單本身。
+
+順帶提一個現在才看清楚的東西：既然 `substantive` 在對抗案例裡就足以觸發封鎖，
+**事實爭點偵測目前對「要不要封鎖」幾乎沒有影響力**——它影響的只是交接卡上多幾行提醒。
+換上真實清單之前，不建議在簡報裡把「偵測事實爭點」講成封鎖機制的主要判準。
+
+### ⚠ B. 實體法條號抽不到，獨立檢索只查得到程序面
+
+案型只給得出法規「名稱」（建築法），條號寫在原處分書上，而 Phase 0 沒有 PDF 視覺抽取、
+卷證摘錄裡也沒有條號。所以獨立檢索的結果**清一色是程序面法條**，
+`cited_not_retrieved` 會一直很長。這是已知限制，畫面上有寫，但**demo 被問到
+「那你們的檢索到底檢索到什麼」時要答得出來**——答案是「程序面查得到、實體面要等 PDF 抽取」。
+
+### ⚠ C. `synthetic-blocked-01.json` 的 `why_this_case` 還寫著舊的因果
+
+那個檔的說明寫「程序合法須進實體審查**且**存在高風險事實認定爭點」，
+跟這次改成的「and 其實是 or、爭點在本案是多餘條件」對不上。
+那個檔不在我這輪的檔案範圍（`backend/data/synthetic/`），沒有改。**一行字的事，但要有人改。**
+
+### ⚠ D. `/api/deadline` 的 `verdict` 是超出 §6.1 的加法
+
+§6.1 #5 寫的是「`Result.as_dict()`，沿用現有 `prototype/app.py:29-37`，不改」。
+我保留了原本每一個欄位，只加一個 `verdict` 兄弟鍵。理由見追加-4。
+要不要回寫進 architecture §6.1 由你決定。
+
+### ⚠ E. 重算只涵蓋期間，不涵蓋 77 條款與案型
+
+改日期後 `art77.clause` 不會跟著變（那要重跑 N3），所以「改成逾期之後，77 條第 2 款
+應該要成立」這件事畫面上不會反映。UI 有寫「只有期間這一段重算過」，但這是個誠實的**缺口**，
+不是設計。要補得靠 §6.1 #8 的 redraft（重跑 N3–N6）。
+
+---
+
+## 六、commit 清單（第一輪）
 
 ```
 6811786 test(scan): secret 掃描擴及 .js/.html，並存下可重跑的瀏覽器驗收證據
@@ -332,3 +595,10 @@ c4458a4 feat(api): 單一 process serve 前端與 API，payload 補齊 §6.2 頂
 | `backend/tests/test_contract.py` | 21 條 §6.2 契約斷言 |
 | `backend/tests/run_all.py:91` | `scan_prototype_dist_reproducible()`：換掉的那條紅線 |
 | `docs/evidence/2026-09-05-integration/` | 可重跑的驗證腳本與 DOM 節錄 |
+
+## 附：第二輪 commit
+
+```
+97ec1f5 feat(prototype): 補回 live 改日期即時重算、兩份引用清單、如實的封鎖判準與步驟5統計
+1967b0e feat(n4): 改獨立檢索、C 型封鎖原因改如實描述、測試向量同步 16 條
+```
