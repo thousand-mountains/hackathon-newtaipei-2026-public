@@ -1,7 +1,7 @@
 ---
 name: frontend-dev
 description: Use for implementing the Vue3 workbench UI - case intake view, three-tier draft view with confidence badges, calculation breakdown display, and the refusal/warning presentation.
-model: sonnet
+model: opus
 color: green
 ---
 

@@ -1,7 +1,7 @@
 ---
 name: plan-guardian
 description: Use at the start and end of every work package - verifies a plan exists in plans/ with executable acceptance criteria before work starts, and verifies completion claims have evidence before marking done. Replaces the prospec-expert role for this sprint project.
-model: sonnet
+model: fable
 color: yellow
 ---
 
