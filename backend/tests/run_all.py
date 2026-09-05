@@ -35,8 +35,15 @@ FORBIDDEN_CLOUD_PATTERNS = [
     (r"GOOGLE_APPLICATION_CREDENTIALS", "GCP 憑證環境變數"),
     (r"\bGCP\b", "GCP 字樣"),
 ]
-SCAN_SUFFIXES = {".py", ".json", ".md", ".txt", ".toml", ".cfg", ".yaml", ".yml", ""}
+SCAN_SUFFIXES = {".py", ".json", ".md", ".txt", ".toml", ".cfg", ".yaml", ".yml", ".js", ".html", ""}
 SKIP_DIRS = {"__pycache__", "output"}
+
+# **具名例外**（不藏在 regex 裡）：Google Fonts 是字型 CDN，不是 GCP 服務、不涉及任何憑證。
+# 前端 `index.tmpl.html` 的 `<link>` 會命中 `googleapis\.com`，那不是違規。
+# 例外寫成一份可讀的清單而不是改 pattern，是為了讓「我們放行了什麼」看得見。
+CLOUD_PATTERN_ALLOWED_CONTEXTS = (
+    "fonts.googleapis.com",   # Google Fonts 樣式表（字型 CDN）
+)
 
 
 def _scan_files(roots: tuple[pathlib.Path, ...] = (BACKEND,)) -> list[pathlib.Path]:
@@ -73,6 +80,9 @@ def scan_redlines() -> list[str]:
             continue
         for pattern, label in SECRET_PATTERNS + FORBIDDEN_CLOUD_PATTERNS:
             for m in re.finditer(pattern, text):
+                context = text[max(0, m.start() - 24) : m.end() + 24]
+                if any(allowed in context for allowed in CLOUD_PATTERN_ALLOWED_CONTEXTS):
+                    continue
                 line = text[: m.start()].count("\n") + 1
                 problems.append(f"{p.relative_to(ROOT)}:{line}：偵測到{label}（{m.group(0)[:24]}）")
     return problems

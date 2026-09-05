@@ -1,0 +1,152 @@
+{
+ "url": "http://127.0.0.1:8080/?case=synthetic-ordinary-01",
+ "badge_mode": "live",
+ "badge_text": "live 後端・synthetic-ordinary-01",
+ "badge_tip": "本頁資料來自後端六節點的一次實際執行（run_id run-synthetic-ordinary-01-428e69955724，RUN_MODE=fixture）。燈號、引用狀態、送出許可全部由後端守門節點判定，前端不重算。",
+ "prov_text": "合成測資：案情自公開決定書之結構反推改寫，人名、地址、案號均為虛構，不對應任何真實案件。",
+ "sourcenote": "資料來源：後端 POST /api/cases/synthetic-ordinary-01/runs（run_id run-synthetic-ordinary-01-428e69955724）。燈號與引用狀態由後端守門節點判定，本頁不重算。",
+ "case_options": [
+  "synthetic-blocked-01",
+  "synthetic-ordinary-01"
+ ],
+ "case_selected": "synthetic-ordinary-01",
+ "step0": {
+  "files": [
+   "synthetic-訴願書.pdf",
+   "synthetic-原處分裁處書.pdf"
+  ],
+  "no": "synthetic-1130000001",
+  "type": "違反空氣污染防制法事件",
+  "person": "（合成）吳○庭",
+  "d2": "2024-06-13",
+  "d3": "2024-07-20",
+  "auto_badges": [
+   "a_type",
+   "a_p",
+   "a_org",
+   "a_d1",
+   "a_d2",
+   "a_d3"
+  ],
+  "go1_disabled": false
+ },
+ "step1": {
+  "progress": "7 / 7",
+  "agents": [
+   {
+    "name": "卷證書記官",
+    "out": "自卷證擷取 12 個欄位，事實段原文 2 段。",
+    "state": "done"
+   },
+   {
+    "name": "分類調查官",
+    "out": "分類為「違反空氣污染防制法事件」（採 N1 抽取之案由欄位（違反空氣污染防制法事件））。",
+    "state": "done"
+   },
+   {
+    "name": "程序審查官",
+    "out": "期滿日 2024-07-15，逾期。偵測到 1 個事實認定爭點（高風險 0 個）。",
+    "state": "done"
+   },
+   {
+    "name": "法規檢索官",
+    "out": "命中 4 筆法規依據，其中 4 筆條號可對回快照。",
+    "state": "done"
+   },
+   {
+    "name": "案例檢索官",
+    "out": "相似歷史案：0 筆（庫外，未驗證）。",
+    "state": "done"
+   },
+   {
+    "name": "決定書主筆",
+    "out": "組出 5 句草稿（槽位：reasoning、conclusion）。",
+    "state": "done"
+   },
+   {
+    "name": "品管守門員",
+    "out": "驗證 5 個引用（在庫 5／已修正 0／庫外未驗證 0／查無 0）。燈號 綠 13／黃 0／紅 0。",
+    "state": "done"
+   }
+  ],
+  "console_head": [
+   "17:32:57 幕僚團啟動 · 案號 synthetic-1130000001",
+   "17:32:57 資料來源：後端六節點執行結果 run_id run-synthetic-ordinary-01-428e69955724（前端不重算燈號）",
+   "17:32:58 ▶ 卷證書記官 開始作業"
+  ]
+ },
+ "step2": {
+  "tab_badges": [
+   "法規依據4",
+   "相似案例0",
+   "爭點與函釋1"
+  ],
+  "law_cards": [
+   "訴願法第14條",
+   "行政程序法第74條",
+   "訴願法第15條",
+   "訴願法第77條"
+  ],
+  "law_tags": [
+   "✓ 在庫",
+   "本稿引用 1 句",
+   "✓ 在庫",
+   "本稿引用 1 句",
+   "✓ 在庫",
+   "本稿引用 1 句",
+   "✓ 在庫",
+   "本稿引用 2 句"
+  ],
+  "issue_cards": [
+   "爭點1：送達生效日之爭執"
+  ],
+  "case_pane": "相似歷史案通道不可用（無資料集），本次回空並非「查無相似案」",
+  "sent_count": "13",
+  "wc": "540 字",
+  "doc_title": "新北市政府（合成測資） 訴願決定書（合成測資草稿）",
+  "inspect": "第 7 句\n綠燈　可被計算\n期間由日期規則直接驗算，攤開算式可逐步覆核，無詮釋空間。\n無外部依據（本句以卷證或規則驗算為準）\n展開算式（6 步・規則引擎驗算）",
+  "calc_steps": [
+   "寄存送達自寄存之日起發生效力（不論實際何時領取）",
+   "自送達生效之次日起算（始日不計入）",
+   "法定期間 30 日",
+   "期滿日為星期六/日，以次一工作日代之",
+   "期滿日確定",
+   "以受理機關收受訴願書之日為提起日"
+  ],
+  "calc_caveats": [
+   "⚠ 國定假日順延未納入（v0 僅處理週六日），期滿日落在國定假日者請對照行政機關辦公日曆。",
+   "⚠ 縱屬逾期，原處分顯屬違法或不當者，機關仍得依職權撤銷或變更（訴願法 80），逾期≠案件終結。",
+   "⚠ 訴願人如有不可歸責事由，得申請回復原狀（訴願法 15），是否受理屬人工判斷。"
+  ]
+ },
+ "step3": {
+  "lamps": {
+   "r": "0",
+   "y": "0",
+   "g": "13",
+   "t": "13"
+  },
+  "go4_disabled": false,
+  "gatetitle": "紅燈句均已確認",
+  "gatemsg": "黃燈 0 句已附來源、綠燈 13 句已通過規則驗算，可送出審議。",
+  "blockers_visible": false,
+  "blockers": [],
+  "handoff_visible": false,
+  "handoff_questions": [],
+  "handoff_signals": [],
+  "advmarks": [],
+  "redlist": [],
+  "placeholder_sent": []
+ },
+ "step4": {
+  "no": "synthetic-1130000001",
+  "type": "因違反空氣污染防制法事件提起訴願",
+  "result": "訴願不受理。",
+  "lamp": "紅 0（已確認）／黃 0／綠 13　共 13 句",
+  "s_min": "2 ms",
+  "s_min_label": "後端六節點實測（RUN_MODE=fixture）",
+  "s_cite": "5 筆"
+ },
+ "js_errors": [],
+ "console_all": []
+}
