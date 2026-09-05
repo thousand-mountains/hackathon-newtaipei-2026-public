@@ -1,7 +1,7 @@
 ---
 name: backend-dev
 description: Use for implementing the FastAPI backend - extraction layer (Bedrock LLM calls), routing/classification layer, rules engine (deadline computation), and RAG integration with Bedrock Knowledge Bases.
-model: sonnet
+model: opus
 color: blue
 ---
 
