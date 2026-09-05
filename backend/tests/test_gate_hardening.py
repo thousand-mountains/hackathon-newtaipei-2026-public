@@ -514,15 +514,27 @@ def test_sentence_without_citation_is_not_labeled_sourced():
     assert_eq(s["tier"], "請人工判斷", "但它不得被歸進「有出處」層")
 
 
-def test_retrieval_lamp_uses_stable_key_and_reports_mismatch():
-    """n6:172 的比對改用穩定鍵；對不到時要明講，不得靜默填預設燈號。"""
+def test_retrieval_lamp_uses_stable_key_and_never_defaults_to_green():
+    """比對改用穩定鍵；**對不到的絕不回頭拿 N4 的 verified 當燈號**。
+
+    這條原本還斷言「對不到 → 黃燈 + 進 blockers」。2026-09-05 N4 改成獨立檢索之後
+    那個預期不成立了，而且方向是反的：查詢句由案情組成，本來就會查到草稿沒引用的
+    條文（民法 120、訴願法 17…），**那是正當結果不是缺陷**。
+    原本的寫法會讓每個正常案例都因為「檢索比草稿多查到幾條」而被擋住送出。
+
+    這條測試真正要守的東西沒有變，而且守得更嚴了：
+    - 對得到 → 照守門結果發燈（不變）
+    - **對不到 → 完全不給燈號（`lamp is None`）**，比原本的「不給綠燈」更強；
+      燈號只屬於草稿裡的句子與引用，這張卡沒有對應的草稿引用就沒有東西可以發燈
+    - 標一個明確的中性狀態，不進 blockers
+    """
     state = _blocked_state_with([_sentence("s1", "依建築法第73條規定。", "reasoning")])
     state.screen["requires_human_conclusion"] = False
     state.retrieval = {
         "laws": [
             {"id": "L1", "t": "建築法第73條", "law": "建築法", "article": "73", "verified": True,
              "lamp": None, "tag": None},
-            # 檢索給了一筆草稿根本沒引用的法條：舊版會靜默用 verified 填綠燈
+            # 檢索給了一筆草稿沒引用的法條：舊版會靜默用 verified 填綠燈（那才是 bug）
             {"id": "L2", "t": "訴願法第14條", "law": "訴願法", "article": "14", "verified": True,
              "lamp": None, "tag": None},
         ],
@@ -532,11 +544,67 @@ def test_retrieval_lamp_uses_stable_key_and_reports_mismatch():
     laws = {l["id"]: l for l in state.retrieval["laws"]}
     assert_eq(laws["L1"]["lamp"], "g", "對得到的照守門結果發燈")
     assert_eq(laws["L1"]["gate_ref_key"], "建築法|73", "比對鍵必須是結構化欄位，不是顯示字串")
-    assert_eq(laws["L2"]["lamp"], "y", "對不到的絕不預設綠燈")
-    assert_in("未能對回", laws["L2"]["tag"])
+    assert_eq(laws["L1"]["gate_status"], "cited_and_gated")
+
+    assert_eq(laws["L2"]["lamp"], None, "對不到的不給燈號——尤其不准拿 verified=True 填綠燈")
+    assert_eq(laws["L2"]["gate_status"], "retrieved_not_cited")
+    assert_in("草稿未引用", laws["L2"]["tag"])
+    assert_true(bool(laws["L2"].get("gate_note")), "中性狀態要附說明，不能只有一個標籤")
     assert_true(
-        any(b["reason"] == "retrieval_law_not_matched_by_gate" for b in state.gate["blockers"]),
-        "對不到必須進 blockers，不能靜默走 else",
+        not any(b["reason"] == "retrieval_law_not_matched_by_gate" for b in state.gate["blockers"]),
+        "「檢索到、草稿未引用」是獨立檢索的正當結果，不得當成阻擋事由",
+    )
+
+
+def test_retrieval_law_without_stable_key_still_fails_loudly():
+    """真正的缺陷仍要大聲失敗：檢索結果組不出穩定鍵 = 永久的比對盲區。
+
+    這是上一條讓步之後留下的防線。少了它，只要 N4 哪天不再輸出 law／article，
+    所有法規卡都會安靜地落進「檢索到、草稿未引用」，看起來一切正常。
+    """
+    state = _blocked_state_with([_sentence("s1", "依建築法第73條規定。", "reasoning")])
+    state.screen["requires_human_conclusion"] = False
+    state.retrieval = {
+        "laws": [{"id": "L1", "t": "建築法第73條", "law": None, "article": None,
+                  "verified": True, "lamp": None, "tag": None}],
+        "cases": [], "retrieval_meta": {},
+    }
+    n6_gate.run(state, _ctx())
+    law = state.retrieval["laws"][0]
+    assert_eq(law["lamp"], None, "組不出鍵一樣不准預設燈號")
+    assert_eq(law["gate_status"], "unkeyed")
+    assert_true(
+        any(b["reason"] == "retrieval_law_unkeyed" for b in state.gate["blockers"]),
+        "組不出穩定鍵是缺陷，必須進 blockers",
+    )
+
+
+def test_draft_citation_without_stable_key_fails_loudly():
+    """草稿側的對應防線（覆核發現②的 silent default）。
+
+    草稿裡抽到一個法條引用、卻組不出「法規名｜條號」時，任何跨模組比對都只能
+    「當作沒對到」而靜靜過去。句子層已經給黃燈並寫明原因，但那不夠——
+    要具名列出來，不能讓後面的人以為「沒出現在 blockers ＝ 已經查過了」。
+    """
+    state = _blocked_state_with([_sentence("s1", "依建築法規定辦理。", "reasoning")])
+    state.screen["requires_human_conclusion"] = False
+    state.retrieval = {"laws": [], "cases": [], "retrieval_meta": {}}
+    # 直接注入一個抽得到、卻組不出鍵的法條引用（條號解析不出來的情形）
+    import backend.nodes.n6_gate as _n6
+    from backend.gate.citations import Citation
+    orig = _n6.CitationChecker.check_text
+    _n6.CitationChecker.check_text = lambda self, text: (
+        [Citation(raw="建築法", kind="law", state="out_of_scope", lamp="y",
+                  note="條號無法解析", payload={"law": "建築法", "article": None})]
+        if "建築法" in text else []
+    )
+    try:
+        n6_gate.run(state, _ctx())
+    finally:
+        _n6.CitationChecker.check_text = orig
+    assert_true(
+        any(b["reason"] == "citation_not_keyed" for b in state.gate["blockers"]),
+        "草稿引用組不出穩定鍵時必須具名列出，不得靜默通過",
     )
 
 
@@ -1048,19 +1116,61 @@ def test_official_cases_behaviour_unchanged():
     assert_eq({k: len(v) for k, v in b["tiers"].items()}, {"可驗算": 6, "有出處": 4, "請人工判斷": 3})
 
 
+# 允許在兩次執行之間變動的欄位。**這是白名單，不是遮罩**：
+# 測試會先算出「實際上有哪些葉節點不一樣」，再斷言那個集合是這份白名單的子集。
+# 這樣寫的差別在於——有人偷加一個新的不確定欄位時會**被抓到並指名**，
+# 而不是被 strip 清單默默吸收掉（原本的寫法就是後者，run_id 加進來時它只說
+# 「跑 5 次結果不一致」，沒說是哪一欄）。
+NONDETERMINISTIC_ALLOWED = {"run_id", "elapsed_ms", "node_timings", "started_at", "summary"}
+
+
+def _leaf_paths(o, path=""):
+    """把 payload 攤平成 {json path: 葉節點值}。"""
+    if isinstance(o, dict):
+        out = {}
+        for k, v in o.items():
+            out.update(_leaf_paths(v, f"{path}/{k}"))
+        return out
+    if isinstance(o, list):
+        out = {}
+        for i, v in enumerate(o):
+            out.update(_leaf_paths(v, f"{path}/{i}"))
+        return out
+    return {path: o}
+
+
 def test_pipeline_is_still_deterministic():
-    """同案例跑 5 次（去掉時間欄位）雜湊必須一致——守門加固不得引入不確定性。"""
+    """分析本體必須 deterministic：兩次執行的差異只准落在具名的時間／識別碼欄位。
+
+    2026-09-05 合併後這條紅過一次，原因是 `run_id`（每次執行一個新 uuid）。
+    分析結果本身沒有變——但原本的寫法看不出這件事，只會說「跑 5 次不一致」。
+    現在先把差異列出來再判斷，訊息裡直接指出是哪個路徑。
+    """
     import hashlib
 
-    def _strip(o):
-        drop = {"elapsed_ms", "node_timings", "started_at", "summary"}
-        if isinstance(o, dict):
-            return {k: _strip(v) for k, v in o.items() if k not in drop}
-        if isinstance(o, list):
-            return [_strip(v) for v in o]
-        return o
-
     for case_id in (ORDINARY, BLOCKED):
+        a = _leaf_paths(build_payload(run_case(case_id, mode="fixture")))
+        b = _leaf_paths(build_payload(run_case(case_id, mode="fixture")))
+        assert_eq(set(a), set(b), f"{case_id} 兩次執行的欄位集合不同（結構不穩定）")
+        differing = sorted(k for k in a if a[k] != b[k])
+        offenders = [
+            k for k in differing
+            if not (set(k.split("/")) & NONDETERMINISTIC_ALLOWED)
+        ]
+        assert_eq(
+            offenders,
+            [],
+            f"{case_id} 有具名白名單以外的欄位在兩次執行之間變動——分析本體不 deterministic",
+        )
+
+        # 把允許變動的欄位剔掉之後，5 次執行必須位元組級一致
+        def _strip(o):
+            if isinstance(o, dict):
+                return {k: _strip(v) for k, v in o.items() if k not in NONDETERMINISTIC_ALLOWED}
+            if isinstance(o, list):
+                return [_strip(v) for v in o]
+            return o
+
         hashes = {
             hashlib.sha256(
                 json.dumps(_strip(build_payload(run_case(case_id, mode="fixture"))),

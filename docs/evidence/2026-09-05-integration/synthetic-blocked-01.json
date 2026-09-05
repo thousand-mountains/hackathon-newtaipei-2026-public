@@ -2,9 +2,9 @@
  "url": "http://127.0.0.1:8080/?case=synthetic-blocked-01",
  "badge_mode": "live",
  "badge_text": "live 後端・synthetic-blocked-01",
- "badge_tip": "本頁資料來自後端六節點的一次實際執行（run_id run-synthetic-blocked-01-e545e660a1bc，RUN_MODE=fixture）。燈號、引用狀態、送出許可全部由後端守門節點判定，前端不重算。",
+ "badge_tip": "本頁資料來自後端六節點的一次實際執行（run_id run-synthetic-blocked-01-14b319e305da，RUN_MODE=fixture）。燈號、引用狀態、送出許可全部由後端守門節點判定，前端不重算。",
  "prov_text": "合成測資：案情自公開決定書之結構反推改寫，人名、地址、案號均為虛構，不對應任何真實案件。",
- "sourcenote": "資料來源：後端 POST /api/cases/synthetic-blocked-01/runs（run_id run-synthetic-blocked-01-e545e660a1bc）。燈號與引用狀態由後端守門節點判定，本頁不重算。",
+ "sourcenote": "資料來源：後端 POST /api/cases/synthetic-blocked-01/runs（run_id run-synthetic-blocked-01-14b319e305da）。燈號與引用狀態由後端守門節點判定，本頁不重算。",
  "case_options": [
   "synthetic-blocked-01",
   "synthetic-ordinary-01"
@@ -70,9 +70,9 @@
    }
   ],
   "console_head": [
-   "18:13:55 幕僚團啟動 · 案號 synthetic-1140000002",
-   "18:13:55 資料來源：後端六節點執行結果 run_id run-synthetic-blocked-01-e545e660a1bc（前端不重算燈號）",
-   "18:13:55 ▶ 卷證書記官 開始作業"
+   "19:10:52 幕僚團啟動 · 案號 synthetic-1140000002",
+   "19:10:52 資料來源：後端六節點執行結果 run_id run-synthetic-blocked-01-14b319e305da（前端不重算燈號）",
+   "19:10:52 ▶ 卷證書記官 開始作業"
   ]
  },
  "step2": {
@@ -89,11 +89,11 @@
    "民法第122條"
   ],
   "law_tags": [
-   "✓ 在庫",
-   "✓ 在庫",
-   "✓ 在庫",
-   "✓ 在庫",
-   "✓ 在庫"
+   "檢索到，草稿未引用",
+   "檢索到，草稿未引用",
+   "檢索到，草稿未引用",
+   "檢索到，草稿未引用",
+   "檢索到，草稿未引用"
   ],
   "issue_cards": [
    "爭點1：裁處權時效之起算與行為終了時點認定"
@@ -130,11 +130,12 @@
    "t": "12"
   },
   "go4_disabled": true,
-  "gatetitle": "後端守門阻擋送出（1 項）",
+  "gatetitle": "後端守門阻擋送出（2 項）",
   "gatemsg": "本案未通過品管守門節點，送出審議已鎖定。阻擋原因如下，須先由承辦人處理；紅燈逐句確認不會解除此鎖定。",
   "blockers_visible": true,
   "blockers": [
-   "[citation_missing] 第 5 句　建築法第999條：快照中建築法無第 999 條（最大條號 105），請人工查證是否誤植。"
+   "[citation_missing] 第 5 句　建築法第999條：快照中建築法無第 999 條（最大條號 105），請人工查證是否誤植。",
+   "[conclusion_requires_human]　本案結論涉及法律判斷，系統不生成結論段（C 型封鎖），草稿不得逕行送出；請承辦人依交接卡認定後自行完成結論。"
   ],
   "handoff_visible": true,
   "handoff_questions": [
@@ -163,7 +164,7 @@
   "placeholder_sent": [
    "（結論段由承辦人判斷後填寫）"
   ],
-  "detail": "紅燈　需人工審核\n第 5 / 12 句\n⚠ 對抗測資\n⚠ 對抗測資：刻意注入的錯誤引用，用來驗證守門會攔。快照中建築法無第 999 條（最大條號 105）。\n\n至擅自變更使用之處罰要件，另參建築法第999條之規定。\n\n引用在資料集內查無此號，可能為誤植，已阻擋送出。\n\n建築法第999條\n我已核閱卷證，確認本句"
+  "detail": "紅燈　需人工審核\n第 5 / 12 句\n⚠ 對抗測資\n⚠ 對抗測資：刻意注入的錯誤引用，用來驗證守門會攔。快照中建築法無第 999 條（最大條號 105）。\n\n至擅自變更使用之處罰要件，另參建築法第999條之規定。\n\n本案結論段已封鎖（需人工判斷），而本句未附任何可查證的引用——系統無法確認它不是實質結論，已交人工。\n\n建築法第999條\n我已核閱卷證，確認本句"
  },
  "step4": "送出審議按鈕為 disabled，未進入步驟 5（預期行為）",
  "js_errors": [],

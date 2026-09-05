@@ -568,6 +568,177 @@ $ pgrep -fl "uvicorn backend.api.app" ; echo $?   → 1（無殘留）
 
 ---
 
+# 合併對接（2026-09-05，守門分支併入後）
+
+指揮官把 `mission/hack-gate-hardening-20260905` 併進本分支（merge commit `95e7db5`，
+`run_all.py` 的衝突由指揮官取聯集解掉）。合併後 `run_all` 出現 **5 個失敗**
+（指揮官點名 2 個，實際跑出來是 5 個，其中 4 個同根因）。
+
+**這 5 個失敗沒有一個是「某一邊寫錯了」**——兩邊各自都對，是合起來之後語意對不上。
+以下逐項說明為什麼這樣改。
+
+| # | 失敗的測試 | 根因 |
+|---|---|---|
+| 1 | `test_e2e.test_ordinary_passes_the_gate` | 檢索比對方向 |
+| 2 | `test_gate_hardening.test_ac2_fabricated_cn_article_blocks_submission_end_to_end` | 同上（基底案例本來要可送出） |
+| 3 | `test_gate_hardening.test_non_c_type_cases_get_conclusion_like_annotation` | 同上 |
+| 4 | `test_gate_hardening.test_official_cases_behaviour_unchanged` | 同上 |
+| 5 | `test_gate_hardening.test_pipeline_is_still_deterministic` | `run_id` |
+
+## 對接-1：檢索比對的方向反了（1–4 號失敗的共同根因）
+
+### 兩邊各自都對
+
+守門 agent 的修法 6 修的是一個真 bug：舊版拿 `raw == laws[].t` 的**顯示字串**去對，
+對不到就走 `else` **用 N4 自己的 `verified` 填燈號**——那等於檢索替守門發燈，
+正是覆核發現②的 silent default。它改成用結構化穩定鍵（`法規名|條號`），對不到就
+黃燈 + 進 blockers。**在它自己的分支上這是對的**。
+
+我這邊把 N4 從「拿草稿引用當查詢句」改成獨立檢索。**在我自己的分支上這也是對的**。
+
+合起來就壞了：舊設計下 `laws[]` 永遠等於草稿引用，所以「對不到」從不發生；
+獨立檢索之後，`laws[]` 本來就會包含草稿沒引用的條文
+（ordinary 的民法 120／訴願法 17／民法 122 來自期間引擎援引的法源），
+於是每個正常案例都被自己的檢索結果擋住送出。
+
+### 改法：把「對不到」拆成兩種
+
+「檢索到但草稿沒引用」跟「組不出穩定鍵」被舊寫法混成同一件事，但它們的性質相反：
+
+| 情形 | 語意 | 處置 |
+|---|---|---|
+| 有穩定鍵、草稿未引用 | **獨立檢索的正當結果**。查詢句由案情組成，本來就會查到草稿沒寫的條文 | `gate_status="retrieved_not_cited"`、`lamp=None`、中性標籤「檢索到，草稿未引用」、**不進 blockers** |
+| 組不出穩定鍵（缺 `law`／`article`） | **真的是缺陷**。這張卡永遠不可能被守門比對到，是永久的比對盲區 | `gate_status="unkeyed"`、`lamp=None`、進 blockers（`retrieval_law_unkeyed`） |
+| 對得到 | 草稿有引用且守門查核過 | `gate_status="cited_and_gated"`、照守門結果發燈 |
+
+**為什麼不給燈號而不是給黃燈**：燈號屬於草稿裡的句子與引用。一張沒有對應草稿引用的
+檢索卡片，根本沒有可以發燈的對象——給黃燈是在替一個不存在的判斷編一個顏色。
+`lamp=None` 比原本的「不給綠燈」更嚴格：它連「有燈號」這件事都不宣稱。
+
+**守門 agent 真正要防的東西一條都沒鬆**：對不到的卡片仍然**絕不回頭去看 `verified`**。
+突變測試證實：把 `lamp` 改回 `'g' if verified else 'y'`，
+`test_laws_have_id_t_q_src_and_lamp_from_rules` 立刻紅。
+
+### 草稿那一側的防線（覆核發現②的另一半）
+
+指揮官指定要保留「草稿裡有引用、卻對不到穩定鍵時大聲失敗」。盤過現況：
+
+- 草稿引用**對不到快照** → 已經是 `missing` → blocker（`citation_missing`）。原本就有。
+- 草稿引用**對不到 `laws[]`** → 獨立檢索之後這是常態（blocked 案的 3 筆引用一筆都不在
+  `laws[]`），不能當失敗。
+- 草稿引用**組不出穩定鍵**（`kind=="law"` 但沒有 `法規名|條號`）→ **這才是剩下的
+  silent-default 表面**：任何跨模組比對都只能「當作沒對到」而靜靜過去。
+  句子層原本已給黃燈並寫明原因（那部分是誠實的），但只停在句子層不夠——
+  現在具名進 blockers（`citation_not_keyed`），不讓後面的人以為
+  「沒出現在 blockers ＝ 已經查過了」。
+
+### 測試更新
+
+- 改寫 `test_retrieval_lamp_uses_stable_key_and_reports_mismatch`
+  → `..._and_never_defaults_to_green`：保住「絕不預設綠燈」（而且改成更強的
+  `lamp is None`），拿掉已不成立的「對不到 → 黃燈 + blocker」。
+- 新增 `test_retrieval_law_without_stable_key_still_fails_loudly`（缺陷側）
+- 新增 `test_draft_citation_without_stable_key_fails_loudly`（草稿側）
+- 新增 `test_contract.test_retrieved_not_cited_is_a_status_not_a_blocker`
+  ——直接釘住這次的整合效應，避免有人日後又把它改回 blocker。
+- `test_contract` 的 `laws[]` 斷言擴充：`gate_status` 值域、
+  非 `cited_and_gated` 一律 `lamp is None`、每張卡都要有 `tag` 與 `gate_note`。
+- 三個新欄位（`gate_status`／`gate_note`／`gate_ref_key`）都在
+  `origin_registry.ORIGIN` 註冊為 `rule`。
+
+**突變測試（證明不是空轉）**：
+
+| 突變 | 被抓到的測試 |
+|---|---|
+| 把 `retrieved_not_cited` 改回 blocker | `test_retrieved_not_cited_is_a_status_not_a_blocker` |
+| 對不到卻用 `verified` 填燈號 | `test_laws_have_id_t_q_src_and_lamp_from_rules` |
+
+### 前端
+
+法規卡的徽章依 `gate_status` 決定樣式，**中性狀態刻意不用紅黃綠**
+（`.tag.neutral`：虛線外框、無底色），一眼跟三色燈區分開；tooltip 顯示 `gate_note`。
+截圖 `docs/evidence/2026-09-05-integration/synthetic-ordinary-01-step2.png`：
+前三張卡是「綠燈 + ✓ 在庫 + 本稿引用 N 句」，後三張只有虛線的「檢索到，草稿未引用」。
+
+## 對接-2：`run_id` 讓 determinism 測試變紅
+
+實測兩次 run 的差異葉節點**只有** `/run_id` 與 `/run_meta/run_id`
+（`elapsed_ms`／`node_timings`／`summary`／`started_at` 原本就在 strip 清單裡）。
+**分析本體是 deterministic 的**，紅的原因是我加的執行識別碼。
+
+改法照指揮官的要求，**沒有只是把 `run_id` 塞進 strip 清單**：
+
+```python
+NONDETERMINISTIC_ALLOWED = {"run_id", "elapsed_ms", "node_timings", "started_at", "summary"}
+# 先算兩次 run 的實際差異葉節點，斷言它是白名單的子集，再做 5 次雜湊比對
+```
+
+差別在於**這是白名單不是遮罩**：有人偷加不確定欄位時會被指名，而不是被清單默默吸收。
+突變測試：在 payload 塞一個 `random.random()`，測試失敗訊息直接印出
+`got : ['/bogus_random']`——原本的寫法只會說「跑 5 次結果不一致」，不說是哪一欄。
+
+## 對接-3：`synthetic-blocked-01.json` 的 `why_this_case`
+
+原本寫「程序合法須進實體審查**且**存在高風險事實認定爭點」，與新定調（`and` 其實是 `or`、
+爭點在本案是多餘條件）對不上。改成：操作判準是程序合法且須進實體審查；
+爭點是提醒不是封鎖原因，並註明「實測把爭點全部拿掉仍然封鎖」。
+順帶把「守門必須攔下並**阻擋送出**」改成「**標記為不得逕行送出**」——
+守門分支第四輪覆核已經確認 `submit_allowed` 目前沒有執行點，那句是不實的宣稱。
+
+**這是一行字的修改**（`git diff --stat` 顯示 1 insertion / 1 deletion）：
+第一次我用 JSON round-trip 改，結果把整個檔重排版成 27 改 8，
+已 `git checkout` 還原後改用字串替換。fixture 檔的 diff 要看得懂。
+
+## 合併對接的完整驗收
+
+```
+$ python3 backend/tests/run_all.py
+   8/8    期間引擎搬遷與測試向量
+   38/38  六節點單元測試
+   26/26  端到端整合測試
+   24/24  CASE payload 契約（architecture §6.2）
+   54/54  守門加固回歸
+   3/3    紅線靜態掃描
+全綠：153/153 通過   （合併當下是 145/150）
+$ echo $?
+0
+$ node prototype/tests/parity.mjs        → ✓ 16/16
+$ python3 prototype/build.py             → dist/index.html 128 KB
+$ uv run --with pytest -- python -m pytest prototype/tests -q   → 4 passed
+```
+
+headless 四種情境（腳本全部 exit 0、零 JS error）：
+
+| 情境 | 結果 |
+|---|---|
+| `synthetic-ordinary-01` | 徽章 live、燈號 0/0/13、**送出審議 enabled**（`go4_disabled: false`）、blockers 0 |
+| `synthetic-blocked-01` | 徽章 live、燈號 2/0/10、送出 disabled、blockers 顯示 |
+| 法規卡狀態 | `['✓ 在庫','本稿引用 2 句','✓ 在庫','本稿引用 1 句','✓ 在庫','本稿引用 1 句','檢索到，草稿未引用','檢索到，草稿未引用','檢索到，草稿未引用']` |
+| `file://` 離線 | 徽章 offline、4/7/10、v0 行為不變 |
+| 改日期重算 | `VERDICT: PASS`（紅燈 2→3、判定句轉紅、閘門仍鎖） |
+
+```
+$ pgrep -fl "uvicorn backend.api.app" ; echo $?    → 1（無殘留）
+```
+
+## 合併對接的待決
+
+### ⚠ F. `submit_allowed` 仍然沒有執行點
+
+守門分支第四輪覆核的結論（`n6_gate.py` 檔首、HANDOFF-GATE 判斷卡）：
+`backend/api/` 沒有送出端點，沒有任何程式讀 `submit_allowed` 去擋任何動作。
+**前端的送出鈕是唯一的執行點，而那是可以繞過的**（改 DOM、直接打 API）。
+對外一律說「標記為不得逕行送出」，不要說「系統會擋下送出」。
+我這輪沒有補送出端點（§6.1 #9），它仍在「明確沒做」清單裡。
+
+### ⚠ G. `retrieved_not_cited` 的數量會隨案情變動，demo 時要能解釋
+
+ordinary 有 3 張、blocked 有 5 張（blocked 是全部）。被問「為什麼左邊查到的法條
+草稿都沒引用」時，正確答案是「實體法條號目前無法由案情自動判定（缺 PDF 視覺抽取），
+所以獨立檢索命中的幾乎都是程序面法條」——這在判斷卡 B 已經寫過，
+但合併後它會更常被看到（因為現在畫面上明確標出來了）。
+---
+
 ## 六、commit 清單（第一輪）
 
 ```
@@ -601,4 +772,10 @@ c4458a4 feat(api): 單一 process serve 前端與 API，payload 補齊 §6.2 頂
 ```
 97ec1f5 feat(prototype): 補回 live 改日期即時重算、兩份引用清單、如實的封鎖判準與步驟5統計
 1967b0e feat(n4): 改獨立檢索、C 型封鎖原因改如實描述、測試向量同步 16 條
+```
+
+## 附：合併對接 commit
+
+```
+（見下方 git log；合併 commit 為 95e7db5，本節的修正在其後）
 ```

@@ -39,6 +39,7 @@ uv run --with playwright -- python docs/evidence/2026-09-05-integration/verify_o
 | `verify_recalc.py` | live 模式改提起訴願日 → 打 `POST /api/deadline` 重算 → 該句轉紅（自帶 PASS/FAIL 判定） |
 | `recalc-blocked-01.json` | 重算前後的燈號、判定句、程序審查官卡片與閘門狀態 |
 | `synthetic-blocked-01-step2.png` | 左欄兩份清單：獨立檢索結果 vs 草稿實際引用 + 落差說明 |
+| `synthetic-ordinary-01-step2.png` | 法規卡的三種狀態：綠燈（草稿有引用、守門查核過）vs 中性虛線徽章「檢索到，草稿未引用」 |
 | `synthetic-blocked-01-recalc-after.png` | 改日期重算後的燈號審核頁 |
 | `synthetic-ordinary-01.json` | 一般案例的完整 DOM 節錄（本次執行輸出） |
 | `synthetic-blocked-01.json` | 對抗案例：blockers、交接卡、對抗測資標記、送出鎖定 |

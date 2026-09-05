@@ -189,18 +189,59 @@ def test_laws_have_id_t_q_src_and_lamp_from_rules() -> None:
         assert_true(len(p["laws"]) > 0, f"{cid}：laws[] 是空的")
         ids = set()
         for law in p["laws"]:
-            for k in ("id", "t", "q", "src", "lamp", "tag", "origin"):
+            for k in ("id", "t", "q", "src", "lamp", "tag", "origin", "gate_status", "gate_note", "gate_ref_key"):
                 assert_in(k, law, f"{cid}：laws[] 元素缺 §6.2 欄位 {k!r}")
             assert_true(law["id"] not in ids, f"{cid}：laws[].id 重複：{law['id']}")
             ids.add(law["id"])
             assert_true(str(law["id"]).startswith("L"), f"{cid}：laws[].id 應為 L* 命名空間，實得 {law['id']!r}")
-            assert_in(law["lamp"], ("r", "y", "g"), f"{cid}：laws[{law['id']}].lamp 值域錯")
+            # 燈號只屬於「草稿有引用、守門查核過」的卡片。獨立檢索命中但草稿沒引用的
+            # 那些卡片不給燈號（None）——不是漏填，是那張卡沒有可以發燈的對象。
+            assert_in(
+                law["gate_status"],
+                ("cited_and_gated", "retrieved_not_cited", "unkeyed"),
+                f"{cid}：laws[{law['id']}].gate_status 值域錯",
+            )
+            if law["gate_status"] == "cited_and_gated":
+                assert_in(law["lamp"], ("r", "y", "g"), f"{cid}：查核過的卡片必須有燈號")
+            else:
+                assert_eq(
+                    law["lamp"], None,
+                    f"{cid}：laws[{law['id']}] 沒有對應的草稿引用卻給了燈號 {law['lamp']!r}"
+                    f"——燈號不得由檢索自己發（覆核發現②）",
+                )
+            assert_true(bool(law.get("tag")), f"{cid}：laws[{law['id']}] 沒有狀態標籤")
+            assert_true(bool(law.get("gate_note")), f"{cid}：laws[{law['id']}] 沒有說明它為什麼是這個狀態")
             assert_eq(law["origin"], "retrieval", f"{cid}：laws[{law['id']}].origin 應為 retrieval")
             if law["q"] is None:
                 assert_true(
                     bool(law.get("q_note")),
                     f"{cid}：laws[{law['id']}].q 為 None 卻沒有 q_note 說明為什麼沒有原文",
                 )
+
+    _both(check)
+
+
+def test_retrieved_not_cited_is_a_status_not_a_blocker() -> None:
+    """獨立檢索命中、草稿沒引用 → 中性狀態，不得擋住送出。
+
+    合併守門分支時踩到的整合效應：守門把「laws[] 對不到守門引用」當 blocker，
+    在 N4 倒推查詢的舊設計下 laws[] 永遠等於草稿引用所以從不觸發；
+    改成獨立檢索後，每個正常案例都會因此被擋住。這條釘住正確語意。
+    """
+
+    def check(cid: str, p: dict) -> None:
+        rnc = [l for l in p["laws"] if l["gate_status"] == "retrieved_not_cited"]
+        blocked_ids = {b.get("sentence_id") for b in p["blockers"]}
+        for law in rnc:
+            assert_true(
+                law["id"] not in blocked_ids,
+                f"{cid}：{law['id']}（{law['t']}）只是檢索到而草稿沒引用，不該進 blockers",
+            )
+        reasons = {b["reason"] for b in p["blockers"]}
+        assert_true(
+            "retrieval_law_not_matched_by_gate" not in reasons,
+            f"{cid}：舊的「檢索對不到守門」阻擋事由又回來了",
+        )
 
     _both(check)
 

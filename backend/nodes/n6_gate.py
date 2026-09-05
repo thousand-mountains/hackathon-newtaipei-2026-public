@@ -59,6 +59,10 @@ HANDOFF_BASE_QUESTIONS = [
 ]
 
 
+# 檢索到、草稿未引用的法規卡標籤。中性措辭：不是燈號、不是警告，就是一個事實陳述。
+RETRIEVED_NOT_CITED_TAG = "檢索到，草稿未引用"
+
+
 def _collect_law_ref_index(retrieval: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return {l["id"]: l for l in retrieval.get("laws", [])}
 
@@ -276,8 +280,22 @@ def run(state: CaseState, ctx: NodeCtx) -> NodeResult:
     # 結構性規則：跨模組比對一律用**結構化的穩定鍵**（法規名｜條號），不用顯示字串。
     # `resolved_id`（`L-建築法-73`）與 `laws[].id`（`L1`）是兩個命名空間、交集為空；
     # 舊版靠 `raw == laws[].t` 的字串巧合對上，顯示格式一改就靜默失效還不報錯，
-    # 然後走 else 用 N4 自己的 `verified` 填燈號——那等於檢索替守門發燈。
-    # 對不到就**明講對不到**：黃燈 + 具名 tag + 進 blockers，絕不預設綠。
+    # 然後走 else 用 N4 自己的 `verified` 填燈號——**那等於檢索替守門發燈**。
+    # 這條防線保留：對不到的一律不給燈號，絕不回頭去看 N4 的 `verified`。
+    #
+    # 但「對不到」有兩種，2026-09-05 N4 改成獨立檢索之後必須分開處理
+    # （合併前這兩種是同一種，因為舊設計的 laws[] 永遠等於草稿引用，所以從不觸發）：
+    #
+    #   (a) 有穩定鍵、但草稿沒引用它 → **獨立檢索的正當結果，不是缺陷**。
+    #       查詢句由案情組成，本來就會查到草稿沒寫的條文（例如期間引擎援引的民法 120）。
+    #       這種卡片不給燈號——燈號屬於草稿裡的句子與引用，這張卡沒有對應的草稿引用，
+    #       就沒有東西可以發燈。標成中性狀態，不進 blockers。
+    #
+    #   (b) 連穩定鍵都組不出來（缺 law／article）→ **真的是缺陷**。
+    #       這種卡片永遠不可能被守門比對到，放著就是一個永久的比對盲區，
+    #       正是覆核發現②那類 silent default 的溫床。大聲失敗。
+    #
+    # 草稿那一側的對應防線在下面的 `citation_not_keyed`。
     cite_by_key: dict[str, dict[str, Any]] = {}
     for c in all_citations:
         key = c.get("ref_key")
@@ -287,21 +305,54 @@ def run(state: CaseState, ctx: NodeCtx) -> NodeResult:
         law_name, article = law.get("law"), law.get("article")
         key = f"{law_name}|{article}" if law_name and article else None
         matched = cite_by_key.get(key) if key else None
+        law["gate_ref_key"] = key
         if matched:
             law["lamp"] = matched["lamp"]
             law["tag"] = matched["mark"]
-            law["gate_ref_key"] = key
+            law["gate_status"] = "cited_and_gated"
+            law["gate_note"] = "草稿有引用此條，燈號為守門逐句查核的結果。"
+        elif key:
+            # (a) 檢索到、草稿未引用
+            law["lamp"] = None
+            law["tag"] = RETRIEVED_NOT_CITED_TAG
+            law["gate_status"] = "retrieved_not_cited"
+            law["gate_note"] = (
+                "本條由 N4 依案情獨立檢索命中，草稿並未引用它，因此沒有可供守門查核的句子——"
+                "不給燈號（燈號只屬於草稿裡的句子與引用），也不代表草稿漏引或引用有誤。"
+            )
         else:
-            law["lamp"] = "y"
-            law["tag"] = "⚠ 未能對回守門結果"
-            law["gate_ref_key"] = key
+            # (b) 組不出穩定鍵：這張卡永遠不可能被守門比對到
+            law["lamp"] = None
+            law["tag"] = "⚠ 無結構化鍵，無法對回守門"
+            law["gate_status"] = "unkeyed"
+            law["gate_note"] = "檢索結果缺 law／article 結構化欄位，跨模組比對無法進行。"
             blockers.append(
                 {
                     "sentence_id": law["id"],
-                    "reason": "retrieval_law_not_matched_by_gate",
+                    "reason": "retrieval_law_unkeyed",
                     "detail": (
-                        f"檢索結果 {law['id']}（{law.get('t')}）的穩定鍵 {key!r} 對不到任何守門過的引用，"
-                        f"燈號無法由守門認定。不預設燈號，請確認檢索與草稿引用是否脫節。"
+                        f"檢索結果 {law['id']}（{law.get('t')}）缺結構化欄位（law／article），"
+                        f"組不出穩定鍵，永遠無法對回守門結果。這是檢索輸出的缺陷，不是資料落差。"
+                    ),
+                    "severity": "P1",
+                }
+            )
+
+    # ── 草稿側的對應防線：引用抽出來了、卻組不出穩定鍵 ────────────────
+    # 這才是覆核發現②真正要防的東西：草稿裡有一個法條引用，但守門拿不到
+    # 「法規名｜條號」這組結構化鍵，於是任何跨模組比對都只能「當作沒對到」而靜靜過去。
+    # 條號解析不出來時 `check_law()` 已經給黃燈並寫明原因（那部分是誠實的），
+    # 但**它不能只停在句子層**：一個無法被穩定比對的引用要被具名列出來，
+    # 不能讓後面的人以為「沒出現在 blockers = 已經查過了」。
+    for c in all_citations:
+        if c.get("kind") == "law" and not c.get("ref_key"):
+            blockers.append(
+                {
+                    "sentence_id": c.get("sentence_id"),
+                    "reason": "citation_not_keyed",
+                    "detail": (
+                        f"草稿引用 {c.get('raw')!r} 抽得到、卻組不出穩定鍵（法規名｜條號），"
+                        f"守門無法把它對回快照或檢索結果。不預設它是對的。"
                     ),
                     "severity": "P1",
                 }

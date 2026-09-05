@@ -506,8 +506,16 @@ function refHTML(o){
   /* live 模式不重算引用狀態：直接用後端給的 tag（✓ 在庫／✗ 查無此號／庫外…）與 note */
   const v=(!isLive&&o.id[0]==='L')?verifyLaw(o.t):null;
   const vf=v?`<span class="tag ${v.ok?'g':'y'}" tabindex="0" data-tip="${esc(v.tip)}">${esc(v.text)}</span>`:'';
-  const tagCls=(isLive&&o.lamp)?o.lamp:'k';
-  const tagTip=(isLive&&o.note)?` tabindex="0" data-tip="${esc(o.note)}"`:'';
+  /* 法規卡的狀態徽章。獨立檢索後有三種：
+     - cited_and_gated：草稿有引用、守門查核過 → 用守門發的燈號顏色
+     - retrieved_not_cited：檢索到、草稿沒引用 → **中性徽章，不是紅黃綠**
+       （燈號只屬於草稿裡的句子與引用，這張卡沒有可以發燈的對象）
+     - unkeyed：組不出穩定鍵 → 這是缺陷，標紅 */
+  const gs=o.gate_status;
+  const tagCls=gs==='retrieved_not_cited'?'neutral'
+              :gs==='unkeyed'?'r'
+              :(isLive&&o.lamp)?o.lamp:'k';
+  const tagTip=(isLive&&(o.gate_note||o.note))?` tabindex="0" data-tip="${esc(o.gate_note||o.note)}"`:'';
   return `<div class="ref" id="ref-${esc(o.id)}" data-ref="${esc(o.id)}">
     <div class="top"><span class="nm">${esc(o.t)}</span>${lamp}</div>
     ${o.q?`<q>${esc(o.q)}</q>`:''}${o.q_note&&!o.q?`<div style="font-size:11.5px;color:var(--ink-3);margin:4px 0 6px;line-height:1.65">${esc(o.q_note)}</div>`:''}${o.d?`<div style="font-size:12.5px;color:var(--ink-2);margin:4px 0 6px;line-height:1.65">${esc(o.d)}</div>`:''}

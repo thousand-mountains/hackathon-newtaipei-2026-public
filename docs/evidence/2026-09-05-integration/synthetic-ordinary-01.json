@@ -2,9 +2,9 @@
  "url": "http://127.0.0.1:8080/?case=synthetic-ordinary-01",
  "badge_mode": "live",
  "badge_text": "live 後端・synthetic-ordinary-01",
- "badge_tip": "本頁資料來自後端六節點的一次實際執行（run_id run-synthetic-ordinary-01-5b254cc8d7cc，RUN_MODE=fixture）。燈號、引用狀態、送出許可全部由後端守門節點判定，前端不重算。",
+ "badge_tip": "本頁資料來自後端六節點的一次實際執行（run_id run-synthetic-ordinary-01-2994353c5a2d，RUN_MODE=fixture）。燈號、引用狀態、送出許可全部由後端守門節點判定，前端不重算。",
  "prov_text": "合成測資：案情自公開決定書之結構反推改寫，人名、地址、案號均為虛構，不對應任何真實案件。",
- "sourcenote": "資料來源：後端 POST /api/cases/synthetic-ordinary-01/runs（run_id run-synthetic-ordinary-01-5b254cc8d7cc）。燈號與引用狀態由後端守門節點判定，本頁不重算。",
+ "sourcenote": "資料來源：後端 POST /api/cases/synthetic-ordinary-01/runs（run_id run-synthetic-ordinary-01-2994353c5a2d）。燈號與引用狀態由後端守門節點判定，本頁不重算。",
  "case_options": [
   "synthetic-blocked-01",
   "synthetic-ordinary-01"
@@ -70,9 +70,9 @@
    }
   ],
   "console_head": [
-   "18:13:41 幕僚團啟動 · 案號 synthetic-1130000001",
-   "18:13:41 資料來源：後端六節點執行結果 run_id run-synthetic-ordinary-01-5b254cc8d7cc（前端不重算燈號）",
-   "18:13:41 ▶ 卷證書記官 開始作業"
+   "19:10:37 幕僚團啟動 · 案號 synthetic-1130000001",
+   "19:10:37 資料來源：後端六節點執行結果 run_id run-synthetic-ordinary-01-2994353c5a2d（前端不重算燈號）",
+   "19:10:37 ▶ 卷證書記官 開始作業"
   ]
  },
  "step2": {
@@ -96,9 +96,9 @@
    "本稿引用 1 句",
    "✓ 在庫",
    "本稿引用 1 句",
-   "✓ 在庫",
-   "✓ 在庫",
-   "✓ 在庫"
+   "檢索到，草稿未引用",
+   "檢索到，草稿未引用",
+   "檢索到，草稿未引用"
   ],
   "issue_cards": [
    "爭點1：送達生效日之爭執"
@@ -156,13 +156,13 @@
   "type": "因違反空氣污染防制法事件提起訴願",
   "result": "訴願不受理。",
   "lamp": "紅 0（已確認）／黃 0／綠 13　共 13 句",
-  "s_min": "0 ms",
+  "s_min": "7 ms",
   "s_min_label": "後端六節點合計（6 節點）",
   "s_sent": "13 句",
   "s_cite": "5 筆",
   "s_cite_label": "引用查核筆數（四態）",
   "s_lamp": "0 / 0 / 13",
-  "s_note": "以上四項均為本次執行實際量到的值（run_id run-synthetic-ordinary-01-5b254cc8d7cc，RUN_MODE=fixture）。fixture 檔位是離線重播，耗時不代表接上模型後的處理時間，也不是與人工作業的對照。"
+  "s_note": "以上四項均為本次執行實際量到的值（run_id run-synthetic-ordinary-01-2994353c5a2d，RUN_MODE=fixture）。fixture 檔位是離線重播，耗時不代表接上模型後的處理時間，也不是與人工作業的對照。"
  },
  "js_errors": [],
  "console_all": []

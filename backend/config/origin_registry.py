@@ -82,8 +82,11 @@ ORIGIN = {
     "retrieval.retrieval_meta.*": "rule",
     # §6.2 的頂層視圖（與 retrieval.* 同一份資料，前端左欄三分頁直接吃）
     "laws[]": "retrieval",
-    "laws[].lamp": "rule",  # 檢索只給候選，燈號歸守門
+    "laws[].lamp": "rule",  # 檢索只給候選，燈號歸守門；草稿沒引用的卡片不給燈號（None）
     "laws[].tag": "rule",
+    "laws[].gate_status": "rule",   # cited_and_gated / retrieved_not_cited / unkeyed
+    "laws[].gate_note": "rule",     # 這張卡為什麼是這個狀態
+    "laws[].gate_ref_key": "rule",  # 跨模組比對用的穩定鍵（法規名｜條號）
     "cases[]": "retrieval",
     "issues[]": "rule",  # N3 事實認定爭點偵測
     "issues[].lamp": "rule",
