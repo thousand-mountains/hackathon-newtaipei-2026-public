@@ -53,6 +53,31 @@ NODE_TO_AGENTS = {
     "n6": ["qc"],
 }
 
+# ── §6.2 CASE payload 的頂層視圖常數（origin=static / rule）──────────
+# 「自動擷取」徽章的門檻。與 `nodes/n1_extract.CONF_THRESHOLD` 是同一個數字，
+# 但故意分開宣告：N1 用它判斷「要不要降級成 NEEDS_INPUT」，這裡用它決定
+# 「UI 要不要打自動擷取標記」。兩者將來可能各自校準，不該互相綁死。
+AUTO_FIELD_CONF_THRESHOLD = 0.80
+
+# §6.2 指定的模板，數字由 len(auto_fields) 填，不寫死
+AUTO_TOAST_TEMPLATE = "已由卷證擷取 {n} 個欄位，請確認"
+
+# 事實認定爭點卡的燈號：定義上就是「AI 不得代為認定」，所以恆為紅燈。
+# 這不是猜一個燈號，是照定義給唯一可能的那個（見 graph._issues_view 的說明）。
+ISSUE_LAMP = "r"
+ISSUE_TAG_BY_SEVERITY = {
+    "high": "需人工認定（高風險）",
+    "medium": "需人工認定",
+    "low": "需人工認定（低風險）",
+    "": "需人工認定",
+}
+
+# §6.2「前端有、後端不需要新增的」欄位之一：保留為靜態字串
+TOKEN_NOTE = (
+    "幕僚敘述中的數字由節點實際結果填入（architecture §3.2）；"
+    "live 模式下前端不重算燈號與引用狀態，一律以後端輸出為準。"
+)
+
 # 需事實認定型案型：程序合法時進入實體審查，結論段由人寫（architecture §4.3）
 SUBSTANTIVE_TYPES = (
     "違反建築法事件",

@@ -17,7 +17,7 @@
 | 東西 | 狀態 |
 |---|---|
 | `check_payload()` | ✅ **真的有跑**，掛在 `graph.build_payload()` 與 API／CLI 上。逐句檢查 origin 是否存在、是否在值域內，以及 `l_origin`／`why_origin`／`citations[].state_origin` 有沒有被標成 `llm`。 |
-| `ORIGIN`（JSON path 對照表） | ⚠️ **目前是文件，不是程式**。沒有任何程式碼按 JSON path 逐欄比對它。它記錄的是「每個欄位應該是什麼 origin」的意圖，等 `scripts/contract_check.py`（qa-legal 的工作包）寫出來才會被真正執行。 |
+| `ORIGIN`（JSON path 對照表） | 🟡 **頂層已被測試釘住，深層仍是文件**。`registered_origin()` + `backend/tests/test_contract.py` 強制 payload 的每個**頂層** key 都要在這裡註冊（新增欄位忘了註冊會紅）。但巢狀的逐欄 JSON path（`doc[].ss[].t` 這種）還沒有程式按 path 比對，等 `scripts/contract_check.py`（qa-legal 的工作包）。 |
 | `LLM_FORBIDDEN_PATHS` | ⚠️ **同上，目前未被引用**。`check_payload()` 是用 `*_origin` 欄位做等價檢查，不是走這份 path 清單。 |
 
 不把它們刪掉是因為介面已經對外講定（architecture §6.4），刪了下一個人會重新發明；
@@ -44,9 +44,16 @@ ORIGIN_TO_TIER = {
 }
 
 ORIGIN = {
+    "case_id": "static",
+    "run_id": "rule",  # 編排層產生的執行識別碼
+    "state": "rule",
     "provenance.*": "static",
+    "files[]": "static",  # 卷證上傳中繼資料（§6.2）
     "intake.*": "llm",  # 人工修改後由 intake_origin[field] 覆寫為 human
+    "intake.auto_fields": "rule",  # 編排層：conf ≥ 門檻 的欄位名清單（§6.2）
+    "intake.auto_toast": "rule",  # 模板填數字，不寫死（§6.2）
     "intake_conf.*": "llm",
+    "intake_origin.*": "rule",
     "facts_excerpt[].text": "record",
     # ⚠ 標 rule 是「分類**演算法**是規則式」的意思，但它的輸入 `intake.type` 來自 N1（llm）。
     # 也就是說 case_type 實際上是 llm 衍生值，而 case_type 又餵給
@@ -54,6 +61,11 @@ ORIGIN = {
     # 換句話說：**封鎖開關的上游有一個未經人工確認的模型輸出**。
     # 正確做法是接上 US-10 的人工確認表單後把 intake_origin[type] 轉成 human 再往下傳；
     # Phase 0 還沒有那道表單，所以這裡誠實標成 llm_derived，不假裝它是純規則。
+    "classification.*": "rule",
+    "screen.*": "rule",
+    "retrieval.*": "retrieval",
+    "doc[]": "static",  # 骨架是模板；句子的 origin 逐句標在 doc[].ss[].origin
+    "citations[]": "rule",
     "classification.class.case_type": "llm_derived",
     "classification.class.method": "rule",
     "classification.class.law_hits": "rule",
@@ -67,6 +79,26 @@ ORIGIN = {
     "retrieval.laws[].lamp": "rule",
     "retrieval.cases[]": "retrieval",
     "retrieval.retrieval_meta.*": "rule",
+    # §6.2 的頂層視圖（與 retrieval.* 同一份資料，前端左欄三分頁直接吃）
+    "laws[]": "retrieval",
+    "laws[].lamp": "rule",  # 檢索只給候選，燈號歸守門
+    "laws[].tag": "rule",
+    "cases[]": "retrieval",
+    "issues[]": "rule",  # N3 事實認定爭點偵測
+    "issues[].lamp": "rule",
+    "issues[].tag": "rule",
+    "agents[]": "static",  # 卡片名稱與角色來自 settings.AGENTS_NARRATIVE
+    "agents[].out": "rule",  # 節點 NodeResult.narrative，模板填數字（§3.2）
+    "agents[].logs[]": "rule",
+    "token_note": "static",
+    "tiers.*": "rule",  # 三層誠實視圖：依 origin 分桶，不改內容
+    "history[]": "rule",  # 狀態機轉換紀錄
+    "lamp_stats.*": "rule",
+    "citation_counts.*": "rule",
+    "issue_refs[]": "rule",
+    "submit_allowed": "rule",
+    "facts_excerpt[]": "record",
+    "origin_violations[]": "rule",
     "draft.slots[].t": "llm",
     "doc[].ss[].t": "llm",
     "doc[].ss[].l": "rule",
@@ -85,6 +117,20 @@ LLM_FORBIDDEN_PATHS = (
     "citations[].state",
     "screen.deadline",
 )
+
+
+def registered_origin(key: str) -> str | None:
+    """查一個**頂層** payload key 在 `ORIGIN` 註冊了什麼 origin，沒註冊回 None。
+
+    比對三種寫法：`key`（純量）、`key[]`（陣列）、`key.*`（物件）。
+    `backend/tests/test_contract.py` 用它強制「payload 的每個頂層欄位都要有 origin 註冊」——
+    也就是說 `ORIGIN` 從這個 commit 起**不再只是文件**，頂層那一層已經被測試釘住了
+    （更深的逐欄 JSON path 比對仍待 qa-legal 的 `scripts/contract_check.py`）。
+    """
+    for candidate in (key, f"{key}[]", f"{key}.*"):
+        if candidate in ORIGIN:
+            return ORIGIN[candidate]
+    return None
 
 
 def tier_of(origin: str) -> str:

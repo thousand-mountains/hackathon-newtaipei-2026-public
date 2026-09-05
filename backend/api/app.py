@@ -1,26 +1,33 @@
-"""FastAPI 服務：把六節點流程掛成 HTTP 端點。
+"""FastAPI 服務：一個 process 同時 serve 五步動線前端與六節點 API。
 
-跑法（沿用 v0 的慣例，見 prototype/app.py）：
+跑法（**唯一的官方啟動指令**，見 `backend/DEPLOY.md`）：
 
-    uv run --with fastapi --with uvicorn backend/api/app.py    → http://127.0.0.1:8788
+    uv run --with fastapi --with "uvicorn[standard]" --with pydantic -- \
+        python -m uvicorn backend.api.app:app --host 127.0.0.1 --port 8080
+
+    → http://127.0.0.1:8080/   五步動線 UI（live 接後端）
+    → http://127.0.0.1:8080/api/docs   OpenAPI
 
 或容器內：
 
     uvicorn backend.api.app:app --host 0.0.0.0 --port 8080
 
-端點（architecture §6.1 的子集，Phase 0 先做四支）：
+端點（architecture §6.1 的子集）：
 
-| 方法 | 路徑                        | 說明                                   |
-|------|-----------------------------|----------------------------------------|
-| GET  | `/api/health`               | 健康檢查：run_mode／kb 狀態／model ids |
-| GET  | `/api/cases`                | 列出可用的合成案例                     |
-| POST | `/api/cases/{case_id}/runs` | 跑完六節點，回完整 CASE payload        |
-| POST | `/api/deadline`             | 期間計算（沿用 prototype/app.py 的契約）|
+| 方法 | 路徑                        | 說明                                       |
+|------|-----------------------------|--------------------------------------------|
+| GET  | `/`                         | 五步動線 UI（`prototype/dist/index.html`） |
+| GET  | `/api/health`               | 健康檢查：**實際**載入快照與合成案例       |
+| GET  | `/api/cases`                | 列出可用的合成案例                         |
+| POST | `/api/cases/{case_id}/runs` | 跑完六節點，回 `run_id` + 完整 CASE payload |
+| POST | `/api/deadline`             | 期間計算（沿用 prototype/app.py 的契約）    |
 
 紅線：
 - 前端不得直連基礎模型，一律過後端（CONSTITUTION 約束二）。
 - 本檔不讀任何憑證、不呼叫任何雲端 API。`RUN_MODE != "fixture"` 時節點會自己 raise，
   這裡把它翻成 501 並照實說原因，不假裝服務正常。
+- `/api/health` 不得無條件回 ok：它必須真的把 laws-snapshot 與合成案例讀起來，
+  讀不動就照實回 503。健康檢查說謊比沒有健康檢查更糟。
 """
 from __future__ import annotations
 
@@ -33,21 +40,38 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from fastapi import FastAPI, HTTPException  # noqa: E402
+from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
+from fastapi.responses import FileResponse, JSONResponse  # noqa: E402
+from fastapi.staticfiles import StaticFiles  # noqa: E402
 from pydantic import BaseModel  # noqa: E402
 
-from backend.config.settings import PROVENANCE, run_mode  # noqa: E402
+from backend.config.settings import PROVENANCE, load_snapshot, run_mode  # noqa: E402
 from backend.engine.deadline import compute  # noqa: E402
 from backend.orchestrator.graph import (  # noqa: E402
     CaseNotFound,
     build_payload,
     list_synthetic_cases,
+    load_case,
     run_case,
 )
 
+# 五步動線前端的建置產物。由 `python3 prototype/build.py` 產生（單檔全內嵌）。
+FRONTEND_DIST = ROOT / "prototype" / "dist"
+FRONTEND_INDEX = FRONTEND_DIST / "index.html"
+
 app = FastAPI(
-    title="訴願案件審理 AI 輔助（Phase 0 backend）",
-    description="六節點 deterministic pipeline。目前僅支援 RUN_MODE=fixture（離線重播）。",
+    title="訴願案件審理 AI 輔助（v2 六節點 + 五步動線）",
+    description="六節點 deterministic pipeline，同一個 process 也 serve 五步動線前端。目前僅支援 RUN_MODE=fixture（離線重播）。",
     docs_url="/api/docs",
+)
+
+# 本機開發用 CORS：只放行 localhost／127.0.0.1 的任意 port。
+# 不用 allow_origins=["*"]——那會讓任何網站都能打這支 API。
+app.add_middleware(
+    CORSMiddleware,
+    allow_origin_regex=r"^http://(localhost|127\.0\.0\.1)(:\d+)?$",
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["*"],
 )
 
 
@@ -61,11 +85,62 @@ class DeadlineIn(BaseModel):
     interested: bool = False
 
 
+def _health_checks() -> list[dict]:
+    """真的去做的檢查——每一項都實際讀檔／解析，不是回報一個常數。
+
+    回傳每項的 `{name, ok, detail}`。任何一項 not ok，`/api/health` 就回 503。
+    """
+    checks: list[dict] = []
+
+    # 1. 引用驗證的唯一真實來源必須載得起來（architecture §8.1）
+    try:
+        snap = load_snapshot()
+        laws = snap.get("laws") or {}
+        if not laws:
+            raise ValueError("laws-snapshot.json 的 laws 區塊是空的")
+        checks.append(
+            {
+                "name": "laws_snapshot",
+                "ok": True,
+                "detail": f"{len(laws)} 部法規、快照日期 {snap.get('generated')}",
+            }
+        )
+    except Exception as e:  # noqa: BLE001 — 健康檢查要照實回報任何失敗原因
+        checks.append({"name": "laws_snapshot", "ok": False, "detail": f"{type(e).__name__}: {e}"})
+
+    # 2. 合成案例必須列得出來、而且每一份都真的解析得動
+    try:
+        case_ids = list_synthetic_cases()
+        if not case_ids:
+            raise ValueError("找不到任何 synthetic-*.json 合成案例")
+        for cid in case_ids:
+            load_case(cid)  # 解析失敗會直接丟出來
+        checks.append({"name": "synthetic_cases", "ok": True, "detail": f"{len(case_ids)} 個：{', '.join(case_ids)}"})
+    except Exception as e:  # noqa: BLE001
+        case_ids = []
+        checks.append({"name": "synthetic_cases", "ok": False, "detail": f"{type(e).__name__}: {e}"})
+
+    # 3. 前端建置產物在不在（不在也還能跑 API，所以這項失敗不擋整體 ok）
+    checks.append(
+        {
+            "name": "frontend_dist",
+            "ok": FRONTEND_INDEX.exists(),
+            "detail": str(FRONTEND_INDEX.relative_to(ROOT)) if FRONTEND_INDEX.exists() else "未建置，請跑 python3 prototype/build.py",
+            "blocking": False,
+        }
+    )
+    return checks
+
+
 @app.get("/api/health")
-def health() -> dict:
+def health() -> JSONResponse:
     mode = run_mode()
-    return {
-        "ok": True,
+    checks = _health_checks()
+    ok = all(c["ok"] for c in checks if c.get("blocking", True))
+    case_ids = list_synthetic_cases() if ok else []
+    body = {
+        "ok": ok,
+        "checks": checks,
         "run_mode": mode,
         "fixture_only": mode == "fixture",
         "kb_backend": "lawtable_only",
@@ -73,9 +148,11 @@ def health() -> dict:
         # 沒有呼叫任何基礎模型就不報 model id
         "model_ids": None,
         "model_ids_note": "fixture 檔位未呼叫任何基礎模型。",
-        "cases_available": list_synthetic_cases(),
+        "cases_available": case_ids,
+        "frontend_served": FRONTEND_INDEX.exists(),
         "provenance": PROVENANCE,
     }
+    return JSONResponse(body, status_code=200 if ok else 503)
 
 
 @app.get("/api/cases")
@@ -85,10 +162,12 @@ def cases() -> dict:
 
 @app.post("/api/cases/{case_id}/runs")
 def create_run(case_id: str) -> dict:
-    """啟動狀態機並同步跑完六節點，回完整 CASE payload。
+    """啟動狀態機並同步跑完六節點，回 `run_id` + 完整 CASE payload。
 
-    Phase 0 是同步執行（fixture 檔位全程毫秒級，沒有阻塞疑慮）。
-    接上真實模型後要改成 202 + SSE 事件流（architecture §6.1 的 2a/2b）。
+    architecture §6.1 的 2a 規定回 `{run_id}`；Phase 0 是同步執行
+    （fixture 檔位全程毫秒級，沒有阻塞疑慮），所以把完整 payload 一起回，
+    前端不必再打一次 `GET /api/cases/{id}`。`run_id` 在 payload 頂層與 `run_meta` 各有一份。
+    接上真實模型後要改成 202 + SSE 事件流（architecture §6.1 的 2b）。
     """
     try:
         state = run_case(case_id)
@@ -122,7 +201,26 @@ def api_deadline(body: DeadlineIn) -> dict:
         raise HTTPException(status_code=400, detail=str(e)) from e
 
 
+# ── 前端：同一個 process serve 五步動線 ────────────────────────────
+# 沿用 v0 `prototype/app.py:40-45` 的慣例（FileResponse `/` + StaticFiles `/static`）。
+# dist/index.html 是單檔全內嵌（CSS/JS/fixture 都在裡面），所以 `/static` 掛著是為了
+# 跟 v0 的路徑相容，不是頁面渲染的必要條件。
+@app.get("/")
+def index() -> FileResponse:
+    if not FRONTEND_INDEX.exists():
+        raise HTTPException(
+            status_code=503,
+            detail=f"前端尚未建置：找不到 {FRONTEND_INDEX.relative_to(ROOT)}。請先跑 `python3 prototype/build.py`。",
+        )
+    # 前端建置產物每次 build 都會變，不讓瀏覽器快取住舊版
+    return FileResponse(FRONTEND_INDEX, headers={"Cache-Control": "no-store"})
+
+
+if FRONTEND_DIST.is_dir():
+    app.mount("/static", StaticFiles(directory=FRONTEND_DIST), name="static")
+
+
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run(app, host="127.0.0.1", port=8788)
+    uvicorn.run(app, host="127.0.0.1", port=8080)

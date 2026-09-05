@@ -83,6 +83,14 @@ class CaseState:
     run_mode: str = "fixture"
     state: str = "CREATED"
 
+    # 這次執行的識別碼（architecture §6.1 2a：POST /runs 回 run_id）。
+    # 由編排層 `graph.run_case()` 產生，不由節點寫。
+    run_id: str = ""
+
+    # 卷證上傳中繼資料（architecture §6.2 `files[].{n,s,x}`，origin=static）。
+    # Phase 0 沒有真實上傳流程，值取自合成案例檔的 `files` 區塊，由編排層搬進來。
+    files: list[dict[str, Any]] = field(default_factory=list)
+
     # N1 抽取
     intake: dict[str, Any] = field(default_factory=dict)
     intake_conf: dict[str, float] = field(default_factory=dict)

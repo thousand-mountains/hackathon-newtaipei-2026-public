@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import pathlib
 import time
+import uuid
 from typing import Any
 
 from backend.config.origin_registry import (
@@ -19,9 +20,14 @@ from backend.config.origin_registry import (
     check_payload,
 )
 from backend.config.settings import (
+    AUTO_FIELD_CONF_THRESHOLD,
+    AUTO_TOAST_TEMPLATE,
+    ISSUE_LAMP,
+    ISSUE_TAG_BY_SEVERITY,
     NODE_TO_AGENTS,
     PROVENANCE,
     SYNTHETIC_DIR,
+    TOKEN_NOTE,
     load_snapshot,
     run_mode,
 )
@@ -75,6 +81,11 @@ def run_case(case_id: str, mode: str | None = None, data_dir: pathlib.Path | Non
     digest = fixture.get("case_digest", "")
 
     state = CaseState(case_id=case_id, run_mode=mode)
+    # architecture §6.1 2a：POST /runs 的回傳值是 run_id。Phase 0 是同步執行、
+    # 沒有「進行中的 run」可以復用，所以每次執行給一個新的 id，並在
+    # `run_meta.run_id_note` 誠實寫出「冪等復用尚未實作」，不假裝有做。
+    state.run_id = f"run-{case_id}-{uuid.uuid4().hex[:12]}"
+    state.files = list(fixture.get("files") or [])
     ctx = NodeCtx(run_mode=mode, snapshot=snapshot)
 
     run_started = time.perf_counter()
@@ -102,6 +113,8 @@ def run_case(case_id: str, mode: str | None = None, data_dir: pathlib.Path | Non
 
     state.agents_narrative = agents
     state.run_meta = {
+        "run_id": state.run_id,
+        "run_id_note": "同步執行，每次 POST /runs 產生新 id；architecture §6.1 2a 的冪等復用尚未實作。",
         "run_mode": mode,
         "started_at": utc_now_iso(),
         "elapsed_ms": int((time.perf_counter() - run_started) * 1000),
@@ -146,10 +159,67 @@ def _collect_cited_law_strings(fixture: dict[str, Any]) -> list[str]:
     return out
 
 
+# ── §6.2 CASE payload 的頂層視圖欄位 ──────────────────────────────
+def _auto_fields(state: CaseState) -> list[str]:
+    """信心值 ≥ 門檻的欄位名清單（architecture §6.2，origin=rule）。
+
+    **§6.2 未明確的地方，採保守解讀**：§6.2 寫「conf ≥ 門檻 的欄位 id 清單」，
+    沒有定義「欄位 id」是後端欄位名（`type`）還是前端表單元素 id（`a_type`）。
+    這裡回**後端欄位名**——後端不該知道前端的 DOM id，映射留給前端做。
+    """
+    return sorted(f for f, c in (state.intake_conf or {}).items() if c >= AUTO_FIELD_CONF_THRESHOLD)
+
+
+def _issues_view(state: CaseState) -> list[dict[str, Any]]:
+    """`issues[]`：N3 偵測到的事實認定爭點 + 燈號（architecture §6.2）。
+
+    **§6.2 未明確的地方，採保守解讀**：§6.2 把 `issues[].{lamp,tag}` 歸給「N6 燈號規則」，
+    但 N6 目前不產爭點卡的燈號（它只把 `I*` ref 掛到句子上）。事實認定爭點的定義本身
+    就是「AI 不得代為認定」，所以這裡固定給紅燈——**不是猜一個燈號，是照定義給唯一可能的那個**，
+    並依 severity 給 tag 文字。規則寫在 `config/settings.py`，零 LLM。
+    """
+    out: list[dict[str, Any]] = []
+    for issue in (state.screen.get("fact_issues") or []):
+        out.append(
+            {
+                "id": issue.get("id"),
+                "t": issue.get("t"),
+                "q": issue.get("q"),
+                "src": issue.get("src"),
+                "lamp": ISSUE_LAMP,
+                "tag": ISSUE_TAG_BY_SEVERITY.get(issue.get("severity", ""), ISSUE_TAG_BY_SEVERITY[""]),
+                "severity": issue.get("severity"),
+                "origin": "rule",
+            }
+        )
+    return out
+
+
+def _attach_law_refs(doc: list[dict[str, Any]], laws: list[dict[str, Any]]) -> None:
+    """把句子的引用解析成 `L*` ref（architecture §6.2 `doc[].ss[].refs[]`）。
+
+    解析方式是**字串相等比對**：句子的 `citations[].raw` 與 `laws[].t` 都是引用原文
+    （例「訴願法第14條」），相等才掛。不做模糊比對、不靠 `cite_ids` 的序號巧合——
+    序號巧合會在文字一變時靜默失效而不報錯（HANDOFF 五點五節指出過這個風險）。
+    解析不到就不掛；那一句的紅黃燈另由 N6 的引用四態決定，不受這裡影響。
+    """
+    by_raw = {law.get("t"): law.get("id") for law in laws if law.get("t") and law.get("id")}
+    for block in doc:
+        for s in block.get("ss", []):
+            refs = s.setdefault("refs", [])
+            for c in s.get("citations", []) or []:
+                rid = by_raw.get(c.get("raw"))
+                if rid and rid not in refs:
+                    refs.insert(0, rid)  # L* 排在 N6 掛的 I* 前面
+
+
 # ── 三層誠實的輸出視圖 ─────────────────────────────────────────────
 def build_payload(state: CaseState) -> dict[str, Any]:
     """把終態組成對外 payload，並依三層誠實分層。"""
     doc = state.gate.get("doc", [])
+    laws = list((state.retrieval or {}).get("laws") or [])
+    cases = list((state.retrieval or {}).get("cases") or [])
+    _attach_law_refs(doc, laws)
     tiers: dict[str, list[dict[str, Any]]] = {
         TIER_VERIFIABLE: [],
         TIER_SOURCED: [],
@@ -177,17 +247,32 @@ def build_payload(state: CaseState) -> dict[str, Any]:
     for c in caveats:
         tiers[TIER_HUMAN].append({"id": None, "slot": "caveat", "t": c, "l": "y", "why": "期間引擎明列之人工判斷項", "origin": "rule"})
 
+    auto_fields = _auto_fields(state)
+    # §6.2：`intake.auto_fields` / `intake.auto_toast` 是編排層算的（origin=rule），
+    # 不覆寫 N1 寫進 state.intake 的抽取欄位——所以組一份新 dict，不動 state。
+    intake_view = dict(state.intake)
+    intake_view["auto_fields"] = auto_fields
+    intake_view["auto_toast"] = AUTO_TOAST_TEMPLATE.format(n=len(auto_fields))
+
     payload = {
         "case_id": state.case_id,
+        "run_id": state.run_id,
         "state": state.state,
         "provenance": PROVENANCE,
-        "intake": state.intake,
+        "files": state.files,
+        "intake": intake_view,
         "intake_conf": state.intake_conf,
         "intake_origin": state.intake_origin,
         "facts_excerpt": state.facts_excerpt,
         "classification": state.classification,
         "screen": state.screen,
         "retrieval": state.retrieval,
+        # §6.2 的頂層 `laws[]` / `cases[]` / `issues[]`：前端左欄三個分頁直接吃這三個。
+        # `laws` / `cases` 是 `retrieval.*` 的同一份物件（不是複製一份改過的），
+        # 避免兩處內容漂移；`issues` 由 fact_issues 加燈號組成，見 `_issues_view()`。
+        "laws": laws,
+        "cases": cases,
+        "issues": _issues_view(state),
         "doc": doc,
         "citations": state.gate.get("citations", []),
         "citation_counts": state.gate.get("citation_counts", {}),
@@ -197,6 +282,7 @@ def build_payload(state: CaseState) -> dict[str, Any]:
         "handoff": state.gate.get("handoff", {}),
         "submit_allowed": state.gate.get("submit_allowed", False),
         "agents": list(state.agents_narrative.values()),
+        "token_note": TOKEN_NOTE,
         "run_meta": state.run_meta,
         "tiers": {
             "可驗算": tiers[TIER_VERIFIABLE],
