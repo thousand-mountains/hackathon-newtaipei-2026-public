@@ -32,7 +32,7 @@ from backend.gate.lamps import (
     detect_conclusion_like,
     lamp_for_states,
     lamp_stats,
-    tier_for_lamp,
+    tier_for_sentence,
     why_for,
 )
 from backend.orchestrator.state import CaseState, NodeCtx, NodeResult
@@ -99,7 +99,11 @@ def run(state: CaseState, ctx: NodeCtx) -> NodeResult:
 
             s["l"] = lamp
             s["why"] = why_for(lamp, origin, states, unresolved=bool(unresolved))
-            s["tier"] = tier_for_lamp(lamp, origin) if origin != "human_required" else tier_of("human_required")
+            s["tier"] = (
+                tier_of("human_required")
+                if origin == "human_required"
+                else tier_for_sentence(lamp, origin, states, has_citations=bool(cites))
+            )
             s["citations"] = [c.as_dict() for c in cites]
             s["src"] = basis or (state.retrieval.get("retrieval_meta", {}) or {}).get("kb_snapshot_date")
 
@@ -124,8 +128,10 @@ def run(state: CaseState, ctx: NodeCtx) -> NodeResult:
                     }
                 )
 
-            # C 型事後覆核：封鎖時竟出現模型生成的結論句 → P0
-            if needs_human and s.get("slot") == "conclusion" and origin == "llm" and not s.get("placeholder"):
+            # ── C 型事後覆核 ────────────────────────────────────────
+            # 結構性規則：封鎖狀態下，**任何槽位**出現模型生成的主文型語句都算繞過封鎖。
+            # slot 是模型自己標的欄位，把它當成判準等於讓被管制的一方決定自己受不受管制。
+            if needs_human and origin == "llm" and s.get("slot") == "conclusion" and not s.get("placeholder"):
                 blockers.append(
                     {
                         "sentence_id": s["id"],
@@ -134,11 +140,12 @@ def run(state: CaseState, ctx: NodeCtx) -> NodeResult:
                         "severity": "P0",
                     }
                 )
-            # 同上，但**不限 slot**：把主文寫進理由段是繞過結論封鎖最自然的路徑。
-            # 只查模型產的句子——卷證直錄與引擎算式句不會是主文。
-            if needs_human and origin == "llm" and s.get("slot") != "conclusion":
-                phrases = detect_conclusion_like(text)
-                if phrases:
+            # 主文語句偵測：**不限 slot、不限 origin**（引擎算式句與佔位句除外）。
+            # 為什麼連 record（卷證直錄）也查：模型若把主文包裝成「引述原處分」就照樣穿過。
+            # 誤攔的代價是多一次人工確認，漏放的代價是系統替一份沒人看過的法律結論背書。
+            if needs_human and not s.get("placeholder") and origin not in ("engine", "rule", "static"):
+                rules = detect_conclusion_like(text)
+                if rules:
                     s["l"] = "r"
                     s["why"] = WHY_CONCLUSION_LEAK
                     s["tier"] = tier_of("human_required")
@@ -147,8 +154,8 @@ def run(state: CaseState, ctx: NodeCtx) -> NodeResult:
                             "sentence_id": s["id"],
                             "reason": "conclusion_like_text_outside_conclusion_slot",
                             "detail": (
-                                f"結論段已封鎖，但 slot={s.get('slot')} 的句子出現主文型語句"
-                                f"（命中：{'、'.join(phrases)}）。實質結論不得因為換個槽位就繞過封鎖。"
+                                f"結論段已封鎖，但 slot={s.get('slot')}／origin={origin} 的句子命中主文型結構"
+                                f"（{'；'.join(rules)}）。實質結論不得因為換個槽位或換個寫法就繞過封鎖。"
                             ),
                             "severity": "P0",
                         }
@@ -167,18 +174,40 @@ def run(state: CaseState, ctx: NodeCtx) -> NodeResult:
         handoff["signals"] = list(state.screen.get("human_conclusion_signals") or [])
         handoff["note"] = "系統偵測到結論涉及法律判斷，已停止生成結論段。以下問題供承辦人核對卷證後自行認定。"
 
-    # 覆寫 N4 檢索結果的 lamp（檢索只給候選，燈號歸守門）
+    # ── 覆寫 N4 檢索結果的 lamp（檢索只給候選，燈號歸守門）───────────
+    # 結構性規則：跨模組比對一律用**結構化的穩定鍵**（法規名｜條號），不用顯示字串。
+    # `resolved_id`（`L-建築法-73`）與 `laws[].id`（`L1`）是兩個命名空間、交集為空；
+    # 舊版靠 `raw == laws[].t` 的字串巧合對上，顯示格式一改就靜默失效還不報錯，
+    # 然後走 else 用 N4 自己的 `verified` 填燈號——那等於檢索替守門發燈。
+    # 對不到就**明講對不到**：黃燈 + 具名 tag + 進 blockers，絕不預設綠。
+    cite_by_key: dict[str, dict[str, Any]] = {}
+    for c in all_citations:
+        key = c.get("ref_key")
+        if key and key not in cite_by_key:
+            cite_by_key[key] = c
     for law in state.retrieval.get("laws", []):
-        matched = next(
-            (c for c in all_citations if c.get("resolved_id") == law["id"] or c.get("raw") == law["t"]),
-            None,
-        )
+        law_name, article = law.get("law"), law.get("article")
+        key = f"{law_name}|{article}" if law_name and article else None
+        matched = cite_by_key.get(key) if key else None
         if matched:
             law["lamp"] = matched["lamp"]
             law["tag"] = matched["mark"]
+            law["gate_ref_key"] = key
         else:
-            law["lamp"] = "g" if law.get("verified") else "y"
-            law["tag"] = "✓ 在庫" if law.get("verified") else "◇ 庫外，未驗證"
+            law["lamp"] = "y"
+            law["tag"] = "⚠ 未能對回守門結果"
+            law["gate_ref_key"] = key
+            blockers.append(
+                {
+                    "sentence_id": law["id"],
+                    "reason": "retrieval_law_not_matched_by_gate",
+                    "detail": (
+                        f"檢索結果 {law['id']}（{law.get('t')}）的穩定鍵 {key!r} 對不到任何守門過的引用，"
+                        f"燈號無法由守門認定。不預設燈號，請確認檢索與草稿引用是否脫節。"
+                    ),
+                    "severity": "P1",
+                }
+            )
 
     stats = lamp_stats(doc)
     counts = count_states(all_citations)

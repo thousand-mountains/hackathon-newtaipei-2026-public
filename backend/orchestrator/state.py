@@ -128,15 +128,38 @@ class CaseState:
             raise AssertionError("不變式違反：算出期滿日卻沒有攤開算式 steps")
 
     def assert_verified_invariant(self) -> None:
-        """requires_human_conclusion=true 時，doc[] 不得存在 origin=llm 的結論句。"""
+        """requires_human_conclusion=true 時，doc[] 不得存在**未被攔下的**模型主文句。
+
+        兩條規則，涵蓋所有槽位（舊版只看 `slot == "conclusion"`，等於讓被管制的一方
+        用自己標的欄位決定要不要受管制）：
+
+        1. **結構違反**：`conclusion` 槽位根本不該存在（N5 會把它從 slots 刪掉）。
+           一旦出現模型生成的結論句，代表封鎖的結構本身破了 → 直接炸，不是記一筆。
+        2. **洩漏未攔**：任何槽位出現模型主文型語句，而它**沒有**被標紅並列入 blockers
+           → 炸。已被 N6 標紅並進 blockers 的，是守門正常運作（流程要繼續跑完，
+           讓使用者看得到被攔下的是哪一句），不炸。
+        """
         if not self.screen.get("requires_human_conclusion"):
             return
+        from backend.gate.lamps import detect_conclusion_like  # 延後 import，避免循環相依
+
+        blocked_ids = {b.get("sentence_id") for b in self.gate.get("blockers", [])}
         for block in self.gate.get("doc", []):
             for s in block.get("ss", []):
-                if s.get("slot") == "conclusion" and s.get("origin") == "llm" and not s.get("placeholder"):
+                origin = s.get("origin")
+                if s.get("placeholder") or origin in ("engine", "rule", "static"):
+                    continue
+                if s.get("slot") == "conclusion" and origin == "llm":
                     raise AssertionError(
                         f"P0 不變式違反：requires_human_conclusion=true 但句子 {s.get('id')} "
                         f"是模型生成的結論段（US-8 AC-8.3）"
+                    )
+                rules = detect_conclusion_like(s.get("t") or "")
+                if rules and not (s.get("l") == "r" and s.get("id") in blocked_ids):
+                    raise AssertionError(
+                        f"P0 不變式違反：requires_human_conclusion=true 但句子 {s.get('id')}"
+                        f"（slot={s.get('slot')}）命中主文型結構（{'；'.join(rules)}）"
+                        f"卻沒有被標紅並列入 blockers——主文換個槽位就繞過封鎖"
                     )
 
     def as_dict(self) -> dict[str, Any]:

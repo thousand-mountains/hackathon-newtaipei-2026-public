@@ -12,6 +12,7 @@
 """
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from backend.config.origin_registry import TIER_HUMAN, TIER_SOURCED, TIER_VERIFIABLE
@@ -20,6 +21,7 @@ from backend.gate.citations import (
     STATE_MISSING,
     STATE_OK,
     STATE_OUT_OF_SCOPE,
+    STATE_UNPARSEABLE,
     Citation,
 )
 
@@ -29,7 +31,13 @@ WHY_ALL_OK = "所引法條／判解全部可對回資料集，字號已驗。"
 WHY_AMENDED = "引用之條次已異動，新舊條號並陳，請確認適用版本。"
 WHY_OUT_OF_SCOPE = "引用超出資料集涵蓋範圍，本系統無法驗證，請人工查證後再採用。"
 WHY_MISSING = "引用在資料集內查無此號，可能為誤植，已阻擋送出。"
-WHY_NO_CITE = "本句未附引用，屬涵攝或評價語句，請承辦人確認其法律依據。"
+WHY_NO_CITE = (
+    "本句未附任何可查證的引用，系統無從指出它的出處，因此不列入「有出處」層，"
+    "改列「請人工判斷」，請承辦人確認其法律依據。"
+)
+WHY_UNPARSEABLE = (
+    "本句的引用號碼寫法無法無歧義解析，系統不猜也不宣稱它存在或不存在，請人工確認號碼。"
+)
 WHY_UNRESOLVED_REF = "本句標註的引用編號在檢索結果中解析不到，已阻擋送出。"
 WHY_PLACEHOLDER = "結論涉及法律判斷，系統不生成，僅提供交接問題清單。"
 WHY_CONCLUSION_LEAK = "結論段已封鎖，但本句出現主文型語句。實質結論不得因為換個槽位就繞過封鎖，已阻擋送出。"
@@ -54,6 +62,35 @@ def tier_for_lamp(lamp: str, origin: str) -> str:
     return TIER_SOURCED
 
 
+# 哪些 origin 的「出處」是結構性的、不靠引用字號：
+#   engine/rule/static = 算式本身；record = 卷證原文直錄。
+# 其餘（llm）的出處**只能**來自引用——沒有引用就沒有出處。
+_STRUCTURAL_SOURCE_ORIGINS = ("engine", "rule", "static", "record")
+
+
+def tier_for_sentence(lamp: str, origin: str, states: list[str], has_citations: bool) -> str:
+    """句子該進三層誠實的哪一層（CONSTITUTION §1）。
+
+    **結構性規則**：「有出處」層的定義是「這句話指得出它的出處」。
+    模型寫的句子若一個引用都沒抽到，它指不出任何出處，就不能算「有出處」——
+    舊版把這種句子丟進「有出處」層，等於系統替一句沒有依據的話背書。
+    依 CONSTITUTION §1，無法歸入可驗算或有出處的，就是「請人工判斷」。
+
+    同理，引用存在但號碼無法解析（`unparseable`）也不算有出處：系統讀不懂那個出處。
+    """
+    if lamp == "r":
+        return TIER_HUMAN
+    if origin in ("engine", "rule", "static"):
+        return TIER_VERIFIABLE
+    if STATE_UNPARSEABLE in states:
+        return TIER_HUMAN
+    if origin in _STRUCTURAL_SOURCE_ORIGINS:
+        return TIER_SOURCED
+    if not has_citations:
+        return TIER_HUMAN
+    return TIER_SOURCED
+
+
 def why_for(lamp: str, origin: str, states: list[str], unresolved: bool = False) -> str:
     if origin == "human_required":
         return WHY_PLACEHOLDER
@@ -67,6 +104,8 @@ def why_for(lamp: str, origin: str, states: list[str], unresolved: bool = False)
         return WHY_NO_CITE
     if STATE_MISSING in states:
         return WHY_MISSING
+    if STATE_UNPARSEABLE in states:
+        return WHY_UNPARSEABLE
     if STATE_AMENDED in states:
         return WHY_AMENDED
     if STATE_OUT_OF_SCOPE in states:
@@ -114,28 +153,105 @@ def requires_human_conclusion(
     return (substantive or bool(high)), signals
 
 
-# 決定書主文型語句。C 型封鎖只把 `conclusion` 槽位刪掉，擋不住「把主文寫進理由段」——
-# 模型（接上 Bedrock 後）完全可能在理由段末尾寫「綜上，原處分應予撤銷」，
-# 那實質上就是結論，卻因為 slot 標成 reasoning 而整個穿過封鎖。
-# 這裡做的是**全槽位**的主文語句偵測，不限 slot（純字串比對，刻意保守：寧可多攔）。
-CONCLUSION_PHRASES = (
-    "原處分撤銷",
-    "原處分應予撤銷",
-    "應予撤銷",
-    "撤銷原處分",
-    "訴願駁回",
-    "訴願不受理",
-    "應不受理",
-    "駁回訴願",
-    "另為適法之處分",
-    "另為適法處分",
-    "由原處分機關另為",
+# ════════════════════════════════════════════════════════════════════
+# 主文型語句偵測（P0-2 的結構性修法）
+# ════════════════════════════════════════════════════════════════════
+#
+# C 型封鎖只把 `conclusion` 槽位刪掉，擋不住「把主文寫進理由段」——模型（接上 Bedrock 後）
+# 完全可能在理由段末尾寫「綜上，本件訴願為無理由，應予駁回」，那實質上就是結論，
+# 卻因為 slot 標成 reasoning 而整個穿過封鎖。
+#
+# **結構性規則**：訴願決定書的主文是一種**語法**，不是一組固定片語——
+# 它一定是「（訴願標的｜處分標的）＋（處置動詞）」的組合：
+#
+#     標的：訴願／復查／申請／異議 ｜ 原處分／原決定／復查決定／系爭處分
+#     處置：駁回／不受理／撤銷／廢止／變更／維持／另為適法之處分
+#     處置助詞：應予／爰予／茲予／均予／准予／著予／洵予／不予（＋處置動詞）
+#
+# 所以偵測的是「標的×動詞的共現」與「處置助詞＋動詞」，不是列舉寫法。
+# 舊版 11 條硬編碼片語漏掉最標準的「本件訴願為無理由，應予駁回」，就是因為那句話
+# 沒有任何一個片語是連續出現的——「訴願」和「駁回」之間隔著八個字。
+#
+# 兩個刻意的設計選擇：
+# 1. **先正規化再比對**：去掉所有空白（含全形空格）、統一標點。決定書主文常見
+#    「原 處 分 撤 銷 。」這種逐字空格排版，不正規化就等於一個空格就能繞過封鎖。
+# 2. **fail-safe：拿不準就攔**。共現窗口開得寬，寧可把「訴願人主張原處分應予撤銷云云」
+#    這種轉述句也攔下來交人工，也不放行一句真的主文。誤攔的代價是多一次人工確認，
+#    漏放的代價是系統替一份沒人看過的法律結論背書。
+# 空白（含全形空格、換行、tab）一律刪除；標點統一成半形代表字元，句號保留為邊界。
+_WS_RE = re.compile(r"[\s　 ]+")
+_PUNCT_MAP = {
+    "。": "。", "．": "。", ".": "。", "｡": "。",
+    "，": "，", ",": "，", "、": "，", "；": "，", ";": "，", "：": "，", ":": "，",
+}
+_DROP_CHARS = "「」『』（）()〔〕【】《》〈〉“”\"'…—－-─·　"
+
+
+def normalize_for_structure(text: str) -> str:
+    """主文偵測前的正規化：刪空白、丟裝飾標點、統一句讀。
+
+    這一步本身就是守門的一部分：排版空白、全形標點、括號都不該成為繞過封鎖的手段。
+    """
+    if not text:
+        return ""
+    t = _WS_RE.sub("", text)
+    t = "".join("" if c in _DROP_CHARS else _PUNCT_MAP.get(c, c) for c in t)
+    return t
+
+
+_TARGET_APPEAL = r"(?:本件)?(?:訴願|再訴願|復查|申請|異議|陳情)(?:人之訴願)?"
+_TARGET_ORDER = r"(?:原處分|原核定|原決定|復查決定|系爭處分|原行政處分|原裁處)"
+_V_DISMISS = r"(?:駁回|不受理|不予受理|不受理之|不予處理)"
+_V_QUASH = r"(?:撤銷|廢止|變更)"
+_V_UPHOLD = r"(?:維持)"
+_V_ANY = rf"(?:{_V_DISMISS}|{_V_QUASH}|{_V_UPHOLD})"
+_PARTICLE = r"(?:應予|爰予|茲予|均予|准予|著予|洵予|不予|應|爰|均|自應|自不應)"
+_LEAD = r"(?:綜上|揆諸|從而|準此|是以|據此|核此|基此|洵屬|爰)"
+
+# 每條規則 = (規則名, pattern)。規則名會寫進 blocker 說明，
+# 讓人一眼看出是「哪一種結構」被判為主文，而不是「命中了哪個字串」。
+CONCLUSION_RULES: tuple[tuple[str, re.Pattern[str]], ...] = (
+    (
+        "訴願標的＋處置動詞（駁回／不受理）",
+        re.compile(rf"{_TARGET_APPEAL}[^。]{{0,16}}?{_V_DISMISS}"),
+    ),
+    (
+        "處置動詞＋訴願標的（駁回訴願）",
+        re.compile(rf"{_V_DISMISS}[^。]{{0,8}}?{_TARGET_APPEAL}"),
+    ),
+    (
+        "處分標的＋處置動詞（撤銷／維持／變更）",
+        re.compile(rf"{_TARGET_ORDER}[^。]{{0,16}}?{_V_QUASH}|{_TARGET_ORDER}[^。]{{0,16}}?{_V_UPHOLD}"),
+    ),
+    (
+        "處置動詞＋處分標的（撤銷原處分）",
+        re.compile(rf"{_V_QUASH}[^。]{{0,8}}?{_TARGET_ORDER}"),
+    ),
+    (
+        "處置助詞＋處置動詞（應予駁回／爰予撤銷）",
+        re.compile(rf"{_PARTICLE}{_V_ANY}"),
+    ),
+    (
+        "發回另為處分（另為適法之處分）",
+        re.compile(r"另為[^。]{0,6}?處分"),
+    ),
+    (
+        "結論引導詞＋處置動詞（綜上…駁回）",
+        re.compile(rf"{_LEAD}[^。]{{0,24}}?{_V_ANY}"),
+    ),
 )
 
 
 def detect_conclusion_like(text: str) -> list[str]:
-    """回傳句中命中的主文型語句（空 list = 不像主文）。"""
-    return [p for p in CONCLUSION_PHRASES if p in text]
+    """回傳命中的**結構規則名稱**（空 list = 不像主文）。
+
+    回的是規則名不是片語，因為這裡判的是語法結構；blocker 訊息要能說出
+    「因為出現了 <標的>×<動詞> 這個主文結構」，而不是「因為出現了某個字串」。
+    """
+    t = normalize_for_structure(text)
+    if not t:
+        return []
+    return [name for name, pattern in CONCLUSION_RULES if pattern.search(t)]
 
 
 def lamp_stats(doc: list[dict[str, Any]]) -> dict[str, int]:
