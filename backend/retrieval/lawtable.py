@@ -205,15 +205,23 @@ def _parse_unit_style(s: str) -> int | None:
             i += 1
             continue
         if c == _CN_ZERO:
-            # 「一百零五」的零是**佔位符**：它後面必須還有東西，前面也必須有東西
-            if i == 0 or i == n - 1:
+            # 「一百零五」的零是**跳級佔位符**：只有在剛用完百／千之後才有意義
+            #（十位之後沒有可跳的級，「三百十〇三」是壞字串，不是 313）。
+            # 前後都必須還有東西。
+            if i == 0 or i == n - 1 or last_unit is None or last_unit < 100:
                 return None
             i += 1
             continue
         if c in _CN_UNITS:
-            # 單位字沒有前導數字：只有句首的「十」（十四、十）是標準寫法
-            if i != 0 or _CN_UNITS[c] != 10:
-                return None
+            unit = _CN_UNITS[c]
+            if unit != 10:
+                return None  # 百／千沒有前導數字一律不合法（「百五」無法無歧義解讀）
+            if i == 0:
+                if last_unit is not None:
+                    return None
+            elif last_unit is None or last_unit <= 10:
+                return None  # 「十十」「三四十」：十位已用過或前面根本沒有更高的位
+            # 句首的「十」（十四）與百／千之後省略前導一的「三百十三」都是標準寫法
             total += 10
             last_unit = 10
             i += 1

@@ -14,7 +14,13 @@ ROOT = pathlib.Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from backend.tests import harness, test_deadline, test_e2e, test_nodes  # noqa: E402
+from backend.tests import (  # noqa: E402
+    harness,
+    test_deadline,
+    test_e2e,
+    test_gate_hardening,
+    test_nodes,
+)
 
 BACKEND = ROOT / "backend"
 
@@ -150,6 +156,7 @@ def main() -> int:
         ("期間引擎搬遷與測試向量", [test_deadline]),
         ("六節點單元測試", [test_nodes]),
         ("端到端整合測試", [test_e2e]),
+        ("守門加固對抗測試", [test_gate_hardening]),
     ]
     total_pass = total = 0
     all_failures: list[str] = []
