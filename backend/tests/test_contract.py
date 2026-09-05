@@ -47,7 +47,8 @@ TOP_LEVEL_SCHEMA: dict[str, type | tuple[type, ...]] = {
     "doc": list,            # §6.2 doc[].{ty,text,ind} + ss[]
     "citations": list,      # §6.2 新增欄位 4
     "blockers": list,       # §6.2 新增欄位 5
-    "handoff": dict,        # §6.2 新增欄位 3
+    "handoff": dict,        # §6.2 新增欄位 3（+ criterion／observations，如實描述封鎖原因）
+    "retrieval_divergence": dict,  # 獨立檢索 vs 草稿引用的差集
     "submit_allowed": bool,
     "run_meta": dict,       # §6.2 新增欄位 6
     "token_note": str,
@@ -375,6 +376,57 @@ def test_handoff_gives_at_least_three_questions_when_conclusion_is_blocked() -> 
             assert_true(len(ho["signals"]) >= 1, f"{cid}：結論封鎖但沒有訊號清單")
 
     _both(check)
+
+
+def test_block_criterion_matches_the_actual_gate_decision() -> None:
+    """`handoff.criterion` 是把守門的判斷重講一遍人話——重講的結論必須跟守門一致。
+
+    這是**防漂移**的鎖：`criterion` 的推導寫在 `orchestrator/narrative.py`，
+    真正的封鎖邏輯寫在 `gate/lamps.py`。兩份程式分屬不同模組（也常常是不同人在改），
+    一旦 lamps 改了判準而描述沒跟上，UI 就會理直氣壯地講一個錯的理由。
+    """
+
+    def check(cid: str, p: dict) -> None:
+        criterion = p["handoff"]["criterion"]
+        assert_eq(
+            criterion["blocked"],
+            bool(p["screen"]["requires_human_conclusion"]),
+            f"{cid}：criterion.blocked 與 screen.requires_human_conclusion 不一致——"
+            f"描述層與守門層漂移了",
+        )
+        assert_true(bool(criterion["text"]), f"{cid}：criterion 沒有說明文字")
+        assert_in(criterion["origin"], ORIGIN_TO_TIER, f"{cid}：criterion.origin 不在值域")
+
+    _both(check)
+
+
+def test_fact_issue_is_not_presented_as_the_blocking_reason_when_it_is_not() -> None:
+    """對抗案例的封鎖原因是「程序合法且須進入實體審查」，**不是**事實認定爭點。
+
+    覆核實測：把 blocked 案例的事實爭點全部拿掉，結論段**仍然封鎖**。
+    所以 UI 不得把事實爭點講成封鎖原因。這條同時釘住兩件事：
+    1. 本案的 `reason_id` 是程序判準，不是爭點；
+    2. 拿掉爭點後 `blocked` 仍為 True（證明爭點在本案確實不是操作條件）。
+    """
+    from backend.config.settings import SUBSTANTIVE_TYPES
+    from backend.orchestrator.narrative import conclusion_block_criterion
+
+    p = payload("synthetic-blocked-01")
+    criterion = p["handoff"]["criterion"]
+    assert_eq(
+        criterion["reason_id"],
+        "procedurally_valid_needs_substantive_review",
+        "對抗案例的封鎖原因被講成別的東西了",
+    )
+    assert_eq(criterion["fact_issue_role"], "observation", "事實爭點被標成操作判準，但它不是")
+    assert_in("提醒", p["handoff"]["observations_label"], "爭點清單的標題沒有標明它只是提醒")
+
+    # 反事實：把爭點全拿掉，仍然封鎖 → 證明爭點不是本案的操作條件
+    screen_without_issues = dict(p["screen"])
+    screen_without_issues["fact_issues"] = []
+    still = conclusion_block_criterion(screen_without_issues, p["classification"], SUBSTANTIVE_TYPES)
+    assert_eq(still["blocked"], True, "拿掉事實爭點後就不封鎖了——那本測試的前提要重寫")
+    assert_eq(still["reason_id"], "procedurally_valid_needs_substantive_review", "反事實下的判準應不變")
 
 
 def test_blocked_conclusion_is_a_placeholder_not_a_generated_sentence() -> None:

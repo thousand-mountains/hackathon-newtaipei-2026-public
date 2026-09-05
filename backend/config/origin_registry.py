@@ -66,6 +66,7 @@ ORIGIN = {
     "retrieval.*": "retrieval",
     "doc[]": "static",  # 骨架是模板；句子的 origin 逐句標在 doc[].ss[].origin
     "citations[]": "rule",
+    "retrieval_divergence.*": "rule",  # 兩份清單的差集，純集合運算
     "classification.class.case_type": "llm_derived",
     "classification.class.method": "rule",
     "classification.class.law_hits": "rule",
@@ -105,7 +106,7 @@ ORIGIN = {
     "doc[].ss[].why": "rule",
     "doc[].ss[].refs[]": "rule",
     "citations[].state": "rule",
-    "handoff.*": "rule",
+    "handoff.*": "rule",  # 含 criterion／observations（編排層如實描述層，見 narrative.conclusion_block_criterion）
     "blockers[]": "rule",
     "run_meta.*": "rule",
 }

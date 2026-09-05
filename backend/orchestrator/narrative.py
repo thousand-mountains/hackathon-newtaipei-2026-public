@@ -16,6 +16,19 @@ from backend.config.settings import AGENTS_NARRATIVE
 
 PLACEHOLDER_CONCLUSION_TEXT = "（結論段由承辦人判斷後填寫）"
 
+# fixture 草稿裡手寫的 `cite_ids`（"L1"、"L3"…）**預設不帶進 doc[]**。
+#
+# 為什麼：那些 id 是寫 fixture 的人在 N4 還沒跑之前手填的，指向的是一份當時並不存在的
+# 檢索結果。2026-09-05 N4 改成獨立檢索之後，它們只會有兩種下場——
+# (a) 序號剛好對上 N4 的 L1/L2/L3，於是「解析成功」但指到完全不相干的法條；
+# (b) 序號對不上，N6 判 unresolved → 紅燈 → 假的 blocker。
+# 兩種都是假訊號。**真正的引用查核本來就不靠 id**：N6 直接從句子本文與 basis 抽引用、
+# 對快照查四態，那條路徑不受影響（假法條照樣被攔）。
+#
+# 接上真實 N5 之後要打開這個開關——那時 N5 是看著 N4 的候選清單寫的，cite_ids 才有意義
+# （architecture §6.2：「N5 的 cite_ids 經 N6 解析比對」）。
+CARRY_DRAFT_CITE_IDS_DEFAULT = False
+
 
 def _sentence(
     sid: str,
@@ -60,10 +73,18 @@ def build_doc_skeleton(
     deadline_result: dict[str, Any],
     draft_slots: dict[str, list[dict[str, Any]]],
     requires_human_conclusion: bool,
+    carry_draft_cite_ids: bool = CARRY_DRAFT_CITE_IDS_DEFAULT,
 ) -> list[dict[str, Any]]:
-    """組出 doc[]（四型區塊）。句子 id 由編排層統一編號 s1, s2, …"""
+    """組出 doc[]（四型區塊）。句子 id 由編排層統一編號 s1, s2, …
+
+    `carry_draft_cite_ids=False`（預設）時，草稿槽位帶的 `cite_ids` 不會進 `doc[]`——
+    理由見模組頂端 `CARRY_DRAFT_CITE_IDS_DEFAULT` 的說明。引用查核不受影響（N6 從本文抽）。
+    """
     doc: list[dict[str, Any]] = []
     counter = {"n": 0}
+
+    def cids(s: dict[str, Any]) -> list[str] | None:
+        return s.get("cite_ids") if carry_draft_cite_ids else []
 
     def nid() -> str:
         counter["n"] += 1
@@ -125,7 +146,7 @@ def build_doc_skeleton(
                 s.get("t", ""),
                 origin="llm",
                 slot="reasoning",
-                cite_ids=s.get("cite_ids"),
+                cite_ids=cids(s),
                 basis=s.get("basis"),
                 adversarial=bool(s.get("adversarial")),
                 adversarial_note=s.get("adversarial_note"),
@@ -171,7 +192,7 @@ def build_doc_skeleton(
                     s.get("t", ""),
                     origin="llm",
                     slot="conclusion",
-                    cite_ids=s.get("cite_ids"),
+                    cite_ids=cids(s),
                     basis=s.get("basis"),
                     adversarial=bool(s.get("adversarial")),
                     adversarial_note=s.get("adversarial_note"),
@@ -179,6 +200,64 @@ def build_doc_skeleton(
             )
     doc.append(conclusion_block)
     return doc
+
+
+def conclusion_block_criterion(
+    screen: dict[str, Any],
+    classification: dict[str, Any],
+    substantive_types: tuple[str, ...],
+) -> dict[str, Any]:
+    """如實描述「這一案的結論段為什麼被封鎖（或沒有）」。
+
+    **這個函式不做任何判斷，只是把 `gate/lamps.requires_human_conclusion()` 已經做完的
+    判斷重新講一遍人話。** 之所以要重講，是因為原本 UI 只拿得到 lamps 產出的訊號字串陣列，
+    而那個陣列把「操作判準」跟「附帶偵測到的事實爭點」並排列出，讀起來像兩個都是原因。
+    覆核實測證實不是：對抗案例把事實爭點全拿掉仍然封鎖。
+
+    判斷順序刻意對齊 `lamps.requires_human_conclusion()` 的 early-return 順序
+    （fail-safe → substantive → 高風險爭點），這樣「哪一條才是操作判準」才會講對。
+    漂移由契約測試釘住：`blocked` 必須等於 `screen.requires_human_conclusion`。
+    """
+    from backend.config import settings
+
+    art77 = screen.get("art77") or {}
+    fact_issues = screen.get("fact_issues") or []
+    case_type = ((classification or {}).get("class") or {}).get("case_type") or ""
+
+    substantive = bool(art77.get("requires_substantive_review")) and case_type in substantive_types
+    high = [i for i in fact_issues if i.get("severity") == "high"]
+    unknown_type = case_type not in substantive_types
+    procedurally_resolved = bool(art77.get("clause"))
+    fail_safe = unknown_type and not procedurally_resolved
+
+    if fail_safe:
+        reason_id = "unknown_case_type_fail_safe"
+        text = settings.BLOCK_CRITERION_FAIL_SAFE.format(case_type=case_type or "（空白）")
+    elif substantive:
+        reason_id = "procedurally_valid_needs_substantive_review"
+        text = settings.BLOCK_CRITERION_SUBSTANTIVE.format(case_type=case_type)
+    elif high:
+        reason_id = "high_severity_fact_issue"
+        text = settings.BLOCK_CRITERION_FACT_ISSUE.format(issue_ids="、".join(i["id"] for i in high))
+    else:
+        reason_id = "not_blocked"
+        text = settings.BLOCK_CRITERION_NONE
+
+    blocked = bool(fail_safe or substantive or high)
+    # 高風險爭點只有在它「就是」操作判準時才算原因；其餘情況一律標成提醒
+    fact_issue_is_operative = reason_id == "high_severity_fact_issue"
+    return {
+        "blocked": blocked,
+        "reason_id": reason_id,
+        "text": text,
+        "fact_issue_role": "operative" if fact_issue_is_operative else "observation",
+        "fact_issue_label": (
+            settings.FACT_ISSUE_OPERATIVE_LABEL
+            if fact_issue_is_operative
+            else settings.FACT_ISSUE_OBSERVATION_LABEL
+        ),
+        "origin": "rule",
+    }
 
 
 def merge_agent_narrative(

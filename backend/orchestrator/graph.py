@@ -26,13 +26,18 @@ from backend.config.settings import (
     ISSUE_TAG_BY_SEVERITY,
     NODE_TO_AGENTS,
     PROVENANCE,
+    SUBSTANTIVE_TYPES,
     SYNTHETIC_DIR,
     TOKEN_NOTE,
     load_snapshot,
     run_mode,
 )
 from backend.nodes import n1_extract, n2_classify, n3_procedure, n4_retrieval, n5_draft, n6_gate
-from backend.orchestrator.narrative import merge_agent_narrative, summary_line
+from backend.orchestrator.narrative import (
+    conclusion_block_criterion,
+    merge_agent_narrative,
+    summary_line,
+)
 from backend.orchestrator.state import CaseState, NodeCtx, utc_now_iso
 
 NODE_ORDER = ("n1", "n2", "n3", "n4", "n5", "n6")
@@ -93,12 +98,13 @@ def run_case(case_id: str, mode: str | None = None, data_dir: pathlib.Path | Non
     degraded: list[dict[str, Any]] = []
     agents: dict[str, Any] = {}
 
-    # 從 fixture 草稿蒐集即將引用的法條字串，餵給 N4 的法規查表通道
-    cited_laws = _collect_cited_law_strings(fixture)
-
+    # N4 的查詢句由 N1／N2／N3 的結果決定（`n4_retrieval.build_query()`）。
+    # 這裡**刻意不再蒐集草稿引用**：舊版把 fixture 草稿即將引用的法條餵給 N4，
+    # 那讓「引用一定查得到」變成必然——查什麼是照著答案要引用什麼倒著填的，
+    # 檢索佐證的是自己。2026-09-05 Ci 拍板改獨立檢索。
     state.transition("EXTRACTING")
     for node in NODE_ORDER:
-        result = _dispatch(node, state, ctx, fixture, digest, cited_laws)
+        result = _dispatch(node, state, ctx, fixture, digest)
         node_timings[node] = result.elapsed_ms
         merge_agent_narrative(agents, node, result.narrative, result.degraded, result.degrade_reason)
         if result.degraded:
@@ -130,7 +136,7 @@ def run_case(case_id: str, mode: str | None = None, data_dir: pathlib.Path | Non
     return state
 
 
-def _dispatch(node, state, ctx, fixture, digest, cited_laws):
+def _dispatch(node, state, ctx, fixture, digest):
     if node == "n1":
         return n1_extract.run(state, ctx, case_fixture=fixture)
     if node == "n2":
@@ -138,25 +144,13 @@ def _dispatch(node, state, ctx, fixture, digest, cited_laws):
     if node == "n3":
         return n3_procedure.run(state, ctx, digest=digest)
     if node == "n4":
-        return n4_retrieval.run(state, ctx, cited_laws=cited_laws)
+        # cited_laws 刻意不傳：N4 自己從 state（N1/N2/N3 的結果）組查詢句。
+        return n4_retrieval.run(state, ctx)
     if node == "n5":
         return n5_draft.run(state, ctx, case_fixture=fixture)
     if node == "n6":
         return n6_gate.run(state, ctx)
     raise ValueError(f"未知節點 {node}")
-
-
-def _collect_cited_law_strings(fixture: dict[str, Any]) -> list[str]:
-    out: list[str] = []
-    for key, slot_sentences in (fixture.get("draft_fixture") or {}).items():
-        if key.startswith("_") or not isinstance(slot_sentences, list):
-            continue  # `_note` 之類的說明欄位不是槽位
-        for s in slot_sentences:
-            if s.get("basis"):
-                out.append(str(s["basis"]))
-            if s.get("t"):
-                out.append(str(s["t"]))
-    return out
 
 
 # ── §6.2 CASE payload 的頂層視圖欄位 ──────────────────────────────
@@ -193,6 +187,62 @@ def _issues_view(state: CaseState) -> list[dict[str, Any]]:
             }
         )
     return out
+
+
+def _handoff_view(state: CaseState) -> dict[str, Any]:
+    """交接卡 + **如實描述的封鎖判準**（2026-09-05 Ci 拍板）。
+
+    N6 產出的 `handoff.signals` 是一個字串陣列，把「本案的操作判準」與「另外偵測到的
+    事實認定爭點」並排列出。並排列出＝讀起來像兩個都是原因，但覆核實測證明不是：
+    對抗案例把事實爭點全部拿掉，**仍然封鎖**。
+
+    這裡**不動 N6 的輸出**（`signals` 原樣保留，守門節點是別人的範圍），
+    只additively 加三個欄位讓 UI 有辦法如實呈現：
+    - `criterion`：本案真正的操作判準，一句話講完（來自 narrative.conclusion_block_criterion）
+    - `observations`：事實爭點訊號，明確標成提醒而非原因
+    - `observations_label`：那份清單該用什麼標題（提醒／原因，依它是不是操作判準而定）
+    """
+    handoff = dict(state.gate.get("handoff") or {})
+    criterion = conclusion_block_criterion(state.screen or {}, state.classification or {}, SUBSTANTIVE_TYPES)
+
+    # 把 signals 拆成「爭點類」與「其餘」——用 fact_issue 的 id 比對，不用字串樣式猜
+    issue_ids = [i.get("id") for i in (state.screen.get("fact_issues") or []) if i.get("id")]
+    signals = list(handoff.get("signals") or [])
+    observations = [s for s in signals if any(iid and iid in s for iid in issue_ids)]
+
+    handoff["criterion"] = criterion
+    handoff["observations"] = observations
+    handoff["observations_label"] = criterion["fact_issue_label"]
+    return handoff
+
+
+def _retrieval_divergence(laws: list[dict[str, Any]], citations: list[dict[str, Any]]) -> dict[str, Any]:
+    """獨立檢索找到的 vs 草稿實際引用的，兩邊的差集。
+
+    N4 改成獨立檢索（2026-09-05 Ci 拍板）之後，這兩份清單本來就不會一樣。
+    **落差本身是資訊，不是故障**——但如果只是讓左欄少幾張卡片，看的人會以為
+    「系統檢索過了、沒意見」。所以把兩邊的差集明講出來：
+    - `cited_not_retrieved`：草稿引用了、但獨立檢索沒找到。可能是條號寫錯（假法條就落在這裡），
+      也可能只是案情訊號不足以推出那個條號（Phase 0 沒有 PDF 視覺抽取，實體法條號抽不到）。
+      **這個清單不代表引用是錯的**——引用對錯由守門的四態負責，不由這裡。
+    - `retrieved_not_cited`：檢索找到、草稿沒引用。可能是漏引，也可能只是不相干。
+    """
+    law_titles = [l["t"] for l in laws if l.get("t")]
+    cited = []
+    for c in citations:
+        raw = c.get("raw")
+        if raw and raw not in cited:
+            cited.append(raw)
+    return {
+        "cited_not_retrieved": [c for c in cited if c not in law_titles],
+        "retrieved_not_cited": [t for t in law_titles if t not in cited],
+        "note": (
+            "N4 的檢索是獨立進行的（查詢句只由案情組成），所以它找到的法條與草稿實際引用的"
+            "不會一一對應。落差不等於錯誤：引用對錯看 citations[] 的四態，這裡只說明兩份清單"
+            "為什麼長得不一樣。實體法條號目前無法由案情自動判定（缺 PDF 視覺抽取），"
+            "所以 cited_not_retrieved 會偏長，這是已知限制不是 bug。"
+        ),
+    }
 
 
 def _attach_law_refs(doc: list[dict[str, Any]], laws: list[dict[str, Any]]) -> None:
@@ -275,11 +325,13 @@ def build_payload(state: CaseState) -> dict[str, Any]:
         "issues": _issues_view(state),
         "doc": doc,
         "citations": state.gate.get("citations", []),
+        # 獨立檢索找到的 vs 草稿實際引用的，兩邊的差集（見 _retrieval_divergence 的說明）
+        "retrieval_divergence": _retrieval_divergence(laws, state.gate.get("citations", [])),
         "citation_counts": state.gate.get("citation_counts", {}),
         "lamp_stats": state.gate.get("lamp_stats", {}),
         "blockers": state.gate.get("blockers", []),
         "issue_refs": state.gate.get("issue_refs", []),
-        "handoff": state.gate.get("handoff", {}),
+        "handoff": _handoff_view(state),
         "submit_allowed": state.gate.get("submit_allowed", False),
         "agents": list(state.agents_narrative.values()),
         "token_note": TOKEN_NOTE,

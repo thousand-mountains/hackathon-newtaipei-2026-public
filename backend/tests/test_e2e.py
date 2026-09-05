@@ -127,14 +127,97 @@ def test_ordinary_deadline_matches_known_vector():
     assert_eq(p["screen"]["requires_human_conclusion"], False, "程序逾期案不封鎖結論段")
 
 
-def test_ordinary_cite_ids_all_resolve():
-    p = _payload(ORDINARY)
-    law_ids = {l["id"] for l in p["retrieval"]["laws"]}
-    for block in p["doc"]:
-        for s in block["ss"]:
-            for cid in s.get("cite_ids", []):
-                if cid.startswith("L"):
-                    assert_in(cid, law_ids, f"句子 {s['id']} 的 {cid} 解析不到檢索結果")
+# ── N4 獨立檢索：查詢句不得由草稿倒推（2026-09-05 Ci 拍板）─────────
+#
+# 這三條取代了舊的 `test_ordinary_cite_ids_all_resolve`。那條當初斷言的是
+# 「草稿標的 L* 都解析得到 N4 的檢索結果」，但**在舊架構下它是恆真的**——
+# N4 的查詢句就是拿草稿的引用去組的，草稿引用什麼就一定查得到什麼。
+# 它看起來在驗「引用可驗」，實際上只驗到「我們把答案抄進了題目」。
+# 改成獨立檢索之後那條更沒有鑑別力（cite_ids 已不帶入，迴圈根本不執行），所以刪掉，
+# 換成下面三條**會因為有人把倒推路徑接回去而變紅**的斷言。
+
+def test_retrieval_query_is_not_derived_from_the_draft():
+    """N4 查詢句只能由 N1／N2／N3 組成，不得含任何草稿內容。"""
+    for case_id in (ORDINARY, BLOCKED):
+        meta = _payload(case_id)["retrieval"]["retrieval_meta"]
+        sources = meta.get("query_sources")
+        assert_true(sources, f"{case_id}：retrieval_meta 沒有 query_sources，無法稽核查詢句來源")
+        for src in sources:
+            origin_node = str(src["from"]).split(".")[0]
+            assert_in(
+                origin_node,
+                ("n1", "n2", "n3"),
+                f"{case_id}：查詢句來源 {src['from']!r} 不是案情節點——草稿倒推的路徑被接回來了",
+            )
+
+
+def test_adversarial_citation_never_enters_the_query():
+    """對抗案例植入的假法條只存在於草稿。它一旦出現在查詢句裡，就是倒推復活了。
+
+    這條是上面那條的**具體反例版**：`建築法第999條` 在卷證、案型、程序結果裡都不存在，
+    唯一的來源是 N5 的草稿。查詢句裡出現它 = 查什麼是照著答案填的。
+    """
+    meta = _payload(BLOCKED)["retrieval"]["retrieval_meta"]
+    assert_true(
+        "建築法第999條" not in meta["query_text"],
+        "查詢句含有只存在於草稿的假法條，代表 N4 又在拿草稿當查詢來源",
+    )
+    assert_true(
+        "第999條" not in json.dumps(meta.get("query_sources"), ensure_ascii=False),
+        "query_sources 裡出現草稿才有的條號",
+    )
+
+
+def test_gate_catches_the_fake_citation_even_though_retrieval_never_found_it():
+    """守門不靠檢索結果——這是獨立檢索之後最重要的一條安全性質。
+
+    改成獨立檢索後，`建築法第999條` 不會出現在 `laws[]`（案情裡沒有任何訊號指向它）。
+    如果引用查核是靠「比對檢索結果」做的，這一改就會讓假法條**靜靜通過**。
+    這條釘住：查核走的是「從句子本文抽引用 → 對快照查條號」，跟檢索到什麼無關。
+    """
+    p = _payload(BLOCKED)
+    law_titles = {l["t"] for l in p["laws"]}
+    assert_true(
+        "建築法第999條" not in law_titles,
+        "前提已變：獨立檢索竟然命中了草稿才有的假法條，這條測試的設計需要重看",
+    )
+    missing = [c for c in p["citations"] if c["state"] == "missing"]
+    assert_true(missing, "假法條沒有被判成 missing")
+    assert_in("建築法第999條", {c["raw"] for c in missing}, "被判 missing 的不是那個假法條")
+    assert_eq(p["submit_allowed"], False, "假法條沒有擋下送出")
+
+
+def test_fixture_draft_cite_ids_are_not_carried_into_doc():
+    """fixture 草稿手寫的 cite_ids 不得進 doc[]（narrative.CARRY_DRAFT_CITE_IDS_DEFAULT）。
+
+    那些 id 是在 N4 跑之前手填的，改成獨立檢索後只會靠序號巧合對上不相干的法條，
+    或對不上而製造假 blocker。兩種都是假訊號。
+    """
+    for case_id in (ORDINARY, BLOCKED):
+        p = _payload(case_id)
+        for block in p["doc"]:
+            for s in block.get("ss", []):
+                assert_eq(
+                    s.get("cite_ids"),
+                    [],
+                    f"{case_id}：句子 {s['id']} 帶進了 fixture 的 cite_ids {s.get('cite_ids')}",
+                )
+
+
+def test_retrieval_divergence_is_reported_not_hidden():
+    """獨立檢索之後，「草稿引用的」與「檢索找到的」本來就會有落差——落差要外顯。
+
+    這是這次改動最容易被誤讀的地方：對抗案例的 `laws[]` 裡看不到 `建築法第73條`，
+    不是檢索壞了，是**案情裡沒有任何訊號指向那個條號**（條號只寫在原處分書上，
+    Phase 0 沒有 PDF 視覺抽取）。這種落差如果只是靜靜地讓左欄少幾張卡片，
+    看的人會以為系統認可了草稿的引用。所以 payload 要把兩邊的差集講出來。
+    """
+    p = _payload(BLOCKED)
+    div = p["retrieval_divergence"]
+    assert_in("建築法第999條", div["cited_not_retrieved"], "草稿引用但檢索未命中的清單漏了假法條")
+    assert_in("建築法第73條", div["cited_not_retrieved"], "草稿引用但檢索未命中的清單漏了實體法條")
+    assert_true(div["retrieved_not_cited"], "檢索到但草稿沒引用的清單是空的——獨立檢索應該會有這種項目")
+    assert_true(bool(div.get("note")), "落差清單沒有附說明，讀的人會誤以為是檢索壞了")
 
 
 # ── 對抗案例：守門必須攔下 ────────────────────────────────────────
