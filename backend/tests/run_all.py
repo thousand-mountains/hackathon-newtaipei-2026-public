@@ -14,9 +14,10 @@ ROOT = pathlib.Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from backend.tests import harness, test_deadline, test_e2e, test_nodes  # noqa: E402
+from backend.tests import harness, test_contract, test_deadline, test_e2e, test_nodes  # noqa: E402
 
 BACKEND = ROOT / "backend"
+PROTOTYPE = ROOT / "prototype"
 
 # ── 紅線靜態掃描 ──────────────────────────────────────────────────
 # 這些字串一旦出現在 backend/ 就是事故，不分分支（CONSTITUTION §7）
@@ -38,25 +39,31 @@ SCAN_SUFFIXES = {".py", ".json", ".md", ".txt", ".toml", ".cfg", ".yaml", ".yml"
 SKIP_DIRS = {"__pycache__", "output"}
 
 
-def _scan_files() -> list[pathlib.Path]:
+def _scan_files(roots: tuple[pathlib.Path, ...] = (BACKEND,)) -> list[pathlib.Path]:
     out = []
-    for p in BACKEND.rglob("*"):
-        if not p.is_file():
+    for root in roots:
+        if not root.exists():
             continue
-        if any(part in SKIP_DIRS for part in p.parts):
-            continue
-        if p.suffix.lower() not in SCAN_SUFFIXES:
-            continue
-        out.append(p)
+        for p in root.rglob("*"):
+            if not p.is_file():
+                continue
+            if any(part in SKIP_DIRS for part in p.parts):
+                continue
+            if p.suffix.lower() not in SCAN_SUFFIXES:
+                continue
+            out.append(p)
     return sorted(out)
 
 
 def scan_redlines() -> list[str]:
-    """掃 backend/ 全樹。**本檔自己除外**——它是掃描器，禁用字樣就是它的規則定義，
-    不排除會永遠自己抓自己。其餘任何檔案出現這些字樣一律視為違規。"""
+    """掃 backend/ 與 prototype/ 全樹。**本檔自己除外**——它是掃描器，禁用字樣就是它的
+    規則定義，不排除會永遠自己抓自己。其餘任何檔案出現這些字樣一律視為違規。
+
+    `prototype/` 是 2026-09-05 前後端整合時納進來的：前端從此會打後端 API，
+    它跟 backend/ 一樣是會被部署出去的東西，沒有理由不掃。"""
     self_path = pathlib.Path(__file__).resolve()
     problems: list[str] = []
-    for p in _scan_files():
+    for p in _scan_files((BACKEND, PROTOTYPE)):
         if p.resolve() == self_path:
             continue
         try:
@@ -71,45 +78,49 @@ def scan_redlines() -> list[str]:
     return problems
 
 
-# 本 branch 的基準 commit。prototype/ 相對於它必須零變更。
-BASE_COMMIT = "ce558a85a36ebaf173aacb35d8d7ef09fada472a"
+def scan_prototype_dist_reproducible() -> list[str]:
+    """`prototype/dist/index.html` 必須完全等於 `prototype/build.py` 的輸出。
 
+    **這條取代了 Phase 0 的「prototype/ 未被變更」**（2026-09-05 前後端整合）。
+    原本那條的前提是「後端工作不准碰前端」，整合工作包的任務本身就是改前端，
+    它必然紅——事實上在整合開工前它就已經是紅的（main 的五步前端相對那個
+    基準 commit 已有變更）。留著一條永遠紅的檢查等於訓練大家忽略紅字。
 
-def scan_prototype_untouched() -> list[str]:
-    """prototype/ 目錄不得變更一個位元組（本 Phase 的硬約束）。
-
-    查兩層——只查未提交變更是不夠的，**已經 commit 的改動會被判為乾淨**：
-    1. 工作區與索引：`git status --porcelain -- prototype/`
-    2. 相對於基準 commit 的累積差異：`git diff BASE..HEAD -- prototype/`
+    換成的這條守的是另一件真的重要的事：**dist 不得被手改**。
+    dist/index.html 是單檔全內嵌的建置產物，手改它會造成「跑起來的東西」與
+    「原始碼」各說各話——正是 architecture §6.3 要防的那種「展示文案與底層資料
+    各說各話」。做法是實際跑一次 build.py 再比對位元組，跑完把原檔還原，
+    不在測試裡留下副作用。
     """
     import subprocess
 
-    def _git(args: list[str]) -> tuple[bool, str]:
-        try:
-            r = subprocess.run(["git", *args], cwd=ROOT, capture_output=True, text=True, timeout=30)
-        except (OSError, subprocess.SubprocessError) as e:
-            return False, str(e)
-        if r.returncode != 0:
-            return False, r.stderr.strip()
-        return True, r.stdout
+    build = PROTOTYPE / "build.py"
+    dist = PROTOTYPE / "dist" / "index.html"
+    if not build.exists():
+        return [f"找不到 {build.relative_to(ROOT)}"]
+    if not dist.exists():
+        return [f"找不到 {dist.relative_to(ROOT)}，請先跑 python3 prototype/build.py"]
 
-    problems: list[str] = []
-    ok, out = _git(["status", "--porcelain", "--", "prototype/"])
-    if not ok:
-        problems.append(f"無法執行 git status 檢查 prototype/：{out}")
-    else:
-        problems += [f"prototype/ 有未提交的變更：{l}" for l in out.splitlines() if l.strip()]
+    before = dist.read_bytes()
+    try:
+        r = subprocess.run(
+            [sys.executable, str(build)], cwd=ROOT, capture_output=True, text=True, timeout=60
+        )
+    except (OSError, subprocess.SubprocessError) as e:
+        return [f"無法執行 build.py：{e}"]
+    if r.returncode != 0:
+        dist.write_bytes(before)
+        return [f"build.py 失敗（exit {r.returncode}）：{(r.stderr or r.stdout).strip()[:300]}"]
 
-    ok, out = _git(["diff", "--stat", f"{BASE_COMMIT}..HEAD", "--", "prototype/"])
-    if not ok:
-        problems.append(f"無法比對 prototype/ 與基準 commit：{out}")
-    else:
-        problems += [
-            f"prototype/ 相對基準 commit {BASE_COMMIT[:7]} 有已提交的變更：{l.strip()}"
-            for l in out.splitlines()
-            if l.strip()
+    after = dist.read_bytes()
+    dist.write_bytes(before)  # 還原，測試不留副作用
+    if after != before:
+        return [
+            f"{dist.relative_to(ROOT)} 與 build.py 的輸出不一致"
+            f"（committed {len(before)} bytes / rebuilt {len(after)} bytes）。"
+            f"dist 是建置產物，不得手改——請改 static/ 或 data/ 後重跑 python3 prototype/build.py。"
         ]
-    return problems
+    return []
 
 
 # `backend/api/` 是 Web 介面層，依任務指定的範圍升級使用 fastapi/uvicorn/pydantic。
@@ -150,6 +161,7 @@ def main() -> int:
         ("期間引擎搬遷與測試向量", [test_deadline]),
         ("六節點單元測試", [test_nodes]),
         ("端到端整合測試", [test_e2e]),
+        ("CASE payload 契約（architecture §6.2）", [test_contract]),
     ]
     total_pass = total = 0
     all_failures: list[str] = []
@@ -163,8 +175,8 @@ def main() -> int:
 
     print("\n── 紅線靜態掃描 " + "─" * 52)
     checks = [
-        ("secret／禁用雲端字樣", scan_redlines),
-        ("prototype/ 未被變更", scan_prototype_untouched),
+        ("secret／禁用雲端字樣（backend/ + prototype/）", scan_redlines),
+        ("prototype/dist 可由 build.py 完全重現（不得手改建置產物）", scan_prototype_dist_reproducible),
         ("核心與測試路徑零外部依賴（backend/api/ 為具名例外：Web 介面層）", scan_core_path_dependencies),
     ]
     for label, fn in checks:

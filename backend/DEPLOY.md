@@ -10,6 +10,31 @@
 
 ---
 
+## 0.0 本機一個指令起整個平台（前端 + API 同一個 process）
+
+```bash
+python3 prototype/build.py     # 前端建置產物（單檔全內嵌）；static/ 或 data/ 改過才需要重跑
+
+uv run --with fastapi --with "uvicorn[standard]" --with pydantic -- \
+    python -m uvicorn backend.api.app:app --host 127.0.0.1 --port 8080
+```
+
+| 位址 | 是什麼 |
+|---|---|
+| <http://127.0.0.1:8080/> | 五步動線 UI，開起來就是 **live 模式**（頁首徽章寫「live 後端」） |
+| <http://127.0.0.1:8080/?case=synthetic-blocked-01> | 換案例（也可以用頁面上的下拉選單） |
+| <http://127.0.0.1:8080/api/health> | 真的去載 laws-snapshot 與每個合成案例，載不動回 503 |
+| <http://127.0.0.1:8080/api/docs> | OpenAPI |
+
+**這是唯一的官方啟動指令**。以前 `uv run … backend/api/app.py`（port 8788）
+與 `prototype/app.py`（port 8787）是兩支各跑各的，整合後統一成上面這一行。
+
+前端在打不到 `/api/health` 時（例如直接 `file://` 開 `prototype/dist/index.html`）
+會自動退回**離線 fixture 模式**，頁首徽章會改成「離線 fixture（未接後端）」——
+斷網 demo 備援走這條，而且畫面上看得出來它不是後端的執行結果。
+
+---
+
 ## 0. 前置：誰要先做什麼
 
 | 事項 | 誰 | 狀態 |
@@ -140,9 +165,24 @@ docker build --platform linux/amd64 -f backend/Dockerfile -t hack-appeal-backend
 
 | 失敗情形 | 備援 | 最遲決定時刻 |
 |---|---|---|
-| ECR 推不上去 / ECS 起不來 | **本機 `uvicorn` 直接 demo**（`uv run --with fastapi --with uvicorn backend/api/app.py`），已實測可跑 | 部署開始後 45 分鐘 |
+| ECR 推不上去 / ECS 起不來 | **本機一個指令起整個平台 demo**（見 §0.0，前端＋API 同一個 process），已實測可跑 | 部署開始後 45 分鐘 |
 | Bedrock model access 未核准 | `RUN_MODE=fixture` 整條線重播，UI 明示「離線重播」 | 賽前即已成立，不需臨場決定 |
 | Fargate 起不來且看不出原因 | 先查 CloudWatch log group；最常見是映像檔架構不符（見 §2） | 15 分鐘查不出就切本機 demo |
+
+---
+
+## 4.5 容器映像檔目前**不帶前端**（2026-09-05 整合後的已知落差）
+
+`backend/Dockerfile` 只 `COPY backend/`，所以容器裡沒有 `prototype/dist/index.html`：
+
+- 容器的 `GET /` 會回 **503**（訊息說明前端未建置），`/api/docs` 與 `/api/*` 正常。
+- `/api/health` 的 `frontend_dist` 檢查會回 `ok:false` 但**標 `blocking:false`**，
+  不影響整體 `ok`——API-only 部署是合法狀態，不該讓健康檢查因此變紅。
+
+要讓雲上也看得到 UI，得在 Dockerfile 加一行 `COPY prototype/dist/ /app/prototype/dist/`
+並把建置 context 保持在專案根目錄。**這件事我沒有自己做**：它會改變映像檔內容
+（Phase 0 的驗收證據裡有一條是「映像檔沒帶 prototype」），要不要帶前端進映像檔
+請 Ci 拍板。本機 demo 走 §0.0 那條指令，不受影響。
 
 ---
 
@@ -155,9 +195,12 @@ python3 backend/tests/run_all.py
 ```
 
 它包含三道與部署直接相關的靜態掃描：
-- **secret／禁用雲端字樣**：`backend/` 內不得出現 AWS 金鑰樣式字串，也不得出現其他雲的 CLI／SDK／憑證變數。
-- **`prototype/` 未被變更**：v0 demo 必須保持可用。
-- **測試路徑零外部依賴**：核心流程不得偷偷長出第三方相依。
+- **secret／禁用雲端字樣（`backend/` + `prototype/`）**：不得出現 AWS 金鑰樣式字串，
+  也不得出現其他雲的 CLI／SDK／憑證變數。整合後 `prototype/` 也納入掃描範圍。
+- **`prototype/dist` 可由 `build.py` 完全重現**：dist 是建置產物，手改它會讓
+  「跑起來的東西」與原始碼各說各話。這條取代了 Phase 0 的「`prototype/` 未被變更」
+  （那條的前提是後端工作不准碰前端，前後端整合後已不適用）。
+- **測試路徑零外部依賴**：核心流程不得偷偷長出第三方相依（`backend/api/` 為具名例外）。
 
 另外用眼睛確認兩件事：
 - task definition 的 `environment` 裡沒有任何看起來像密碼或金鑰的值。
