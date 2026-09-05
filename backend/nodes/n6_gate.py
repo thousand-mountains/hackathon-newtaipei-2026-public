@@ -27,6 +27,7 @@ from backend.gate.citations import (
 )
 from backend.gate.lamps import (
     WHY_CONCLUSION_LEAK,
+    WHY_UNSOURCED_WHILE_BLOCKED,
     attach_issue_refs,
     citation_states_for,
     detect_conclusion_like,
@@ -140,9 +141,31 @@ def run(state: CaseState, ctx: NodeCtx) -> NodeResult:
                         "severity": "P0",
                     }
                 )
-            # 主文語句偵測：**不限 slot、不限 origin**（引擎算式句與佔位句除外）。
+            # 兜底（第三層，對抗覆核後新增）：C 型封鎖下，**模型寫的、一個可查證引用都沒有的
+            # 句子**一律交人工並阻擋送出。
+            #
+            # 為什麼需要這一層：主文偵測不管寫得多好，本質上都是在比對字串，一定有盲點——
+            # 覆核用 30 句真實主文打穿了 29 句。但**那 9 種繞法沒有一句帶引用**，
+            # 因為主文本來就不引法條。這一層不看字串，所以沒有寫法能繞過它：
+            # 「這個案子已經需要人來下結論了，而這句話又指不出任何可查證的依據」
+            # ——這兩件事同時成立時，唯一安全的行為就是交人工。
+            if needs_human and origin == "llm" and not s.get("placeholder") and not cites:
+                s["l"] = "r"
+                s["tier"] = tier_of("human_required")
+                s["why"] = WHY_UNSOURCED_WHILE_BLOCKED
+                blockers.append(
+                    {
+                        "sentence_id": s["id"],
+                        "reason": "unsourced_sentence_while_conclusion_blocked",
+                        "detail": (
+                            f"結論段已封鎖（本案需人工判斷），但 slot={s.get('slot')} 的模型生成句"
+                            f"未附任何可查證的引用，系統無法確認它不是實質結論，已交人工。"
+                        ),
+                        "severity": "P0",
+                    }
+                )
+            # 主文語句偵測（第一、二層）：**不限 slot、不限 origin**（引擎算式句與佔位句除外）。
             # 為什麼連 record（卷證直錄）也查：模型若把主文包裝成「引述原處分」就照樣穿過。
-            # 誤攔的代價是多一次人工確認，漏放的代價是系統替一份沒人看過的法律結論背書。
             if needs_human and not s.get("placeholder") and origin not in ("engine", "rule", "static"):
                 rules = detect_conclusion_like(text)
                 if rules:

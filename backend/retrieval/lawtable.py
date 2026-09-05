@@ -176,11 +176,22 @@ def _parse_digit_string(s: str) -> int | None:
 def _parse_unit_style(s: str) -> int | None:
     """單位式：靠十百千標位值，文法嚴格，違反即 None。
 
-    合法：七十三、九百九十九、十四、二十、一百零五、一千二百三十四
-    非法（回 None，不猜）：十十、百五、三四十、一百二百
+    合法：七十三、九百九十九、十四、二十、一百零五、一千二百三十四、三百十三
+    非法（回 None，不猜）：十十、百五、三四十、一百二百、**一百五**、一千八
+
+    「一百五」為什麼必須是 None：中文有「尾數單位省略式」——口語裡「一百五」是 150、
+    「三千八」是 3800，但在條號脈絡也可能有人當成 105 寫。同一串字有兩種讀法，
+    就是**歧義**，歧義一律不猜。這條是對抗覆核打出來的：舊版把百／千後面的裸數字
+    一律當個位，「建築法第一百五條」（人讀第 150 條，該法只到 105 條、應紅燈）
+    被讀成 105 → ✓ 在庫 → 綠燈放行，跟上一輪「九九九→9」是同一個病灶換個字串。
+
+    規則：**個位裸數字只有在「前一個單位是十」或「前面出現過〇跳級佔位符」時才合法。**
+    七十三（前一單位是十）✓、一百零五（有〇）✓、三百十三（前一單位是十）✓、
+    一百五（前一單位是百、又沒有〇）✗。
     """
     total = 0
     last_unit: int | None = None  # 前一個用過的單位，必須嚴格遞減
+    zero_seen = False  # 是否出現過〇跳級佔位符（「一百零五」）
     i = 0
     n = len(s)
     while i < n:
@@ -193,6 +204,7 @@ def _parse_unit_style(s: str) -> int | None:
                     return None  # 單位沒有遞減：「一百二百」這類寫法無法無歧義解讀
                 total += d * unit
                 last_unit = unit
+                zero_seen = False  # 跳級佔位符只授權「緊接其後」的個位，隔一個單位就失效
                 i += 2
                 continue
             # 後面沒有單位 → 只能是最後一個字（個位）
@@ -200,6 +212,8 @@ def _parse_unit_style(s: str) -> int | None:
                 return None  # 「三四十」這種數字連寫又帶單位，混用兩套體系
             if last_unit is not None and last_unit <= 1:
                 return None
+            if last_unit is not None and last_unit > 10 and not zero_seen:
+                return None  # 「一百五」：150 還是 105？歧義，不猜
             total += d
             last_unit = 1
             i += 1
@@ -210,6 +224,7 @@ def _parse_unit_style(s: str) -> int | None:
             # 前後都必須還有東西。
             if i == 0 or i == n - 1 or last_unit is None or last_unit < 100:
                 return None
+            zero_seen = True
             i += 1
             continue
         if c in _CN_UNITS:
@@ -224,6 +239,7 @@ def _parse_unit_style(s: str) -> int | None:
             # 句首的「十」（十四）與百／千之後省略前導一的「三百十三」都是標準寫法
             total += 10
             last_unit = 10
+            zero_seen = False
             i += 1
             continue
         return None

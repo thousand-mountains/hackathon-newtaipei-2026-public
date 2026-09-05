@@ -117,7 +117,7 @@ def _reference_read(s: str) -> int | None:
     if not s or any(c not in digits and c != "〇" and c not in dict(units) for c in s):
         return None
 
-    def read(part: str, allowed: list[tuple[str, int]]) -> int | None:
+    def read(part: str, allowed: list[tuple[str, int]], ones_ok: bool) -> int | None:
         if part == "":
             return 0
         for i, (u, v) in enumerate(allowed):
@@ -133,6 +133,7 @@ def _reference_read(s: str) -> int | None:
                     head = digits[left]
                 else:
                     return None
+                zero = False
                 if right.startswith("〇"):
                     # 「一百零五」的零是**跳級**佔位符：只有還有更低的單位級可跳時才合法，
                     # 且它後面必須還有東西（「三百十〇三」「一百〇」都是壞字串）。
@@ -141,15 +142,18 @@ def _reference_read(s: str) -> int | None:
                     right = right.lstrip("〇")
                     if right == "":
                         return None
-                tail = read(right, allowed[i + 1:])
+                    zero = True
+                # 尾數裸數字只有在「剛用完十位」或「有〇跳級」時才無歧義：
+                # 「一百五」是 150 還是 105？兩種讀法都有人用 → 不猜。
+                tail = read(right, allowed[i + 1:], ones_ok=(v == 10 or zero))
                 return None if tail is None else head * v + tail
-        # 沒有單位了：只能是單一個位數
-        if len(part) == 1 and part in digits:
+        # 沒有單位了：只能是單一個位數，而且要有資格當個位
+        if len(part) == 1 and part in digits and ones_ok:
             return digits[part]
         return None
 
     if any(u in s for u, _ in units):
-        v = read(s, units)
+        v = read(s, units, ones_ok=True)
     else:
         if s.startswith("〇"):
             return None
@@ -315,14 +319,33 @@ def test_whitespace_and_punctuation_normalisation_is_not_bypassable():
     assert_eq(normalize_for_structure("原 處 分 撤 銷 。"), "原處分撤銷。")
 
 
-def test_conclusion_detection_is_deliberately_over_inclusive():
-    """fail-safe 的成本要寫成測試，不要當意外。
+def test_attribution_frame_is_exempt_at_pattern_layer_but_still_caught_by_backstop():
+    """轉述當事人主張的句子在片語層免責，但兜底層照樣接住——兩層的分工要寫成測試。
 
-    「訴願人主張原處分應予撤銷云云」是轉述、不是主文，但它照樣被攔。
-    這是刻意的：誤攔的代價是多一次人工確認，漏放的代價是系統替一份沒人看過的
-    法律結論背書。這條測試存在的目的是讓未來的人**知道這是選擇**，不是 bug。
+    「訴願人主張原處分應予撤銷云云」是轉述，不是機關的結論。在片語層攔它會製造誤攔
+    （覆核實測誤攔率 14%，而且踩在最高頻句型上），所以用結構性免責框架放行。
+    但它一個可查證引用都沒有，在 C 型封鎖下仍會被第三層兜底攔下並交人工。
+    **免責只豁免片語層，不豁免兜底層**——這正是兜底層存在的理由。
     """
-    assert_true(detect_conclusion_like("訴願人主張原處分應予撤銷云云，尚非可採。"))
+    text = "又訴願人請求撤銷原處分之理由，均係就原處分機關認定事實之爭執。"
+    assert_eq(detect_conclusion_like(text), [], "轉述框架在片語層應免責，避免高頻誤攔")
+    # 對照：處置動詞離主張／請求較遠時**不**豁免——那是機關自己的處置，不是轉述。
+    assert_true(
+        detect_conclusion_like("訴願人主張原處分應予撤銷云云，尚非可採。"),
+        "「應予撤銷」不緊貼主張，仍視為處置語句（刻意保守，寧可多攔）",
+    )
+    assert_true(
+        detect_conclusion_like("認訴願人之主張核無可採，其請求不能准許，予以駁回。"),
+        "轉述後面接機關自己的處置，不得因為前面有「主張」就整句豁免",
+    )
+
+    state = _blocked_state_with([_sentence("s1", text, "reasoning")])
+    n6_gate.run(state, _ctx())
+    assert_eq(state.gate["submit_allowed"], False, "無引用的模型句在 C 型封鎖下仍要交人工")
+    assert_in(
+        "unsourced_sentence_while_conclusion_blocked",
+        {b["reason"] for b in state.gate["blockers"]},
+    )
 
 
 def _blocked_state_with(sentences: list[dict[str, Any]]) -> CaseState:
@@ -524,6 +547,150 @@ def test_resolved_id_and_laws_id_namespaces_are_documented_as_disjoint():
         not c.resolved_id.startswith("L1") and c.resolved_id != "L1",
         "resolved_id 與 N4 的 laws[].id（L1、L2…）不同命名空間，比對必須改用 ref_key",
     )
+
+
+# ════════════════════════════════════════════════════════════════════
+# 第二輪對抗覆核（2026-09-05）打穿的破口，逐條回歸
+# ════════════════════════════════════════════════════════════════════
+# 覆核用 30 句真實主文打穿 29 句、並找到一整類回「錯誤整數而非 None」的數字寫法。
+# 這一區每一條都對應一個當時真的穿過去的輸入。
+
+# 覆核構造的繞法：不含「駁回／不受理／撤銷／廢止／變更／維持」這六個動詞的主文、
+# 插入語超過字元視窗的、拆成兩句寫的。
+REVIEW_BYPASS_FORMS = (
+    "本件訴願為無理由。",
+    "命被告機關重為處分。",
+    "本府決定如主文。",
+    "原處分並無違誤，訴願人執詞爭議，難認有據。",
+    "本件應發回原處分機關，於二個月內重為適法之決定。",
+    "訴願人之訴願，難謂有理由，其請求應遭否准。",
+    "系爭核定應予註銷。",
+    "本件訴願，經審酌全部卷證資料及兩造陳述意見後，認訴願人之主張核無可採，其請求不能准許，予以駁回。",
+    "本件訴願，為無理由。",
+    "依法駁回。",
+    "原處分應予維持，訴願駁回。",
+    "訴願人之請求為無理由。",
+    "本件訴願事件，經核並無理由，爰予否准。",
+    "本府認原處分並無不當，應予維持。",
+    "系爭處分應予變更。",
+)
+
+
+def test_review_bypass_forms_all_blocked():
+    """覆核打穿的 15 種繞法，端到端一句都不准放行。"""
+    leaked = []
+    for i, text in enumerate(REVIEW_BYPASS_FORMS):
+        state = _blocked_state_with([_sentence(f"s{i}", text, "reasoning")])
+        n6_gate.run(state, _ctx())
+        if state.gate["submit_allowed"]:
+            leaked.append(text)
+    assert_eq(leaked, [], f"{len(leaked)} 種繞法仍穿過封鎖：{leaked}")
+
+
+def test_review_bypass_forms_caught_by_pattern_layer_even_when_armed_with_citations():
+    """把繞法句配上**真實可查證的引用**（讓兜底層失效），片語層必須自己擋得住。
+
+    這條是分層檢驗：兜底層（無引用即交人工）擋得住所有沒帶引用的主文，
+    但攻擊者只要加一個合法法條就能繞過兜底層。這時只剩片語層，它必須自己成立。
+    """
+    missed = []
+    for text in REVIEW_BYPASS_FORMS:
+        armed = f"依訴願法第79條規定，{text}"
+        if not detect_conclusion_like(armed):
+            missed.append(armed)
+    assert_eq(missed, [], f"片語層漏抓 {len(missed)} 種（兜底層此時已被引用繞過）：{missed}")
+
+
+def test_unsourced_model_sentence_blocks_under_c_type():
+    """兜底層本身：C 型封鎖下，模型寫的、零引用的句子一律交人工。
+
+    這一層不看字串，所以沒有任何寫法能繞過它——覆核打穿的 15 種主文沒有一句帶引用。
+    """
+    state = _blocked_state_with([_sentence("s1", "本件事證明確，堪予認定。", "reasoning")])
+    n6_gate.run(state, _ctx())
+    s = state.gate["doc"][0]["ss"][0]
+    assert_eq(s["l"], "r")
+    assert_eq(s["tier"], "請人工判斷")
+    assert_eq(state.gate["submit_allowed"], False)
+    assert_in(
+        "unsourced_sentence_while_conclusion_blocked",
+        {b["reason"] for b in state.gate["blockers"]},
+    )
+
+
+def test_backstop_does_not_fire_when_conclusion_not_blocked():
+    """兜底層只在 C 型封鎖下生效——一般案件的無引用涵攝句仍可送出（只是黃燈交人工）。"""
+    state = _blocked_state_with([_sentence("s1", "本件事證明確，堪予認定。", "reasoning")])
+    state.screen["requires_human_conclusion"] = False
+    n6_gate.run(state, _ctx())
+    assert_eq(state.gate["submit_allowed"], True, "非 C 型案件不得被兜底層鎖死")
+
+
+def test_unit_omitted_numerals_are_ambiguous_and_refused():
+    """覆核找到的整類誤讀：「一百五」人讀 150、舊版讀成 105 → 捏造條號拿到綠燈。
+
+    兩種讀法都有人用 = 歧義 = 不猜。這裡要的是 `None`，不是「讀對」。
+    """
+    for s in ("一百五", "一百二", "二百五", "三千八", "一千五", "七千〇六百四"):
+        assert_eq(cn_to_int(s), None, f"{s!r} 有兩種讀法，必須回 None 而不是猜一個")
+    # 對照組：加了跳級零或以十位收尾就無歧義，必須讀得出來
+    for s, want in (("一百零五", 105), ("七十三", 73), ("三百十三", 313), ("一千零二十", 1020)):
+        assert_eq(cn_to_int(s), want, f"{s!r} 無歧義，不得誤判成無法解析")
+
+
+def test_unit_omitted_article_does_not_get_green_light():
+    """端到端：「建築法第一百五條」不得被讀成第 105 條而拿到 ✓ 在庫 綠燈。
+
+    建築法快照最大條號 105。人讀「第一百五條」是第 150 條（不存在）。
+    舊版讀成 105 → 命中 → 綠燈 → 可送出，正是這輪要根除的「誤讀→綠燈」。
+    """
+    p = _run_with_injected(ORDINARY, "reasoning", [{"t": "另參建築法第一百五條之規定。"}])
+    cites = [c for c in p["citations"] if "建築法" in c["raw"]]
+    assert_eq(len(cites), 1, f"應抽到 1 筆建築法引用，實得 {[c['raw'] for c in p['citations']]}")
+    assert_eq(cites[0]["state"], STATE_UNPARSEABLE, "歧義寫法應標無法解析，不得猜成 105")
+    assert_true(cites[0]["lamp"] != "g", "絕不得對歧義條號發綠燈")
+
+
+def test_directive_with_cn_number_and_dotted_date_is_detected():
+    """覆核找到的隱形函釋：國字號數、點式發文日期、帶尾綴的號數。
+
+    隱形本身在單獨成句時是安全失敗（無引用→交人工），但只要同句另有一個合法法條，
+    整句就會變綠燈＋「有出處」——等於系統替一個它根本沒看見的函釋背書。
+    """
+    ck = CitationChecker(SNAPSHOT)
+    for text in (
+        "內政部台內營字第一〇一〇八一〇八八一號函參照。",
+        "內政部 88.5.10 台內營字第8873101號",
+        "內政部台內營字第1010810881-1號函",
+    ):
+        directives = [c for c in ck.check_text(text) if c.kind == "directive"]
+        assert_eq(len(directives), 1, f"{text!r} 的函釋整筆隱形")
+
+    mixed = "依建築法第73條及內政部台內營字第一〇一〇八一〇八八一號函釋意旨，本件應予處罰。"
+    kinds = [c.kind for c in ck.check_text(mixed)]
+    assert_in("directive", kinds, "同句有合法法條時，隱形的函釋會讓整句誤標綠燈")
+
+
+def test_cn_year_precedent_is_not_misclassified_as_directive():
+    """覆核找到的 kind 誤判：`最高行政法院一一二年度判字第123號` 被判成函釋。
+
+    結構性區辨：發文字別不含「年」「度」，判解字號才有「年度」。
+    誤判的後果是畫面對評審顯示「函釋不在本系統的驗證範圍」這句與事實不符的說明。
+    """
+    ck = CitationChecker(SNAPSHOT)
+    for text in ("最高行政法院一一二年度判字第123號判決參照。", "最高行政法院一一二年度判字第一二三號"):
+        r = ck.check_text(text)
+        assert_eq(len(r), 1, f"{text!r} 應抽到 1 筆")
+        assert_eq(r[0].kind, "precedent", f"{text!r} 是判解字號，不是函釋")
+
+
+def test_generic_rule_quotation_is_not_false_positive():
+    """覆核量到 14% 誤攔，兩句都是最高頻句型，必須放行。"""
+    for text in (
+        "按訴願法第77條第2款規定，提起訴願逾法定期間者，應為不受理之決定。",
+        "又訴願人請求撤銷原處分之理由，均係就原處分機關認定事實之爭執。",
+    ):
+        assert_eq(detect_conclusion_like(text), [], f"{text!r} 是理由段高頻句型，不得誤攔")
 
 
 # ════════════════════════════════════════════════════════════════════
