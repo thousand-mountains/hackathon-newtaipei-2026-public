@@ -87,6 +87,10 @@ def run(state: CaseState, ctx: NodeCtx) -> NodeResult:
                 seen_raw.add(key)
                 cites.append(c)
             states = citation_states_for(cites)
+            # 「有出處」必須是**可查證**的出處。`out_of_scope`（庫外法規、任何函釋字號、
+            # 白名單外判解）是系統明說「我驗不了」的東西，拿它當出處等於自己給自己背書——
+            # 第三輪覆核用一個捏造的函釋字號就示範了這件事。
+            usable_cites = [c for c in cites if c.state in (STATE_OK, STATE_AMENDED)]
 
             # cite_ids 解析：草稿標的 L* 必須對得回 N4 的檢索結果
             unresolved = [cid for cid in s.get("cite_ids", []) if cid.startswith("L") and cid not in law_index]
@@ -142,43 +146,19 @@ def run(state: CaseState, ctx: NodeCtx) -> NodeResult:
                         "severity": "P0",
                     }
                 )
-            # 兜底（第三層，對抗覆核後新增）：C 型封鎖下，**模型寫的、一個可查證引用都沒有的
-            # 句子**一律交人工並阻擋送出。
+            # 句子層註記（**不是**送出的守門，見下方 case 層封鎖）。
             #
-            # 為什麼需要這一層：主文偵測不管寫得多好，本質上都是在比對字串，一定有盲點——
-            # 覆核用 30 句真實主文打穿了 29 句。但**那 9 種繞法沒有一句帶引用**，
-            # 因為主文本來就不引法條。這一層不看字串，所以沒有寫法能繞過它：
-            # 「這個案子已經需要人來下結論了，而這句話又指不出任何可查證的依據」
-            # ——這兩件事同時成立時，唯一安全的行為就是交人工。
-            # 「有引用」不能只看抓到幾個 token：讀不懂的號碼（unparseable）與查無此號
-            # （missing）都不是出處。覆核實測用一個捏造的函釋字號就讓兜底層失效。
-            usable_cites = [c for c in cites if c.state not in (STATE_UNPARSEABLE, STATE_MISSING)]
-            # 已經因為「查無此號」被擋的句子不重複列一條——同一句在畫面上出現兩個 blocker
-            # 只會讓人以為是兩個問題。安全性不變：它本來就已經擋住了。
-            already_blocked = any(c.state == STATE_MISSING for c in cites)
-            if (
-                needs_human
-                and origin == "llm"
-                and not s.get("placeholder")
-                and not usable_cites
-                and not already_blocked
-            ):
-                s["l"] = "r"
-                s["tier"] = tier_of("human_required")
-                s["why"] = WHY_UNSOURCED_WHILE_BLOCKED
-                blockers.append(
-                    {
-                        "sentence_id": s["id"],
-                        "reason": "unsourced_sentence_while_conclusion_blocked",
-                        "detail": (
-                            f"結論段已封鎖（本案需人工判斷），但 slot={s.get('slot')} 的模型生成句"
-                            f"未附任何可查證的引用，系統無法確認它不是實質結論，已交人工。"
-                        ),
-                        "severity": "P0",
-                    }
-                )
-            # 主文語句偵測（第一、二層）：**不限 slot、不限 origin**（引擎算式句與佔位句除外）。
-            # 為什麼連 record（卷證直錄）也查：模型若把主文包裝成「引述原處分」就照樣穿過。
+            # 三輪對抗覆核的共同教訓：**只要最後一道防線是在比對字串，就一定有盲點。**
+            # 第一輪 30 句主文穿過 29 句；第二輪 90 句穿過 55 句；第三輪又找到 §83 情況決定、
+            # §93 停止執行、§84 損害賠償、「當事人請求X，本會同意」等一整批新寫法。
+            # 每一輪修完都「這次總算窮舉了」，每一輪都被推翻。
+            #
+            # 所以這一層**不再承擔阻擋責任**，它的工作是「把看起來像主文的句子標紅給人看」。
+            # 阻擋改由 case 層負責（`conclusion_requires_human`）：C 型案件一律不得送出，
+            # 那條判準完全不看句子寫了什麼，因此沒有任何寫法能繞過。
+            #
+            # 這個分工也把誠實性擺正了：片語層漏抓時，後果是「少標一個紅」，不是「放行一份
+            # 系統沒看過的法律結論」。
             if needs_human and not s.get("placeholder") and origin not in ("engine", "rule", "static"):
                 rules = detect_conclusion_like(text)
                 if rules:
@@ -190,12 +170,38 @@ def run(state: CaseState, ctx: NodeCtx) -> NodeResult:
                             "sentence_id": s["id"],
                             "reason": "conclusion_like_text_outside_conclusion_slot",
                             "detail": (
-                                f"結論段已封鎖，但 slot={s.get('slot')}／origin={origin} 的句子命中主文型結構"
+                                f"slot={s.get('slot')}／origin={origin} 的句子命中主文型結構"
                                 f"（{'；'.join(rules)}）。實質結論不得因為換個槽位或換個寫法就繞過封鎖。"
                             ),
                             "severity": "P0",
                         }
                     )
+                elif origin == "llm" and not usable_cites:
+                    # 沒命中片語層、又指不出可查證的出處：不宣稱它是主文，但也不能說它有出處。
+                    s["tier"] = tier_of("human_required")
+                    s["why"] = WHY_UNSOURCED_WHILE_BLOCKED
+
+    # ── case 層封鎖：C 型案件一律不得送出 ────────────────────────────
+    # **這是這份守門層唯一真正扛得住的判準，因為它不看句子寫了什麼。**
+    #
+    # 判準：`requires_human_conclusion=true`（由 N2/N3 的規則算出，見 lamps.requires_human_conclusion）
+    # ⇒ 這份草稿沒有結論段、而結論需要人來下 ⇒ 它本來就不是一份可逕行送出的決定書。
+    #
+    # 為什麼是一條 case 層的紀錄、而不是每句一條：第三輪覆核量到句子層的「無出處即擋」
+    # 會擋掉 22 句真實理由段裡的 20 句，blockers 清單被正常敘述句塞滿，真訊號反而看不見。
+    # 送出與否是**案件**的性質，不是逐句累加出來的。
+    if needs_human:
+        blockers.append(
+            {
+                "sentence_id": None,
+                "reason": "conclusion_requires_human",
+                "detail": (
+                    "本案結論涉及法律判斷，系統不生成結論段（C 型封鎖），草稿不得逕行送出；"
+                    "請承辦人依交接卡認定後自行完成結論。"
+                ),
+                "severity": "P0",
+            }
+        )
 
     issue_refs = attach_issue_refs(doc, fact_issues)
 

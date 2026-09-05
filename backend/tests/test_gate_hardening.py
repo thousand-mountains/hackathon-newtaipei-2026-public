@@ -346,11 +346,9 @@ def test_attribution_frame_is_exempt_at_pattern_layer_but_still_caught_by_backst
 
     state = _blocked_state_with([_sentence("s1", text, "reasoning")])
     n6_gate.run(state, _ctx())
-    assert_eq(state.gate["submit_allowed"], False, "無引用的模型句在 C 型封鎖下仍要交人工")
-    assert_in(
-        "unsourced_sentence_while_conclusion_blocked",
-        {b["reason"] for b in state.gate["blockers"]},
-    )
+    assert_eq(state.gate["submit_allowed"], False, "C 型案件一律不得送出（case 層封鎖）")
+    assert_in("conclusion_requires_human", {b["reason"] for b in state.gate["blockers"]})
+    assert_eq(state.gate["doc"][0]["ss"][0]["tier"], "請人工判斷", "無出處的句子仍要降層交人工")
 
 
 def _blocked_state_with(sentences: list[dict[str, Any]]) -> CaseState:
@@ -606,21 +604,48 @@ def test_review_bypass_forms_caught_by_pattern_layer_even_when_armed_with_citati
     assert_eq(missed, [], f"片語層漏抓 {len(missed)} 種（兜底層此時已被引用繞過）：{missed}")
 
 
-def test_unsourced_model_sentence_blocks_under_c_type():
-    """兜底層本身：C 型封鎖下，模型寫的、零引用的句子一律交人工。
+def test_c_type_case_is_never_submittable_regardless_of_text():
+    """**這是整份守門層唯一扛得住的判準：C 型案件一律不得送出，且不看句子寫了什麼。**
 
-    這一層不看字串，所以沒有任何寫法能繞過它——覆核打穿的 15 種主文沒有一句帶引用。
+    三輪覆核的共同結論是「只要最後一道防線在比對字串，就一定有盲點」。
+    這條判準只看 `requires_human_conclusion`（規則算出的案件性質），
+    所以任何寫法、任何 origin、任何假出處都繞不過。
+    """
+    for text, origin in (
+        ("本件事證明確，堪予認定。", "llm"),
+        ("卷內載明本件訴願要件不備。", "record"),
+        ("依訴願法第93條規定，原行政處分之執行應予停止。", "llm"),
+        ("", "llm"),
+    ):
+        state = _blocked_state_with([_sentence("s1", text, "reasoning", origin=origin)])
+        n6_gate.run(state, _ctx())
+        assert_eq(state.gate["submit_allowed"], False, f"C 型案件竟可送出：{text!r}／{origin}")
+        assert_in("conclusion_requires_human", {b["reason"] for b in state.gate["blockers"]})
+
+
+def test_unsourced_sentence_is_annotated_not_flooded_into_blockers():
+    """無出處的句子降層交人工，但**不**逐句灌進 blockers。
+
+    覆核量到「無出處即擋」會擋掉 22 句真實理由段裡的 20 句，blockers 被正常敘述句塞滿，
+    真訊號反而看不見。送出與否是**案件**的性質（見上一條），不是逐句累加出來的。
     """
     state = _blocked_state_with([_sentence("s1", "本件事證明確，堪予認定。", "reasoning")])
     n6_gate.run(state, _ctx())
     s = state.gate["doc"][0]["ss"][0]
-    assert_eq(s["l"], "r")
-    assert_eq(s["tier"], "請人工判斷")
-    assert_eq(state.gate["submit_allowed"], False)
-    assert_in(
-        "unsourced_sentence_while_conclusion_blocked",
-        {b["reason"] for b in state.gate["blockers"]},
-    )
+    assert_eq(s["tier"], "請人工判斷", "指不出出處就不能算「有出處」")
+    reasons = [b["reason"] for b in state.gate["blockers"]]
+    assert_eq(reasons, ["conclusion_requires_human"], f"不該逐句灌 blockers，實得 {reasons}")
+
+
+def test_fabricated_citation_cannot_buy_sourced_tier():
+    """捏造的函釋／庫外法規不得買到「有出處」——覆核實測的盾牌。"""
+    for shield in ("內政部112年5月1日台內營字第1120999999號函", "政府資訊公開法第9條", "都市計畫法第85條"):
+        state = _blocked_state_with([_sentence("s1", "本件事證明確，並無其他應予斟酌之情事。", "reasoning")])
+        state.draft["doc_skeleton"][0]["ss"][0]["basis"] = shield
+        n6_gate.run(state, _ctx())
+        s = state.gate["doc"][0]["ss"][0]
+        assert_eq(s["tier"], "請人工判斷", f"{shield!r} 是系統驗不了的東西，不得算出處")
+        assert_eq(state.gate["submit_allowed"], False)
 
 
 def test_backstop_does_not_fire_when_conclusion_not_blocked():
@@ -815,6 +840,130 @@ def test_zero_placeholder_scope_is_enforced():
         assert_eq(cn_to_int(s), None, f"{s!r} 的〇沒有真的跳級，屬壞字串")
     for s, want in (("一千零二十", 1020), ("一百零五", 105), ("一千零五", 1005), ("二千零五十", 2050)):
         assert_eq(cn_to_int(s), want, f"{s!r} 是合法跳級寫法，不得誤判")
+
+
+# ════════════════════════════════════════════════════════════════════
+# 第四輪對抗覆核（2026-09-05）打穿的破口，逐條回歸
+# ════════════════════════════════════════════════════════════════════
+# 覆核判 No-Go，打穿三處：(a) out_of_scope 仍算「可用出處」，一個捏造函釋就關掉兜底層；
+# (b) 第 1 層漏 §83/§93/§84/§81 自為決定，25/28 穿過且拿綠燈；
+# (c)「當事人請求X，本會同意」繞過轉述豁免；另指出宣稱「已移除字元視窗」不實。
+# 結構性回應：送出封鎖改掛 case 層（C 型一律不得送出，不看字串），片語層退為提示層。
+
+ROUND4_DISPOSITION_FORMS = (
+    "依訴願法第93條規定，原行政處分之執行應予停止。",
+    "本件情況決定，宣示原處分為違法。",
+    "本會就系爭處分之數額部分酌減為新臺幣三萬元。",
+    "本會併予決定損害賠償金額為新臺幣十萬元。",
+    "本會就原處分之違法部分自為決定。",
+    "本件訴願標的不存在。",
+    "卷內載明本件訴願要件不備。",
+    "經查本件符合不受理要件。",
+    # 拉長插入語繞過字元視窗（覆核 4/6 穿過）
+    "原處分機關應另就本件全部事實及卷內證據重新審酌後為適法之處分。",
+    "應依本決定書所載意旨並斟酌全案卷證及相關法令規定後另行辦理。",
+    "本件訴願程序因訴願人已於期間內具狀表明不再續行之意思而告終結。",
+    "應作成准予訴願人所請並依相關規定辦理後續事宜之核准處分。",
+    # 「當事人請求 X，本會同意」——把轉述變成機關的決定
+    "訴願人請求撤銷原處分，本會同意。",
+    "原處分機關主張駁回訴願，本會照准。",
+    "訴願人請求不予受理之部分，本會予以採納。",
+    "訴願人陳稱撤銷原處分即可，本會從其所請。",
+    "原處分機關陳稱不予受理，本會敬表同意。",
+)
+
+# 全新的真實理由段（第四輪覆核構造，與前幾輪不重複），一句都不准被片語層誤攔
+ROUND4_REASONING_FORMS = (
+    "訴願人於民國113年3月5日收受原處分書，有送達證書可稽。",
+    "原處分機關於113年2月1日派員至現場勘查，製有稽查紀錄工作單一紙在卷。",
+    "系爭噪音量測作業係於113年1月18日晚間10時許實施，量測結果為63分貝。",
+    "上開事實有現場照片、稽查紀錄表及訴願人陳述紀錄附卷可稽。",
+    "本件訴願書於112年5月20日送達原處分機關，程序上並無不合。",
+    "本會於112年7月1日通知訴願人到會陳述意見，訴願人未到場。",
+    "所謂變更使用，係指變更建築物之使用類組而言，與是否辦理室內裝修無涉。",
+    "裁處權時效之起算，應以違規行為終了之日為準，本件違規狀態持續中，時效尚未起算。",
+    "有關訴願人請求閱覽卷宗一節，本會業於112年8月1日安排閱卷。",
+    "原處分機關答辯略以，本件處分書業經合法送達，訴願人所稱並非可採。",
+)
+
+
+def test_round4_disposition_forms_are_flagged():
+    """第四輪打穿的 17 種寫法，片語層現在要標得出來（提示層的職責）。"""
+    missed = [t for t in ROUND4_DISPOSITION_FORMS if not detect_conclusion_like(t)]
+    assert_eq(missed, [], f"片語層仍漏 {len(missed)} 種：{missed}")
+
+
+def test_round4_reasoning_forms_are_not_flagged():
+    """全新的 10 句真實理由段，片語層零誤攔。"""
+    fired = [(t, detect_conclusion_like(t)[:1]) for t in ROUND4_REASONING_FORMS if detect_conclusion_like(t)]
+    assert_eq(fired, [], f"誤攔：{fired}")
+
+
+def test_out_of_scope_citation_cannot_buy_a_green_light():
+    """覆核 P0-1：`out_of_scope`（庫外法規／任何函釋／白名單外判解）不是可查證的出處。
+
+    `check_directive` 對**任何**函釋字號一律回 `out_of_scope`，所以「編一個函釋字號」
+    是零成本的。它不能用來把句子買成「有出處」，也不能用來關掉任何守門。
+    """
+    for shield in (
+        "內政部112年5月1日台內營字第1120999999號函",
+        "政府資訊公開法第9條",
+        "都市計畫法第85條",
+        "最高行政法院112年度判字第99999號",
+        "釋字第800號",
+    ):
+        state = _blocked_state_with([_sentence("s1", "本件事證明確，並無其他應予斟酌之情事。", "reasoning")])
+        state.draft["doc_skeleton"][0]["ss"][0]["basis"] = shield
+        n6_gate.run(state, _ctx())
+        s = state.gate["doc"][0]["ss"][0]
+        assert_eq(s["tier"], "請人工判斷", f"{shield!r} 驗不了，不得算出處")
+        assert_eq(state.gate["submit_allowed"], False, f"{shield!r} 不得讓案子變成可送出")
+
+
+def test_fabricated_record_conclusions_cannot_be_submitted():
+    """覆核 P0-3：把實質結論捏造成卷證事實（origin=record），25/30 曾拿綠燈放行。
+
+    case 層封鎖之後，這一整類不論片語層有沒有標到，都不可能送出。
+    """
+    forms = (
+        "卷內載明本件訴願要件不備。",
+        "原處分機關已於卷內載明本件應予撤銷。",
+        "經查本件符合不受理要件。",
+        "卷附簽呈記載本案擬予駁回。",
+        "原處分機關主張駁回訴願，此有卷附答辯書可稽。",
+        "卷附紀錄記載訴願人請求撤銷原處分，經審查小組同意。",
+    )
+    leaked = []
+    for i, text in enumerate(forms):
+        state = _blocked_state_with([_sentence(f"s{i}", text, "facts", origin="record")])
+        n6_gate.run(state, _ctx())
+        if state.gate["submit_allowed"]:
+            leaked.append(text)
+    assert_eq(leaked, [], f"{len(leaked)} 句捏造卷證結論可送出：{leaked}")
+
+
+def test_record_why_does_not_claim_unverified_verbatim_fidelity():
+    """`why` 不得對評審講一句系統擔保不了的話。
+
+    原文寫「卷證原文直錄，未經改寫或生成」——但 `facts_excerpt` 由 N1（live 檔位是 LLM）
+    透傳，全流程沒有任何一處把它與來源文件逐字比對。這是**具體的事實宣稱**，不能亂講。
+    """
+    from backend.gate.lamps import WHY_RECORD
+
+    assert_true("未經改寫" not in WHY_RECORD, "不得宣稱未經改寫——系統無從擔保")
+    assert_true("逐字比對" in WHY_RECORD or "覆核原文" in WHY_RECORD, "必須把限制講出來")
+
+
+def test_invariant_is_not_string_based():
+    """不變式改成只看案件性質，不重跑偵測器（否則等於用同一把尺量兩次）。"""
+    state = _blocked_state_with([_sentence("s1", "任意文字。", "reasoning")])
+    state.gate = {"doc": state.draft["doc_skeleton"], "blockers": [], "submit_allowed": True}
+    try:
+        state.assert_verified_invariant()
+    except AssertionError as e:
+        assert_in("conclusion_requires_human", str(e))
+        return
+    raise AssertionError("C 型案件缺 case 層封鎖時，不變式必須炸")
 
 
 # ════════════════════════════════════════════════════════════════════

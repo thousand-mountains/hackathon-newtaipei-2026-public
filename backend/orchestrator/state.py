@@ -128,39 +128,39 @@ class CaseState:
             raise AssertionError("不變式違反：算出期滿日卻沒有攤開算式 steps")
 
     def assert_verified_invariant(self) -> None:
-        """requires_human_conclusion=true 時，doc[] 不得存在**未被攔下的**模型主文句。
+        """C 型封鎖時必須成立的兩條不變式。**兩條都不看句子的文字內容。**
 
-        兩條規則，涵蓋所有槽位（舊版只看 `slot == "conclusion"`，等於讓被管制的一方
-        用自己標的欄位決定要不要受管制）：
+        1. **結構**：`conclusion` 槽位不得有模型生成的句子（N5 會把它從 slots 刪掉，
+           出現就代表封鎖的結構本身破了）。
+        2. **送出**：`requires_human_conclusion=true` ⇒ 必須有 case 層的
+           `conclusion_requires_human` 阻擋項，且 `submit_allowed` 為 false。
 
-        1. **結構違反**：`conclusion` 槽位根本不該存在（N5 會把它從 slots 刪掉）。
-           一旦出現模型生成的結論句，代表封鎖的結構本身破了 → 直接炸，不是記一筆。
-        2. **洩漏未攔**：任何槽位出現模型主文型語句，而它**沒有**被標紅並列入 blockers
-           → 炸。已被 N6 標紅並進 blockers 的，是守門正常運作（流程要繼續跑完，
-           讓使用者看得到被攔下的是哪一句），不炸。
+        為什麼不再用 `detect_conclusion_like` 複驗：前幾版的不變式重跑同一個偵測器，
+        等於用同一把尺量兩次——片語層漏抓的它也漏抓，卻給人「有兩道防線」的錯覺。
+        連續三輪對抗覆核都點出這件事。真正的第二道防線是上面第 2 條：
+        它只看案件性質（規則算出的 `requires_human_conclusion`），沒有任何寫法能繞過。
         """
         if not self.screen.get("requires_human_conclusion"):
             return
-        from backend.gate.lamps import detect_conclusion_like  # 延後 import，避免循環相依
-
-        blocked_ids = {b.get("sentence_id") for b in self.gate.get("blockers", [])}
         for block in self.gate.get("doc", []):
             for s in block.get("ss", []):
-                origin = s.get("origin")
-                if s.get("placeholder") or origin in ("engine", "rule", "static"):
-                    continue
-                if s.get("slot") == "conclusion" and origin == "llm":
+                if s.get("slot") == "conclusion" and s.get("origin") == "llm" and not s.get("placeholder"):
                     raise AssertionError(
                         f"P0 不變式違反：requires_human_conclusion=true 但句子 {s.get('id')} "
                         f"是模型生成的結論段（US-8 AC-8.3）"
                     )
-                rules = detect_conclusion_like(s.get("t") or "")
-                if rules and not (s.get("l") == "r" and s.get("id") in blocked_ids):
-                    raise AssertionError(
-                        f"P0 不變式違反：requires_human_conclusion=true 但句子 {s.get('id')}"
-                        f"（slot={s.get('slot')}）命中主文型結構（{'；'.join(rules)}）"
-                        f"卻沒有被標紅並列入 blockers——主文換個槽位就繞過封鎖"
-                    )
+        if not self.gate:
+            return  # 守門還沒跑，第 2 條還輪不到
+        reasons = {b.get("reason") for b in self.gate.get("blockers", [])}
+        if "conclusion_requires_human" not in reasons:
+            raise AssertionError(
+                "P0 不變式違反：requires_human_conclusion=true 但 blockers 沒有 case 層的 "
+                "conclusion_requires_human——C 型案件必須一律阻擋送出"
+            )
+        if self.gate.get("submit_allowed"):
+            raise AssertionError(
+                "P0 不變式違反：requires_human_conclusion=true 但 submit_allowed=true"
+            )
 
     def as_dict(self) -> dict[str, Any]:
         return dataclasses.asdict(self)
