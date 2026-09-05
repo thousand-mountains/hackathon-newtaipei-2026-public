@@ -60,6 +60,13 @@ header.masthead{background:var(--navy);color:#fff;border-bottom:4px solid var(--
 .crumb b{color:var(--ink-2);font-weight:500}
 .prov{margin-left:auto;font-size:11.5px;letter-spacing:.02em;color:var(--seal);
   border:1px solid rgba(158,42,43,.35);background:#FDF4F4;border-radius:2px;padding:1px 9px;white-space:nowrap}
+/* 資料來源模式徽章：常駐，一眼看出畫面是接了後端還是離線重播 */
+.mode{font-size:11.5px;letter-spacing:.02em;border-radius:2px;padding:1px 9px;white-space:nowrap;
+  border:1px solid transparent;font-weight:500;cursor:help}
+.mode[data-m="live"]{color:var(--green);border-color:rgba(27,122,75,.4);background:#EDF7F1}
+.mode[data-m="offline"]{color:var(--amber);border-color:rgba(176,114,6,.4);background:#FDF7EA}
+.mode[data-m="pending"]{color:var(--ink-3);border-color:var(--line);background:var(--paper-2)}
+.mode .dotm{display:inline-block;width:7px;height:7px;border-radius:50%;background:currentColor;margin-right:5px;vertical-align:.05em}
 
 /* ---------- 步驟列 ---------- */
 .steps{background:var(--white);border-bottom:1px solid var(--line);position:sticky;top:0;z-index:40;box-shadow:0 1px 0 rgba(0,0,0,.02)}
@@ -330,6 +337,23 @@ textarea{resize:vertical;line-height:1.7}
 .calc .cav p:last-child{margin:0}
 .nav-r{display:flex;gap:6px;align-items:center;font-size:12px;color:var(--ink-3)}
 
+/* ---------- 對抗測資標記：刻意注入的錯誤引用，畫面上必須看得出來 ---------- */
+.advmark{font-family:var(--sans);font-size:10.5px;font-weight:700;letter-spacing:.02em;
+  color:var(--seal);background:#FDF4F4;border:1px solid rgba(158,42,43,.45);border-radius:2px;
+  padding:0 4px;margin-left:4px;vertical-align:.35em;cursor:help;white-space:nowrap}
+.advnote{font-size:11.5px;line-height:1.7;color:var(--seal);background:#FDF4F4;
+  border-left:3px solid var(--seal);border-radius:2px;padding:7px 10px;margin:0 0 10px}
+
+/* ---------- 送出閘門的阻擋原因（§6.2 blockers[]） ---------- */
+.blockers{display:grid;gap:6px}
+.blockers .bk{font-size:12px;line-height:1.65;color:var(--ink-2);background:#FDF4F4;
+  border-left:3px solid var(--seal);border-radius:2px;padding:7px 10px}
+.blockers .bk b{color:var(--seal);font-weight:700}
+.handoff-q{margin:0 0 9px;padding-left:20px;font-size:12.5px;line-height:1.75;color:var(--ink-2)}
+.handoff-q li{margin-bottom:6px}
+.handoff-s{display:grid;gap:5px;margin-bottom:9px}
+.handoff-s span{font-size:11.5px;line-height:1.65;color:var(--ink-3);background:var(--paper);border-radius:2px;padding:5px 8px}
+
 .gate{margin-top:16px;border:1px solid var(--line);border-radius:3px;background:var(--white);padding:15px 17px;display:flex;gap:14px;align-items:center;flex-wrap:wrap;box-shadow:var(--shadow)}
 .gate .msg{flex:1;min-width:240px;font-size:13px;color:var(--ink-2)}
 .gate .msg b{display:block;font-size:14.5px;color:var(--ink);font-weight:700;margin-bottom:2px}
@@ -401,6 +425,7 @@ footer b{color:#C9DCEE;font-weight:500}
 </div></header>
 
 <nav class="crumb"><div class="in"><span>首頁 ／ 訴願案件管理 ／ <b>決定書撰擬</b></span>
+  <span class="mode" id="modebadge" data-m="pending" tabindex="0" style="margin-left:auto"><span class="dotm"></span>連線後端中…</span>
   <span class="prov" id="prov" tabindex="0">示範案件・去識別化資料</span>
 </div></nav>
 
@@ -433,7 +458,12 @@ footer b{color:#C9DCEE;font-weight:500}
         <ul class="files" id="filelist"></ul>
         <div class="actions">
           <button class="btn ghost sm" id="demoload">載入示範案件（洗錢防制法 書面告誡）</button>
+          <!-- live 模式才顯示：案例清單來自後端 GET /api/cases -->
+          <label id="casepick" style="display:none;align-items:center;gap:7px;font-size:12.5px;color:var(--ink-3)">
+            後端案例<select id="caseselect" style="width:auto;padding:4px 8px;font-size:12.5px"></select>
+          </label>
         </div>
+        <p class="hint" id="sourcenote" style="margin:10px 0 0"></p>
       </div>
     </div>
 
@@ -567,11 +597,19 @@ footer b{color:#C9DCEE;font-weight:500}
           <button class="btn seal sm" id="ackall" style="width:100%;margin-top:9px">一鍵確認</button>
         </div>
       </div>
+      <!-- live 模式才顯示：N6 交接卡（US-8 AC-8.2），問題與訊號一律由後端產生 -->
+      <div class="det" id="handoffcard" style="display:none">
+        <div class="hdd"><span style="width:3px;height:15px;background:var(--seal);border-radius:2px"></span>交接卡・請承辦人判斷</div>
+        <div class="bd" id="handoffbody"></div>
+      </div>
     </div>
   </div>
 
   <div class="gate">
-    <div class="msg"><b id="gatetitle">尚有紅燈項目待確認</b><span id="gatemsg">紅燈項目全部確認後，才會開放送出審議。</span></div>
+    <div class="msg"><b id="gatetitle">尚有紅燈項目待確認</b><span id="gatemsg">紅燈項目全部確認後，才會開放送出審議。</span>
+      <!-- live 模式：後端 blockers[]，說明「為什麼擋」，不只 disable 按鈕（§6.2） -->
+      <div id="blockerlist" style="display:none;margin-top:9px"></div>
+    </div>
   </div>
 </section>
 
