@@ -2,9 +2,9 @@
  "url": "http://127.0.0.1:8080/?case=synthetic-blocked-01",
  "badge_mode": "live",
  "badge_text": "live 後端・synthetic-blocked-01",
- "badge_tip": "本頁資料來自後端六節點的一次實際執行（run_id run-synthetic-blocked-01-14b319e305da，RUN_MODE=fixture）。燈號、引用狀態、送出許可全部由後端守門節點判定，前端不重算。",
+ "badge_tip": "本頁資料來自後端六節點的一次實際執行（run_id run-synthetic-blocked-01-d5b55e5d5558，RUN_MODE=fixture）。燈號、引用狀態、送出許可全部由後端守門節點判定，前端不重算。",
  "prov_text": "合成測資：案情自公開決定書之結構反推改寫，人名、地址、案號均為虛構，不對應任何真實案件。",
- "sourcenote": "資料來源：後端 POST /api/cases/synthetic-blocked-01/runs（run_id run-synthetic-blocked-01-14b319e305da）。燈號與引用狀態由後端守門節點判定，本頁不重算。",
+ "sourcenote": "資料來源：後端 POST /api/cases/synthetic-blocked-01/runs（run_id run-synthetic-blocked-01-d5b55e5d5558）。燈號與引用狀態由後端守門節點判定，本頁不重算。",
  "case_options": [
   "synthetic-blocked-01",
   "synthetic-ordinary-01"
@@ -26,7 +26,8 @@
    "a_org",
    "a_d1",
    "a_d2",
-   "a_d3"
+   "a_d3",
+   "a_sm"
   ],
   "go1_disabled": false
  },
@@ -70,9 +71,9 @@
    }
   ],
   "console_head": [
-   "19:10:52 幕僚團啟動 · 案號 synthetic-1140000002",
-   "19:10:52 資料來源：後端六節點執行結果 run_id run-synthetic-blocked-01-14b319e305da（前端不重算燈號）",
-   "19:10:52 ▶ 卷證書記官 開始作業"
+   "19:54:01 幕僚團啟動 · 案號 synthetic-1140000002",
+   "19:54:01 資料來源：後端六節點執行結果 run_id run-synthetic-blocked-01-c809fb7fff26（前端不重算燈號）",
+   "19:54:02 ▶ 卷證書記官 開始作業"
   ]
  },
  "step2": {
@@ -131,7 +132,7 @@
   },
   "go4_disabled": true,
   "gatetitle": "後端守門阻擋送出（2 項）",
-  "gatemsg": "本案未通過品管守門節點，送出審議已鎖定。阻擋原因如下，須先由承辦人處理；紅燈逐句確認不會解除此鎖定。",
+  "gatemsg": "本案未通過品管守門節點。按下送出時後端會重新判斷一次並以 409 拒絕；阻擋原因如下，須先由承辦人處理。紅燈逐句確認不會解除它。",
   "blockers_visible": true,
   "blockers": [
    "[citation_missing] 第 5 句　建築法第999條：快照中建築法無第 999 條（最大條號 105），請人工查證是否誤植。",

@@ -33,7 +33,7 @@ WHY_RECORD = "本句標示為卷證直錄；本階段尚無法與來源文件逐
 WHY_ALL_OK = "所引法條／判解全部可對回資料集，字號已驗。"
 WHY_AMENDED = "引用之條次已異動，新舊條號並陳，請確認適用版本。"
 WHY_OUT_OF_SCOPE = "引用超出資料集涵蓋範圍，本系統無法驗證，請人工查證後再採用。"
-WHY_MISSING = "引用在資料集內查無此號，可能為誤植，已阻擋送出。"
+WHY_MISSING = "引用在資料集內查無此號，可能為誤植；後端送出端點會以 409 拒絕本案送出。"
 WHY_NO_CITE = (
     "本句未附任何可查證的引用，系統無從指出它的出處，因此不列入「有出處」層，"
     "改列「請人工判斷」，請承辦人確認其法律依據。"
@@ -41,9 +41,9 @@ WHY_NO_CITE = (
 WHY_UNPARSEABLE = (
     "本句的引用號碼寫法無法無歧義解析，系統不猜也不宣稱它存在或不存在，請人工確認號碼。"
 )
-WHY_UNRESOLVED_REF = "本句標註的引用編號在檢索結果中解析不到，已阻擋送出。"
+WHY_UNRESOLVED_REF = "本句標註的引用編號在檢索結果中解析不到；後端送出端點會以 409 拒絕本案送出。"
 WHY_PLACEHOLDER = "結論涉及法律判斷，系統不生成，僅提供交接問題清單。"
-WHY_CONCLUSION_LEAK = "結論段已封鎖，但本句出現主文型語句。實質結論不得因為換個槽位就繞過封鎖，已阻擋送出。"
+WHY_CONCLUSION_LEAK = "結論段已封鎖，但本句出現主文型語句。實質結論不得因為換個槽位就繞過封鎖；後端送出端點會以 409 拒絕本案送出。"
 WHY_UNSOURCED_WHILE_BLOCKED = (
     "本案結論段已封鎖（需人工判斷），而本句未附任何可查證的引用——系統無法確認它不是實質結論，已交人工。"
 )
@@ -128,6 +128,8 @@ def requires_human_conclusion(
     case_type: str,
     fact_issues: list[dict[str, Any]],
     substantive_types: tuple[str, ...],
+    procedural_inputs_confirmed: bool = False,
+    unconfirmed_fields: tuple[str, ...] = (),
 ) -> tuple[bool, list[str]]:
     """C 型結論封鎖的結構性開關（architecture §4.3）。
 
@@ -151,7 +153,22 @@ def requires_human_conclusion(
     # 為什麼要加「程序上沒有不受理事由」這個條件：逾期不受理（77-2）是期間引擎直接算出來的，
     # 屬可驗算層，那種案子不需要靠案型判斷就能寫結論（synthetic-ordinary-01 就是）。
     unknown_type = case_type not in substantive_types
-    procedurally_resolved = bool(art77.get("clause"))
+    # 判斷卡 7（2026-09-05 Ci 拍板）：只有**承辦人確認過**的期間輸入欄位，
+    # 才可以用「程序上已有可直接算出的不受理事由」來解除結論封鎖。
+    # 未確認時 `procedurally_resolved` 一律當 False——覆核實測證明，
+    # 改一個模型抽出來的日期就足以把整個封鎖關掉（見 settings.DEADLINE_INPUT_FIELDS）。
+    procedurally_resolved = bool(art77.get("clause")) and procedural_inputs_confirmed
+    # 這是覆核實測真正打穿的那條路徑：案件被判逾期（clause=77-2）→
+    # `requires_substantive_review` 變 False → `substantive` 變 False → 整個封鎖關掉。
+    # 而「是否逾期」完全由 d2／d3／送達方式決定，那些欄位在 live 檔位是模型抽的。
+    # 所以：**只要是靠未確認的抽取欄位算出來的程序結論，就不准拿它解除封鎖。**
+    unconfirmed_procedural_unlock = bool(art77.get("clause")) and not procedural_inputs_confirmed
+    if unconfirmed_procedural_unlock:
+        from backend.config.settings import UNCONFIRMED_INTAKE_SIGNAL
+
+        signals.append(
+            UNCONFIRMED_INTAKE_SIGNAL.format(fields="、".join(unconfirmed_fields) or "（未指明）")
+        )
     if unknown_type and not procedurally_resolved:
         signals.append(
             f"案型「{case_type or '（空白）'}」不在已知需事實認定型清單內，"
@@ -160,7 +177,7 @@ def requires_human_conclusion(
         )
         return True, signals
 
-    return (substantive or bool(high)), signals
+    return (substantive or bool(high) or unconfirmed_procedural_unlock), signals
 
 
 # ════════════════════════════════════════════════════════════════════
@@ -175,16 +192,24 @@ def requires_human_conclusion(
 #
 # 第二版改成**三層判準**，其中第三層才是真正的骨幹：
 #
-# 1. **法定處理結果動詞（強）**——訴願法 §77／§79–82 把可能的處理結果**窮舉**了：
+# 1. **法定處理結果動詞（強）**——訴願法 §77／§79–82 列出的處理結果：
 #    不受理、駁回、撤銷、變更、維持、確認、命應為之處分、發回另為處分。
-#    這一層的清單不是從測試案例長出來的，是從法條長出來的，因此是封閉集合。
+#    這一層的清單是從法條長出來的，不是從測試案例長出來的。
+#    **但它不是封閉集合**：法條列的是「處理結果」，決定書寫的是「表達那個結果的中文」，
+#    兩者不是一對一——三輪覆核每一輪都找得到新寫法（§83 情況決定、§93 停止執行、
+#    §84 損害賠償、§81 自為決定／酌減都是後來才補的）。這裡與檔案下方
+#    「這份清單不是、也不可能是窮舉」的說明是同一件事，不要再寫成封閉集合。
 #    句段內出現其中之一即命中，**不設字元視窗**（視窗本身就是繞法）。
 # 2. **評價性結論述語（弱）**——「有／無理由」「有／無據」「可採」「違誤」等，
 #    必須與案件標的**緊鄰**（≤4 字）才命中，避免「原處分認定之違規事實…尚無違誤」
 #    這種講事實認定的句子被誤攔。
 # 3. **兜底：C 型封鎖下，模型寫的句子若一個可查證的引用都沒有，一律交人工**
-#    （在 `n6_gate.py` 實作）。這一層不看字串，所以**沒有寫法能繞過**：
-#    覆核打穿的 9 種主文寫法沒有一句帶引用。片語層漏掉的，這層接住。
+#    （在 `n6_gate.py` 實作）。這一層不看字串，所以**不能靠改寫句子的文字繞過**——
+#    覆核打穿的 9 種主文寫法沒有一句帶引用，片語層漏掉的這層接住。
+#    **但它不是「沒有寫法能繞過」**，那句話擔保不了：(a) 帶一個可查證引用的捏造主文
+#    就不會被這層接住；(b) 這層只在 C 型封鎖成立時才生效，而封鎖開關的上游是
+#    N1 抽出來的日期欄位（判斷卡 7 已把未確認的情形改成 fail-safe 封鎖，
+#    但確認之後仍以承辦人看到的值為準）。邊界寫清楚，不要寫成絕對。
 #
 # 免責框架（negative evidence，也是結構性的）：
 #   - **通則引述**：「按…第X條規定，…者，…」——講的是法條通則不是本案，

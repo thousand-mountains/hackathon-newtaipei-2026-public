@@ -24,6 +24,7 @@ from backend.config.settings import (
     AUTO_TOAST_TEMPLATE,
     ISSUE_LAMP,
     ISSUE_TAG_BY_SEVERITY,
+    CONFIRMABLE_INTAKE_FIELDS,
     NODE_TO_AGENTS,
     PROVENANCE,
     SUBSTANTIVE_TYPES,
@@ -78,8 +79,48 @@ def load_case(case_id: str, data_dir: pathlib.Path | None = None) -> dict[str, A
     return json.loads(p.read_text(encoding="utf-8"))
 
 
-def run_case(case_id: str, mode: str | None = None, data_dir: pathlib.Path | None = None) -> CaseState:
-    """把一個合成案例跑完六個節點，回傳終態 CaseState。"""
+def _apply_confirmed_intake(state: CaseState, confirmed: dict[str, Any] | None) -> None:
+    """把承辦人在收文頁確認過的欄位寫回 state，並把 origin 翻成 `human`（判斷卡 7）。
+
+    「確認」的定義是**人看過那個值**（可能改過，也可能原樣採用），不是「值變了」。
+    所以即使送來的值與 N1 抽的一模一樣，origin 也要翻成 human——
+    差別在於現在有人為它背書了。
+
+    白名單制：不在 `CONFIRMABLE_INTAKE_FIELDS` 內的鍵一律拒絕（丟 ValueError），
+    不讓呼叫端用這條路徑塞進任意狀態。
+    """
+    if not confirmed:
+        return
+    unknown = [k for k in confirmed if k not in CONFIRMABLE_INTAKE_FIELDS]
+    if unknown:
+        raise ValueError(
+            f"confirmed_intake 含不可確認的欄位 {unknown}；"
+            f"允許的欄位：{', '.join(CONFIRMABLE_INTAKE_FIELDS)}"
+        )
+    applied: list[str] = []
+    for k, v in confirmed.items():
+        if k == "transit_days":
+            v = int(v or 0)
+        elif k == "interested_party":
+            v = bool(v)
+        if v is not None:
+            state.intake[k] = v
+        state.intake_origin[k] = "human"
+        applied.append(k)
+    state.intake_confirmed = sorted(applied)
+
+
+def run_case(
+    case_id: str,
+    mode: str | None = None,
+    data_dir: pathlib.Path | None = None,
+    confirmed_intake: dict[str, Any] | None = None,
+) -> CaseState:
+    """把一個合成案例跑完六個節點，回傳終態 CaseState。
+
+    `confirmed_intake`：承辦人在收文頁確認過的 intake 欄位。**不給就是沒人確認過**，
+    此時期間結果不得用來解除結論封鎖（判斷卡 7，見 `gate/lamps.requires_human_conclusion`）。
+    """
     fixture = load_case(case_id, data_dir)
     mode = mode or run_mode()
     snapshot = load_snapshot()
@@ -105,6 +146,9 @@ def run_case(case_id: str, mode: str | None = None, data_dir: pathlib.Path | Non
     state.transition("EXTRACTING")
     for node in NODE_ORDER:
         result = _dispatch(node, state, ctx, fixture, digest)
+        if node == "n1":
+            # 人工確認緊接在抽取之後套用：N3 的程序判斷要看得到 origin 已翻成 human
+            _apply_confirmed_intake(state, confirmed_intake)
         node_timings[node] = result.elapsed_ms
         merge_agent_narrative(agents, node, result.narrative, result.degraded, result.degrade_reason)
         if result.degraded:
@@ -313,6 +357,8 @@ def build_payload(state: CaseState) -> dict[str, Any]:
         "intake": intake_view,
         "intake_conf": state.intake_conf,
         "intake_origin": state.intake_origin,
+        # 判斷卡 7：哪些欄位是承辦人確認過的（空 list = 全部仍是模型抽取）
+        "intake_confirmed": state.intake_confirmed,
         "facts_excerpt": state.facts_excerpt,
         "classification": state.classification,
         "screen": state.screen,

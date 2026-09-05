@@ -38,6 +38,7 @@ ORIGIN_TO_TIER = {
     "retrieval": TIER_SOURCED,
     "record": TIER_SOURCED,
     "human_required": TIER_HUMAN,
+    "human": TIER_VERIFIABLE,  # 承辦人親自確認的欄位：有人背書，不是模型讀出來的
     "llm": TIER_SOURCED,  # 模型句子必須帶引用才出得去；沒帶引用的會被 N6 打紅燈
     "llm_derived": TIER_SOURCED,  # 規則算出來的，但輸入是模型輸出——不算可驗算層
     "static": TIER_VERIFIABLE,
@@ -54,14 +55,27 @@ ORIGIN = {
     "intake.auto_toast": "rule",  # 模板填數字，不寫死（§6.2）
     "intake_conf.*": "llm",
     "intake_origin.*": "rule",
+    "intake_confirmed[]": "human",  # 承辦人在收文頁確認過的欄位名（判斷卡 7）
     "facts_excerpt[].text": "record",
-    # ⚠ 標 rule 是「分類**演算法**是規則式」的意思，但它的輸入 `intake.type` 來自 N1（llm）。
-    # 也就是說 case_type 實際上是 llm 衍生值，而 case_type 又餵給
-    # `screen.requires_human_conclusion`（C 型結論封鎖的開關）。
-    # 換句話說：**封鎖開關的上游有一個未經人工確認的模型輸出**。
-    # 正確做法是接上 US-10 的人工確認表單後把 intake_origin[type] 轉成 human 再往下傳；
-    # Phase 0 還沒有那道表單，所以這裡誠實標成 llm_derived，不假裝它是純規則。
+    # ⚠ 標 rule 是「分類**演算法**是規則式」的意思，但它的輸入 `intake.type` 來自 N1（llm），
+    # 所以 case_type 實際上是 llm 衍生值——這一段仍然成立。
+    #
+    # **但這段原本把矛頭指錯人了（2026-09-05 覆核更正）**：它說封鎖開關的上游是 case_type，
+    # 實測不是。改 case_type 關不掉封鎖（fail-safe 會接住：案型不明反而更保守）；
+    # 真正關得掉的是 **`intake.d2` / `d3` / `service_method`**——改一個日期就讓案件變逾期、
+    # `art77.clause` 變 77-2、`requires_substantive_review` 變 False、整個結論封鎖消失。
+    # 那些欄位在 live 檔位全部是 N1 抽的（origin=llm）。
+    #
+    # 修法（判斷卡 7，Ci 拍板）：那些欄位只有在 `intake_origin` 翻成 `human` 之後，
+    # 才可以用程序結果解除封鎖。所以 `screen.*` 不能整批標 rule——
+    # 演算法是規則式沒錯，但它吃的是模型抽出來的東西，兩件事要分開標。
     "classification.*": "rule",
+    "screen.deadline.*": "llm_derived",  # 演算法純規則，但輸入 d2/d3/送達方式來自 N1
+    "screen.art77.*": "llm_derived",  # 由 deadline 推導，同一條依賴鏈
+    "screen.requires_human_conclusion": "llm_derived",  # 未確認前，開關的上游是模型輸出
+    "screen.procedural_inputs_confirmed": "rule",  # 這一欄本身是程式算的（有沒有人確認）
+    "screen.unconfirmed_procedural_fields": "rule",
+    "screen.fact_issues[]": "rule",  # 純字串比對，輸入是卷證原文
     "screen.*": "rule",
     "retrieval.*": "retrieval",
     "doc[]": "static",  # 骨架是模板；句子的 origin 逐句標在 doc[].ss[].origin

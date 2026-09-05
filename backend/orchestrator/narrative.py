@@ -227,12 +227,22 @@ def conclusion_block_criterion(
     substantive = bool(art77.get("requires_substantive_review")) and case_type in substantive_types
     high = [i for i in fact_issues if i.get("severity") == "high"]
     unknown_type = case_type not in substantive_types
-    procedurally_resolved = bool(art77.get("clause"))
+    inputs_confirmed = bool(screen.get("procedural_inputs_confirmed"))
+    unconfirmed_fields = list(screen.get("unconfirmed_procedural_fields") or [])
+    procedurally_resolved = bool(art77.get("clause")) and inputs_confirmed
+    # 判斷卡 7：靠未確認的抽取欄位算出來的程序結論，不准拿來解除封鎖
+    unconfirmed_unlock = bool(art77.get("clause")) and not inputs_confirmed
     fail_safe = unknown_type and not procedurally_resolved
 
     if fail_safe:
         reason_id = "unknown_case_type_fail_safe"
         text = settings.BLOCK_CRITERION_FAIL_SAFE.format(case_type=case_type or "（空白）")
+    elif unconfirmed_unlock and not substantive:
+        reason_id = "unconfirmed_procedural_inputs"
+        text = settings.BLOCK_CRITERION_UNCONFIRMED.format(
+            fields="、".join(unconfirmed_fields) or "（未指明）",
+            clause=art77.get("clause") or "—",
+        )
     elif substantive:
         reason_id = "procedurally_valid_needs_substantive_review"
         text = settings.BLOCK_CRITERION_SUBSTANTIVE.format(case_type=case_type)
@@ -243,7 +253,7 @@ def conclusion_block_criterion(
         reason_id = "not_blocked"
         text = settings.BLOCK_CRITERION_NONE
 
-    blocked = bool(fail_safe or substantive or high)
+    blocked = bool(fail_safe or substantive or high or unconfirmed_unlock)
     # 高風險爭點只有在它「就是」操作判準時才算原因；其餘情況一律標成提醒
     fact_issue_is_operative = reason_id == "high_severity_fact_issue"
     return {

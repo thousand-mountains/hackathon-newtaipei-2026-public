@@ -17,6 +17,7 @@ uv run --with fastapi --with "uvicorn[standard]" --with pydantic -- \
 > 2026-09-05 追加：多一支 `verify_recalc.py`，驗 live 模式改日期即時重算。
 
 ```bash
+uv run --with playwright -- python docs/evidence/2026-09-05-integration/verify_submit.py /tmp/shots
 uv run --with playwright -- python docs/evidence/2026-09-05-integration/verify_recalc.py \
     synthetic-blocked-01 2025-06-30 /tmp/shots
 uv run --with playwright -- python docs/evidence/2026-09-05-integration/verify_ui.py \
@@ -37,6 +38,9 @@ uv run --with playwright -- python docs/evidence/2026-09-05-integration/verify_o
 | `verify_ui.py` | live 模式五步逐步驗證（載入案件 → 幕僚團 → 草稿 → 燈號審核 → 送出） |
 | `verify_offline.py` | `file://` 直開的離線 fixture 模式驗證 |
 | `verify_recalc.py` | live 模式改提起訴願日 → 打 `POST /api/deadline` 重算 → 該句轉紅（自帶 PASS/FAIL 判定） |
+| `verify_submit.py` | 判斷卡 7 ＋ 送出端點三情境：確認後送出 200／未確認打 API 得 409／blocked **強制繞過前端 disabled** 仍得 409（自帶 PASS/FAIL） |
+| `submit-endpoint.json` | 上述三情境的完整 DOM 與 API 節錄 |
+| `*-submit.png` | 送出後的完成頁 / 被 409 拒絕的燈號頁 |
 | `recalc-blocked-01.json` | 重算前後的燈號、判定句、程序審查官卡片與閘門狀態 |
 | `synthetic-blocked-01-step2.png` | 左欄兩份清單：獨立檢索結果 vs 草稿實際引用 + 落差說明 |
 | `synthetic-ordinary-01-step2.png` | 法規卡的三種狀態：綠燈（草稿有引用、守門查核過）vs 中性虛線徽章「檢索到，草稿未引用」 |

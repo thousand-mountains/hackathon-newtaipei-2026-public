@@ -20,6 +20,7 @@
 | GET  | `/api/health`               | 健康檢查：**實際**載入快照與合成案例       |
 | GET  | `/api/cases`                | 列出可用的合成案例                         |
 | POST | `/api/cases/{case_id}/runs` | 跑完六節點，回 `run_id` + 完整 CASE payload |
+| POST | `/api/cases/{case_id}/submit` | 送出審議：後端重算後 200／409（§6.1 #9）  |
 | POST | `/api/deadline`             | 期間計算（沿用 prototype/app.py 的契約）    |
 
 紅線：
@@ -32,8 +33,10 @@
 from __future__ import annotations
 
 import datetime as dt
+import json
 import pathlib
 import sys
+from typing import Any
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
@@ -74,6 +77,17 @@ app.add_middleware(
     allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["*"],
 )
+
+
+class RunIn(BaseModel):
+    """`POST /runs` 的選填 body（判斷卡 7）。
+
+    `confirmed_intake` 裡的欄位代表**承辦人在收文頁看過**（可能改過、也可能原樣採用）。
+    這些欄位的 `intake_origin` 會記成 `human`，而且只有它們齊全時，
+    期間結果才可以用來解除結論封鎖。不給 body ＝ 沒有人確認過。
+    """
+
+    confirmed_intake: dict[str, Any] | None = None
 
 
 class DeadlineIn(BaseModel):
@@ -162,7 +176,7 @@ def cases() -> dict:
 
 
 @app.post("/api/cases/{case_id}/runs")
-def create_run(case_id: str) -> dict:
+def create_run(case_id: str, body: RunIn | None = None) -> dict:
     """啟動狀態機並同步跑完六節點，回 `run_id` + 完整 CASE payload。
 
     architecture §6.1 的 2a 規定回 `{run_id}`；Phase 0 是同步執行
@@ -171,7 +185,7 @@ def create_run(case_id: str) -> dict:
     接上真實模型後要改成 202 + SSE 事件流（architecture §6.1 的 2b）。
     """
     try:
-        state = run_case(case_id)
+        state = run_case(case_id, confirmed_intake=(body.confirmed_intake if body else None))
     except CaseNotFound as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
     except ValueError as e:
@@ -186,6 +200,72 @@ def create_run(case_id: str) -> dict:
     if payload["origin_violations"]:
         raise HTTPException(status_code=500, detail={"origin_violations": payload["origin_violations"]})
     return payload
+
+
+# 送出紀錄。**本機檔案，沒有任何外部整合**——沒有寄信、沒有排議程、沒有打任何外部系統。
+# 這件事必須寫在回應裡（`external_effect: "none"`），因為 UI 上「已送出」四個字
+# 很容易被讀成「已經送到訴願審議委員會了」。
+SUBMISSION_LOG = ROOT / "backend" / "output" / "submissions.jsonl"
+
+
+@app.post("/api/cases/{case_id}/submit")
+def submit_case(case_id: str, body: RunIn | None = None) -> JSONResponse:
+    """送出審議（architecture §6.1 #9）。
+
+    **後端自己重跑一次六節點再判斷，完全不信前端送來的 `submit_allowed`。**
+    前端的送出鈕只是一個按鈕，改 DOM 或直接打這支 API 都繞得過它；
+    唯一有意義的守門點是這裡。這也是「已標記為不得逕行送出」能不能改口說成
+    「後端會拒絕」的前提——在這支端點接上之前，那句話是不實的。
+
+    - 阻擋 → **409** ＋ 完整 blockers（要說得出為什麼擋，不能只回一個 false）
+    - 允許 → 200 ＋ 本機收據。收據裡明寫 `external_effect: "none"`。
+    """
+    try:
+        state = run_case(case_id, confirmed_intake=(body.confirmed_intake if body else None))
+    except CaseNotFound as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except NotImplementedError as e:
+        raise HTTPException(status_code=501, detail=str(e)) from e
+    except AssertionError as e:
+        raise HTTPException(status_code=500, detail=f"不變式違反（P0）：{e}") from e
+
+    payload = build_payload(state)
+    common = {
+        "case_id": case_id,
+        "run_id": payload["run_id"],
+        "recomputed_by": "backend",
+        "recompute_note": "本回應的 submit_allowed 由後端重跑六節點得出，未採信前端送來的任何判斷。",
+        "submit_allowed": payload["submit_allowed"],
+        "blockers": payload["blockers"],
+        "lamp_stats": payload["lamp_stats"],
+        "intake_confirmed": payload["intake_confirmed"],
+    }
+    if not payload["submit_allowed"]:
+        return JSONResponse({**common, "accepted": False}, status_code=409)
+
+    receipt = {
+        **common,
+        "accepted": True,
+        "recorded_at": dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat(),
+        "external_effect": "none",
+        "external_effect_note": (
+            "本 demo 只把這筆紀錄寫進本機檔案，沒有任何外部整合："
+            "沒有寄送任何郵件、沒有排入任何議程、沒有呼叫任何外部系統。"
+        ),
+        "record_path": str(SUBMISSION_LOG.relative_to(ROOT)),
+    }
+    try:
+        SUBMISSION_LOG.parent.mkdir(parents=True, exist_ok=True)
+        with SUBMISSION_LOG.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(receipt, ensure_ascii=False) + "\n")
+    except OSError as e:  # 寫不進去就照實說，不要回一個假的成功
+        return JSONResponse(
+            {**common, "accepted": False, "record_error": f"{type(e).__name__}: {e}"},
+            status_code=500,
+        )
+    return JSONResponse(receipt, status_code=200)
 
 
 def _roc(d: dt.date | None) -> str:

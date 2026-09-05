@@ -78,6 +78,40 @@ TOKEN_NOTE = (
     "live 模式下前端不重算燈號與引用狀態，一律以後端輸出為準。"
 )
 
+# ── 判斷卡 7：結論封鎖的上游是模型抽的欄位（2026-09-05 Ci 拍板）────────
+#
+# 覆核實測打穿的破口：只要改掉 N1 抽的 `d2` 或 `d3` 讓案件變成逾期，
+# `art77.clause` 就變 77-2 → `requires_substantive_review` 變 False →
+# `requires_human_conclusion` 由 True 翻成 False → 捏造的主文拿綠燈、
+# 列進「有出處」、`submit_allowed=True`。**分類（case_type）關不掉封鎖，日期可以。**
+#
+# 這些欄位全部餵進期間引擎，期間結果又決定 77 條款、77 條款又決定要不要封鎖結論。
+# 只要其中任何一欄還是模型抽的（`intake_origin != "human"`），
+# 「程序上已有可直接算出的不受理事由」這個結論就**不足以解除封鎖**。
+#
+# 為什麼是全部五欄而不只 d2/d3：`compute()` 的每個參數都會改變期滿日。
+# 只確認日期、卻讓送達方式／在途期間／利害關係人維持模型抽取，
+# 等於在承辦人沒看過的欄位上宣稱「已確認」——那是同一個洞換個位置。
+DEADLINE_INPUT_FIELDS = ("d2", "d3", "service_method", "transit_days", "interested_party")
+
+# 承辦人可以在收文頁確認（看過、可改過）的欄位。白名單制：
+# 只有列在這裡的欄位可以把 `intake_origin` 從 llm 翻成 human，
+# 避免呼叫端塞一個不存在的欄位進來、或用確認機制夾帶其他狀態。
+CONFIRMABLE_INTAKE_FIELDS = (
+    "no", "type", "person", "org", "d1", "d2", "d3", "agent", "note",
+    "service_method", "transit_days", "interested_party",
+)
+
+UNCONFIRMED_INTAKE_SIGNAL = (
+    "抽取日期未經承辦人確認，結論段維持交人工"
+    "（{fields} 由模型抽取；這些欄位決定期間與訴願法 77 條款，"
+    "未經確認前不得用它們解除結論封鎖）"
+)
+UNCONFIRMED_INTAKE_HANDOFF = (
+    "本案的程序判斷（期滿日、77 條款）建立在**未經承辦人確認**的抽取欄位上。"
+    "請在收文頁核對送達日期、提起日期與送達方式後再送出；確認前結論段一律交人工。"
+)
+
 # ── 期間判定的燈號與說法（`POST /api/deadline` 的 verdict 區塊）──────
 #
 # 為什麼要放在後端：前端在收文頁改日期時要即時看到「這句轉紅了」，
@@ -122,6 +156,11 @@ BLOCK_CRITERION_FAIL_SAFE = (
 )
 BLOCK_CRITERION_FACT_ISSUE = (
     "偵測到高風險事實認定爭點（{issue_ids}），結論涉及事實認定，交由承辦人判斷。"
+)
+BLOCK_CRITERION_UNCONFIRMED = (
+    "程序上算出了訴願法第77條第 {clause} 款之不受理事由，但這個結論建立在**未經承辦人確認**的"
+    "抽取欄位（{fields}）上——那些欄位由模型讀卷證取得，改動其中任何一個都會改變期滿日與 77 條款。"
+    "在承辦人於收文頁確認之前，不得用它來解除結論封鎖，結論段維持交人工。"
 )
 BLOCK_CRITERION_NONE = "本案未觸發結論段封鎖，結論段由系統依模板產出。"
 

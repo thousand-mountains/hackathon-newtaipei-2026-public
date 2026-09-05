@@ -12,11 +12,14 @@
 5. **爭點 ref 補掛與交接卡**：用 N3 的 `fact_issues` 關鍵詞比對到句子上補 `I*`；
    封鎖結論時產出至少 3 個具體交接問題（US-8 AC-8.2）。
 
-⚠️ **`submit_allowed` 目前沒有執行點。** 本模組算出 `blockers` 與 `submit_allowed`，
-但 `backend/api/` 目前**沒有送出端點**（只有 health／cases／runs／deadline），
-沒有任何程式讀 `submit_allowed` 去擋任何動作——它是一個**訊號欄位**，不是強制機制。
-舊版這裡寫「送出端點回 409」，那是**不實的宣稱**，第四輪對抗覆核抓到。
-對外說明一律用「標記為不得逕行送出」，不得說「系統會擋下送出」，直到送出端點接上。
+✅ **`submit_allowed` 現在有執行點了（2026-09-05）。** `POST /api/cases/{id}/submit`
+會**重新跑一次六節點**再判斷，不採信前端送來的任何值；不通過就回 409 並附 blockers。
+所以「後端會以 409 拒絕送出」是可查證的事實陳述，不再是不實的宣稱
+（第四輪覆核抓到的舊版問題是：那時候根本沒有那支端點）。
+
+它的**邊界**仍要講清楚：前端那顆送出鈕的 disabled 只是提示，改 DOM 或直接打 API 都繞得過；
+唯一有意義的守門點是那支端點。而端點擋的是「這一次重算的結果」，
+不是「這份草稿的內容正確」——非 C 型案件的結論段內容系統擋不了（見下方說明）。
 
 ⚠️ **C 型封鎖的開關上游有模型輸出。** `requires_human_conclusion` 由規則函式算出，
 但它的輸入（`case_type`、`art77.clause`）來自 N1／N2 的抽取結果，`origin_registry`
@@ -95,13 +98,15 @@ def run(state: CaseState, ctx: NodeCtx) -> NodeResult:
 
             # 引用抽自句子本文與 basis 欄位（basis 常是「訴願法 14 I」這類法源標註）。
             # 同一句裡本文與 basis 標同一個引用時只算一次，避免 blockers 重複列。
+            # 去重用**結構化鍵**（`Citation.dedup_key`），不用 `raw`：
+            # 前導虛詞剝不乾淨時，同一筆函釋會以兩種 raw 出現而被算成兩筆。
             cites = []
-            seen_raw: set[tuple[str, str]] = set()
+            seen_keys: set[tuple] = set()
             for c in checker.check_text(f"{text}\n{basis}"):
-                key = (c.kind, c.raw)
-                if key in seen_raw:
+                key = c.dedup_key
+                if key in seen_keys:
                     continue
-                seen_raw.add(key)
+                seen_keys.add(key)
                 cites.append(c)
             states = citation_states_for(cites)
             # 「有出處」必須是**可查證**的出處。`out_of_scope`（庫外法規、任何函釋字號、
@@ -389,7 +394,8 @@ def run(state: CaseState, ctx: NodeCtx) -> NodeResult:
                 ),
                 "logs": [
                     [
-                        f"阻擋送出：{len(blockers)} 項" if blockers else "無阻擋項，可送出人工覆核",
+                        f"不得送出：{len(blockers)} 項（送出端點會以 409 拒絕）" if blockers
+                        else "無阻擋項；送出端點會重新判斷一次後放行",
                         "r" if blockers else "",
                     ],
                     *[[f"{b['reason']}｜{b['sentence_id']}：{b['detail']}", "r"] for b in blockers],

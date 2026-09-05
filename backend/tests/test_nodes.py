@@ -189,10 +189,25 @@ def test_unknown_case_type_fails_safe_to_blocked():
     ok_empty, _ = requires_human_conclusion(unknown_procedural, "", [], SUBSTANTIVE_TYPES)
     assert_eq(ok_empty, True, "案型空白同樣要封鎖")
 
-    # 但逾期不受理是期間引擎直接算出來的（可驗算層），不該被這條 fail-safe 誤攔
+    # 但逾期不受理是期間引擎直接算出來的（可驗算層），不該被這條 fail-safe 誤攔——
+    # **前提是那個期間結果建立在承辦人確認過的欄位上**（判斷卡 7，2026-09-05 Ci 拍板）。
     overdue = {"requires_substantive_review": False, "clause": "77-2"}
-    ok_overdue, _ = requires_human_conclusion(overdue, "未能分類", [], SUBSTANTIVE_TYPES)
-    assert_eq(ok_overdue, False, "程序上已由引擎算出不受理事由者，不因案型不明而封鎖")
+    ok_confirmed, _ = requires_human_conclusion(
+        overdue, "未能分類", [], SUBSTANTIVE_TYPES, procedural_inputs_confirmed=True
+    )
+    assert_eq(ok_confirmed, False, "承辦人確認過期間輸入後，程序上算出的不受理事由可解除封鎖")
+
+    # 未確認時同一組輸入必須維持封鎖：覆核實測只要改一個模型抽的日期就能關掉封鎖，
+    # 所以「程序上已算出不受理事由」這句話，在沒有人確認過那些日期之前不算數。
+    ok_unconfirmed, sig_unconfirmed = requires_human_conclusion(
+        overdue, "未能分類", [], SUBSTANTIVE_TYPES,
+        procedural_inputs_confirmed=False, unconfirmed_fields=("d2", "d3"),
+    )
+    assert_eq(ok_unconfirmed, True, "期間輸入未經確認時，不得用程序結果解除封鎖")
+    assert_true(
+        any("未經承辦人確認" in s for s in sig_unconfirmed),
+        "必須說明是因為欄位未確認才維持封鎖",
+    )
 
 
 # ── N4 檢索 ────────────────────────────────────────────────────────

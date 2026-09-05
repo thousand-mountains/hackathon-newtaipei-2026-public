@@ -14,11 +14,12 @@ from __future__ import annotations
 
 import json
 import pathlib
+import re
 import random
 import tempfile
 from typing import Any
 
-from backend.config.settings import load_snapshot
+from backend.config.settings import CONFIRMABLE_INTAKE_FIELDS, load_snapshot
 from backend.gate.citations import (
     STATE_MISSING,
     STATE_OK,
@@ -42,8 +43,21 @@ def _ctx() -> NodeCtx:
     return NodeCtx(run_mode="fixture", snapshot=SNAPSHOT)
 
 
-def _run_with_injected(base_case: str, slot: str, sentences: list[dict[str, Any]]) -> dict[str, Any]:
-    """把對抗句注入某個合成案例的草稿槽位，端到端跑完六節點，回 payload。"""
+def _confirmed_of(fixture: dict[str, Any]) -> dict[str, Any]:
+    """模擬承辦人在收文頁看過並採用這份 fixture 抽出來的欄位（判斷卡 7）。"""
+    return {k: v for k, v in fixture["extraction"]["intake"].items()
+            if k in CONFIRMABLE_INTAKE_FIELDS}
+
+
+def _run_with_injected(
+    base_case: str, slot: str, sentences: list[dict[str, Any]], confirm_intake: bool = False
+) -> dict[str, Any]:
+    """把對抗句注入某個合成案例的草稿槽位，端到端跑完六節點，回 payload。
+
+    `confirm_intake=True`：模擬承辦人已在收文頁確認過期間輸入欄位。
+    **需要一個「本來可以送出」的基底時一定要打開它**——判斷卡 7 之後，
+    未確認的案子一律封鎖，拿它當基底就證明不了「是注入的那一句把它翻成 false 的」。
+    """
     fx = load_case(base_case)
     fx["draft_fixture"].setdefault(slot, [])
     for s in sentences:
@@ -60,7 +74,12 @@ def _run_with_injected(base_case: str, slot: str, sentences: list[dict[str, Any]
     tmp = pathlib.Path(tempfile.mkdtemp())
     case_id = "synthetic-adversarial-01"
     (tmp / f"{case_id}.json").write_text(json.dumps(fx, ensure_ascii=False), encoding="utf-8")
-    return build_payload(run_case(case_id, mode="fixture", data_dir=tmp))
+    return build_payload(
+        run_case(
+            case_id, mode="fixture", data_dir=tmp,
+            confirmed_intake=_confirmed_of(fx) if confirm_intake else None,
+        )
+    )
 
 
 # ════════════════════════════════════════════════════════════════════
@@ -250,10 +269,18 @@ def test_ac2_fabricated_cn_article_blocks_submission_end_to_end():
     這條直接複現覆核者實測「submit_allowed=True、cites=[('建築法第9條','ok')]」的那次放行。
     基底刻意用會通過的 ordinary 案例，才能證明是這一句把它從 true 翻成 false。
     """
-    clean = build_payload(run_case(ORDINARY, mode="fixture"))
-    assert_eq(clean["submit_allowed"], True, "基底案例本來是可送出的")
+    # 判斷卡 7 之後「可送出」多一個前提：承辦人確認過期間輸入欄位。
+    # 基底必須用確認過的版本，否則它本來就是 false，證明不了是注入那一句造成的。
+    clean = build_payload(
+        run_case(ORDINARY, mode="fixture", confirmed_intake=_confirmed_of(load_case(ORDINARY)))
+    )
+    assert_eq(clean["submit_allowed"], True, "基底案例（已確認 intake）本來是可送出的")
 
-    p = _run_with_injected(ORDINARY, "reasoning", [{"t": "至擅自變更使用之處罰要件，另參建築法第九九九條之規定。"}])
+    p = _run_with_injected(
+        ORDINARY, "reasoning",
+        [{"t": "至擅自變更使用之處罰要件，另參建築法第九九九條之規定。"}],
+        confirm_intake=True,
+    )
     assert_eq(p["submit_allowed"], False, "捏造的國字條號必須阻擋送出")
     bad = [c for c in p["citations"] if "999" in c["raw"]]
     assert_eq(len(bad), 1, f"應抽到建築法第999條，實得 {[c['raw'] for c in p['citations']]}")
@@ -1069,33 +1096,111 @@ def test_non_c_type_cases_get_conclusion_like_annotation():
     「捏造的結論」——兩者長得一樣。覆核量到非 C 型下 26/26 捏造主文全綠，
     根因是這件事，不是少了幾條規則。註記讓 UI 至少能標出來給人看，不是保證。
     """
-    p = _run_with_injected(ORDINARY, "reasoning", [{"t": "本件情況決定，宣示原處分為違法。", "basis": "訴願法第79條"}])
+    p = _run_with_injected(
+        ORDINARY, "reasoning",
+        [{"t": "本件情況決定，宣示原處分為違法。", "basis": "訴願法第79條"}],
+        confirm_intake=True,
+    )
     flagged = [s for b in p["doc"] for s in b["ss"] if s.get("conclusion_like")]
     assert_true(flagged, "非 C 型的理由段主文型語句要留下 conclusion_like 註記")
     assert_eq(p["submit_allowed"], True, "註記不改變送出判斷（非 C 型本來就允許有結論）")
 
 
-def test_no_code_comment_claims_an_unbackable_guarantee():
-    """程式註解不得寫下系統擔保不了的宣稱——這是對法制局的事實陳述，不是文案。
+# 會過度承諾的措辭家族。**用 regex 家族而不是比對兩個完整字串**：
+# 原本那版只認「沒有任何寫法能繞過」與「送出端點回 409」兩句一字不差的宣稱，
+# 換個講法（「無法繞過」「保證擋下」「覆蓋率 100%」）就整個掃不到——
+# 那是一張只擋得住上次那個具體案例的清單。
+OVERCLAIM_PATTERNS = (
+    ("繞過", re.compile(r"(?:沒有|無|不可能有)[^。\n]{0,12}(?:寫法|方式|方法)[^。\n]{0,8}(?:能|可以|可)?繞過")),
+    ("阻擋送出", re.compile(r"(?:會|已|必|能)[^。\n]{0,6}(?:阻擋|擋下|擋住)[^。\n]{0,4}送出")),
+    ("鎖定", re.compile(r"送出[^。\n]{0,6}(?:已|被)?(?:鎖定|封鎖)")),
+    ("100%", re.compile(r"(?:覆蓋率|正確率|準確率|涵蓋)[^。\n]{0,6}100\s*%|100\s*%[^。\n]{0,6}(?:覆蓋|正確|準確)")),
+    ("已排入議程", re.compile(r"已?(?:陳送|排入)[^。\n]{0,12}(?:委員會|議程)")),
+    ("已解析", re.compile(r"[✓✔]\s*已解析")),
+    ("已驗證結論", re.compile(r"已(?:驗證|確認)[^。\n]{0,8}結論[^。\n]{0,6}(?:正確|無誤|可信)")),
+)
 
-    覆核抓到兩處：`n6_gate` docstring 宣稱「送出端點回 409」（`backend/api/` 根本沒有
-    送出端點），`state.py` 宣稱 case 層封鎖「沒有任何寫法能繞過」（它的開關上游是
-    LLM 抽取欄位，改一個日期就能關掉）。
+# 否定語境：宣稱只准出現在**否定它自己**的句子裡（「舊版寫 X，那是不實的宣稱」）。
+OVERCLAIM_NEGATORS = (
+    "不是", "不能說", "不實", "舊版", "不得說", "錯誤", "不會", "並非", "不代表",
+    "原本", "改成", "改為", "拿掉", "移除", "不該", "禁止", "不准", "以前", "曾經",
+    "regex", "re.compile", "OVERCLAIM", "誤以為", "會被讀成", "不保證",
+    # 有指名執行點的宣稱不算過度承諾：「後端會以 409 拒絕」是可查證的事實陳述，
+    # 「已阻擋送出」不是。差別在於前者說得出是誰、在哪裡、怎麼擋。
+    "409", "後端",
+)
+
+# 就地否定：命中處前後 10 字內若有否定詞，代表這句話在講「不會 X」而不是「會 X」。
+# 例：「沒有排入任何議程」「送出封鎖**不掛在這一層**」。
+_LOCAL_NEGATION = "沒未不無非"
+
+# **具名例外**：`backend/tests/` 不掃。測試的 assert 訊息是在描述「預期行為」
+# （「對抗案例必須阻擋送出」），不是對法制局講的話。把它們掃進來只會製造雜訊，
+# 而雜訊會逼人把 pattern 調鬆——那正好毀掉這條測試。
+OVERCLAIM_SKIP_DIRS = ("tests",)
+
+
+def _overclaim_targets() -> list[tuple[str, str]]:
+    """要掃的檔：backend 全部 .py（排除本測試檔自己）＋ 前端兩個原始檔。
+
+    前端一定要掃：對法制局講話的其實是畫面上的字，不是 Python 註解。
+    `dist/index.html` 是建置產物（內容等於這兩個檔），掃它只會重複報同一處。
     """
+    root = pathlib.Path(__file__).resolve().parents[2]
+    self_path = pathlib.Path(__file__).resolve()
+    out: list[tuple[str, str]] = []
+    for f in sorted((root / "backend").rglob("*.py")):
+        if f.resolve() == self_path or "__pycache__" in f.parts or "output" in f.parts:
+            continue
+        if any(d in f.parts for d in OVERCLAIM_SKIP_DIRS):
+            continue
+        out.append((str(f.relative_to(root)), f.read_text(encoding="utf-8")))
+    for rel in ("prototype/static/app.js", "prototype/static/index.tmpl.html"):
+        f = root / rel
+        if f.exists():
+            out.append((rel, f.read_text(encoding="utf-8")))
+    return out
+
+
+def test_no_overclaim_in_code_or_ui():
+    """程式與畫面都不得寫下系統擔保不了的宣稱——這是對法制局的事實陳述，不是文案。
+
+    覆核逐條列出的來源：`state.py`「沒有任何寫法能繞過」、`n6_gate` 舊 docstring
+    「送出端點回 409」（當時根本沒有那支端點）、`index.tmpl.html`「逐句溯源覆蓋率 100%」、
+    `app.js`「✓ 已解析」（其實不讀上傳檔）、完成頁「已陳送訴願審議委員會，並排入議程」。
+
+    掃描範圍是 backend 全部 .py ＋ 前端原始檔，判準是**措辭家族**而不是兩句固定字串。
+    """
+    problems: list[str] = []
+    for name, src in _overclaim_targets():
+        for lineno, line in enumerate(src.split("\n"), 1):
+            if any(k in line for k in OVERCLAIM_NEGATORS):
+                continue
+            for label, pattern in OVERCLAIM_PATTERNS:
+                m = pattern.search(line)
+                if not m:
+                    continue
+                around = line[max(0, m.start() - 10):m.end() + 10]
+                if any(c in around for c in _LOCAL_NEGATION):
+                    continue
+                problems.append(f"{name}:{lineno}［{label}］{line.strip()[:110]}")
+    assert_eq(problems, [], "出現未經限定的宣稱：\n" + "\n".join(problems))
+
+
+def test_boundaries_are_stated_where_the_claims_used_to_be():
+    """光是刪掉宣稱不夠——邊界要**寫出來**，否則讀的人只會以為那件事沒問題。"""
     root = pathlib.Path(__file__).resolve().parents[2]
     n6 = (root / "backend" / "nodes" / "n6_gate.py").read_text(encoding="utf-8")
     state = (root / "backend" / "orchestrator" / "state.py").read_text(encoding="utf-8")
-    assert_true("不是強制機制" in n6, "必須把 submit_allowed 沒有執行點這件事寫在模組說明裡")
-    assert_true("llm_derived" in state or "抽取" in state, "必須寫明封鎖開關的上游依賴")
-    # 絕對宣稱只准出現在**否定它自己**的句子裡（例如「舊版寫 X，那是不實的宣稱」）。
-    _NEGATORS = ("不是", "不能說", "不實", "舊版", "不得說", "錯誤")
-    for name, src in (("n6_gate.py", n6), ("state.py", state)):
-        for lineno, line in enumerate(src.split("\n"), 1):
-            for claim in ("沒有任何寫法能繞過", "送出端點回 409"):
-                if claim in line and not any(k in line for k in _NEGATORS):
-                    raise AssertionError(f"{name}:{lineno} 出現未經限定的宣稱：{line.strip()}")
+    tmpl = (root / "prototype" / "static" / "index.tmpl.html").read_text(encoding="utf-8")
+
+    assert_true("llm_derived" in state or "抽取" in state, "state.py 必須寫明封鎖開關的上游依賴")
     for name, src in (("n6_gate.py", n6), ("state.py", state)):
         assert_true("不能靠改草稿文字繞過" in src, f"{name} 必須把防線的**邊界**講清楚")
+    assert_true(
+        "系統不阻擋其內容" in tmpl,
+        "燈號審核頁必須寫明：非 C 型案件的結論段由承辦人撰寫，系統不阻擋其內容",
+    )
 
 
 # ════════════════════════════════════════════════════════════════════
@@ -1103,9 +1208,24 @@ def test_no_code_comment_claims_an_unbackable_guarantee():
 # ════════════════════════════════════════════════════════════════════
 
 def test_official_cases_behaviour_unchanged():
-    """加固不得改動兩個正式案例的燈號分布與送出判斷（AC4 的行為面）。"""
-    o = build_payload(run_case(ORDINARY, mode="fixture"))
-    assert_eq(o["submit_allowed"], True)
+    """加固不得改動兩個正式案例的燈號分布與送出判斷（AC4 的行為面）。
+
+    **2026-09-05 判斷卡 7 之後基準改了，這裡記錄為什麼**：
+    ordinary 的「可送出」現在以「承辦人已在收文頁確認期間輸入欄位」為前提。
+    未確認時它會被封鎖——那不是回歸，是修掉一個覆核實測打穿的破口
+    （改一個模型抽的日期就能關掉整個結論封鎖）。所以兩個狀態都要測。
+    """
+    unconfirmed = build_payload(run_case(ORDINARY, mode="fixture"))
+    assert_eq(unconfirmed["submit_allowed"], False, "未確認 intake 的 ordinary 必須封鎖")
+    assert_eq(
+        unconfirmed["screen"]["requires_human_conclusion"], True,
+        "未確認時不得用程序結果解除結論封鎖",
+    )
+
+    o = build_payload(
+        run_case(ORDINARY, mode="fixture", confirmed_intake=_confirmed_of(load_case(ORDINARY)))
+    )
+    assert_eq(o["submit_allowed"], True, "承辦人確認之後才回到可送出")
     assert_eq(o["lamp_stats"], {"r": 0, "y": 0, "g": 13}, "ordinary 的燈號分布不得改變")
     assert_eq(o["blockers"], [])
     assert_eq({k: len(v) for k, v in o["tiers"].items()}, {"可驗算": 6, "有出處": 7, "請人工判斷": 3})
@@ -1121,7 +1241,22 @@ def test_official_cases_behaviour_unchanged():
 # 這樣寫的差別在於——有人偷加一個新的不確定欄位時會**被抓到並指名**，
 # 而不是被 strip 清單默默吸收掉（原本的寫法就是後者，run_id 加進來時它只說
 # 「跑 5 次結果不一致」，沒說是哪一欄）。
-NONDETERMINISTIC_ALLOWED = {"run_id", "elapsed_ms", "node_timings", "started_at", "summary"}
+# **完整路徑**白名單，不是「路徑任一段命中就豁免」。
+# 用 path 分段比對的問題：任何巢狀在 `run_meta` 底下、或名字剛好叫 `summary` 的新欄位
+# 都會被順便豁免掉——那又變成一張會自己長大的遮罩。
+NONDETERMINISTIC_ALLOWED_PATHS = {
+    "/run_id",
+    "/run_meta/run_id",
+    "/run_meta/elapsed_ms",
+    "/run_meta/started_at",
+    "/run_meta/summary",
+}
+# 唯一的前綴豁免：每個節點各一筆耗時，節點數會變，逐條列不合理。
+NONDETERMINISTIC_ALLOWED_PREFIXES = ("/run_meta/node_timings/",)
+
+
+def _path_may_vary(path: str) -> bool:
+    return path in NONDETERMINISTIC_ALLOWED_PATHS or path.startswith(NONDETERMINISTIC_ALLOWED_PREFIXES)
 
 
 def _leaf_paths(o, path=""):
@@ -1153,10 +1288,7 @@ def test_pipeline_is_still_deterministic():
         b = _leaf_paths(build_payload(run_case(case_id, mode="fixture")))
         assert_eq(set(a), set(b), f"{case_id} 兩次執行的欄位集合不同（結構不穩定）")
         differing = sorted(k for k in a if a[k] != b[k])
-        offenders = [
-            k for k in differing
-            if not (set(k.split("/")) & NONDETERMINISTIC_ALLOWED)
-        ]
+        offenders = [k for k in differing if not _path_may_vary(k)]
         assert_eq(
             offenders,
             [],
@@ -1164,11 +1296,16 @@ def test_pipeline_is_still_deterministic():
         )
 
         # 把允許變動的欄位剔掉之後，5 次執行必須位元組級一致
-        def _strip(o):
+        def _strip(o, path=""):
+            """依**完整路徑**剔除允許變動的欄位，不是看鍵名。"""
             if isinstance(o, dict):
-                return {k: _strip(v) for k, v in o.items() if k not in NONDETERMINISTIC_ALLOWED}
+                return {
+                    k: _strip(v, f"{path}/{k}")
+                    for k, v in o.items()
+                    if not _path_may_vary(f"{path}/{k}")
+                }
             if isinstance(o, list):
-                return [_strip(v) for v in o]
+                return [_strip(v, f"{path}/{i}") for i, v in enumerate(o)]
             return o
 
         hashes = {

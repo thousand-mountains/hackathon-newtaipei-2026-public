@@ -1,491 +1,275 @@
-# HANDOFF：Phase 0 backend pipeline（2026-09-05 過夜無人值守）
+# HANDOFF — 訴願案件審理 AI 輔助 prototype（2026-09-05 定稿）
 
-給 Ci 早上看的誠實交接。**這份的原則是：做了什麼講清楚、沒做什麼標明白、拿不準的直接列出來讓你判斷。**
-
-- branch：`mission/hack-manual-phase0-backend-pipeline-20260905`
-- base commit：`ce558a8`
-- commits：9 筆（見文末）
-- **沒有 push、沒有開 PR、沒有動任何 remote**
-- `prototype/` 一個位元組都沒動（`git status --porcelain -- prototype/` 為空，且有自動化測試守著）
+> **這份是唯一真相。** `HANDOFF-PHASE0.md`／`HANDOFF-GATE.md`／`HANDOFF-INTEGRATION.md`
+> 是三條分支各自的過程紀錄，頂部都已標「已被本檔取代」，保留供追溯——
+> 裡面的測試計數、行號、「還沒做」清單都已過時，**引用它們之前先看這裡**。
+>
+> branch `mission/hack-integration-20260905`。**沒有 push、沒有開 PR、沒有動任何 remote。**
 
 ---
 
-## 一、驗收條件逐條狀態
+## 0. 一分鐘現況
 
-### SC-01 `backend/tests/run_all.py` 全綠，期間引擎搬遷後對照測試向量集零分歧 — ✅ 通過
+一個指令起整個平台（前端 + API 同一個 process）：
 
-指令與結果：
-
-```
-$ python3 backend/tests/run_all.py
-...
-全綠：70/70 通過
-$ echo $?
-0
+```bash
+python3 prototype/build.py     # static/ 或 data/ 改過才需要重跑
+uv run --with fastapi --with "uvicorn[standard]" --with pydantic -- \
+    python -m uvicorn backend.api.app:app --host 127.0.0.1 --port 8080
 ```
 
-分成四段：
-
-| 段落 | 通過數 | 內容 |
-|---|---|---|
-| 期間引擎搬遷與測試向量 | 7/7 | 含 sha256 逐位元組比對、15 條向量零分歧 |
-| 六節點單元測試 | 38/38 | 每個節點至少一條紅線行為 |
-| 端到端整合測試 | 22/22 | 兩個合成案例的完整行為驗收 |
-| 紅線靜態掃描 | 3/3 | secret／禁用雲端字樣、`prototype/` 未變更、核心與測試路徑零外部依賴 |
-
-搬遷保真的證據不是「我看過了」，是機器比對——`backend/tests/test_deadline.py:31`
-直接算兩個檔的 sha256 並斷言相同（實測皆為 `715102c4bd7ac8f354db6b96d6bb6d9e0429d3ba`）。
-測試向量數量也鎖成 15（`test_vector_count_is_15`），將來有人偷偷刪向量會被抓到。
-
-> ⚠ 一個要提的落差：`docs/architecture.md` §8.3 說「五步動線分支多 1 條示範案件向量、
-> 16/16」，但 main 分支的 `prototype/data/test-vectors.json` 只有 **15 條**。我搬的是
-> main 這份 15 條的。**第 16 條在另一個分支，我沒有去找、也沒有自己補一條**——補一條
-> 我造的向量進去等於污染鎖定基準。要不要把那條合併進來由你決定。
-
-### SC-02 `python3 -m backend.cli --case synthetic-ordinary-01` exit 0，六節點結果齊全、每欄有 origin、三層分明 — ✅ 通過
-
-```
-$ python3 -m backend.cli --case synthetic-ordinary-01
-案例：synthetic-ordinary-01　狀態：VERIFIED　模式：fixture
-【程序】期滿日 2024-07-15　逾期 True　77 條款 77-2
-        結論段封鎖：False
-          · 爭點 I1［medium］爭點1：送達生效日之爭執（命中：未實際收受）
-【檢索】法規 4 筆／相似案 0 筆（庫外，未驗證）
-【守門】引用 在庫 5／已修正 0／庫外未驗證 0／查無 0
-        燈號 綠 13／黃 0／紅 0
-        送出：允許（blockers 0 項）
-【三層誠實】
-  可驗算（6 項）／有出處（7 項）／請人工判斷（3 項）
-【降級】2 個節點降級
-    ⚠ n4：相似歷史案通道不可用（無資料集），僅法規查表通道有結果
-    ⚠ n5：fixture 檔位：草稿為模板重播，非模型即時生成
-【分層檢查】通過：每個句子都有 origin，燈號與 why 均非模型產出。
-$ echo $?
-0
-```
-
-- 六節點都跑過：`run_meta.node_timings` 有 n1–n6 六個鍵（`test_ordinary_runs_all_six_nodes` 斷言）
-- 狀態轉換 deterministic：`CREATED→EXTRACTING→EXTRACTED→CLASSIFIED→SCREENED→RETRIEVED→DRAFTED→VERIFIED`（逐項斷言）
-- 每個句子都有 `origin`／`l`／`why`，且 `l_origin` 恆為 `rule`（`test_ordinary_every_sentence_has_origin`）
-- 三層都非空：可驗算 6／有出處 7／請人工判斷 3
-- 期間結果對齊既有向量 `hist-113-03`（寄存 113/6/13 → 期滿 113/7/15、逾期）
-
-### SC-03 對抗案例 N6 正確攔下／降級，不誤放行 — ✅ 通過（這條我特別加測）
-
-```
-$ python3 -m backend.cli --case synthetic-blocked-01
-【程序】期滿日 2025-04-14　逾期 False　77 條款 無命中
-        結論段封鎖：True
-          · 訊號：程序合法且須進入實體審查（案型：違反建築法事件）
-          · 訊號：存在高風險事實認定爭點 I1：爭點1：裁處權時效之起算與行為終了時點認定
-【守門】引用 在庫 2／已修正 0／庫外未驗證 0／查無 1
-        燈號 綠 10／黃 0／紅 2
-        送出：阻擋（blockers 1 項）
-          ✗ [citation_missing] s5：建築法第999條：快照中建築法無第 999 條（最大條號 105）
-【交接卡】…（3 個具體問題）
-$ echo $?
-0
-```
-
-兩道防線同時觸發，不是只擋一種：
-
-1. **C 型結論封鎖**：`requires_human_conclusion=true` → N5 把 `conclusion` 從 slots
-   陣列**直接刪掉**（`backend/nodes/n5_draft.py:25` 的 `resolve_slots()`），結論段只剩 `origin=human_required`
-   的佔位句 + 交接卡 3 題。
-2. **引用查無此號**：注入的「建築法第999條」被判 `missing` → 紅燈 → 進 `blockers` →
-   `submit_allowed=false`。
-
-**最硬的一條證據**：`backend/tests/test_e2e.py:139` 的
-`test_blocked_case_fixture_conclusion_text_never_leaks`——fixture 裡確實寫了一句
-「原處分撤銷。」，測試會把整個 `doc[]` 序列化成字串，斷言這句**完全找不到**。
-不是「檢查旗標有沒有設對」，是「檢查那段文字有沒有真的洩漏出去」。
-
-另外有一條防線是為了防未來的人改壞：`backend/orchestrator/state.py:130`
-的 `assert_verified_invariant()`——就算有人把 N5 改壞讓結論句溜進來，N6 也會先記
-`blockers` 再拋 AssertionError（`test_n6_flags_generated_conclusion_when_blocked` 驗過）。
-
-### SC-04 `n4_retrieval.py` 相似案通道誠實回報庫外未驗證，不編造內容 — ✅ 通過
-
-- 相似案通道由 `backend/retrieval/base.py:UnavailableRetriever` 實作，`search()` **恆回空 list**。
-- `retrieval_meta.similar_case_channel` = `{available: false, hits: 0, label: "庫外，未驗證", reason: "..."}`，
-  reason 明說「回空不是查無相似案，而是本系統目前無法檢索」。
-- N4 內有一行 `assert cases == []`（`backend/nodes/n4_retrieval.py:88`），未來有人接上檢索卻忘了改這裡會直接炸。
-- 這條被算成**降級**並外顯在 `run_meta.degraded`，不是靜靜地當作正常。
-- 順帶：法規查表通道也**不補寫條文原文**（`laws[].q` 恆為 `null` + `q_note` 說明快照只索引條號）。
-
-### SC-05 `prototype/` 無變更；無真實資料；無 secret；測試路徑無外部依賴 — ✅ 通過
-
-| 項目 | 驗法 | 結果 |
-|---|---|---|
-| `prototype/` 未變更 | `git status --porcelain -- prototype/`、`git diff ce558a8..HEAD -- prototype/` | 皆為空；`run_all.py` 每次跑都重驗 |
-| 無真實競賽資料 | 只讀 `synthetic-` 前綴（`graph.py:load_case` 硬擋，非 synthetic 的 case id 直接 ValueError） | 這台機器上本來就沒有該檔，我也沒去找 |
-| 無 secret 字樣 | `run_all.py` 掃 AKIA／ASIA／`aws_secret_access_key=`／PRIVATE KEY | 零命中 |
-| 無新增外部依賴在測試路徑 | `run_all.py` 用 `sys.stdlib_module_names` 逐檔掃 import | 零命中（`backend/api/` 例外，見下） |
-| 無 `.env`／AWS 憑證 | 沒有建立、沒有讀取；`~/.aws/` 不存在 | 確認 |
-| 無任何雲端 API 實際呼叫 | 全樹無 `boto3`／`bedrock-runtime` import | 確認 |
-
-`backend/api/` 是唯一用第三方套件（fastapi/uvicorn/pydantic）的地方，這是任務明確要求的
-範圍升級。**依賴掃描刻意把 `backend/api/` 排除在外**，其餘全部維持 stdlib——
-也就是說 `run_all.py` 與 `python3 -m backend.cli` 在一台只有 python3 的機器上照樣跑得起來。
-
-### SC-06 `backend/` 有 Dockerfile／requirements.txt／DEPLOY.md，完全不含 GCP 字樣 — ✅ 通過（且超出要求，實際 build 過）
-
-- `grep -rniE "gcp|gcloud|google" backend/`（排除掃描器自身）→ **零命中**。
-- 靜態掃描把 `gcloud`／`google-cloud`／`googleapis.com`／`GOOGLE_APPLICATION_CREDENTIALS`／`GCP`
-  列為禁用字樣，任何檔案出現即 exit 1。
-
-**額外做的（任務只要求「部署就緒」，我實際 build 了）**：
-
-```
-$ docker build --platform linux/amd64 -f backend/Dockerfile -t hack-appeal-backend:phase0 .
-→ 成功
-$ docker run -d -p 18080:8080 -e RUN_MODE=fixture hack-appeal-backend:phase0
-$ curl http://127.0.0.1:18080/api/health          → ok=True, mode=fixture
-$ curl -X POST .../synthetic-blocked-01/runs      → submit_allowed=False, blockers=1
-$ curl -X POST .../synthetic-ordinary-01/runs     → state=VERIFIED, submit_allowed=True
-$ docker exec ... whoami                          → appuser（非 root）
-$ docker exec ... ls /app/prototype               → No such file（映像檔沒帶 prototype）
-$ docker inspect --format='{{.State.Health.Status}}' → healthy
-```
-
-容器已刪除（`docker rm -f hack-api-test`）。**映像檔 `hack-appeal-backend:phase0` 留在你本機**，
-不需要的話 `docker rmi hack-appeal-backend:phase0`。
-
-**尚未實測**：ECR 推送與 ECS 部署本身——那需要 AWS 帳號，我沒有也不會去建。
-
-### SC-07 `backend/api/app.py` 是真的能跑起來的 FastAPI 服務，實際啟動並打過 `/api/health` — ✅ 通過
-
-用任務指定的方式啟動：`uv run --with fastapi --with uvicorn backend/api/app.py`（port 8788）。
-實際打過的每一支與結果：
-
-| 請求 | 結果 |
+| 位址 | 是什麼 |
 |---|---|
-| `GET /api/health` | 200，`run_mode=fixture`、`model_ids=null`（誠實回報未呼叫模型） |
-| `GET /api/cases` | 200，列出兩個 synthetic 案例 |
-| `POST /api/cases/synthetic-ordinary-01/runs` | 200，`submit_allowed=true`，燈號 g13/y0/r0，三層 6/7/3 |
-| `POST /api/cases/synthetic-blocked-01/runs` | 200，`submit_allowed=false`，`blockers=[citation_missing]`，交接卡 3 題 |
-| `POST /api/cases/synthetic-nope/runs` | 404 |
-| `POST /api/cases/real-case-001/runs` | **400**，訊息說明非 synthetic 前綴被拒 |
-| `POST /api/deadline` 正常輸入 | 200，`2024-07-15 / overdue=true / 6 steps` |
-| `POST /api/deadline` `{"method":"bogus"}` | 400 |
-| `RUN_MODE=local` 重啟後 `POST .../runs` | **501**，訊息說明缺 Bedrock 憑證 |
+| <http://127.0.0.1:8080/> | 五步動線 UI，開起來就是 **live 模式**（頁首徽章寫著） |
+| <http://127.0.0.1:8080/?case=synthetic-blocked-01> | 換案例（頁面上也有下拉選單） |
+| <http://127.0.0.1:8080/api/docs> | OpenAPI |
+| `file://…/prototype/dist/index.html` | 斷網備援：**離線 fixture 模式**，徽章會改，不會假裝是後端結果 |
 
-**啟動的 process 都已關閉**（`pkill -f "backend/api/app.py"`，`pgrep` 確認無殘留）。
+```
+$ python3 backend/tests/run_all.py     → 全綠：157/157 通過（exit 0）
+$ node prototype/tests/parity.mjs      → ✓ JS 引擎 16/16 向量全過（與 Python 零分歧）
+$ uv run --with pytest -- python -m pytest prototype/tests -q   → 4 passed
+$ python3 prototype/build.py           → dist/index.html 137 KB
+```
+
+157 的組成：期間引擎 8／六節點單元 38／端到端 29／CASE payload 契約 24／守門加固 55／紅線靜態掃描 3。
 
 ---
 
-## 二、我自己拿不準的判斷（請你裁決）
+## 1. 這個系統實際上做了什麼（與沒做什麼）
 
-### ⚠ 1. 對抗測資裡放了一個不存在的法條，這算不算踩紅線？
+**真的在跑的**
 
-`backend/data/synthetic/synthetic-blocked-01.json` 的草稿裡有一句
-「至擅自變更使用之處罰要件，另參**建築法第999條**之規定」——這個條號**不存在**
-（建築法最大條號 105）。
-
-- **我為什麼這樣做**：`plans/2026-09-05-phase0-backend-pipeline.md:46-48` 與你的任務說明
-  都明確要求「一個故意有問題的案例（例如引用查無此號）用來驗證 N6 真的會攔下來」。
-  沒有一個假引用，就沒辦法證明守門是真的。
-- **我做了什麼防護**：該檔的 `provenance.adversarial_injections` 明文列出這是刻意注入、
-  為什麼注入、期望結果是什麼；該句本身也帶 `adversarial: true` 與 `adversarial_note`。
-- **我拿不準的**：這份 JSON 如果被單獨拿去看（例如貼進簡報、或未來被誰當成範例），
-  那句話讀起來像是系統對法律的認知。**demo 時如果要展示這個案例，請務必口頭說明
-  「這個條號是我們故意放的假引用，用來示範守門」**。若你認為風險太高，最小改法是把
-  該句改成明顯不可能被誤認的形式（例如「建築法第999條（測試用假條號，不存在）」），
-  代價是 demo 時比較不像真實誤植。**這個取捨我沒有替你決定。**
-- **後續補強（獨立審查指出後已修）**：原本 `adversarial` 旗標只存在於合成案例檔，**沒有帶進輸出的 `doc[]`**——也就是說輸出 JSON 裡那句假法條完全沒有標記。現在旗標與說明會一路帶到句子物件（`test_adversarial_flag_is_carried_into_doc` 釘住）。風險小了一截，但 demo 口頭聲明這件事還是要做。
-
-### ⚠ 2. 判解白名單外一律標「庫外，未驗證」而不擋 — 與 v0 前端行為不同
-
-`prototype/static/app.js:83` 的 v0 邏輯是**二態**：判解不在 17 筆白名單內就標 `bad`（紅、擋）。
-我照 `docs/architecture.md` §8.1 實作成**四態**：白名單外但字號格式成立 → `out_of_scope`（黃、**不擋**）。
-
-- 理由是架構文件寫的：白名單只有 17 筆，真實決定書引用的判解幾乎必然超出，二態會讓系統
-  用自己的正確輸出把送出鈕鎖死。
-- **但這代表 backend 與 v0 前端現在行為不一致**。哪一邊要改由你決定；我沒有動 `prototype/`。
-
-### ⚠ 3. 釋字沒有做上限檢查
-
-`釋字第999號` 目前被判 `out_of_scope`（黃、不擋），不是 `missing`。
-- 我原本想加「釋字號數上限」的格式檢查，但**那需要我斷言「最後一號釋字是第幾號」這個
-  法律事實，我不確定，所以沒做**。判解那邊我只做了「年度不得超過當前民國年」這種
-  純日期可算的檢查，那不需要法律知識。
-- 要不要補釋字上限，等有人查證後再加。
-
-### ⚠ 4. `fact_issue_signals` 用 JSON 不是 YAML
-
-`docs/architecture.md` §4.3 指定 `backend/config/fact_issue_signals.yaml`。
-我用了 `fact_issue_signals.json`，因為 YAML 需要 PyYAML，會違反「測試路徑零外部依賴」。
-欄位名完全一致，要換回 YAML 只需改讀取器。**清單內容是我寫的骨架版**——
-架構文件說正式版應由 Jacky 從 114年/19、113年/20 兩份真實 C 型決定書反推。
-我沒有那兩份決定書，所以訊號詞取自公開法條用語（時效、裁處權、行為終了…），
-**不是從真實案件反推的**。這份要換掉。
-
-### ⚠ 5. 檔名與架構文件不同
-
-任務指定 `n3_procedure.py` / `n4_retrieval.py`，架構文件 §10 寫的是
-`n3_screen.py` / `n4_retrieve.py`。我照任務指定的檔名。職責完全相同，
-但要不要統一命名（以及要改哪一邊）你決定。
-
----
-
-## 三、我自己在過程中發現並修掉的兩個真 bug
-
-（獨立審查另外打出 6 個，見第四點五節。）
-
-### Bug 1：庫外法規引用被整個漏掉（漏抓）
-
-引用抽取原本只認快照內的 11 部法規名（沿用 v0 前端的 regex 寫法），
-結果是：**快照範圍外的法規引用會被整個漏掉**，連「庫外，未驗證」都標不出來。
-`architecture.md` §8.1 明確要求這一態存在（Claire 量測決定書引用的 479 個法條有 17%
-對不回資料集：政府資訊公開法、行政訴訟法、檔案法…）。
-
-也就是說原本的寫法會讓那 17% 靜默消失——**漏抓比誤攔更危險**。
-修法：`backend/retrieval/lawtable.py:107` 加泛用法規名比對（中文字 + 法／條例／準則／
-辦法／細則／規則／通則結尾）+ 前導虛詞剝除，並保證兩輪掃描的結果依出現位置排序
-（L1、L2… 的編號要 deterministic）。實測：
-
-```
-依訴願法第14條                        → ('訴願法第14條', 'ok')
-依民事訴訟法第100條                    → ('民事訴訟法第100條', 'out_of_scope')
-按政府資訊公開法第18條及行政程序法第74條 → out_of_scope + ok（兩筆都抓到）
-另參建築法第999條                      → ('建築法第999條', 'missing')
-爰依行政訴訟法第98條                    → ('行政訴訟法第98條', 'out_of_scope')
-```
-
-這個 bug 是被 `test_citation_state_out_of_scope_for_unknown_law` 抓出來的——
-**測試先失敗，我才發現**。如果我沒寫那條測試，這個洞會一路帶到賽場。
-
-### Bug 2：全形數字造成**正確的引用被誤攔**（誤抓，比 Bug 1 更陰險）
-
-寫完 HANDOFF 後我又手動構造了 18 組對抗輸入去打引用檢查器，抓到這個：
-
-```
-'訴願法第１４條'   →  ('訴願法第14條', 'missing')   ← 修正前：合法引用被判查無此號
-'訴願法第１４條'   →  ('訴願法第14條', 'ok')        ← 修正後
-```
-
-全形數字是法規 PDF 轉文字的常見形式。修正前這種引用會被打紅燈、進 `blockers`、
-**鎖死送出鈕**——系統把承辦人寫對的東西攔下來，而且理由寫著「快照中訴願法無第
-１４條」，看起來還很像在認真把關。
-
-`architecture.md` §8.1 花了整整一段講「不能誤攔」（判解設計成四態就是為了這個），
-但數字正規化這層原本沒做到。修法在 `backend/retrieval/lawtable.py:128`。
-
-同一輪對抗輸入還確認了幾件事是**本來就對的**（沒改）：空白與換行容忍、
-邊界條號（建築法 105 通過／106 與 0 查無）、判解字號的前導零與省略「度」字、
-`之N` 條號、amended 態（洗防法 15之2 → 22）。
-
-另外找到一個**已知限制，我沒修**：「本法第14條」「同法第74條」這類相對指稱抓不到
-（需要上下文追蹤）。我判斷不修是因為它的失敗模式是安全的——抓不到 → 該句沒有引用
-→ 燈號黃（交人工），**不會**被誤標成綠燈。我補了一條測試把這個行為釘住
-（`test_relative_law_reference_is_not_silently_passed`），避免將來有人「順手」
-把無引用句改成預設綠燈。
-
-**這兩個 bug 都是「寫測試／構造對抗輸入」抓到的，不是讀程式碼看出來的。**
-如果只靠讀程式碼自我檢查，兩個都會漏掉。
-
----
-
-## 四、明確沒做的（不要以為做完了）
-
-| 項目 | 為什麼沒做 |
+| 東西 | 實作 |
 |---|---|
-| **真實 Bedrock 呼叫（N1／N5 live 分支）** | 沒有 AWS 憑證與 model access。介面寫好、guard 好，非 fixture 模式一律 raise/501。**沒有假裝能跑。** |
-| **真實相似案檢索、真實 kNN 分類** | 沒有賽方資料集。誠實回空 + 標庫外未驗證。 |
-| **SSE 事件流（`/api/runs/{id}/events`）** | `POST /runs` 目前是同步跑完就回。fixture 檔位毫秒級，沒有阻塞問題；接上模型後必須改成 202 + SSE。 |
-| **另外 6 支 API 端點** | architecture §6.1 列 10 支，我做了 4 支（health／cases／runs／deadline）。intake 補正、citecheck、confirm、redraft、submit 沒做。 |
-| **前端** | 不在範圍。 |
-| **`scripts/consistency_check.py`／`contract_check.py`** | 架構文件指派給 qa-legal（Jacky）。`origin_registry.check_payload()` 做了 contract_check 的核心邏輯並掛進 CLI 與 API，但不是那支獨立腳本。 |
-| **洗防法修法日期矛盾的定案** | architecture §8.2 說「這支腳本一寫出來就會 fail，這是設計意圖」——要翻原始 PDF 定案。我不能翻 PDF，也不該猜哪個日期對，**所以沒動**。 |
-| **ECR 推送／ECS 實際部署** | 需要 AWS 帳號。 |
-| **`backlog.md`／`.claude/agents/` 同步** | plan 明確列為「留給 Ci 判斷」，不放進自動化範圍。 |
+| 期間計算 | 純函式規則引擎，同輸入必同輸出，16 條向量鎖住，Python／JS 兩份實作零分歧 |
+| 引用查核 | 逐句抽引用 → 對 `laws-snapshot.json` 定四態（在庫／已修正／庫外未驗證／查無） |
+| 法規檢索 | **獨立**檢索：查詢句只由案情（N1 卷證、N2 案型、N3 程序結果）組成 |
+| 結論封鎖 | C 型案件不生成結論段，改出交接卡；封鎖判準不看句子文字，改草稿文字繞不過 |
+| 送出守門 | `POST /api/cases/{id}/submit` **重跑一次六節點**再判斷，不通過回 **409** |
+| 分層誠實 | 每個句子帶 origin；燈號／why／引用狀態的 origin 恆為 `rule`，機器檢查 |
+
+**沒做（不要以為做完了）**
+
+| 項目 | 為什麼 |
+|---|---|
+| 真實 Bedrock 呼叫（N1／N5 live 分支） | 無 AWS 憑證與 model access。非 fixture 模式一律 raise／501，沒有假裝能跑 |
+| 真實相似案檢索、kNN 分類 | 無賽方資料集。誠實回空 + 標「庫外，未驗證」 |
+| PDF 視覺抽取 | 所以**實體法條號抽不到**（見判斷卡 B），上傳的檔案完全不讀 |
+| SSE 事件流（§6.1 2b） | `POST /runs` 同步跑完就回。接上模型（25–45 秒）後必須改 |
+| §6.1 另外 4 支端點 | 已做 6 支：`/`、health、cases、runs、submit、deadline。intake 補正、citecheck、confirm、redraft 未做 |
+| 逐句「已確認」寫回後端 | 步驟 3 的紅燈確認只存在瀏覽器記憶體，重整就沒了 |
+| 冪等 `run_id` | 每次 `POST /runs` 都真的重跑。接 Bedrock 後**每次重整都會燒模型費用** |
+| 容器映像檔帶前端 | `Dockerfile` 只 `COPY backend/`，容器裡 `GET /` 回 503（見 `backend/DEPLOY.md` §4.5） |
+| 洗防法修法日期矛盾、示範案號 | **待 Ci 裁決，刻意原樣保留** |
 
 ---
 
-## 四點五、獨立審查結果：打出 3 個 P0，**全部已修**
+## 2. 本輪（第五輪）做的六件事
 
-依「產出的人不驗自己」的規矩，我派了一個 fresh-context 的 opus agent 做對抗式審查
-（它沒看過我的產製過程，只看最終結果）。它一度沒回應、我催過一次，最後回報了
-**三個實際打穿守門的 P0**。我逐條複現驗證——**全部屬實，不是誤報**：
+### 2.1 判斷卡 7：收文頁人工確認後，程序結果才算數 — Ci 拍板
 
-| # | 破口 | 我複現的實際輸出 | 狀態 |
-|---|---|---|---|
-| P0-1 | **國字條號完全漏抓** | 「建築法第九百九十九條」→ 抽到 0 個引用 → 系統回「本句未附引用」→ 綠燈放行 | ✅ 已修 |
-| P0-2 | **結論封鎖可繞過**：主文寫進 reasoning 槽位 | 「綜上…應予撤銷，由原處分機關另為適法之處分」放在理由段 → `submit_allowed=True` | ✅ 已修 |
-| P0-3 | **函釋零檢查通道** | 「台內營字第1120801234號函釋」→ 抽到 0 個 → 放行 | ✅ 已修 |
-| P1-1 | 判解字別漏「抗」 | 「112年度抗字第123號」→ 抽到 0 個 | ✅ 已修 |
-| P1-2 | 「同法第999條」只拿黃燈，且吐出「又同法」這種假法規名 | 假條號寫成「同法」就繞過紅燈 | ✅ 已修 |
-| P1-3 | **案型辨識不出來反而解除結論封鎖**（fail-open） | `case_type="其他事件"` → `requires_human_conclusion` True→False | ✅ 已修（改 fail-safe） |
+**破口**（覆核實測）：只要改 `intake.d2` 或 `d3` 讓案件變逾期 → `art77.clause` 變 `77-2`
+→ `requires_substantive_review` 變 False → `requires_human_conclusion` **True 翻 False**
+→ 捏造的主文拿綠燈、列進「有出處」、`submit_allowed=True`。
+而 live 檔位那兩欄的 origin 是 `llm`。
 
-**這三個 P0 為什麼重要**：它們的共同形態都是「**漏抓被講成沒有**」——
-系統抽不到引用，然後輸出「本句未附引用，屬涵攝或評價語句」並放行。
-那不只是漏一筆，是**用一句肯定的話掩蓋一次失敗**，正好是這個系統最不該犯的錯。
-P0-2 更直接：fixture 檔位下永遠不會爆（模板不會亂寫），**一接上 Bedrock 就是真破口**。
+**修法**：`DEADLINE_INPUT_FIELDS`（`d2`／`d3`／`service_method`／`transit_days`／`interested_party`）
+**全部**要 `intake_origin == "human"`，才可以拿程序結果解除結論封鎖；否則 fail-safe 維持封鎖，
+交接卡加一條「抽取日期未經承辦人確認，結論段維持交人工」。
 
-修法與新增的 11 條回歸測試見 commit `58d97a6`。修完後 70/70 全綠，
-兩個正式案例行為不變（ordinary `submit_allowed=true`、blocked `false`），
-FastAPI 重新起來打過三支端點也一致。
+> 為什麼是五欄不是只有 `d2`／`d3`：`compute()` 的每個參數都會改變期滿日。
+> 只確認日期、讓送達方式維持模型抽取，等於在承辦人沒看過的欄位上宣稱「已確認」——
+> 同一個洞換個位置。所以收文頁**新增了送達方式／在途期間／利害關係人三個欄位**，
+> 承辦人看得到才算數。
 
-### 審查同時指出、我也修了的三項「誠實性」問題
+各層的動線：
 
-1. **對抗測資的 `adversarial` 旗標沒帶進 `doc[]`** — 輸出 JSON 裡那句假法條完全沒有標記，
-   任何人只截 `doc[]` 或貼進簡報就會看到一句沒註記的假條號。已把旗標與說明一路帶到句子物件。
-   （這也讓上面第二節 ⚠1 的風險小了一截，但**demo 時仍要口頭聲明**。）
-2. **掃描器被改成排除 `api/` 卻仍用「測試路徑零外部依賴」的名字報綠** — 這正是本系統要防的
-   那種「調整量尺讓自己過關」。已改名為「核心與測試路徑零外部依賴（`backend/api/` 為具名例外：Web 介面層）」，
-   例外具名，不藏在實作裡。
-3. **`origin_registry` 的 `ORIGIN`／`LLM_FORBIDDEN_PATHS` 是死碼，docstring 卻宣稱「會擋下來」** —
-   已改成誠實對照表，逐項標明哪個真的在跑、哪個只是文件（等 qa-legal 的 `contract_check.py`）。
-   另外 `classification.class.case_type` 原本標 `rule`（可驗算層），但它的輸入來自 N1 的模型輸出，
-   而它又餵給結論封鎖開關——已改標 `llm_derived` 並在註解寫明這條依賴鏈。
+| 層 | 做法 |
+|---|---|
+| 後端 | `run_case(..., confirmed_intake=)`；白名單制，不在 `CONFIRMABLE_INTAKE_FIELDS` 的鍵直接 ValueError |
+| API | `POST /runs` 與 `/submit` 接選填 body `{"confirmed_intake": {...}}` |
+| payload | `intake_confirmed[]` 列出誰被確認過；`intake_origin[f]` 翻成 `human`；`screen.procedural_inputs_confirmed` |
+| 前端 | 按「啟動幕僚團分析」＝ 承辦人確認 → 帶著表單值重跑一次後端；畫面常駐「已由承辦人確認（N 欄）」 |
+| CLI | `--confirm-intake`（**預設不加＝沒人確認**） |
 
-### ⚠ 審查中我**沒有**處理的部分（留給你）
+**新的誠實基準**：`synthetic-ordinary-01` 未確認時 `submit_allowed=False`。
+那不是回歸，是修掉破口的必然結果。所有相關測試改成「未確認→封鎖、確認→允許」兩個狀態都測，
+並在測試註解寫明原因。
 
-- 審查者自陳有三項**未查完**：architecture.md §3.1／§4.2／§4.3／§6.2／§8.1 的逐條規格對位、
-  期間向量的獨立重驗、獨立於我們自己那支 scanner 的 secret grep。
-- 審查者提的一個問題我**無法替你判斷**：`laws-snapshot.json` 的 17 筆判解白名單標註來源為
-  賽方資料集且已進 git。純法條條號索引我認為沒問題，但判解白名單算不算 §6「僅供競賽之用」
-  的衍生物，**請你確認**。這份檔是 v0 就有的、我只是搬遷，沒有新增內容。
-- 審查者認為 FastAPI/Docker 超出 plan 的 out-of-scope 應該補一段 plan 範圍變更紀錄。
-  這部分是你的任務明確要求的範圍升級（plan 寫的是沙箱限制，不適用），我沒有改 plan——
-  要不要補一段追認由你決定。
-- `backend/api/app.py` 目前**零測試覆蓋**（只有手動打過端點）。
+對抗測試 `test_changing_extracted_dates_cannot_unlock_the_conclusion_block`：
+兩組改過的日期都必須維持封鎖，確認後才解除。
 
-**結論**：現在這份程式碼**有**通過一輪獨立對抗審查，而且審查抓到的東西不是雞毛蒜皮。
-但同一位審查者也自陳有未查完的項目，所以它是「查過一輪、不是查完」。
+**`origin_registry` 的誠實註解原本指錯人**：它說封鎖開關的上游是 `case_type`。
+實測不是——改 `case_type` 關不掉封鎖（fail-safe 會接住），關得掉的是日期。
+已改成指向 `screen.deadline.*`／`screen.art77.*`／`screen.requires_human_conclusion`
+（三者標 `llm_derived`，不再整批標 `rule`）。
 
+### 2.2 離線備援文案改誠實 — Ci 拍板
 
----
+`prototype/data/case-demo.json` 六處點名的宣稱全部改掉：
 
-## 五點五、第二輪 fresh-context 對抗覆核：推翻「3 個 P0 全部已修」
+| 原文 | 改成 |
+|---|---|
+| 解析 4 份卷證，OCR 信心值 0.97 | 示範案件內建 4 份卷證中繼資料（本 demo 不讀取上傳檔內容，未執行 OCR） |
+| 向量檢索 11 部法規 · 命中 6 筆 | 對離線法規快照做**條號查表** · 命中 6 筆（查表，非向量檢索） |
+| 比對 101 件歷史決定書 · 相似度 ≥0.72 者 5 件 | 相似歷史決定書：**庫外，未驗證**（本機無資料集，未執行任何相似度計算） |
+| 8 款不受理事由逐款比對，全數不該當 | 只自動判定可由日期算出的第 2 款；其餘 7 款屬法律判斷，未自動比對 |
+| 可與卷證原文逐字比對 | 標記為卷證直錄（非模型撰寫）；**本 demo 未執行逐字比對**，請承辦人核對 |
+| 已比對修正前後條文全文 | 快照只記錄修正對照（舊條次→新條次）；條文全文不在快照內，實質有無變動請人工查證 |
 
-> 這節是主對話（指揮官）事後補的，**不是**上面建置 agent 寫的。派了另一個全新、沒看過
-> 建置過程的 opus agent 專門對抗式覆核上面第四點五節的「已修」宣稱，不能只信文件。
+**沒動案號與洗防法日期**（那兩件仍待 Ci）。已重跑 `build.py`。
 
-**結論先講：P0-3（函釋）是真的修好了；P0-1（國字條號）和 P0-2（結論封鎖繞過）都只是
-補了原審查者測過的那個具體案例，通用繞法照樣穿過。P0-1 的修法甚至把「漏抓→黃燈」這個
-安全的失敗模式，換成了「誤讀→綠燈」這個不安全的。**
+### 2.3 送出端點：讓「不得送出」變成真話
 
-### ❌ P0-1 國字條號：只修了「單位式」，「數字串式」全被誤讀成綠燈
+`POST /api/cases/{case_id}/submit`：
 
-`cn_to_int`（`backend/retrieval/lawtable.py:145`）：
+- **後端自己重跑六節點再判斷，完全不採信前端**（`recomputed_by: "backend"`）
+- 不通過 → **409** ＋ 完整 `blockers`
+- 通過 → 200 ＋ 本機收據，寫 `backend/output/submissions.jsonl`（gitignored），
+  收據明寫 `external_effect: "none"`
 
-```
-七十三 → 73  ✓          七三   → 3   ✗（誤讀）
-九百九十九 → 999 ✓       九九九  → 9   ✗（誤讀）
-一百零五 → 105 ✓         一〇五  → 5   ✗（誤讀，「〇」是法律文書標準寫法）
-```
+前端「送出審議」改打這支；409 時停在燈號頁顯示「後端已拒絕送出（409）」。
+完成頁的「已陳送訴願審議委員會，並排入最近一次審議會議程」**已移除**，
+改成「已記錄為送出（後端回 200）」＋ 收據內容（run_id／時間／外部效果 none／寫入路徑）。
 
-實測「建築法第九九九條」端到端跑完六節點：`submit_allowed=True`，`cites=[('建築法第9條','ok')]`，
-because「九九九」被誤讀成 `9`、剛好在庫、綠燈放行。**比原本更糟**：原本是抽不到 → 黃燈
-（安全失敗），現在是抽到錯的 → 命中存在的低條號 → 綠燈（系統對捏造條號主動背書）。
+**headless 實測（刻意繞過前端）**：把 blocked 案例的送出鈕用 JS 改成 enabled 再點，
+後端照樣回 409、畫面顯示拒絕、按鈕重新變灰。這證明前端的 disabled 只是提示，
+真正的守門在後端。
 
-### ❌ P0-2 結論封鎖繞過：15 種真實主文寫法漏 8 種
+### 2.4 宣稱清理
 
-`detect_conclusion_like`（`gate/lamps.py:136`）是 11 條硬編碼片語的子字串比對，
-無空白正規化。漏的 8 種包含**最標準的寫法**：
+| 位置 | 原本 | 現在 |
+|---|---|---|
+| `lamps.py` 第 1 層 | 法條把處理結果「窮舉」了，是**封閉集合** | 明說**不是**封閉集合（法條列的是結果，決定書寫的是中文，不一對一），與檔案下方「不可能窮舉」一致 |
+| `lamps.py` 第 3 層 | **沒有寫法能繞過** | 「不能靠改寫句子的文字繞過」＋列出兩個仍然繞得過的情形 |
+| `lamps.py` WHY_* | 已阻擋送出 | 後端送出端點會以 409 拒絕本案送出 |
+| `index.tmpl.html` | 逐句溯源覆蓋率 **100%** | 每一句都掛得出燈號與理由；燈號本身不保證內容正確 |
+| `app.js` 上傳清單 | **✓ 已解析** | 已上傳（本 demo 不讀取上傳檔內容，案情來自後端合成案例） |
+| 步驟列 / 一鍵確認 modal | 陳核並排入委員會議程／紀錄會陳送審議委員會 | 本 demo 沒有外部整合，不會真的陳送任何單位 |
+| 燈號審核頁 | （無） | 新增邊界說明：**非 C 型案件之結論段由承辦人撰寫，系統不阻擋其內容** |
 
-```
-漏  本件訴願為無理由，應予駁回。
-漏  訴願人之訴願為無理由，爰予駁回。
-漏  本件訴願逾期，不予受理。
-漏  原處分應予維持。／原處分核有違誤，爰予撤銷。
-漏  原 處 分 撤 銷 。（決定書主文常見排版，字間有空白）
-```
+**誠實性 meta-test 改成措辭家族掃描**（`test_no_overclaim_in_code_or_ui`）：
+掃 `backend/**/*.py`（`backend/tests/` 為具名例外）＋ `app.js` ＋ `index.tmpl.html`，
+用 7 組 regex 家族（繞過／阻擋送出／鎖定／100%／已排入議程／已解析／已驗證結論）
+配否定語境白名單與就地否定判斷。原本那版只比對兩句一字不差的字串，換個講法就掃不到。
 
-實測放行：「綜上所述，本件訴願為無理由，應予駁回。」放進 reasoning 槽位 → `submit_allowed=True`。
-**HANDOFF 第四點五節那句「一接上 Bedrock 就是真破口」仍然成立，這個破口沒被關掉。**
+### 2.5 P2 修補
 
-### ✅ P0-3 函釋：是真的做了，通道有邏輯在跑，只是漏抓 2 種字號格式（`…號書函`、括號內無「函」字者）
+- **函釋前導虛詞**：改成「剝掉虛詞後**仍需是合法機關名**才剝」（用 `_AGENCY` 文法自己驗）。
+  「本件參照內政部…」「此有內政部…」現在都正確剝成 `內政部`，
+  而「新北市政府警察局新店分局」不會被剝成「警察局」（取最短合法後綴會犯這個錯）。
+- **去重改用結構化鍵**：`Citation.dedup_key`（法規名｜條號 / 年度字號 / 機關字別號數），
+  不再用 `raw`。前導虛詞剝不乾淨時同一筆函釋不會再被算兩次。
+- **determinism 白名單改完整路徑**：原本 `set(path.split("/")) & ALLOWED` 會讓任何
+  巢狀在 `run_meta` 下、或名字剛好撞到的新欄位一併豁免。現在是 5 條完整路徑 + 1 個前綴例外
+  （`/run_meta/node_timings/`）。
 
-### 附帶：agent 另外做的 architecture 規格逐條對位，抓到幾個會影響 demo 可信度的結構性問題
+### 2.6 HANDOFF 統一
 
-- **N4 檢索查詢句其實是從 N5 草稿 fixture 反推的**（`graph.py:86→128`），不是被案情決定；
-  規格要求的 `build_query()` 實務上是死碼。也就是說目前「引用一定查得到」是因為
-  「查什麼」是照著「答案要引用什麼」倒著填的，**不是獨立檢索在佐證什麼**。
-- `resolved_id` 與 `laws[].id` 命名空間交集是空集合，靠字串巧合過關，顯示字串一變會
-  靜默失效不報錯。
-- **C 型結論封鎖的判準幾乎沒有鑑別力**：實測把 blocked 案例的事實爭點訊號全拿掉，
-  **仍然封鎖**——真正的判準其實是「未逾期」，不是「偵測到事實認定爭點」。demo 被問
-  「換個案型會怎樣」會露餡，這是簡報風險。
-- `backend/api/app.py` 無 CORS middleware，前端串接第一天就會被瀏覽器擋下。
+本檔。三份舊檔頂部已標「已被 HANDOFF.md 取代」。
 
-### 我（主對話）自己補做的驗證
+**修正舊檔的失效數字**：`70/70` → 現況 157/157；`test_vector_count_is_15` → `_is_16`；
+契約測試 21 條 → 24 條；HANDOFF-INTEGRATION 的 AC5「91/91」→ 157/157。
 
-親自用 `uv run --with fastapi --with uvicorn[standard] --with pydantic` 啟動
-`backend.api.app`，實打 `/api/health`、`/api/cases`、`POST /api/cases/{id}/runs`
-（兩個案例）：全部 200，`synthetic-blocked-01` 正確回 `submit_allowed=false`。
-SC-07 現在有獨立於本文件宣稱的第三方驗證。
-
-### 給 Ci 的建議
-
-**不要 merge。** 這不是修得不認真，是「拿具體反例補具體片語／規則」這個修法本身
-會反覆製造同一類洞——下一輪要改守門的**形狀**（無法可靠解析就回 `None`／降黃，
-不要猜一個值；主文偵測改結構判準，不要再加片語），不是再補幾個案例。另外請針對
-第二節 ⚠2 的白名單資料歸屬問題、以及這裡新發現的 N4 循環佐證與 C 型判準鑑別力問題
-給出方向，這兩個影響的是 demo 敢不敢在評審面前被追問細節，不只是程式碼品質。
+**裁定 HANDOFF-GATE:349 與整合實作的衝突**：
+那條寫「**不得**把 `submit_allowed` 在 UI 上做成『可送出』按鈕或等義文案（判斷卡 9）」。
+它成立的前提是「`submit_allowed` 沒有執行點」——**那個前提已經不成立**（§2.3 做出來了）。
+**裁定：UI 可以有送出按鈕與等義文案，但必須滿足三個條件**，三個都已實作：
+1. 按下去真的打後端端點，由後端重算後決定（不是前端自己判斷）；
+2. 被拒絕時畫面明說是**後端**以 409 拒絕，不是前端擋的；
+3. 成功時的文案不得暗示任何外部效果（現在寫「已記錄為送出」＋ `external_effect: none`）。
 
 ---
 
-## 五、建議你早上先做的三件事
+## 3. 驗收證據
 
-1. **決定上面第二節的五個判斷**（尤其 ⚠1 對抗測資的假引用要不要改寫法）。
-2. **送出 AWS 帳號與 Bedrock model access 申請**——這是唯一有「行政等待時間」的路徑，
-   plan 的「待 Ci 醒來後決定的事」也建議睡前先送出申請。其餘東西都可以之後補。
-3. 跑一次 `python3 backend/tests/run_all.py` 自己確認（70/70、exit 0）。
-   **另外建議**：獨立審查已經打出 3 個 P0（都修了），這說明這類破口確實會出現。merge 前值得再派一輪審查，重點放在審查者自陳未查完的三項（architecture 規格逐條對位、期間向量獨立重驗、獨立於我們自己 scanner 的 secret grep）。
+全部可重跑，腳本在 `docs/evidence/2026-09-05-integration/`（自帶 PASS/FAIL 或 exit code）。
+
+| 情境 | 腳本 | 結果 |
+|---|---|---|
+| ordinary 五步 + 確認 + 送出 200 | `verify_submit.py` | **PASS**：確認 12 欄、燈號 0/0/13、完成頁「已記錄為送出（後端回 200）」＋收據 |
+| ordinary **未確認**直接打 API | `verify_submit.py` | **409**，`accepted:false`，blockers 含 `conclusion_requires_human` |
+| blocked 五步 + 強制點送出 | `verify_submit.py` | **409**，畫面「後端已拒絕送出（409）」，按鈕重新變灰 |
+| ordinary / blocked 五步渲染 | `verify_ui.py` | exit 0，零 JS error |
+| `file://` 離線 fixture | `verify_offline.py` | exit 0，徽章 offline，v0 行為不變 |
+| 改日期即時重算 | `verify_recalc.py` | **PASS**：紅燈 2→3、判定句轉紅、閘門仍鎖 |
+
+> 唯一一則 console 訊息是 Chromium 對**刻意的** 409 記的 `Failed to load resource`。
+> 那不是 JS error（程式接住並顯示了訊息），腳本把它分開記在
+> `expected_http_409_console_lines`，不混進 `js_errors`——不是靜靜過濾掉。
+
+紅線：無 secret、無 GCP 字樣、Python 依賴仍只有 fastapi/uvicorn/pydantic、
+前端外連只有 Google Fonts（與 v0 相同）、啟動過的 process 全關。
 
 ---
 
-## 附：commit 清單
+## 4. 判斷卡（全部未決事項，合併去重）
 
-```
-58d97a6 fix(gate): 修掉獨立審查打出來的 3 個 P0 + 3 個 P1 破口
-337d744 docs: HANDOFF 補記 Bug 2 與誠實聲明
-403252b fix(gate): 全形數字造成合法引用被誤攔
-84379f6 docs: HANDOFF.md
-91d48a7 docs(deploy): 補記 Docker 映像檔本機實測結果
-7dea039 feat(api): 可運作的 FastAPI 服務 + ECS 部署就緒
-56d1e1a test(backend): 55 項統整測試全綠
-aa22add feat(backend): 六節點 pipeline + deterministic 編排 + 兩個合成案例可端到端跑完
-9b7d9e6 test(engine): 原封搬遷期間計算引擎到 backend/ 並鎖定零分歧
-```
+### ⚠ A. `fact_issue_signals.json` 仍是骨架版
 
-## 附：檔案清單（41 個新檔，全在 `backend/` 底下）
+正式版要由 Jacky 從 114年/19、113年/20 兩份真實 C 型決定書反推。
+現在的訊號詞取自公開法條用語，**不是從真實案件反推的**。
 
-```
-backend/
-├── DEPLOY.md                      ECS 部署步驟與環境變數（只寫名稱不寫值）
-├── Dockerfile                     ECS Fargate 用，非 root，內建 healthcheck
-├── requirements.txt               只有 Web 層需要；核心與測試路徑零外部依賴
-├── cli.py                         python3 -m backend.cli --case <synthetic-id>
-├── api/app.py                     FastAPI 四支端點
-├── engine/deadline.py             原封搬遷（sha256 相同）
-├── config/
-│   ├── settings.py                RUN_MODE、provenance、幕僚卡片、需事實認定型案型
-│   ├── origin_registry.py         JSON path → origin，三層誠實的機器強制
-│   └── fact_issue_signals.json    C 型訊號清單（骨架版，待 qa-legal 換掉）
-├── retrieval/
-│   ├── base.py                    凍結的 Retriever 介面 + UnavailableRetriever
-│   └── lawtable.py                法條查表 + 引用抽取（含庫外法規）
-├── gate/
-│   ├── citations.py               引用四態
-│   └── lamps.py                   燈號規則 + C 型封鎖開關
-├── nodes/n1..n6                   六節點
-├── orchestrator/
-│   ├── state.py                   CaseState/NodeResult/NodeCtx + 不變式
-│   ├── graph.py                   deterministic 狀態機 + 三層輸出視圖
-│   └── narrative.py               決定書骨架模板 + 幕僚卡片文案
-├── data/
-│   ├── laws-snapshot.json         搬遷自 prototype
-│   ├── test-vectors.json          搬遷自 prototype（15 條）
-│   └── synthetic/
-│       ├── synthetic-ordinary-01.json   正常案例
-│       └── synthetic-blocked-01.json    對抗案例（含刻意注入的假引用）
-└── tests/
-    ├── harness.py                 stdlib-only 測試 harness
-    ├── test_deadline.py           搬遷保真 + 向量零分歧
-    ├── test_nodes.py              六節點單元測試
-    ├── test_e2e.py                端到端整合測試
-    └── run_all.py                 統整入口 + 三道紅線靜態掃描
-```
+**附帶發現**：`substantive` 單獨就足以觸發封鎖，所以事實爭點偵測目前
+對「要不要封鎖」幾乎沒有影響力，只影響交接卡多幾行提醒。
+換上真實清單之前，**不要在簡報裡把它講成封鎖機制的主要判準**。
+
+### ⚠ B. 實體法條號抽不到，獨立檢索只查得到程序面
+
+案型只給得出法規「名稱」（建築法），條號寫在原處分書上，而 Phase 0 沒有 PDF 視覺抽取。
+所以 `laws[]` 清一色是程序面法條，`retrieval_divergence.cited_not_retrieved` 會一直很長。
+Demo 被問「你們的檢索到底檢索到什麼」，答案是「程序面查得到、實體面要等 PDF 抽取」。
+
+### ⚠ C. 洗防法修法日期矛盾 + 示範案號
+
+`case-demo.json` 的洗防法日期與案號**刻意未動**，等 Ci 裁決。
+
+### ⚠ D. `/api/deadline` 的 `verdict` 超出 §6.1
+
+§6.1 #5 寫「`Result.as_dict()`，不改」。我保留了原本每一個欄位，只加一個 `verdict` 兄弟鍵
+（燈號＋說法，origin=rule）。加它的理由：前端即時重算時不能自己判斷燈號。
+要不要回寫進 architecture 請拍板。
+
+### ⚠ E. 改日期重算只涵蓋期間，不含 77 條款
+
+改日期後 `art77.clause` 不會跟著變（那要重跑 N3）。UI 有寫「只有期間這一段重算過」，
+但這是誠實的**缺口**不是設計。要補得靠 §6.1 #8 的 redraft（重跑 N3–N6）。
+
+### ⚠ F. 非 C 型案件的結論內容，系統擋不了
+
+系統無法用文字判準區分「合法的結論」與「捏造的結論」——兩者長得一樣。
+覆核量到非 C 型下 26/26 捏造主文全綠，根因是這件事，不是少了幾條規則。
+現在燈號審核頁有一行邊界說明，但**這是揭露，不是修好**。
+
+### ⚠ G. `record`（卷證直錄）通道無條件發綠燈
+
+綠燈代表「來源是卷證、非模型撰寫」，**不代表已與來源文件逐字比對**——本階段沒有這個控制。
+`why` 已改成不作此宣稱（§2.2、§2.4），但綠燈本身仍可能被讀成「已驗證」。
+
+### ⚠ H. 判斷卡 7 修完之後，仍然剩下的路
+
+確認機制擋住的是「**沒有人看過**就解除封鎖」。它擋不住「承辦人看了、但沒發現 N1 抽錯」——
+那時 origin 是 `human`，系統會採信。這是設計上的正解（人有最終判斷權），
+但 demo 被問「所以模型抽錯日期還是會過？」時要答得出來：
+**會，只要承辦人確認了**——這正是為什麼那三個日期欄位現在都攤在收文頁上讓人看。
+
+### ⚠ I. `git mv HANDOFF.md HANDOFF-PHASE0.md`
+
+指揮官說「舊兩份可保留」，但實際上有三份舊檔。我把原本的 `HANDOFF.md`（Phase 0 那輪）
+改名成 `HANDOFF-PHASE0.md` 並標為已取代，讓根目錄的 `HANDOFF.md` 空出來給這份統一版。
+如果你希望保留原檔名，`git mv` 回去即可。
+
+---
+
+## 5. 檔案地圖
+
+| 路徑 | 是什麼 |
+|---|---|
+| `CONSTITUTION.md` | 八原則（紅線） |
+| `docs/architecture.md` | 架構與資料契約（§6.1 API、§6.2 CASE payload） |
+| `plans/` | 各工作包的 plan（含驗收條件） |
+| `backend/DEPLOY.md` | 啟動指令、ECS 部署、備援路徑 |
+| `prototype/README.md` | 前端兩種模式的差異表、檔案地圖、測試指令 |
+| `docs/evidence/2026-09-05-integration/` | 可重跑的驗證腳本 + DOM 節錄 + 截圖 |
+| `HANDOFF-PHASE0.md` / `HANDOFF-GATE.md` / `HANDOFF-INTEGRATION.md` | 三條分支的過程紀錄（已被本檔取代） |

@@ -20,7 +20,11 @@ import datetime as dt
 import time
 from typing import Any
 
-from backend.config.settings import SUBSTANTIVE_TYPES, load_fact_issue_signals
+from backend.config.settings import (
+    DEADLINE_INPUT_FIELDS,
+    SUBSTANTIVE_TYPES,
+    load_fact_issue_signals,
+)
 from backend.engine.deadline import compute
 from backend.gate.lamps import requires_human_conclusion
 from backend.orchestrator.state import CaseState, NodeCtx, NodeResult
@@ -126,8 +130,19 @@ def run(state: CaseState, ctx: NodeCtx, digest: str = "") -> NodeResult:
     fact_issues = detect_fact_issues(
         case_type, art77["clause"], digest, str(intake.get("note") or ""), signals
     )
+    # 判斷卡 7：期間輸入欄位有沒有經過承辦人確認，決定「程序上已可直接算出不受理事由」
+    # 這件事能不能拿來解除結論封鎖。未確認 = 不能。
+    unconfirmed = tuple(
+        f for f in DEADLINE_INPUT_FIELDS if state.intake_origin.get(f, "llm") != "human"
+    )
+    inputs_confirmed = not unconfirmed
     needs_human, block_signals = requires_human_conclusion(
-        art77, case_type, fact_issues, SUBSTANTIVE_TYPES
+        art77,
+        case_type,
+        fact_issues,
+        SUBSTANTIVE_TYPES,
+        procedural_inputs_confirmed=inputs_confirmed,
+        unconfirmed_fields=unconfirmed,
     )
 
     state.screen = {
@@ -136,6 +151,9 @@ def run(state: CaseState, ctx: NodeCtx, digest: str = "") -> NodeResult:
         "fact_issues": fact_issues,
         "requires_human_conclusion": needs_human,
         "human_conclusion_signals": block_signals,
+        # 稽核用：這一次的程序判斷建立在哪些未確認欄位上
+        "procedural_inputs_confirmed": inputs_confirmed,
+        "unconfirmed_procedural_fields": list(unconfirmed),
     }
     state.assert_screened_invariant()
 
@@ -160,6 +178,15 @@ def run(state: CaseState, ctx: NodeCtx, digest: str = "") -> NodeResult:
                     [
                         f"結論段{'封鎖（由承辦人判斷）' if needs_human else '可由模板組稿'}",
                         "r" if needs_human else "",
+                    ],
+                    [
+                        (
+                            f"期間輸入欄位未經承辦人確認：{'、'.join(unconfirmed)}"
+                            "——不得用程序結果解除結論封鎖"
+                            if unconfirmed
+                            else "期間輸入欄位已由承辦人確認"
+                        ),
+                        "y" if unconfirmed else "",
                     ],
                     *[[c, "y"] for c in deadline_result["caveats"]],
                 ],

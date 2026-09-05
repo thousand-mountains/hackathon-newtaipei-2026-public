@@ -120,8 +120,34 @@ DIRECTIVE_PATTERNS = (
 DIRECTIVE_RE = DIRECTIVE_PATTERNS[0]
 
 
-# 機關名比對會把前導虛詞一起吃進去（「參內政部…」），逐字剝掉再顯示。
-DIRECTIVE_STOP_PREFIX = set("依按查據參另及與暨爰本該之以由自如見並且或者其惟至揆諸準用適用核符即則故是有無得應照又")
+# 機關名比對會把前導虛詞一起吃進去（「參內政部…」「本件參照內政部…」），剝掉再顯示。
+DIRECTIVE_STOP_PREFIX = set("依按查據參另及與暨爰本該之以由自如見並且或者其惟至揆諸準用適用核符即則故是有無得應照又此件案系爭前開上開")
+
+# 只由 `_AGENCY` 這個文法本身定義「什麼還算是一個機關名」——不另外維護一份機關清單。
+_AGENCY_ONLY_RE = re.compile(rf"^{_AGENCY}$")
+
+
+def strip_directive_prefix(agency: str) -> tuple[str, int]:
+    """把機關名前面的虛詞剝掉，回 (剝完的機關名, 剝掉幾個字)。
+
+    **兩個條件同時成立才剝**：被剝掉的那個字是已知虛詞，**而且**剝完之後剩下的
+    仍然是一個合法的機關名（用 `_AGENCY` 自己的文法驗，不另建清單）。
+
+    為什麼不用「取最短的合法後綴」那種寫法：那會把「新北市政府警察局」剝成「警察局」——
+    後綴本身也是合法機關名。寧可**少剝**（raw 多帶一個雜字）也不能多剝（丟掉機關）。
+
+    誠實說明它的極限：虛詞是列舉的，列舉一定有漏，所以 `raw` 仍可能帶到雜字。
+    這件事現在不影響計數——同一筆函釋重複與否改由 `Citation.dedup_key` 的
+    結構化鍵決定，不看 `raw`（見那個 property 的說明）。
+    """
+    dropped = 0
+    while len(agency) > 2 and agency[0] in DIRECTIVE_STOP_PREFIX:
+        candidate = agency[1:]
+        if not _AGENCY_ONLY_RE.fullmatch(candidate):
+            break
+        agency = candidate
+        dropped += 1
+    return agency, dropped
 
 
 def find_directives(text: str) -> list[tuple[int, int, str | None, str, str, str]]:
@@ -134,9 +160,9 @@ def find_directives(text: str) -> list[tuple[int, int, str | None, str, str, str
                 continue
             taken.append((m.start(), m.end()))
             start, agency = m.start(), m.group(1)
-            while agency and len(agency) > 2 and agency[0] in DIRECTIVE_STOP_PREFIX:
-                agency = agency[1:]
-                start += 1
+            if agency:
+                agency, dropped = strip_directive_prefix(agency)
+                start += dropped
             out.append((start, m.end(), agency, m.group(2), m.group(3), text[start:m.end()]))
     out.sort(key=lambda x: x[0])
     return out
@@ -178,6 +204,27 @@ class Citation:
         if self.kind != "law" or not law or not article:
             return None
         return f"{law}|{article}"
+
+    @property
+    def dedup_key(self) -> tuple:
+        """同一筆引用的**結構化**識別。去重、計數一律用它，不用 `raw`。
+
+        用 `raw` 去重的問題：前導虛詞剝不乾淨時，「本件參照內政部台內營字第123號函」
+        與「內政部台內營字第123號函」會被當成兩筆不同的引用，同一個函釋計成兩次，
+        畫面上的「引用查核 N 筆」就多算。結構化欄位不受顯示層雜字影響。
+
+        payload 缺欄位時退回 `(kind, raw)`——退回是為了不漏，不是為了正確去重。
+        """
+        pl = self.payload
+        if self.kind == "law" and pl.get("law"):
+            return ("law", pl.get("law"), pl.get("article"))
+        if self.kind == "precedent" and pl.get("no") is not None:
+            return ("precedent", pl.get("year"), pl.get("type"), pl.get("no"))
+        if self.kind == "interpretation" and pl.get("no") is not None:
+            return ("interpretation", pl.get("no"))
+        if self.kind == "directive" and pl.get("no") is not None:
+            return ("directive", pl.get("agency"), pl.get("word"), str(pl.get("no")))
+        return (self.kind, self.raw)
 
     def as_dict(self) -> dict[str, Any]:
         return {

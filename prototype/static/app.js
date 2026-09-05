@@ -130,13 +130,16 @@ $('#stepbar').addEventListener('click',e=>{const b=e.target.closest('.step');if(
 $$('[data-back]').forEach(b=>b.onclick=()=>goto(+b.dataset.back));
 
 /* ================= 1 上傳 ================= */
-const DEMO_FILES=CASE.files||[];
+let DEMO_FILES=CASE.files||[];
+/* 拖進來的檔案**不會被讀取**。這個 demo 的案情一律來自後端的合成案例，
+   上傳只是動線示意——原本寫「✓ 已解析」會讓人以為系統剖析了他丟進來的 PDF。 */
+const UPLOAD_NOTE='本 demo 不讀取上傳檔內容，案情來自後端合成案例';
 function addFile(f,i){
   const li=document.createElement('li');
   li.style.animationDelay=(i*90)+'ms';
   li.innerHTML=`<span class="mi doc">description</span>
     <span class="meta"><b>${esc(f.n)}</b><span>${esc(f.s)}　·　${esc(f.x)}</span></span>
-    <span class="ok">✓ 已解析</span><button aria-label="移除">×</button>`;
+    <span class="ok" title="本 demo 不讀取上傳檔內容">已上傳</span><button aria-label="移除">×</button>`;
   li.querySelector('button').onclick=()=>{li.remove();updateGo1()};
   $('#filelist').appendChild(li);
   updateGo1();
@@ -162,12 +165,17 @@ function loadDemo(){
     $('#f_d2').value=K.d2||'';
     $('#f_d3').value=K.d3||'';
     setSelectValue($('#f_agent'),K.agent);
+    setSelectValue($('#f_sm'),K.service_method);
+    $('#f_transit').value=(K.transit_days!=null?K.transit_days:0);
+    $('#f_interested').checked=!!K.interested_party;
     $('#f_note').value=K.note||'';
     updateGo1();
     (K.auto_fields||[]).forEach(id=>{
       const dom=String(id).startsWith('a_')?id:AUTO_FIELD_DOM[id];
       const el=dom&&$('#'+dom); if(el)el.textContent='自動擷取';
     });
+    if((K.auto_fields||[]).includes('service_method')){const e=$('#a_sm'); if(e)e.textContent='自動擷取';}
+    renderConfirmNote();
     if(K.auto_toast)toast(K.auto_toast);
   },700);
 }
@@ -179,10 +187,10 @@ drop.onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();loadDemo(
 ['dragleave','drop'].forEach(t=>drop.addEventListener(t,e=>{e.preventDefault();drop.classList.remove('hot')}));
 drop.addEventListener('drop',e=>{
   const fs=[...(e.dataTransfer?.files||[])];
-  if(fs.length)fs.forEach((f,i)=>addFile({n:f.name,s:Math.round(f.size/1024)+' KB',x:'已上傳'},i));
+  if(fs.length)fs.forEach((f,i)=>addFile({n:f.name,s:Math.round(f.size/1024)+' KB',x:UPLOAD_NOTE},i));
   else loadDemo();
 });
-$('#filein').onchange=e=>[...e.target.files].forEach((f,i)=>addFile({n:f.name,s:Math.round(f.size/1024)+' KB',x:'已上傳'},i));
+$('#filein').onchange=e=>[...e.target.files].forEach((f,i)=>addFile({n:f.name,s:Math.round(f.size/1024)+' KB',x:UPLOAD_NOTE},i));
 
 function updateGo1(){
   const files=$('#filelist').children.length;
@@ -192,8 +200,69 @@ function updateGo1(){
   $('#go1hint').textContent=!files?'請先上傳卷證':(!no||!ty)?'請填寫收文案號與案件類型':'';
 }
 ['#f_no','#f_type'].forEach(s=>{$(s).addEventListener('input',updateGo1);$(s).addEventListener('change',updateGo1)});
-$('#go1').onclick=()=>{
+/* ================= 判斷卡 7：承辦人確認 intake ================= */
+/* 「啟動幕僚團分析」＝ 承辦人已經看過這一頁的欄位（可能改過、也可能原樣採用）。
+   把它們當作**人工確認**送進後端，後端才允許用程序結果解除結論封鎖。
+   不確認的話，覆核實測證明：只要 N1 抽錯一個日期，整個結論封鎖就會被關掉。 */
+function collectIntake(){
+  const v=s=>$(s).value;
+  return {
+    no:v('#f_no'), type:v('#f_type'), person:v('#f_person'), org:v('#f_org'),
+    d1:v('#f_d1'), d2:v('#f_d2'), d3:v('#f_d3'), agent:v('#f_agent'), note:v('#f_note'),
+    service_method:v('#f_sm'),
+    transit_days:parseInt(v('#f_transit'),10)||0,
+    interested_party:$('#f_interested').checked
+  };
+}
+function renderConfirmNote(){
+  const el=$('#confirmnote'); if(!el)return;
+  const conf=(isLive&&LIVE&&LIVE.intake_confirmed)||[];
+  if(!isLive){el.textContent='離線模式：本頁不與後端往來，沒有「承辦人確認」這個狀態。';return;}
+  el.innerHTML=conf.length
+    ? '<b style="color:var(--green)">已由承辦人確認（'+conf.length+' 欄）</b>：'+conf.map(esc).join('、')+
+      '。程序判斷（期滿日、訴願法 77 條款）建立在這些確認過的欄位上。'
+    : '<b style="color:var(--amber)">尚未由承辦人確認</b>：目前欄位全部由模型自卷證抽取。'+
+      '按「啟動幕僚團分析」即視為承辦人已核對本頁欄位；'+
+      '在此之前，系統不會用期間結果解除結論段封鎖（結論一律交人工）。';
+}
+
+/* 帶著確認過的欄位重跑一次後端，並把整個畫面換成新 payload。
+   為什麼要重跑而不是改前端狀態：確認會改變後端的封鎖判斷，
+   那個判斷只有後端算得準——前端拿舊 payload 改幾個欄位就是在假裝。 */
+async function runConfirmed(){
+  const hint=$('#go1hint');
+  hint.textContent='送出承辦人確認並重跑六節點…';
+  try{
+    const res=await fetch('api/cases/'+encodeURIComponent(L.chosen)+'/runs',{
+      method:'POST',headers:{'Content-Type':'application/json','Accept':'application/json'},
+      body:JSON.stringify({confirmed_intake:collectIntake()})});
+    if(!res.ok)throw new Error('HTTP '+res.status);
+    applyLivePayload(await res.json());
+    hint.textContent='';
+    return true;
+  }catch(e){
+    hint.textContent='後端重跑失敗（'+String(e&&e.message||e)+'）——停在本步，未以舊資料續跑。';
+    return false;
+  }
+}
+
+function applyLivePayload(payload){
+  LIVE=payload; CASE=adaptPayload(payload);
+  DOC=CASE.doc||[]; DEMO_FILES=CASE.files||[];
+  LAWS=CASE.laws||[]; CASES=CASE.cases||[]; ISSUES=CASE.issues||[];
+  ALLREFS=[...LAWS,...CASES,...ISSUES]; AGENTS=CASE.agents||[];
+  rebuildSents();
+  renderConfirmNote();
+}
+
+$('#go1').onclick=async ()=>{
   if($('#go1').disabled)return;
+  if(isLive){
+    $('#go1').disabled=true;
+    const ok=await runConfirmed();
+    $('#go1').disabled=false;
+    if(!ok)return;   /* 後端沒回來就停在第 1 步，不拿舊 payload 假裝跑過 */
+  }
   S.startTime=Date.now();
   goto(1); runAgents();
 };
@@ -223,7 +292,7 @@ $('#go1').onclick=()=>{
 })();
 
 /* ================= 2 幕僚團 ================= */
-const AGENTS=CASE.agents||[];
+let AGENTS=CASE.agents||[];
 let agentsRan=false;
 function runAgents(){
   if(agentsRan)return; agentsRan=true;
@@ -311,7 +380,7 @@ function fillTokens(str){
 
 /* ================= 文件模型：以「句」為單位 ================= */
 /* lamp: g 可被計算 / y 有證據 / r 需人工審核　refs 對應左欄卡片 id */
-const DOC=CASE.doc||[];
+let DOC=CASE.doc||[];
 const SENTS=[];
 /* live 模式改日期會由後端重算期間，整段期間計算的句子會換掉（步數可能從 6 變 5），
    所以句子清單要能重建。**原地改陣列內容**，不重新指派——所有 closure 都抓著同一個參考。 */
@@ -449,8 +518,9 @@ async function recomputeDeadlineLive(){
       method:'POST',
       headers:{'Content-Type':'application/json','Accept':'application/json'},
       body:JSON.stringify({
-        method:K.service_method||'personal', service:svc, filing:fil||null,
-        transit:K.transit_days||0, interested:!!K.interested_party})});
+        method:$('#f_sm').value||K.service_method||'personal', service:svc, filing:fil||null,
+        transit:parseInt($('#f_transit').value,10)||0,
+        interested:$('#f_interested').checked})});
     if(!res.ok)throw new Error('HTTP '+res.status);
     r=await res.json();
   }catch(e){
@@ -495,8 +565,8 @@ function verifyLaw(title){
 }
 
 /* ================= 左欄參考資料 ================= */
-const LAWS=CASE.laws||[], CASES=CASE.cases||[], ISSUES=CASE.issues||[];
-const ALLREFS=[...LAWS,...CASES,...ISSUES];
+let LAWS=CASE.laws||[], CASES=CASE.cases||[], ISSUES=CASE.issues||[];
+let ALLREFS=[...LAWS,...CASES,...ISSUES];
 const refTab=id=>id[0]==='L'?'law':id[0]==='C'?'case':'issue';
 
 function refHTML(o){
@@ -787,8 +857,8 @@ function refreshGate(){
   $('#go4').disabled=left>0||gateBlocked;
   if(gateBlocked){
     $('#gatetitle').textContent=`後端守門阻擋送出（${nBlockers} 項）`;
-    $('#gatemsg').textContent='本案未通過品管守門節點，送出審議已鎖定。阻擋原因如下，須先由承辦人處理；'+
-      '紅燈逐句確認不會解除此鎖定。';
+    $('#gatemsg').textContent='本案未通過品管守門節點。按下送出時後端會重新判斷一次並以 409 拒絕；'+
+      '阻擋原因如下，須先由承辦人處理。紅燈逐句確認不會解除它。';
   }else if(left>0){
     $('#gatetitle').textContent=`尚有 ${left} 句紅燈待確認`;
     $('#gatemsg').textContent='紅燈涉及事實認定、裁量或人工改寫，須由承辦人核閱卷證後逐句確認，系統不代為判斷。';
@@ -821,8 +891,48 @@ $('#m_ok').onclick=()=>{
   toast(`已確認 ${pend.length} 句紅燈`);
 };
 
-$('#go4').onclick=()=>{
+/* 送出審議：live 模式一律打後端 POST /submit，**由後端重新判斷一次**。
+   前端這顆按鈕的 disabled 只是提示；改 DOM 或直接打 API 都繞得過它，
+   真正的守門在後端（409）。這也是「已標記為不得逕行送出」能改口的前提。 */
+async function submitToBackend(){
+  const btn=$('#go4');
+  btn.disabled=true;
+  const prev=$('#gatemsg').textContent;
+  $('#gatemsg').textContent='送出中：後端重新判斷可否送出…';
+  try{
+    const res=await fetch('api/cases/'+encodeURIComponent(L.chosen)+'/submit',{
+      method:'POST',headers:{'Content-Type':'application/json','Accept':'application/json'},
+      body:JSON.stringify({confirmed_intake:collectIntake()})});
+    const data=await res.json().catch(()=>({}));
+    if(res.status===409){
+      $('#gatetitle').textContent='後端已拒絕送出（409）';
+      $('#gatemsg').textContent='後端重跑六節點後判定不得送出，原因如下。前端顯示的狀態不算數，這一筆以後端為準。';
+      LIVE.blockers=data.blockers||LIVE.blockers;
+      LIVE.submit_allowed=false;
+      renderBlockers(); btn.disabled=true;
+      toast('後端拒絕送出（409）');
+      return null;
+    }
+    if(!res.ok)throw new Error('HTTP '+res.status);
+    return data;
+  }catch(e){
+    $('#gatetitle').textContent='送出失敗';
+    $('#gatemsg').textContent='無法與後端完成送出（'+esc(String(e&&e.message||e))+'）。'+
+      '本頁不會自行判定成功——沒有收到後端回應就是沒有送出。';
+    btn.disabled=false;
+    return null;
+  }finally{
+    if($('#gatemsg').textContent==='送出中：後端重新判斷可否送出…')$('#gatemsg').textContent=prev;
+  }
+}
+
+$('#go4').onclick=async ()=>{
   if($('#go4').disabled)return;
+  let receipt=null;
+  if(isLive){
+    receipt=await submitToBackend();
+    if(!receipt)return;   /* 409 或失敗：留在燈號頁，不進完成頁 */
+  }
   $('#r_no').textContent=$('#f_no').value||'—';
   $('#r_type').textContent='因'+($('#f_type').value||'—')+'提起訴願';
   $('#r_lamp').textContent=`紅 ${SENTS.filter(s=>s.l==='r').length}（已確認）／黃 ${SENTS.filter(s=>s.l==='y').length}／綠 ${SENTS.filter(s=>s.l==='g').length}　共 ${SENTS.length} 句`;
@@ -845,6 +955,17 @@ $('#go4').onclick=()=>{
     $('#s_note').innerHTML='以上四項均為本次執行實際量到的值（run_id <code>'+esc(rm.run_id||'—')+
       '</code>，RUN_MODE='+esc(rm.run_mode||'?')+'）。'+
       '<b>fixture 檔位是離線重播，耗時不代表接上模型後的處理時間</b>，也不是與人工作業的對照。';
+    /* 完成頁的措辭一律照後端收據講，不由前端自己宣稱送到了哪裡 */
+    if(receipt){
+      $('#r_title').textContent='已記錄為送出（後端回 200）';
+      $('#r_desc').textContent=receipt.external_effect_note||
+        '本 demo 沒有任何外部整合：沒有寄送郵件、沒有排入議程、沒有呼叫外部系統。';
+      $('#r_server').innerHTML='後端收據：<code>'+esc(receipt.run_id||'—')+'</code>　'+
+        '記錄時間 '+esc(receipt.recorded_at||'—')+'　'+
+        '外部效果 <b>'+esc(receipt.external_effect||'none')+'</b>　'+
+        '寫入 <code>'+esc(receipt.record_path||'—')+'</code>。'+
+        '<br>可否送出由後端重跑六節點判定（<code>'+esc(receipt.recomputed_by||'backend')+'</code>），未採信前端的判斷。';
+    }
   }else{
     const secs=Math.max(1,Math.round((Date.now()-S.startTime)/1000));
     $('#s_min').textContent=secs+' 秒';
@@ -852,6 +973,9 @@ $('#go4').onclick=()=>{
     $('#s_cite').textContent=SENTS.reduce((n,s)=>n+s.refs.length,0)+' 筆';
     $('#s_cite_lb').textContent='逐句依據連結數';
     $('#s_note').textContent='離線 fixture 模式：以上為前端在本頁量到的值，不是後端執行結果。';
+    $('#r_title').textContent='離線模式：未送出任何東西';
+    $('#r_desc').textContent='本頁未連上後端，沒有呼叫送出端點，也沒有留下任何紀錄。這一步只是動線示意。';
+    $('#r_server').textContent='';
   }
   goto(4);
 };

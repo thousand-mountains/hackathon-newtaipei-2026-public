@@ -7,8 +7,9 @@
 from __future__ import annotations
 
 import json
+import pathlib
 
-from backend.config.settings import SYNTHETIC_DIR
+from backend.config.settings import CONFIRMABLE_INTAKE_FIELDS, SYNTHETIC_DIR
 from backend.orchestrator.graph import build_payload, list_synthetic_cases, load_case, run_case
 from backend.tests.harness import assert_eq, assert_in, assert_true
 
@@ -110,11 +111,91 @@ def test_origin_violation_checker_actually_catches_violations():
         assert_true(got, f"檢查器沒抓到違規：{expect}")
 
 
-def test_ordinary_passes_the_gate():
+# 判斷卡 7（2026-09-05 Ci 拍板）之後，「正常案例可送出」多了一個前提：
+# 承辦人要在收文頁確認過期間輸入欄位。**未確認是誠實的預設值**——
+# 覆核實測證明，只要改一個模型抽出來的日期，整個結論封鎖就會被關掉。
+# 所以同一個案例現在有兩個基準，兩個都要測。
+def _write_tmp_case(case_id: str, fixture: dict) -> pathlib.Path:
+    """把一份改過的 fixture 寫進暫存目錄，回傳可餵給 `run_case(data_dir=...)` 的路徑。"""
+    import tempfile
+
+    tmp = pathlib.Path(tempfile.mkdtemp())
+    (tmp / f"{case_id}.json").write_text(json.dumps(fixture, ensure_ascii=False), encoding="utf-8")
+    return tmp
+
+
+def _confirmed_payload(case_id: str) -> dict:
+    """模擬承辦人在收文頁看過並採用 N1 抽出來的欄位。"""
+    probe = run_case(case_id, mode="fixture")
+    confirmed = {k: v for k, v in probe.intake.items() if k in CONFIRMABLE_INTAKE_FIELDS}
+    return build_payload(run_case(case_id, mode="fixture", confirmed_intake=confirmed))
+
+
+def test_ordinary_is_blocked_until_intake_is_confirmed():
+    """未確認 → 封鎖。這是新的誠實基準，不是回歸。"""
     p = _payload(ORDINARY)
-    assert_eq(p["blockers"], [], "正常案例不該有阻擋項")
+    assert_eq(p["screen"]["procedural_inputs_confirmed"], False, "預設就是沒有人確認過")
+    assert_eq(p["screen"]["requires_human_conclusion"], True, "未確認時不得用程序結果解除封鎖")
+    assert_eq(p["submit_allowed"], False, "未確認的案子不得標記為可送出")
+    assert_true(
+        any(b["reason"] == "conclusion_requires_human" for b in p["blockers"]),
+        "要說得出是因為結論段交人工才擋",
+    )
+
+
+def test_ordinary_passes_the_gate_once_intake_is_confirmed():
+    p = _confirmed_payload(ORDINARY)
+    assert_eq(p["screen"]["procedural_inputs_confirmed"], True)
+    assert_eq(p["blockers"], [], "確認後的正常案例不該有阻擋項")
     assert_eq(p["submit_allowed"], True)
     assert_eq(p["citation_counts"]["missing"], 0, "正常案例不得有查無此號的引用")
+
+
+def test_confirming_intake_records_who_vouched_for_each_field():
+    """確認不是靜靜改一個布林值：每個被確認的欄位都要在 payload 上看得出來。"""
+    p = _confirmed_payload(ORDINARY)
+    assert_true(p["intake_confirmed"], "intake_confirmed 是空的，看不出誰確認了什麼")
+    for f in ("d2", "d3", "service_method"):
+        assert_in(f, p["intake_confirmed"], f"{f} 應列在已確認欄位裡")
+        assert_eq(p["intake_origin"][f], "human", f"{f} 的 origin 應翻成 human")
+
+
+def test_changing_extracted_dates_cannot_unlock_the_conclusion_block():
+    """對抗測試（判斷卡 7 的核心）：改抽取日期不得解除結論封鎖。
+
+    覆核打穿的那條路徑：改 `d2`／`d3` → 案件變逾期 → `art77.clause=77-2` →
+    `requires_substantive_review` 變 False → 封鎖關掉 → 捏造主文拿綠燈、
+    列進「有出處」、`submit_allowed=True`。這條把它釘死。
+    """
+    blocked_case = load_case(BLOCKED)
+    # 原本未逾期（會因「須進實體審查」而封鎖）；把日期改成明顯逾期
+    for d2, d3 in (("2020-01-01", "2025-04-07"), ("2025-03-14", "2030-01-01")):
+        fixture = json.loads(json.dumps(blocked_case))
+        fixture["extraction"]["intake"]["d2"] = d2
+        fixture["extraction"]["intake"]["d3"] = d3
+        tmp = _write_tmp_case("synthetic-datehack-01", fixture)
+        p = build_payload(run_case("synthetic-datehack-01", mode="fixture", data_dir=tmp))
+        assert_eq(
+            p["screen"]["art77"]["clause"], "77-2",
+            f"前提檢查：d2={d2} d3={d3} 應該被算成逾期，否則這條測試沒測到東西",
+        )
+        assert_eq(
+            p["screen"]["requires_human_conclusion"], True,
+            f"改抽取日期（d2={d2} d3={d3}）就解除了結論封鎖——判斷卡 7 的破口又開了",
+        )
+        assert_eq(p["submit_allowed"], False, "未確認狀態下不得標記為可送出")
+
+    # 同一份資料，經過承辦人確認之後才可以解除
+    fixture = json.loads(json.dumps(blocked_case))
+    fixture["extraction"]["intake"]["d2"] = "2020-01-01"
+    fixture["extraction"]["intake"]["d3"] = "2025-04-07"
+    tmp = _write_tmp_case("synthetic-datehack-02", fixture)
+    confirmed = {k: v for k, v in fixture["extraction"]["intake"].items()
+                 if k in CONFIRMABLE_INTAKE_FIELDS}
+    q = build_payload(run_case("synthetic-datehack-02", mode="fixture", data_dir=tmp,
+                               confirmed_intake=confirmed))
+    assert_eq(q["screen"]["requires_human_conclusion"], False,
+              "承辦人確認過之後，程序上算出的不受理事由才可以解除封鎖")
 
 
 def test_ordinary_deadline_matches_known_vector():
@@ -124,7 +205,13 @@ def test_ordinary_deadline_matches_known_vector():
     assert_eq(dl["deadline"], "2024-07-15")
     assert_eq(dl["overdue"], True)
     assert_eq(p["screen"]["art77"]["clause"], "77-2")
-    assert_eq(p["screen"]["requires_human_conclusion"], False, "程序逾期案不封鎖結論段")
+    # 判斷卡 7：期間算出來是一回事，能不能用它解除結論封鎖是另一回事。
+    # 未確認 → 仍封鎖；確認後 → 才不封鎖。
+    assert_eq(p["screen"]["requires_human_conclusion"], True, "未確認時逾期案仍維持封鎖")
+    assert_eq(
+        _confirmed_payload(ORDINARY)["screen"]["requires_human_conclusion"], False,
+        "承辦人確認後，程序逾期案不封鎖結論段",
+    )
 
 
 # ── N4 獨立檢索：查詢句不得由草稿倒推（2026-09-05 Ci 拍板）─────────

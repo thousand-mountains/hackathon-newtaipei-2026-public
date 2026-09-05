@@ -95,6 +95,8 @@ class CaseState:
     intake: dict[str, Any] = field(default_factory=dict)
     intake_conf: dict[str, float] = field(default_factory=dict)
     intake_origin: dict[str, str] = field(default_factory=dict)
+    # 承辦人在收文頁確認過的欄位名（判斷卡 7）。空 list = 全部仍是模型抽取。
+    intake_confirmed: list[str] = field(default_factory=list)
     low_conf_fields: list[str] = field(default_factory=list)
     facts_excerpt: list[dict[str, Any]] = field(default_factory=list)
 
@@ -167,7 +169,7 @@ class CaseState:
         if "conclusion_requires_human" not in reasons:
             raise AssertionError(
                 "P0 不變式違反：requires_human_conclusion=true 但 blockers 沒有 case 層的 "
-                "conclusion_requires_human——C 型案件必須一律阻擋送出"
+                "conclusion_requires_human——C 型案件一律不得送出，後端送出端點會以 409 拒絕"
             )
         if self.gate.get("submit_allowed"):
             raise AssertionError(

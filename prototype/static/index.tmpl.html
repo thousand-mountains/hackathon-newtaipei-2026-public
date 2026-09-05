@@ -455,7 +455,7 @@ footer b{color:#C9DCEE;font-weight:500}
   <button class="step" data-i="1" data-on="0" disabled title="七名 AI 幕僚分工：收文、分類、程序、法規、案例、撰稿、品管"><span class="n">2</span><span class="t">幕僚團分析</span></button>
   <button class="step" data-i="2" data-on="0" disabled title="逐句編輯，即時連結法規與相似案例"><span class="n">3</span><span class="t">草稿編輯</span></button>
   <button class="step" data-i="3" data-on="0" disabled title="全文逐句標示紅黃綠燈，紅燈須人工確認"><span class="n">4</span><span class="t">燈號審核</span></button>
-  <button class="step" data-i="4" data-on="0" disabled title="陳核並排入訴願審議委員會議程"><span class="n">5</span><span class="t">送出審議</span></button>
+  <button class="step" data-i="4" data-on="0" disabled title="送出前由後端重新判斷一次可否送出；本 demo 沒有外部整合，不會真的陳送任何單位"><span class="n">5</span><span class="t">送出審議</span></button>
 </div></nav>
 
 <main id="main">
@@ -518,10 +518,26 @@ footer b{color:#C9DCEE;font-weight:500}
           <div class="field"><label>提起訴願日期<span class="auto" id="a_d3"></span></label><input type="date" id="f_d3"></div>
           <div class="field"><label>有無委任代理人</label><select id="f_agent"><option>無</option><option>有（律師）</option><option>有（非律師）</option></select></div>
         </div>
+        <!-- 這三欄一樣餵進期間引擎。確認的定義是「承辦人看過」——
+             看不到的欄位不能算在「已確認」裡，否則那個徽章是假的。 -->
+        <div class="row2">
+          <div class="field"><label>送達方式<span class="req">*</span><span class="auto" id="a_sm"></span></label>
+            <select id="f_sm">
+              <option value="personal">本人／同居人簽收（personal）</option>
+              <option value="deposit">寄存送達（deposit）</option>
+              <option value="public">公示送達（public，引擎拒答）</option>
+            </select>
+          </div>
+          <div class="field"><label>在途期間（日）</label><input type="number" id="f_transit" min="0" step="1" value="0"></div>
+        </div>
+        <div class="field"><label style="display:flex;gap:8px;align-items:center;font-weight:400">
+          <input type="checkbox" id="f_interested" style="width:16px;height:16px;flex:none">
+          <span>訴願人為利害關係人（非受處分人）</span></label></div>
         <div class="field"><label>承辦人補充說明<span style="font-weight:400;color:var(--ink-3)">（卷內未載、或需幕僚團特別注意之事項）</span></label>
           <textarea id="f_note" rows="3" placeholder="例：原處分機關答辯書未附證據資料，已二次函請補充答辯仍未提出。"></textarea></div>
         <!-- live 模式：改送達／提起日期會打 POST /api/deadline 重算，結果與限制寫在這裡 -->
         <p class="hint" id="recalcnote" style="display:none;margin:2px 0 0"></p>
+        <p class="hint" id="confirmnote" style="margin:10px 0 0;line-height:1.75"></p>
       </div>
     </div>
   </div>
@@ -597,7 +613,7 @@ footer b{color:#C9DCEE;font-weight:500}
     <button class="b r" data-lf="r" aria-pressed="false"><span class="num" id="n_r">0</span><span class="lb">紅燈<span class="mi tip" tabindex="0" data-tip="事實認定、裁量，或承辦人已改寫之句。AI 不代為判斷，須逐句核閱確認。">info</span></span></button>
     <button class="b y" data-lf="y" aria-pressed="false"><span class="num" id="n_y">0</span><span class="lb">黃燈<span class="mi tip" tabindex="0" data-tip="已找到出處，請確認引用版本與適用射程。">info</span></span></button>
     <button class="b g" data-lf="g" aria-pressed="false"><span class="num" id="n_g">0</span><span class="lb">綠燈<span class="mi tip" tabindex="0" data-tip="期間、條次、版式等可由規則自動驗算。">info</span></span></button>
-    <button class="b t" data-lf="all" aria-pressed="true"><span class="num" id="n_t">0</span><span class="lb">全文句數<span class="mi tip" tabindex="0" data-tip="逐句溯源覆蓋率 100%，點此顯示全文。">info</span></span></button>
+    <button class="b t" data-lf="all" aria-pressed="true"><span class="num" id="n_t">0</span><span class="lb">全文句數<span class="mi tip" tabindex="0" data-tip="每一句都掛得出燈號與理由；燈號本身不保證內容正確，紅燈與黃燈就是系統說「這句我驗不了」。點此顯示全文。">info</span></span></button>
   </div>
 
   <div class="review">
@@ -628,6 +644,11 @@ footer b{color:#C9DCEE;font-weight:500}
     </div>
   </div>
 
+  <p class="hint" style="margin:14px 0 0;line-height:1.8">
+    <b>這一頁的邊界</b>：燈號標的是「這句話系統驗不驗得動」，不是「這句話對不對」。
+    <b>非 C 型案件之結論段由承辦人撰寫，系統不阻擋其內容</b>——
+    系統無法用文字判準區分「合法的結論」與「捏造的結論」，兩者長得一樣。
+  </p>
   <div class="gate">
     <div class="msg"><b id="gatetitle">尚有紅燈項目待確認</b><span id="gatemsg">紅燈項目全部確認後，才會開放送出審議。</span>
       <!-- live 模式：後端 blockers[]，說明「為什麼擋」，不只 disable 按鈕（§6.2） -->
@@ -639,14 +660,16 @@ footer b{color:#C9DCEE;font-weight:500}
 <!-- ===================== 5 完成 ===================== -->
 <section class="panel" data-p="4">
   <div class="done-wrap">
-    <div class="done-seal">陳核<br>完成</div>
-    <h2>已送出審議</h2>
-    <p>決定書草稿與查核紀錄已陳送訴願審議委員會，並排入最近一次審議會議程。</p>
+    <div class="done-seal" id="r_seal">已記錄</div>
+    <h2 id="r_title">已記錄為送出</h2>
+    <p id="r_desc">本 demo 沒有任何外部整合：沒有寄送任何郵件、沒有排入任何議程、沒有呼叫任何外部系統。
+      這一步做的是「後端重新判斷一次可否送出，並在本機記一筆」。</p>
+    <p id="r_server" style="font-size:12.5px;color:var(--ink-3);margin:-14px 0 26px;line-height:1.75"></p>
     <div class="receipt">
       <dl>
         <dt>收文案號</dt><dd id="r_no">—</dd>
         <dt>案由</dt><dd id="r_type">—</dd>
-        <dt>擬辦</dt><dd id="r_result">訴願駁回（訴願法第 79 條第 1 項）</dd>
+        <dt>擬辦</dt><dd id="r_result">—</dd>
         <dt>查核結果</dt><dd id="r_lamp">—</dd>
         <dt>送出時間</dt><dd id="r_time">—</dd>
       </dl>
@@ -681,7 +704,7 @@ footer b{color:#C9DCEE;font-weight:500}
     <div class="mb">
       <p style="margin:0">你即將一次確認 <b id="m_n" style="color:var(--seal)">0</b> 句紅燈，包含：</p>
       <ol id="m_list"></ol>
-      <div class="warn">紅燈代表事實認定、裁量或人工改寫，系統無法代為驗證。一次確認等同承辦人已逐句核閱卷證，紀錄會併同決定書陳送審議委員會。</div>
+      <div class="warn">紅燈代表事實認定、裁量或人工改寫，系統無法代為驗證。一次確認等同承辦人已逐句核閱卷證，該紀錄會留在本次執行結果裡；本 demo 沒有外部整合，不會把任何東西送到委員會。</div>
       <label class="confirmline"><input type="checkbox" id="m_chk"><span>我已逐句核閱卷內證據，確認上列論述與卷證相符。</span></label>
     </div>
     <div class="mf">
