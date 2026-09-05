@@ -137,8 +137,12 @@ class CaseState:
 
         為什麼不再用 `detect_conclusion_like` 複驗：前幾版的不變式重跑同一個偵測器，
         等於用同一把尺量兩次——片語層漏抓的它也漏抓，卻給人「有兩道防線」的錯覺。
-        連續三輪對抗覆核都點出這件事。真正的第二道防線是上面第 2 條：
-        它只看案件性質（規則算出的 `requires_human_conclusion`），沒有任何寫法能繞過。
+        連續三輪對抗覆核都點出這件事。第 2 條只看案件性質，**改草稿文字繞不過它**。
+
+        ⚠️ 但它**不是絕對的**：`requires_human_conclusion` 的輸入來自 N1／N2 的抽取結果
+        （`origin_registry` 標明 `case_type` 是 `llm_derived`），抽取錯誤會讓這個開關關掉，
+        整條 case 層封鎖就不存在。第四輪覆核用「改一個 N1 抽的日期」實測成功。
+        **所以正確的說法是「不能靠改草稿文字繞過」，不是「沒有任何寫法能繞過」。**
         """
         if not self.screen.get("requires_human_conclusion"):
             return

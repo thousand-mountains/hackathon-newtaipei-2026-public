@@ -3,14 +3,27 @@
 做五件事：
 
 1. **引用四態比對**：逐句抽引用，對 laws-snapshot 定 ok／amended／out_of_scope／missing。
-2. **燈號規則**：句子燈號 = 它所有引用狀態裡最嚴重的那一個；引擎句與卷證直錄句直接綠燈。
+2. **燈號規則**：句子燈號 = 它所有引用狀態裡最嚴重的那一個；引擎句與卷證直錄句直接綠燈
+   （⚠️ 卷證直錄的綠燈代表「來源是卷證、非模型撰寫」，**不代表已與來源文件逐字比對**——
+   本階段沒有這個控制，見 `WHY_RECORD` 與 HANDOFF-GATE.md 判斷卡 8）。
 3. **cite_ids 解析**：草稿標的 `L*` 要能對回 N4 的檢索結果，對不到即進 blockers。
 4. **C 型結論封鎖的事後覆核**：`requires_human_conclusion=true` 卻出現模型生成的結論句
    → 直接進 blockers 並記為 P0 訊號。
 5. **爭點 ref 補掛與交接卡**：用 N3 的 `fact_issues` 關鍵詞比對到句子上補 `I*`；
    封鎖結論時產出至少 3 個具體交接問題（US-8 AC-8.2）。
 
-`blockers` 非空 → 送出端點回 409（阻擋送出，不只警告）。
+⚠️ **`submit_allowed` 目前沒有執行點。** 本模組算出 `blockers` 與 `submit_allowed`，
+但 `backend/api/` 目前**沒有送出端點**（只有 health／cases／runs／deadline），
+沒有任何程式讀 `submit_allowed` 去擋任何動作——它是一個**訊號欄位**，不是強制機制。
+舊版這裡寫「送出端點回 409」，那是**不實的宣稱**，第四輪對抗覆核抓到。
+對外說明一律用「標記為不得逕行送出」，不得說「系統會擋下送出」，直到送出端點接上。
+
+⚠️ **C 型封鎖的開關上游有模型輸出。** `requires_human_conclusion` 由規則函式算出，
+但它的輸入（`case_type`、`art77.clause`）來自 N1／N2 的抽取結果，`origin_registry`
+已標明 `classification.class.case_type` 是 `llm_derived`。覆核實測：只要改掉 N1 抽的
+一個日期欄位讓案件被判逾期，這個開關就會關掉、case 層封鎖不觸發。
+**所以不能說「沒有任何寫法能繞過」——正確說法是「不能靠改草稿文字繞過，但可以靠
+上游抽取錯誤繞過」。** 修法屬 C 型判準設計，見 HANDOFF-GATE.md 判斷卡 7。
 """
 from __future__ import annotations
 
@@ -155,10 +168,29 @@ def run(state: CaseState, ctx: NodeCtx) -> NodeResult:
             #
             # 所以這一層**不再承擔阻擋責任**，它的工作是「把看起來像主文的句子標紅給人看」。
             # 阻擋改由 case 層負責（`conclusion_requires_human`）：C 型案件一律不得送出，
-            # 那條判準完全不看句子寫了什麼，因此沒有任何寫法能繞過。
+            # 那條判準完全不看句子寫了什麼，因此**不能靠改草稿文字繞過**
+            #（但它的開關上游有 N1／N2 的抽取結果，抽錯仍會讓封鎖不觸發——見檔首說明）。
             #
             # 這個分工也把誠實性擺正了：片語層漏抓時，後果是「少標一個紅」，不是「放行一份
             # 系統沒看過的法律結論」。
+            # 非 C 型案件也要跑偵測，但**語意不同**：那種案子本來就該有結論，
+            # 主文出現在 `conclusion` 槽位是正常的。所以非 C 型只在「主文型語句出現在
+            # 結論槽位以外」時留下 `conclusion_like` 註記供覆核，不改燈號、不擋送出。
+            #
+            # 誠實說明其極限：非 C 型案件**無法**用文字判準區分「合法的結論」與
+            # 「捏造的結論」——兩者長得一樣。這裡給的是提示，不是保證。
+            # 第四輪覆核量到非 C 型下 26/26 捏造主文全綠，那個數字的根因是這件事，
+            # 不是少了幾條規則。
+            if (
+                not needs_human
+                and not s.get("placeholder")
+                and origin not in ("engine", "rule", "static")
+                and s.get("slot") != "conclusion"
+            ):
+                rules = detect_conclusion_like(text)
+                if rules:
+                    s["conclusion_like"] = rules
+
             if needs_human and not s.get("placeholder") and origin not in ("engine", "rule", "static"):
                 rules = detect_conclusion_like(text)
                 if rules:
@@ -180,6 +212,30 @@ def run(state: CaseState, ctx: NodeCtx) -> NodeResult:
                     # 沒命中片語層、又指不出可查證的出處：不宣稱它是主文，但也不能說它有出處。
                     s["tier"] = tier_of("human_required")
                     s["why"] = WHY_UNSOURCED_WHILE_BLOCKED
+
+    # ── 空草稿不得標成可送出 ─────────────────────────────────────────
+    # `submit_allowed = not blockers` 只看 blockers，不看文件裡有沒有東西。
+    # 第四輪覆核：把 reasoning／conclusion／facts 全清空 → 0 blockers → submit_allowed=True，
+    # 畫面上還同時掛著一句紅燈的「未擷取到事實段」佔位句。空文件不是通過，是沒東西可審。
+    # 只算「實質內容」：期間引擎的算式句不算——它們是規則自動產生的，
+    # 一份只有算式、沒有任何事實段與理由段的文件，等於沒有可審查的標的。
+    content_sentences = [
+        s
+        for block in doc
+        for s in block.get("ss", [])
+        if s.get("origin") in ("llm", "record")
+        and not s.get("placeholder")
+        and (s.get("t") or "").strip()
+    ]
+    if not content_sentences:
+        blockers.append(
+            {
+                "sentence_id": None,
+                "reason": "empty_draft",
+                "detail": "草稿沒有任何實質內容句（全為佔位或空字串），無可審查之標的，不得標為可送出。",
+                "severity": "P0",
+            }
+        )
 
     # ── case 層封鎖：C 型案件一律不得送出 ────────────────────────────
     # **這是這份守門層唯一真正扛得住的判準，因為它不看句子寫了什麼。**

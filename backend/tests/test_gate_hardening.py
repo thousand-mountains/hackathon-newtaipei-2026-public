@@ -967,6 +967,70 @@ def test_invariant_is_not_string_based():
 
 
 # ════════════════════════════════════════════════════════════════════
+# 第五輪對抗覆核（2026-09-05）：新防線的邊界
+# ════════════════════════════════════════════════════════════════════
+# 覆核判 Go-with-caveats，指出 case 層封鎖雖然擋得住所有寫法，但它的開關
+# （requires_human_conclusion）上游有 LLM 抽取欄位，且非 C 型案件內容守門歸零。
+# 前者屬 C 型判準設計（任務指示不得改，見 HANDOFF-GATE 判斷卡 7）；
+# 這裡釘住我**能**修的部分，以及那些**修不了但必須誠實講出來**的極限。
+
+def test_empty_draft_is_not_submittable():
+    """空草稿不得標成可送出——`submit_allowed = not blockers` 原本不看有沒有內容。
+
+    覆核實測：把 reasoning／conclusion／facts 全清空 → 0 blockers → submit_allowed=True，
+    畫面同時掛著一句紅燈的「未擷取到事實段」佔位句。空文件不是通過，是沒東西可審。
+    """
+    import json
+    import tempfile
+
+    fx = load_case(ORDINARY)
+    fx["draft_fixture"]["reasoning"] = []
+    fx["draft_fixture"]["conclusion"] = []
+    fx["extraction"]["facts_excerpt"] = []
+    tmp = pathlib.Path(tempfile.mkdtemp())
+    (tmp / "synthetic-empty-01.json").write_text(json.dumps(fx, ensure_ascii=False), encoding="utf-8")
+    p = build_payload(run_case("synthetic-empty-01", mode="fixture", data_dir=tmp))
+    assert_eq(p["submit_allowed"], False, "空草稿不得標成可送出")
+    assert_in("empty_draft", {b["reason"] for b in p["blockers"]})
+
+
+def test_non_c_type_cases_get_conclusion_like_annotation():
+    """非 C 型案件也跑主文偵測，但只留註記（那種案子本來就該有結論）。
+
+    **這條測試同時記錄一個極限**：非 C 型無法用文字判準區分「合法的結論」與
+    「捏造的結論」——兩者長得一樣。覆核量到非 C 型下 26/26 捏造主文全綠，
+    根因是這件事，不是少了幾條規則。註記讓 UI 至少能標出來給人看，不是保證。
+    """
+    p = _run_with_injected(ORDINARY, "reasoning", [{"t": "本件情況決定，宣示原處分為違法。", "basis": "訴願法第79條"}])
+    flagged = [s for b in p["doc"] for s in b["ss"] if s.get("conclusion_like")]
+    assert_true(flagged, "非 C 型的理由段主文型語句要留下 conclusion_like 註記")
+    assert_eq(p["submit_allowed"], True, "註記不改變送出判斷（非 C 型本來就允許有結論）")
+
+
+def test_no_code_comment_claims_an_unbackable_guarantee():
+    """程式註解不得寫下系統擔保不了的宣稱——這是對法制局的事實陳述，不是文案。
+
+    覆核抓到兩處：`n6_gate` docstring 宣稱「送出端點回 409」（`backend/api/` 根本沒有
+    送出端點），`state.py` 宣稱 case 層封鎖「沒有任何寫法能繞過」（它的開關上游是
+    LLM 抽取欄位，改一個日期就能關掉）。
+    """
+    root = pathlib.Path(__file__).resolve().parents[2]
+    n6 = (root / "backend" / "nodes" / "n6_gate.py").read_text(encoding="utf-8")
+    state = (root / "backend" / "orchestrator" / "state.py").read_text(encoding="utf-8")
+    assert_true("不是強制機制" in n6, "必須把 submit_allowed 沒有執行點這件事寫在模組說明裡")
+    assert_true("llm_derived" in state or "抽取" in state, "必須寫明封鎖開關的上游依賴")
+    # 絕對宣稱只准出現在**否定它自己**的句子裡（例如「舊版寫 X，那是不實的宣稱」）。
+    _NEGATORS = ("不是", "不能說", "不實", "舊版", "不得說", "錯誤")
+    for name, src in (("n6_gate.py", n6), ("state.py", state)):
+        for lineno, line in enumerate(src.split("\n"), 1):
+            for claim in ("沒有任何寫法能繞過", "送出端點回 409"):
+                if claim in line and not any(k in line for k in _NEGATORS):
+                    raise AssertionError(f"{name}:{lineno} 出現未經限定的宣稱：{line.strip()}")
+    for name, src in (("n6_gate.py", n6), ("state.py", state)):
+        assert_true("不能靠改草稿文字繞過" in src, f"{name} 必須把防線的**邊界**講清楚")
+
+
+# ════════════════════════════════════════════════════════════════════
 # 回歸：兩個正式案例的行為不得因為加固而改變
 # ════════════════════════════════════════════════════════════════════
 
