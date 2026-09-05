@@ -85,11 +85,15 @@ def tier_for_sentence(lamp: str, origin: str, states: list[str], has_citations: 
         return TIER_HUMAN
     if origin in ("engine", "rule", "static"):
         return TIER_VERIFIABLE
-    if STATE_UNPARSEABLE in states:
-        return TIER_HUMAN
     if origin in _STRUCTURAL_SOURCE_ORIGINS:
         return TIER_SOURCED
     if not has_citations:
+        return TIER_HUMAN
+    # 「有出處」＝出處**指得出來而且對得回資料集**。只引到庫外／讀不懂的號碼時，
+    # 系統其實沒有驗到任何東西，卻在畫面上蓋「有出處、字號已驗」——那是替它沒看過的
+    # 東西背書（覆核實測：捏造的函釋字號足以讓整句變成「有出處」）。
+    # CONSTITUTION §2 把「庫外未驗證」定位成必須明標的**保留**，不是出處。
+    if not any(s in (STATE_OK, STATE_AMENDED) for s in states):
         return TIER_HUMAN
     return TIER_SOURCED
 
@@ -210,29 +214,45 @@ def _segments(text: str) -> list[str]:
     return [seg for seg in normalize_for_structure(text).split("。") if seg]
 
 
-# ── 第 1 層：法定處理結果（來源＝訴願法 §77、§79–82，封閉集合）────────
+# ── 第 1 層：法定處理結果（來源＝訴願法，逐條標註出處）────────────────
+# 這一層的清單**必須對得回法條**，不是從測試案例長出來的。每條後面標的條號就是它的來源；
+# 新增任何一條都要能指出它在訴願法哪一條——指不出來的，代表它不屬於這一層。
+# 第二輪覆核打穿 15/35，就是因為第一版漏了 §81 的「確認」、§82 的「作成…處分」、
+# §61 的移送管轄、§60/§77 的撤回終結——那些不是罕見寫法，是法定處理結果本身。
 DISPOSITION_RULES: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("法定處理結果：不受理（訴願法 §77）", re.compile(r"不(?:予)?受理|不應受理|應不受理")),
     ("法定處理結果：駁回（訴願法 §79）", re.compile(r"駁回")),
-    ("法定處理結果：撤銷／變更（訴願法 §81）", re.compile(r"撤銷|廢止|註銷|撤回原處分")),
-    ("法定處理結果：命應為之處分（訴願法 §82）", re.compile(r"另為[^，]{0,8}處分|重為[^，]{0,8}(?:處分|決定)|命[^，]{0,10}(?:機關|單位)[^，]{0,10}處分|發回")),
-    ("法定處理結果：否准／不予准許", re.compile(r"否准|不能准許|不予准許|礙難准許")),
+    ("法定處理結果：撤銷／廢止（訴願法 §81）", re.compile(r"撤銷|廢止|註銷")),
+    ("法定處理結果：變更（訴願法 §81）", re.compile(r"變更原(?:處分|核定|決定)|予以變更|應予變更")),
+    ("法定處理結果：確認違法／無效／不存在（訴願法 §81、行程法 §113）",
+     re.compile(r"確認[^。]{0,30}(?:違法|無效|不存在|不成立)")),
+    ("法定處理結果：命應為之處分（訴願法 §82）",
+     re.compile(r"另為[^，]{0,10}處(?:分|理)|重為[^，]{0,10}(?:處分|決定|審查)"
+                r"|作成[^，]{0,14}(?:處分|決定)|依本決定(?:書)?(?:之)?意旨[^，]{0,8}(?:辦理|處理)")),
+    ("法定處理結果：移送管轄（訴願法 §61）", re.compile(r"移(?:送|由)[^，]{0,12}(?:管轄|機關)")),
+    ("法定處理結果：程序終結／撤回（訴願法 §60）", re.compile(r"(?:訴願|程序|本件)[^，]{0,10}終結|撤回訴願|訴願[^，]{0,4}撤回")),
+    ("法定處理結果：否准／不予准許", re.compile(r"否准|不能准許|不予准許|礙難准許|不應准許")),
     ("指涉主文（決定如主文）", re.compile(r"如主文|決定如主文|主文所示")),
+    ("發回（訴願法 §81）", re.compile(r"發回")),
 )
 
 # ── 第 2 層：評價性結論述語，必須與案件標的緊鄰（≤4 字）──────────────
-_TARGET = r"(?:本件|本案|系爭處分|系爭核定|原處分|原核定|原決定|原行政處分|原裁處|復查決定|訴願人之訴願|訴願|再訴願|復查|申請|請求|異議)"
+# 「緊鄰」是為了避開「原處分認定之違規事實…尚無違誤」這種在講事實認定的句子。
+_TARGET = (
+    r"(?:本件|本案|系爭處分|系爭核定|原處分|原核定|原決定|原行政處分|原裁處|復查決定"
+    r"|訴願人之訴願|訴願人之主張|訴願人之請求|訴願人所執|訴願|再訴願|復查|申請|請求|異議|主張)"
+)
 # 注意：**不含裸的「理由」**——「原處分之理由」「爭執之理由」是名詞，不是評價述語，
 # 放進來會把「又訴願人請求撤銷原處分之理由，均係…之爭執」這種高頻理由段句子誤攔。
 _VERDICT = (
-    r"(?:有理由|無理由|有據|無據|可採|違誤|不合法|於法有違|於法無據"
-    r"|應予維持|予以維持|維持|應予變更|變更|准許)"
+    r"(?:有理由|無理由|有據|無據|可採|採據|違誤|不合法|於法有違|於法無據"
+    r"|應予維持|予以維持|維持|准許|不足採|不足以動搖|不足取|洵屬無據)"
 )
-_NEG = r"(?:並無|尚無|核無|洵無|難謂|難認|不能|不足|非無|均無|核有|洵有|應|為|係|屬|認|尚屬|洵屬|實有|自屬)"
+_NEG = r"(?:並無|尚無|核無|洵無|難謂|難認|不能|不足|非無|均無|核有|洵有|應|為|係|屬|認|尚屬|洵屬|實有|自屬|均不|皆不)"
 VERDICT_RULES: tuple[tuple[str, re.Pattern[str]], ...] = (
     (
         "案件標的＋評價性結論述語（本件訴願為無理由／原處分並無違誤）",
-        re.compile(rf"{_TARGET}[，]?{_NEG}?[^，。]{{0,2}}{_VERDICT}"),
+        re.compile(rf"{_TARGET}[，]?{_NEG}?[^，。]{{0,4}}(?P<v>{_VERDICT})"),
     ),
     (
         "處置助詞＋處置動詞（應予駁回／爰予撤銷／應予維持）",
@@ -241,43 +261,39 @@ VERDICT_RULES: tuple[tuple[str, re.Pattern[str]], ...] = (
 )
 
 # ── 免責框架（negative evidence）──────────────────────────────────────
-# 免責只豁免第 1、2 層；n6 的「無引用即交人工」兜底不受免責影響。
+# 免責只豁免**第 2 層**（評價述語）；第 1 層的法定處理結果**任何框架都不豁免**。
 #
-# 兩種免責，適用範圍**刻意不同**（覆核打穿過一次過寬的版本）：
+# 為什麼第 1 層不給豁免（第二輪覆核打穿的就是這個）：
+# 「按訴願法第81條規定，訴願有理由者，原處分撤銷，並命原處分機關另為適法之處分。」
+# 這句話的殼是通則引述，內容卻是完整主文，而且帶著真實條號（同時繞過第 3 層兜底）。
+# 純引述法定處理結果的句子（「按訴願法第79條規定，訴願無理由者，應以決定駁回之」）
+# 因此會被誤攔——**這是刻意選的方向**：誤攔的代價是承辦人多按一次確認，
+# 漏放的代價是系統替一份沒人看過的法律結論背書。
 #
-# A. **通則引述**（句段級）：「按…第X條規定，…者，…」——整句在講法條通則不是本案，
-#    用「條件句（者，／時，）」＋「沒有本件／系爭」辨識。兩層都豁免。
-# B. **轉述當事人**（逐命中級，只豁免第 1 層）：只有**緊貼在**「主張／請求／稱」後面
-#    （≤6 字）的處置動詞才算轉述——「訴願人請求撤銷原處分之理由」的「撤銷」是當事人
-#    請求的內容。若處置動詞離得遠（「…認訴願人之主張核無可採，其請求不能准許，予以駁回」
-#    的「駁回」），那是機關自己的處置，不豁免。
-#    **不豁免第 2 層**：「訴願人之請求為無理由」是機關對請求下的評價，正是主文的實質。
-_GENERIC_RULE_FRAME = re.compile(r"^(?:次|復|又|另)?(?:按|依|查|依據|參)[^，]*(?:第[^，]{1,12}條|規定|明定|所定)")
-_CONDITIONAL = re.compile(r"者，|時，|之情形")
-_ABOUT_THIS_CASE = re.compile(r"本件|本案|系爭")
+# 轉述當事人（逐命中級）只作用在第 2 層：只有**緊貼在**「主張／請求／稱」後面（≤6 字）
+# 的評價述語才算轉述——「訴願人請求撤銷原處分之理由」的「撤銷」是當事人請求的內容。
 _ATTRIBUTION_VERB = re.compile(r"(?:主張|請求|稱|略以|陳稱|指摘|爭執|答辯|認為)")
 _ATTRIBUTOR = re.compile(r"(?:訴願人|申請人|原處分機關|被告機關|代理人)")
-_CONCLUSION_LEAD = re.compile(r"綜上|從而|準此|是以|據此|核此|基此|揆諸|爰")
 _ATTRIBUTION_GAP = 6
 
 
-def _is_generic_rule_statement(segment: str) -> bool:
-    """整個句段在引述法條通則（不是對本案下判斷）→ 兩層都豁免。"""
-    if _CONCLUSION_LEAD.search(segment):
-        return False  # 有結論引導詞就不是引述通則，是本案結論
-    return bool(
-        _GENERIC_RULE_FRAME.search(segment)
-        and _CONDITIONAL.search(segment)
-        and not _ABOUT_THIS_CASE.search(segment)
-    )
-
-
 def _is_attributed(segment: str, hit_start: int) -> bool:
-    """這個處置動詞是不是「緊貼在當事人主張後面」＝轉述，不是機關的處置。"""
+    """這個述語是不是「緊貼在當事人主張後面」＝轉述，不是機關自己的判斷。
+
+    「之」是關鍵的結構分水嶺：「訴願人**請求**撤銷原處分」是當事人在請求（動詞，轉述）；
+    「訴願人**之請求**為無理由」是機關在評價那個請求（名詞，機關自己的結論）。
+    差一個「之」，主語就換人了，所以前面帶「之」的主張／請求不算轉述框架。
+    """
     if not _ATTRIBUTOR.search(segment[:hit_start]):
         return False
-    window = segment[max(0, hit_start - _ATTRIBUTION_GAP):hit_start]
-    return bool(_ATTRIBUTION_VERB.search(window))
+    start = max(0, hit_start - _ATTRIBUTION_GAP)
+    window = segment[start:hit_start]
+    for m in _ATTRIBUTION_VERB.finditer(window):
+        abs_pos = start + m.start()
+        if abs_pos > 0 and segment[abs_pos - 1] == "之":
+            continue  # 「之請求／之主張」是名詞，被評價的對象，不是轉述
+        return True
+    return False
 
 
 def detect_conclusion_like(text: str) -> list[str]:
@@ -288,18 +304,28 @@ def detect_conclusion_like(text: str) -> list[str]:
     """
     hits: list[str] = []
     for segment in _segments(text):
-        if _is_generic_rule_statement(segment):
-            continue
         for name, pattern in DISPOSITION_RULES:
+            if name in hits:
+                continue
             for m in pattern.finditer(segment):
+                # 唯一豁免：處置動詞**緊貼**在當事人「主張／請求」後面＝轉述其請求內容。
+                # 通則引述框架（按…者，…）**不再**豁免第 1 層——那個殼是覆核實測的繞法。
                 if _is_attributed(segment, m.start()):
-                    continue  # 當事人請求的內容，不是機關的處置
-                if name not in hits:
-                    hits.append(name)
+                    continue
+                hits.append(name)
                 break
         for name, pattern in VERDICT_RULES:
-            if name not in hits and pattern.search(segment):
+            if name in hits:
+                continue
+            for m in pattern.finditer(segment):
+                # 判「述語」前面有沒有轉述框架，不是判「標的」前面——
+                # 「訴願人請求撤銷原處分，經核於法有據」的評價落在「於法有據」，
+                # 前面那個「請求撤銷」修飾的是標的，不能把整條評價一起豁免掉。
+                anchor = m.start("v") if "v" in (m.groupdict() or {}) and m.start("v") >= 0 else m.start()
+                if _is_attributed(segment, anchor):
+                    continue
                 hits.append(name)
+                break
     return hits
 
 

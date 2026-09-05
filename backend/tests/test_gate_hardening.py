@@ -134,18 +134,23 @@ def _reference_read(s: str) -> int | None:
                 else:
                     return None
                 zero = False
+                rest = allowed[i + 1:]
                 if right.startswith("〇"):
-                    # 「一百零五」的零是**跳級**佔位符：只有還有更低的單位級可跳時才合法，
-                    # 且它後面必須還有東西（「三百十〇三」「一百〇」都是壞字串）。
-                    if not allowed[i + 1:]:
+                    # 「一百零五」的零是**跳級**佔位符：宣告「至少跳過一個位級」，
+                    # 所以餘數要從再下一級開始讀（一千零二十 → 餘數從百以下讀起）。
+                    # 「一百零五十」的餘數用了緊鄰的十位＝沒真的跳，是壞字串。
+                    if len(right) > 1 and right[1] == "〇":
+                        return None  # 「一千零零五」連兩個佔位符
+                    if not rest:
                         return None
-                    right = right.lstrip("〇")
+                    right = right[1:]
                     if right == "":
                         return None
+                    rest = allowed[i + 2:]
                     zero = True
                 # 尾數裸數字只有在「剛用完十位」或「有〇跳級」時才無歧義：
                 # 「一百五」是 150 還是 105？兩種讀法都有人用 → 不猜。
-                tail = read(right, allowed[i + 1:], ones_ok=(v == 10 or zero))
+                tail = read(right, rest, ones_ok=(v == 10 or zero))
                 return None if tail is None else head * v + tail
         # 沒有單位了：只能是單一個位數，而且要有資格當個位
         if len(part) == 1 and part in digits and ones_ok:
@@ -684,13 +689,132 @@ def test_cn_year_precedent_is_not_misclassified_as_directive():
         assert_eq(r[0].kind, "precedent", f"{text!r} 是判解字號，不是函釋")
 
 
-def test_generic_rule_quotation_is_not_false_positive():
-    """覆核量到 14% 誤攔，兩句都是最高頻句型，必須放行。"""
+def test_attribution_quotation_is_not_false_positive():
+    """轉述當事人請求的句子必須放行（覆核量到的誤攔之一，最高頻句型）。"""
     for text in (
-        "按訴願法第77條第2款規定，提起訴願逾法定期間者，應為不受理之決定。",
         "又訴願人請求撤銷原處分之理由，均係就原處分機關認定事實之爭執。",
+        "訴願人主張其未收受原處分書，請求撤銷原處分並退還已繳納之罰鍰。",
     ):
-        assert_eq(detect_conclusion_like(text), [], f"{text!r} 是理由段高頻句型，不得誤攔")
+        assert_eq(detect_conclusion_like(text), [], f"{text!r} 是轉述當事人請求，不得誤攔")
+
+
+def test_agency_verdict_on_a_request_is_not_treated_as_quotation():
+    """「訴願人**之**請求為無理由」是機關的評價，不是轉述——差一個「之」就換了主語。"""
+    assert_true(detect_conclusion_like("訴願人之請求為無理由。"), "機關對請求下的評價就是主文的實質")
+    assert_true(detect_conclusion_like("訴願人請求撤銷原處分，經核於法有據，本會爰依其請求辦理。"),
+                "轉述後面接機關自己的評價，不得整句豁免")
+
+
+def test_pure_statutory_quotation_of_a_disposition_is_deliberately_over_blocked():
+    """刻意選的方向：第 1 層（法定處理結果）**任何框架都不豁免**，純引述也照攔。
+
+    「按訴願法第79條規定，訴願無理由者，應以決定駁回之」是純引述法條，攔它是誤攔。
+    但覆核實測「按訴願法第81條規定，訴願有理由者，原處分撤銷，並命…另為適法之處分」
+    ——同樣的殼、完整的主文、還帶真實條號（同時繞過第三層兜底）。兩者在結構上無法區分，
+    所以只能二選一。選攔：誤攔的代價是承辦人多按一次確認，漏放的代價是系統替一份
+    沒人看過的法律結論背書。**這條測試存在的目的是讓未來的人知道這是選擇，不是 bug。**
+    """
+    assert_true(detect_conclusion_like("按訴願法第77條第2款規定，提起訴願逾法定期間者，應為不受理之決定。"))
+    assert_true(
+        detect_conclusion_like("按訴願法第81條規定，訴願有理由者，原處分撤銷，並命原處分機關於二個月內另為適法之處分。"),
+        "偽裝成通則引述的實質主文必須被攔（覆核實測的繞法）",
+    )
+
+
+# ════════════════════════════════════════════════════════════════════
+# 第三輪對抗覆核（2026-09-05）打穿的破口，逐條回歸
+# ════════════════════════════════════════════════════════════════════
+# 覆核構造 90 句、55 句穿過。三條繞法：(a) origin=record 不受兜底層管轄；
+# (b) 隨便塞一個「系統自己標明無法驗證」的引用就讓兜底層失效；
+# (c)「按…者，…」通則引述殼可以整段豁免片語層。全部在這裡釘死。
+
+# 覆核找出的、第 1 層漏掉的法定處理結果（都對得回訴願法條號，不是罕見寫法）
+STATUTORY_DISPOSITION_FORMS = (
+    "確認原處分違法。",
+    "確認原處分不存在。",
+    "確認原處分機關民國一一二年五月一日之行政處分為違法。",
+    "原處分機關應於三十日內作成准予閱覽卷宗之處分。",
+    "原處分機關應於收受本決定書之次日起二個月內，就訴願人之申請案作成決定。",
+    "本件訴願事件移送於管轄機關。",
+    "本件移由有管轄權之機關處理。",
+    "訴願人業已撤回訴願，本件應予終結。",
+    "本件訴願程序終結。",
+    "本件訴願事件因訴願人死亡且無人承受而終結。",
+    "原處分機關嗣後應依本決定意旨另為處理。",
+    "原處分機關應於三十日內就系爭申請案重新審查並作成決定。",
+    "綜上所述，原處分認事用法並無違誤，訴願人之主張不足採據。",
+    "綜上，訴願人所執各節均不足以動搖原處分之認定。",
+    "準此，訴願人之主張洵屬無據。",
+    "命新北市政府環境保護局於二個月內就訴願人之申請作成准予備查之處分。",
+)
+
+# 覆核用來讓兜底層失效的「假出處」：系統自己都標明無法驗證的東西
+FAKE_SHIELDS = (
+    "政府資訊公開法第9條",      # 庫外法規（out_of_scope）
+    "行政訴訟法第4條",          # 庫外法規
+    "建築法第一百五條",          # 無法解析的條號（unparseable）
+    "內政部台內營字第9999999號函",  # 捏造的機關函釋
+)
+
+
+def test_statutory_disposition_forms_are_all_detected():
+    """第 1 層宣稱「來源是訴願法窮舉」——覆核證明當時沒窮舉完，這 16 種全漏。"""
+    missed = [t for t in STATUTORY_DISPOSITION_FORMS if not detect_conclusion_like(t)]
+    assert_eq(missed, [], f"第 1 層仍漏 {len(missed)} 種法定處理結果：{missed}")
+
+
+def test_conclusion_survives_every_shield_and_origin_combination():
+    """交叉組合：主文寫法 × 假出處 × origin，一種都不准放行。
+
+    覆核的三條繞法會互相加乘：用 record origin 躲開兜底層、用假引用讓兜底層失效、
+    用通則引述殼豁免片語層。這條測試把它們乘起來一次打。
+    """
+    leaks = []
+    forms = STATUTORY_DISPOSITION_FORMS + REVIEW_BYPASS_FORMS
+    for text in forms:
+        for shield in (None,) + FAKE_SHIELDS:
+            for origin in ("llm", "record"):
+                state = _blocked_state_with([_sentence("s1", text, "reasoning", origin=origin)])
+                state.draft["doc_skeleton"][0]["ss"][0]["basis"] = shield
+                n6_gate.run(state, _ctx())
+                if state.gate["submit_allowed"]:
+                    leaks.append((origin, shield, text[:24]))
+    assert_eq(leaks, [], f"{len(leaks)} 種組合穿過封鎖：{leaks[:8]}")
+
+
+def test_unverifiable_citation_is_not_a_valid_shield_for_the_backstop():
+    """兜底層的「有引用」必須是**可用的**引用：讀不懂的、查無此號的都不算出處。"""
+    for shield in ("建築法第一百五條", "建築法第9999條"):
+        state = _blocked_state_with([_sentence("s1", "本件事證明確，堪予認定。", "reasoning")])
+        state.draft["doc_skeleton"][0]["ss"][0]["basis"] = shield
+        n6_gate.run(state, _ctx())
+        assert_eq(state.gate["submit_allowed"], False, f"{shield!r} 不得當成出處讓兜底層失效")
+
+
+def test_out_of_scope_only_citation_is_not_sourced_tier():
+    """只引到庫外法規時不得標「有出處」——系統其實沒有驗到任何東西。
+
+    覆核實測：一個捏造的函釋字號足以讓整句在畫面上變成「有出處、字號已驗」。
+    CONSTITUTION §2 把「庫外未驗證」定位成必須明標的保留，不是出處。
+    """
+    state = _blocked_state_with([_sentence("s1", "依政府資訊公開法第9條規定，訴願人得申請閱覽卷宗。", "reasoning")])
+    state.screen["requires_human_conclusion"] = False
+    n6_gate.run(state, _ctx())
+    s = state.gate["doc"][0]["ss"][0]
+    assert_eq(s["l"], "y", "庫外引用是黃燈")
+    assert_eq(s["tier"], "請人工判斷", "庫外未驗證不是「有出處」")
+
+
+def test_zero_placeholder_scope_is_enforced():
+    """覆核找到的第二類猜值：〇 宣告跳級，後面卻沒真的跳級。
+
+    「一百零五十」人讀 150、舊版讀成 150 並命中查表；「一千零零五」連兩個佔位符。
+    規則：〇 後面的餘數必須**小於下一個位級**（一千零二十 → 20 < 100 ✓）。
+    """
+    for s in ("一百〇五十", "一百零五十", "一千零零五", "一千零一百"):
+        assert_eq(cn_to_int(s), None, f"{s!r} 的〇沒有真的跳級，屬壞字串")
+    for s, want in (("一千零二十", 1020), ("一百零五", 105), ("一千零五", 1005), ("二千零五十", 2050)):
+        assert_eq(cn_to_int(s), want, f"{s!r} 是合法跳級寫法，不得誤判")
 
 
 # ════════════════════════════════════════════════════════════════════

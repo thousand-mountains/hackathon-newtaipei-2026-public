@@ -192,6 +192,9 @@ def _parse_unit_style(s: str) -> int | None:
     total = 0
     last_unit: int | None = None  # 前一個用過的單位，必須嚴格遞減
     zero_seen = False  # 是否出現過〇跳級佔位符（「一百零五」）
+    # 〇 宣告「跳過至少一個位級」，因此它後面的餘數必須**小於下一個位級**：
+    # 一千零二十 → 餘數 20 < 100 ✓；一百零五十 → 餘數 50 不小於 10 ✗（那是 150 的壞寫法）。
+    zero_limit: int | None = None
     i = 0
     n = len(s)
     while i < n:
@@ -202,9 +205,12 @@ def _parse_unit_style(s: str) -> int | None:
                 unit = _CN_UNITS[s[i + 1]]
                 if last_unit is not None and unit >= last_unit:
                     return None  # 單位沒有遞減：「一百二百」這類寫法無法無歧義解讀
+                if zero_limit is not None and unit >= zero_limit:
+                    return None  # 「一百零五十」：〇 宣告跳級，後面卻沒真的跳
                 total += d * unit
                 last_unit = unit
                 zero_seen = False  # 跳級佔位符只授權「緊接其後」的個位，隔一個單位就失效
+                zero_limit = None
                 i += 2
                 continue
             # 後面沒有單位 → 只能是最後一個字（個位）
@@ -224,7 +230,10 @@ def _parse_unit_style(s: str) -> int | None:
             # 前後都必須還有東西。
             if i == 0 or i == n - 1 or last_unit is None or last_unit < 100:
                 return None
+            if zero_seen:
+                return None  # 「一千零零五」：連續兩個跳級佔位符無法無歧義解讀
             zero_seen = True
+            zero_limit = last_unit // 10
             i += 1
             continue
         if c in _CN_UNITS:
@@ -236,6 +245,8 @@ def _parse_unit_style(s: str) -> int | None:
                     return None
             elif last_unit is None or last_unit <= 10:
                 return None  # 「十十」「三四十」：十位已用過或前面根本沒有更高的位
+            if zero_limit is not None and 10 >= zero_limit:
+                return None  # 〇 宣告跳級後又只降一級，等於沒跳
             # 句首的「十」（十四）與百／千之後省略前導一的「三百十三」都是標準寫法
             total += 10
             last_unit = 10

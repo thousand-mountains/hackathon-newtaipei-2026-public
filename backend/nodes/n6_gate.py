@@ -23,6 +23,7 @@ from backend.gate.citations import (
     STATE_MISSING,
     STATE_OK,
     STATE_OUT_OF_SCOPE,
+    STATE_UNPARSEABLE,
     CitationChecker,
 )
 from backend.gate.lamps import (
@@ -149,7 +150,19 @@ def run(state: CaseState, ctx: NodeCtx) -> NodeResult:
             # 因為主文本來就不引法條。這一層不看字串，所以沒有寫法能繞過它：
             # 「這個案子已經需要人來下結論了，而這句話又指不出任何可查證的依據」
             # ——這兩件事同時成立時，唯一安全的行為就是交人工。
-            if needs_human and origin == "llm" and not s.get("placeholder") and not cites:
+            # 「有引用」不能只看抓到幾個 token：讀不懂的號碼（unparseable）與查無此號
+            # （missing）都不是出處。覆核實測用一個捏造的函釋字號就讓兜底層失效。
+            usable_cites = [c for c in cites if c.state not in (STATE_UNPARSEABLE, STATE_MISSING)]
+            # 已經因為「查無此號」被擋的句子不重複列一條——同一句在畫面上出現兩個 blocker
+            # 只會讓人以為是兩個問題。安全性不變：它本來就已經擋住了。
+            already_blocked = any(c.state == STATE_MISSING for c in cites)
+            if (
+                needs_human
+                and origin == "llm"
+                and not s.get("placeholder")
+                and not usable_cites
+                and not already_blocked
+            ):
                 s["l"] = "r"
                 s["tier"] = tier_of("human_required")
                 s["why"] = WHY_UNSOURCED_WHILE_BLOCKED
