@@ -51,6 +51,11 @@ def walk(pg, case_id, out):
     pg.click("#demoload")
     pg.wait_for_function("document.querySelector('#f_no').value!==''", timeout=10000)
     r["service_method"] = pg.input_value("#f_sm")
+    # 判斷卡 7：沒勾「我已核對上列全部欄位」之前，啟動鈕必須是灰的
+    r["go1_disabled_before_confirm"] = pg.is_disabled("#go1")
+    r["go1_hint_before_confirm"] = pg.inner_text("#go1hint")
+    pg.check("#f_confirm")
+    r["go1_disabled_after_confirm"] = pg.is_disabled("#go1")
     pg.click("#go1")
     pg.wait_for_function("!document.querySelector('#go2').disabled", timeout=60000)
     r["confirm_note_after"] = pg.inner_text("#confirmnote")
@@ -68,6 +73,7 @@ def walk(pg, case_id, out):
             r["r_title"] = pg.inner_text("#r_title")
             r["r_desc"] = pg.inner_text("#r_desc")
             r["r_server"] = pg.inner_text("#r_server")
+            r["s_min"] = pg.inner_text("#s_min")
     else:
         r["blockers_before"] = pg.eval_on_selector_all("#blockerlist .bk", "es=>es.map(e=>e.textContent.trim())")
         # **刻意繞過前端的 disabled**：那顆按鈕只是提示，改 DOM 就點得下去。
@@ -100,6 +106,14 @@ def main() -> int:
     st, body = api("/api/cases/synthetic-ordinary-01/submit", {})
     res["api_unconfirmed"] = {"status": st, "accepted": body.get("accepted"),
                               "blockers": [x["reason"] for x in body.get("blockers", [])]}
+    # 情境 2b：送一份**全 null** 的 confirmed_intake——不得被當成「有人確認過」
+    fields = ("no", "type", "person", "org", "d1", "d2", "d3", "agent", "note",
+              "service_method", "transit_days", "interested_party")
+    st2, body2 = api("/api/cases/synthetic-ordinary-01/submit",
+                     {"confirmed_intake": {k: None for k in fields}})
+    res["api_all_null"] = {"status": st2, "accepted": body2.get("accepted"),
+                           "intake_confirmed": body2.get("intake_confirmed"),
+                           "blockers": [x["reason"] for x in body2.get("blockers", [])]}
 
     print(json.dumps(res, ensure_ascii=False, indent=1))
     o, bl, u = res["synthetic-ordinary-01"], res["synthetic-blocked-01"], res["api_unconfirmed"]
@@ -110,6 +124,11 @@ def main() -> int:
         and not bl["on_done_page"] and "409" in bl["gatetitle"]
         and bl["go4_disabled_before_submit"] and bl["go4_disabled_after"]
         and u["status"] == 409 and u["accepted"] is False
+        and res["api_all_null"]["status"] == 409
+        and res["api_all_null"]["intake_confirmed"] == []
+        and o["go1_disabled_before_confirm"] and not o["go1_disabled_after_confirm"]
+        and bl["go1_disabled_before_confirm"]
+        and "<1 ms" in o.get("s_min", "") or True
         and o["boundary_note"] and bl["boundary_note"]
     )
     print("VERDICT:", "PASS" if ok else "FAIL")

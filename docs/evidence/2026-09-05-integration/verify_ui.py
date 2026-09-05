@@ -53,6 +53,7 @@ def main() -> int:
         pg.screenshot(path=f"{OUT}/{CASE}-step0.png", full_page=True)
 
         # 步驟 1：幕僚團
+        pg.check("#f_confirm")   # 判斷卡 7：live 模式要先明示確認
         pg.click("#go1")
         pg.wait_for_function("!document.querySelector('#go2').disabled", timeout=60000)
         r["step1"] = {

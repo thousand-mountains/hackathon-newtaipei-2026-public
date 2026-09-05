@@ -9,7 +9,11 @@ from __future__ import annotations
 import json
 import pathlib
 
-from backend.config.settings import CONFIRMABLE_INTAKE_FIELDS, SYNTHETIC_DIR
+from backend.config.settings import (
+    BLOCK_DECISION_INPUT_FIELDS,
+    CONFIRMABLE_INTAKE_FIELDS,
+    SYNTHETIC_DIR,
+)
 from backend.orchestrator.graph import build_payload, list_synthetic_cases, load_case, run_case
 from backend.tests.harness import assert_eq, assert_in, assert_true
 
@@ -158,6 +162,58 @@ def test_confirming_intake_records_who_vouched_for_each_field():
     for f in ("d2", "d3", "service_method"):
         assert_in(f, p["intake_confirmed"], f"{f} 應列在已確認欄位裡")
         assert_eq(p["intake_origin"][f], "human", f"{f} 的 origin 應翻成 human")
+
+
+def test_null_values_in_confirmed_intake_do_not_count_as_confirmation():
+    """送 null 不算確認——舊版會把 null 脅迫成 0／False 並照樣翻成 human。
+
+    覆核實測：`{"transit_days": null}` 被 `int(v or 0)` 變成 0、
+    `{"interested_party": null}` 被 `bool(v)` 變成 False，兩者都標成「承辦人確認過」，
+    期滿日還因此從 2024-07-18 變成 2024-07-15。等於「送一個空值就能宣稱有人看過」。
+    """
+    all_null = {k: None for k in CONFIRMABLE_INTAKE_FIELDS}
+    p = build_payload(run_case(ORDINARY, mode="fixture", confirmed_intake=all_null))
+    assert_eq(p["intake_confirmed"], [], "全 null 不得列出任何已確認欄位")
+    assert_eq(p["screen"]["procedural_inputs_confirmed"], False, "全 null 不得算已確認")
+    assert_eq(p["screen"]["requires_human_conclusion"], True, "全 null 必須維持封鎖")
+    assert_eq(p["submit_allowed"], False, "全 null 不得標成可送出")
+    # 值也不准被動到
+    base = _payload(ORDINARY)
+    assert_eq(
+        p["screen"]["deadline"]["deadline"], base["screen"]["deadline"]["deadline"],
+        "送 null 竟然改變了期滿日——型別脅迫又跑到 None 檢查前面了",
+    )
+
+
+def test_a_single_null_field_leaves_that_field_untouched():
+    """單欄 null：那一欄的值不變、origin 不翻，其餘欄位照常確認。"""
+    probe = run_case(ORDINARY, mode="fixture")
+    full = {k: v for k, v in probe.intake.items() if k in CONFIRMABLE_INTAKE_FIELDS}
+    partial = dict(full, transit_days=None)
+    p = build_payload(run_case(ORDINARY, mode="fixture", confirmed_intake=partial))
+    assert_eq(p["intake_origin"]["transit_days"], "llm", "null 的欄位 origin 不得翻成 human")
+    assert_eq(p["intake"]["transit_days"], probe.intake["transit_days"], "null 的欄位值不得被改動")
+    assert_true("transit_days" not in p["intake_confirmed"], "null 的欄位不得列進 intake_confirmed")
+    assert_in("d2", p["intake_confirmed"], "其餘欄位仍要正常確認")
+    # 少一個期間輸入欄位 → 閘門仍關著
+    assert_eq(p["screen"]["requires_human_conclusion"], True, "缺一欄未確認就不得解除封鎖")
+
+
+def test_note_is_part_of_the_block_decision_and_must_be_confirmed():
+    """`note` 餵進事實爭點偵測，所以它也是封鎖判斷的輸入（BLOCK_DECISION_INPUT_FIELDS）。
+
+    覆核實測：五個期間欄位全確認之後把 note 清空，`requires_human_conclusion`
+    由 True 翻成 False、`submit_allowed` 由 False 翻成 True——
+    等於一個沒被納入確認範圍的欄位可以關掉封鎖。
+    """
+    assert_in("note", BLOCK_DECISION_INPUT_FIELDS, "note 必須列入封鎖判斷的輸入欄位")
+    probe = run_case(ORDINARY, mode="fixture")
+    full = {k: v for k, v in probe.intake.items() if k in CONFIRMABLE_INTAKE_FIELDS}
+    without_note = {k: v for k, v in full.items() if k != "note"}
+    p = build_payload(run_case(ORDINARY, mode="fixture", confirmed_intake=without_note))
+    assert_in("note", p["screen"]["unconfirmed_procedural_fields"], "未確認的 note 要被列出來")
+    assert_eq(p["screen"]["requires_human_conclusion"], True, "note 未確認時不得解除封鎖")
+    assert_eq(p["submit_allowed"], False, "note 未確認時不得標成可送出")
 
 
 def test_changing_extracted_dates_cannot_unlock_the_conclusion_block():

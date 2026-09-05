@@ -26,13 +26,13 @@ uv run --with fastapi --with "uvicorn[standard]" --with pydantic -- \
 | `file://…/prototype/dist/index.html` | 斷網備援：**離線 fixture 模式**，徽章會改，不會假裝是後端結果 |
 
 ```
-$ python3 backend/tests/run_all.py     → 全綠：157/157 通過（exit 0）
+$ python3 backend/tests/run_all.py     → 全綠：162/162 通過（exit 0）
 $ node prototype/tests/parity.mjs      → ✓ JS 引擎 16/16 向量全過（與 Python 零分歧）
 $ uv run --with pytest -- python -m pytest prototype/tests -q   → 4 passed
-$ python3 prototype/build.py           → dist/index.html 137 KB
+$ python3 prototype/build.py           → dist/index.html 139 KB
 ```
 
-157 的組成：期間引擎 8／六節點單元 38／端到端 29／CASE payload 契約 24／守門加固 55／紅線靜態掃描 3。
+162 的組成：期間引擎 8／六節點單元 38／端到端 32／CASE payload 契約 24／守門加固 57／紅線靜態掃描 3。
 
 ---
 
@@ -169,8 +169,8 @@ $ python3 prototype/build.py           → dist/index.html 137 KB
 
 本檔。三份舊檔頂部已標「已被 HANDOFF.md 取代」。
 
-**修正舊檔的失效數字**：`70/70` → 現況 157/157；`test_vector_count_is_15` → `_is_16`；
-契約測試 21 條 → 24 條；HANDOFF-INTEGRATION 的 AC5「91/91」→ 157/157。
+**修正舊檔的失效數字**：`70/70` → 現況 162/162；`test_vector_count_is_15` → `_is_16`；
+契約測試 21 條 → 24 條；HANDOFF-INTEGRATION 的 AC5「91/91」→ 162/162。
 
 **裁定 HANDOFF-GATE:349 與整合實作的衝突**：
 那條寫「**不得**把 `submit_allowed` 在 UI 上做成『可送出』按鈕或等義文案（判斷卡 9）」。
@@ -179,6 +179,83 @@ $ python3 prototype/build.py           → dist/index.html 137 KB
 1. 按下去真的打後端端點，由後端重算後決定（不是前端自己判斷）；
 2. 被拒絕時畫面明說是**後端**以 409 拒絕，不是前端擋的；
 3. 成功時的文案不得暗示任何外部效果（現在寫「已記錄為送出」＋ `external_effect: none`）。
+
+---
+
+## 2.7 第六輪：窄範圍 fresh-context 覆核的收尾（2026-09-05）
+
+**覆核判定：可 merge、可 demo。** 以下是它點名的洞與處置，全部已收。
+
+### (1) `confirmed_intake` 的 null 會被脅迫成值 — 已修
+
+型別脅迫寫在 `is not None` 之前，於是 `{"transit_days": null}` 被 `int(v or 0)` 變成 0、
+`{"interested_party": null}` 被 `bool(v)` 變成 False，**而且照樣把 origin 翻成 human**
+（實測期滿日 2024-07-18 → 2024-07-15）。等於「送一個空值就能宣稱有人確認過」，
+正好是判斷卡 7 要防的那件事。
+
+改成：**null 一律不採用**——值不動、origin 不翻、不列進 `intake_confirmed`。
+`transit_days` 給非整數會 raise 帶欄位名的 ValueError，不再靜靜吞成 0。
+
+新增測試：全 null → `intake_confirmed=[]`、仍封鎖、期滿日不變；
+單欄 null → 該欄 origin 維持 `llm`、值不變、閘門仍關著。
+
+### (2) `note` 也能改變封鎖判斷 — 已修
+
+`intake.note` 餵進 `detect_fact_issues()`。實測：五個期間欄位全部確認後把 note 清空，
+`requires_human_conclusion` True→False、`submit_allowed` False→True。
+
+新增 `BLOCK_DECISION_INPUT_FIELDS = DEADLINE_INPUT_FIELDS + ("note",)`，
+閘門判準改吃它。兩份清單分開命名，不讓人以為期間欄位就是全部。
+前端 `collectIntake()` 本來就送 note，確認 checkbox 的文案也已列出「補充說明」。
+
+### (3) 離線 fixture 殘留五處與新文案自相矛盾 — 已修
+
+| 位置 | 原本 | 現在 |
+|---|---|---|
+| `agents[proc].out` | 訴願法第 77 條各款**逐款檢核通過** | 只自動判定可由日期算出的第 2 款；其餘各款屬法律判斷，未自動比對 |
+| `agents[proc].logs` | 77(1) ✓ 77(3) ✓ 77(4) ✓ 77(8) ✓ | 77(2) 由規則引擎驗算（唯一自動判定的一款）；其餘七款請承辦人審認 |
+| `doc[s18].src` | 規則驗算：77(1)–77(8) **全數通過** | 僅第 2 款由引擎判定；其餘 7 款未自動比對 |
+| `agents[case].out` | 比對出 **5 件**高相似案例，主論理架構採 113 年第 16 號 | 相似歷史決定書：0 筆可驗證（庫外，未驗證），未執行任何相似度計算 |
+| `agents[case].logs` / `doc[s14].src` / `cases[].tag` | 最高相似 **0.91** | 相似度為**示意，非計算值**（`cases[].sim` 分數保留為示範資料，tag 逐筆標明） |
+
+**案號與洗防法日期照舊未動**（仍待 Ci）。已重跑 `build.py`；
+`file://` headless 掃過全五步的 DOM，16 個舊字串**一個都不剩**，零 JS error。
+
+### (4) 收文頁補「我已核對」checkbox — 已做
+
+live 模式下未勾選則「啟動幕僚團分析」為 disabled，提示寫
+「請先勾選『我已核對上列全部欄位』——未確認的欄位系統不會採信」。
+按鈕本身不能代表「有人看過」，那正是覆核打穿的假設。離線模式隱藏該 checkbox（沒有後端可確認）。
+
+### (5) 函釋去重鍵仍受機關名雜字影響 — 已修
+
+「經內政部…」的「經」不在虛詞清單裡，於是同一函釋算成兩筆。
+修法**不是**再往清單加一個字，而是把機關名整個排除在去重鍵之外：
+`("directive", 正規化字別, 正規化號數)`。字別本身就編碼發文機關，
+號數同時做全形／國字正規化，所以「經內政部台內營字第1120801234號函釋」、
+「內政部台內營字第1120801234號函」、「內政部台內營字第１１２０８０１２３４號函」
+三種寫法收斂成一筆。
+**代價寫在 docstring 裡**：兩個不同機關若用了相同字別與號數會被併成一筆——
+字別是機關專屬編碼，實務上不會撞，但這是取捨不是定理。另補一條反向測試確認
+不同號數不會被併。
+
+### (6) 誠實性 meta-test 納入離線 fixture — 已做
+
+`_overclaim_targets()` 多掃 `prototype/data/case-demo.json`，
+**只掃會顯示給人看的欄位**（`agents[].out`／`logs`、`laws/cases/issues[].tag`／`src`、
+`doc[].why`／`src`），不掃案情敘述本身（那是合成案件內容，不是系統對自己能力的宣稱）。
+新增四組措辭家族：逐款通過／比對出 N 件／相似度數值／信心值數值，
+並把「未執行、未自動、未計算、示意、非計算值、庫外、未驗證、不讀取」加進否定語境白名單。
+突變測試：把覆核點名的五處原文塞回去，五處全部被指名抓到。
+
+### (7) 送出頁「0 ms」 — 已修
+
+六節點在 fixture 檔位都是次毫秒，逐項四捨五入後合計可能是 0，畫面顯示「0 ms」像壞掉。
+改成合計 > 0 時顯示實際數字，等於 0 時顯示 `<1 ms`。
+
+### (8) 本檔更新 — 就是這一節
+
+計數對現況（162/162），並記錄覆核的「可 merge」判定與上述八項的處置狀態。
 
 ---
 
@@ -194,6 +271,9 @@ $ python3 prototype/build.py           → dist/index.html 137 KB
 | ordinary / blocked 五步渲染 | `verify_ui.py` | exit 0，零 JS error |
 | `file://` 離線 fixture | `verify_offline.py` | exit 0，徽章 offline，v0 行為不變 |
 | 改日期即時重算 | `verify_recalc.py` | **PASS**：紅燈 2→3、判定句轉紅、閘門仍鎖 |
+| 未勾「我已核對」→ 啟動鈕 disabled | `verify_submit.py` | **PASS**：`go1_disabled_before_confirm=true`，勾選後才啟用 |
+| API 送全 null 的 confirmed_intake | `verify_submit.py` | **409**，`intake_confirmed=[]`——空值不算確認 |
+| `file://` 舊文案已清除 | 一次性 headless 掃描 | 16 個舊字串**零殘留**，零 JS error |
 
 > 唯一一則 console 訊息是 Chromium 對**刻意的** 409 記的 `Failed to load resource`。
 > 那不是 JS error（程式接住並顯示了訊息），腳本把它分開記在
@@ -252,7 +332,8 @@ Demo 被問「你們的檢索到底檢索到什麼」，答案是「程序面查
 確認機制擋住的是「**沒有人看過**就解除封鎖」。它擋不住「承辦人看了、但沒發現 N1 抽錯」——
 那時 origin 是 `human`，系統會採信。這是設計上的正解（人有最終判斷權），
 但 demo 被問「所以模型抽錯日期還是會過？」時要答得出來：
-**會，只要承辦人確認了**——這正是為什麼那三個日期欄位現在都攤在收文頁上讓人看。
+**會，只要承辦人確認了**——這正是為什麼那些欄位現在都攤在收文頁上、
+而且要明示勾選「我已核對上列全部欄位」才算數。
 
 ### ⚠ I. `git mv HANDOFF.md HANDOFF-PHASE0.md`
 

@@ -39,6 +39,7 @@ def main() -> int:
         pg.wait_for_function("document.querySelector('#f_no').value!==''", timeout=10000)
         r["filing_before"] = pg.input_value("#f_d3")
         r["service"] = pg.input_value("#f_d2")
+        pg.check("#f_confirm")   # 判斷卡 7：live 模式要先明示確認
         pg.click("#go1")
         pg.wait_for_function("!document.querySelector('#go2').disabled", timeout=60000)
         pg.click("#go2")

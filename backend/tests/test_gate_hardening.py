@@ -1118,6 +1118,15 @@ OVERCLAIM_PATTERNS = (
     ("已排入議程", re.compile(r"已?(?:陳送|排入)[^。\n]{0,12}(?:委員會|議程)")),
     ("已解析", re.compile(r"[✓✔]\s*已解析")),
     ("已驗證結論", re.compile(r"已(?:驗證|確認)[^。\n]{0,8}結論[^。\n]{0,6}(?:正確|無誤|可信)")),
+    # 離線 fixture 的文案也是對法制局講的話。這四組是覆核在 case-demo.json 逐條點名的形態：
+    # 「逐款檢核通過」「全數通過」「比對出 N 件」「相似度 0.xx」「信心值 0.xx」——
+    # 系統只自動判定 77-2、沒有歷史決定書資料集、不讀上傳檔，這些數字都沒有來源。
+    ("逐款通過", re.compile(r"逐款[^。\n]{0,6}(?:通過|檢核通過|該當)|全數[^。\n]{0,4}通過")),
+    ("比對出 N 件", re.compile(r"比對出\s*\d+\s*件")),
+    # 「相似度 0.91」「最高相似：0.91」都要抓——沒有資料集就算不出任何相似度分數，
+    # 換個詞不換事實。
+    ("相似度數值", re.compile(r"相似[^。\n]{0,40}?0\.\d+")),
+    ("信心值數值", re.compile(r"信心值\s*0\.\d+")),
 )
 
 # 否定語境：宣稱只准出現在**否定它自己**的句子裡（「舊版寫 X，那是不實的宣稱」）。
@@ -1128,6 +1137,8 @@ OVERCLAIM_NEGATORS = (
     # 有指名執行點的宣稱不算過度承諾：「後端會以 409 拒絕」是可查證的事實陳述，
     # 「已阻擋送出」不是。差別在於前者說得出是誰、在哪裡、怎麼擋。
     "409", "後端",
+    # 離線 fixture 那幾條的否定語境：講「沒做」「未執行」「示意」不是過度承諾。
+    "未執行", "未自動", "未計算", "示意", "非計算值", "庫外", "未驗證", "不讀取",
 )
 
 # 就地否定：命中處前後 10 字內若有否定詞，代表這句話在講「不會 X」而不是「會 X」。
@@ -1159,7 +1170,52 @@ def _overclaim_targets() -> list[tuple[str, str]]:
         f = root / rel
         if f.exists():
             out.append((rel, f.read_text(encoding="utf-8")))
+    # 離線 fixture 的文案：它在 file:// 斷網 demo 時就是整個畫面的內容。
+    # **只掃會顯示給人看的欄位**（幕僚敘述、逐句 why／src），
+    # 不掃案情敘述本身——那是合成案件的內容，不是系統對自己能力的宣稱。
+    demo = root / "prototype" / "data" / "case-demo.json"
+    if demo.exists():
+        data = json.loads(demo.read_text(encoding="utf-8"))
+        lines: list[str] = []
+        for a in data.get("agents", []):
+            lines.append(f'agents[{a.get("k")}].out: {a.get("out", "")}')
+            for log in a.get("logs", []):
+                lines.append(f'agents[{a.get("k")}].logs: {log[0] if log else ""}')
+        for card in ("laws", "cases", "issues"):
+            for it in data.get(card, []):
+                lines.append(f'{card}[{it.get("id")}].tag: {it.get("tag", "")}')
+                lines.append(f'{card}[{it.get("id")}].src: {it.get("src", "")}')
+        for blk in data.get("doc", []):
+            for s in blk.get("ss", []):
+                lines.append(f'doc[{s.get("id")}].why: {s.get("why", "")}')
+                lines.append(f'doc[{s.get("id")}].src: {s.get("src", "")}')
+        out.append(("prototype/data/case-demo.json", "\n".join(lines)))
     return out
+
+
+def test_same_directive_counts_once_regardless_of_leading_noise():
+    """同一筆函釋不管前面沾到什麼字、號數用哪種數字寫法，都只能算一筆。
+
+    覆核指出「經內政部…」的「經」不在虛詞清單裡，於是 raw 帶雜字、
+    同一個函釋被計成兩筆。修法是把機關名整個排除在去重鍵之外
+    （字別本身就編碼了發文機關），不是再往虛詞清單加一個字。
+    """
+    ck = CitationChecker(SNAPSHOT)
+    text = (
+        "經內政部台內營字第1120801234號函釋，"
+        "又內政部台內營字第1120801234號函，"
+        "另本件參照內政部台內營字第１１２０８０１２３４號函"
+    )
+    cites = [c for c in ck.check_text(text) if c.kind == "directive"]
+    assert_eq(len(cites), 3, "前提檢查：三種寫法都要抽得到")
+    assert_eq(len({c.dedup_key for c in cites}), 1, f"同一筆函釋被算成多筆：{[c.dedup_key for c in cites]}")
+
+
+def test_different_directives_are_not_merged_by_the_dedup_key():
+    """去重不能反過來把不同的函釋併掉——這是上一條讓步的代價，要釘住。"""
+    ck = CitationChecker(SNAPSHOT)
+    cites = [c for c in ck.check_text("內政部台內營字第111號函、內政部台內營字第222號函") if c.kind == "directive"]
+    assert_eq(len({c.dedup_key for c in cites}), 2, "不同號數的函釋不得被併成一筆")
 
 
 def test_no_overclaim_in_code_or_ui():

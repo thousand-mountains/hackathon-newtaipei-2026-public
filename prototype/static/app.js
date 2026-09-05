@@ -195,11 +195,17 @@ $('#filein').onchange=e=>[...e.target.files].forEach((f,i)=>addFile({n:f.name,s:
 function updateGo1(){
   const files=$('#filelist').children.length;
   const no=$('#f_no').value.trim(), ty=$('#f_type').value;
-  const ok=files>0&&no&&ty;
+  /* live 模式多一道：承辦人必須明示勾選「我已核對上列全部欄位」。
+     按下「啟動幕僚團分析」不能自己代表「有人看過」——那正是判斷卡 7 打穿的假設。 */
+  const confirmed=!isLive||$('#f_confirm').checked;
+  const ok=files>0&&no&&ty&&confirmed;
   $('#go1').disabled=!ok;
-  $('#go1hint').textContent=!files?'請先上傳卷證':(!no||!ty)?'請填寫收文案號與案件類型':'';
+  $('#go1hint').textContent=!files?'請先上傳卷證'
+    :(!no||!ty)?'請填寫收文案號與案件類型'
+    :(!confirmed)?'請先勾選「我已核對上列全部欄位」——未確認的欄位系統不會採信':'';
 }
-['#f_no','#f_type'].forEach(s=>{$(s).addEventListener('input',updateGo1);$(s).addEventListener('change',updateGo1)});
+['#f_no','#f_type','#f_confirm'].forEach(s=>{$(s).addEventListener('input',updateGo1);$(s).addEventListener('change',updateGo1)});
+if(!isLive){const cb=$('#confirmbox'); if(cb)cb.style.display='none';}
 /* ================= 判斷卡 7：承辦人確認 intake ================= */
 /* 「啟動幕僚團分析」＝ 承辦人已經看過這一頁的欄位（可能改過、也可能原樣採用）。
    把它們當作**人工確認**送進後端，後端才允許用程序結果解除結論封鎖。
@@ -946,7 +952,9 @@ $('#go4').onclick=async ()=>{
     const rm=(LIVE&&LIVE.run_meta)||{};
     const nt=rm.node_timings||{};
     const total=Object.keys(nt).reduce((a,k)=>a+(nt[k]||0),0);
-    $('#s_min').textContent=total+' ms';
+    /* 六節點在 fixture 檔位都是次毫秒，逐項四捨五入後合計會是 0——
+       畫面上顯示「0 ms」看起來像壞掉，寫成 <1 ms 才是那個數字真正的意思。 */
+    $('#s_min').textContent=(total>0?total+' ms':'<1 ms');
     $('#s_min_lb').textContent='後端六節點合計（'+Object.keys(nt).length+' 節點）';
     $('#s_cite').textContent=((LIVE&&LIVE.citations)||[]).length+' 筆';
     $('#s_cite_lb').textContent='引用查核筆數（四態）';

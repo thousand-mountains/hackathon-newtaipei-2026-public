@@ -99,12 +99,22 @@ def _apply_confirmed_intake(state: CaseState, confirmed: dict[str, Any] | None) 
         )
     applied: list[str] = []
     for k, v in confirmed.items():
+        # **null 一律不採用**。舊版把型別脅迫寫在 None 檢查之前，於是
+        # `{"transit_days": null}` 被 `int(v or 0)` 變成 0、`{"interested_party": null}`
+        # 被 `bool(v)` 變成 False，而且照樣把 origin 翻成 human——
+        # 那等於「送一個空值就能宣稱有人確認過」，正好是判斷卡 7 要防的那件事
+        # （實測會把期滿日從 2024-07-18 改成 2024-07-15）。
+        # 沒給值就是沒有人確認這一欄：值不動、origin 不翻、不列進 intake_confirmed。
+        if v is None:
+            continue
         if k == "transit_days":
-            v = int(v or 0)
+            try:
+                v = int(v)
+            except (TypeError, ValueError) as e:
+                raise ValueError(f"confirmed_intake.transit_days 必須是整數，實得 {v!r}") from e
         elif k == "interested_party":
             v = bool(v)
-        if v is not None:
-            state.intake[k] = v
+        state.intake[k] = v
         state.intake_origin[k] = "human"
         applied.append(k)
     state.intake_confirmed = sorted(applied)

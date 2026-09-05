@@ -2,9 +2,9 @@
  "url": "http://127.0.0.1:8080/?case=synthetic-blocked-01",
  "badge_mode": "live",
  "badge_text": "live 後端・synthetic-blocked-01",
- "badge_tip": "本頁資料來自後端六節點的一次實際執行（run_id run-synthetic-blocked-01-d5b55e5d5558，RUN_MODE=fixture）。燈號、引用狀態、送出許可全部由後端守門節點判定，前端不重算。",
+ "badge_tip": "本頁資料來自後端六節點的一次實際執行（run_id run-synthetic-blocked-01-898d012c3f5e，RUN_MODE=fixture）。燈號、引用狀態、送出許可全部由後端守門節點判定，前端不重算。",
  "prov_text": "合成測資：案情自公開決定書之結構反推改寫，人名、地址、案號均為虛構，不對應任何真實案件。",
- "sourcenote": "資料來源：後端 POST /api/cases/synthetic-blocked-01/runs（run_id run-synthetic-blocked-01-d5b55e5d5558）。燈號與引用狀態由後端守門節點判定，本頁不重算。",
+ "sourcenote": "資料來源：後端 POST /api/cases/synthetic-blocked-01/runs（run_id run-synthetic-blocked-01-898d012c3f5e）。燈號與引用狀態由後端守門節點判定，本頁不重算。",
  "case_options": [
   "synthetic-blocked-01",
   "synthetic-ordinary-01"
@@ -29,7 +29,7 @@
    "a_d3",
    "a_sm"
   ],
-  "go1_disabled": false
+  "go1_disabled": true
  },
  "step1": {
   "progress": "7 / 7",
@@ -71,9 +71,9 @@
    }
   ],
   "console_head": [
-   "19:54:01 幕僚團啟動 · 案號 synthetic-1140000002",
-   "19:54:01 資料來源：後端六節點執行結果 run_id run-synthetic-blocked-01-c809fb7fff26（前端不重算燈號）",
-   "19:54:02 ▶ 卷證書記官 開始作業"
+   "20:23:44 幕僚團啟動 · 案號 synthetic-1140000002",
+   "20:23:44 資料來源：後端六節點執行結果 run_id run-synthetic-blocked-01-5fb93998373d（前端不重算燈號）",
+   "20:23:45 ▶ 卷證書記官 開始作業"
   ]
  },
  "step2": {

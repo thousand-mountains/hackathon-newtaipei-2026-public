@@ -3,6 +3,9 @@
   "badge": "live",
   "confirm_note_before": "",
   "service_method": "deposit",
+  "go1_disabled_before_confirm": true,
+  "go1_hint_before_confirm": "請先勾選「我已核對上列全部欄位」——未確認的欄位系統不會採信",
+  "go1_disabled_after_confirm": false,
   "confirm_note_after": "已由承辦人確認（12 欄）：agent、d1、d2、d3、interested_party、no、note、org、person、service_method、transit_days、type。程序判斷（期滿日、訴願法 77 條款）建立在這些確認過的欄位上。",
   "lamps": {
    "r": "0",
@@ -16,7 +19,8 @@
   "gatetitle": "紅燈句均已確認",
   "r_title": "已記錄為送出（後端回 200）",
   "r_desc": "本 demo 只把這筆紀錄寫進本機檔案，沒有任何外部整合：沒有寄送任何郵件、沒有排入任何議程、沒有呼叫任何外部系統。",
-  "r_server": "後端收據：run-synthetic-ordinary-01-c2c06708b41b　記錄時間 2026-09-05T11:53:16+00:00　外部效果 none　寫入 backend/output/submissions.jsonl。\n可否送出由後端重跑六節點判定（backend），未採信前端的判斷。",
+  "r_server": "後端收據：run-synthetic-ordinary-01-fe39026187ed　記錄時間 2026-09-05T12:24:50+00:00　外部效果 none　寫入 backend/output/submissions.jsonl。\n可否送出由後端重跑六節點判定（backend），未採信前端的判斷。",
+  "s_min": "1 ms",
   "js_errors": [],
   "expected_http_409_console_lines": []
  },
@@ -24,6 +28,9 @@
   "badge": "live",
   "confirm_note_before": "",
   "service_method": "personal",
+  "go1_disabled_before_confirm": true,
+  "go1_hint_before_confirm": "請先勾選「我已核對上列全部欄位」——未確認的欄位系統不會採信",
+  "go1_disabled_after_confirm": false,
   "confirm_note_after": "已由承辦人確認（12 欄）：agent、d1、d2、d3、interested_party、no、note、org、person、service_method、transit_days、type。程序判斷（期滿日、訴願法 77 條款）建立在這些確認過的欄位上。",
   "lamps": {
    "r": "2",
@@ -53,6 +60,15 @@
  "api_unconfirmed": {
   "status": 409,
   "accepted": false,
+  "blockers": [
+   "conclusion_like_text_outside_conclusion_slot",
+   "conclusion_requires_human"
+  ]
+ },
+ "api_all_null": {
+  "status": 409,
+  "accepted": false,
+  "intake_confirmed": [],
   "blockers": [
    "conclusion_like_text_outside_conclusion_slot",
    "conclusion_requires_human"

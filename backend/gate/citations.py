@@ -120,6 +120,9 @@ DIRECTIVE_PATTERNS = (
 DIRECTIVE_RE = DIRECTIVE_PATTERNS[0]
 
 
+# 去重鍵正規化用：把字別與號數裡的空白（含全形）壓掉再比。
+_WS_STRIP_RE = re.compile(r"[\s　]+")
+
 # 機關名比對會把前導虛詞一起吃進去（「參內政部…」「本件參照內政部…」），剝掉再顯示。
 DIRECTIVE_STOP_PREFIX = set("依按查據參另及與暨爰本該之以由自如見並且或者其惟至揆諸準用適用核符即則故是有無得應照又此件案系爭前開上開")
 
@@ -213,6 +216,13 @@ class Citation:
         與「內政部台內營字第123號函」會被當成兩筆不同的引用，同一個函釋計成兩次，
         畫面上的「引用查核 N 筆」就多算。結構化欄位不受顯示層雜字影響。
 
+        **函釋刻意不把機關名放進鍵裡。** 機關名正好是會沾到雜字的那一段
+        （虛詞清單是列舉的，一定有漏——「經內政部…」的「經」就不在清單裡），
+        把它放進鍵等於讓去重繼續受顯示層影響。字別（「台內營字」）本身就編碼了發文機關，
+        所以 (字別, 號數) 已足以識別一筆函釋。
+        代價講明白：**兩個不同機關若用了相同的字別與號數會被併成一筆**——
+        字別是機關專屬的編碼，實務上不會撞，但這是一個取捨不是定理。
+
         payload 缺欄位時退回 `(kind, raw)`——退回是為了不漏，不是為了正確去重。
         """
         pl = self.payload
@@ -223,7 +233,10 @@ class Citation:
         if self.kind == "interpretation" and pl.get("no") is not None:
             return ("interpretation", pl.get("no"))
         if self.kind == "directive" and pl.get("no") is not None:
-            return ("directive", pl.get("agency"), pl.get("word"), str(pl.get("no")))
+            word = _WS_STRIP_RE.sub("", str(pl.get("word") or ""))
+            raw_no = _WS_STRIP_RE.sub("", str(pl.get("no")))
+            n = _int(raw_no)
+            return ("directive", word, str(n) if n is not None else raw_no)
         return (self.kind, self.raw)
 
     def as_dict(self) -> dict[str, Any]:

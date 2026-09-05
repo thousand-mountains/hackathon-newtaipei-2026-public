@@ -94,6 +94,13 @@ TOKEN_NOTE = (
 # 等於在承辦人沒看過的欄位上宣稱「已確認」——那是同一個洞換個位置。
 DEADLINE_INPUT_FIELDS = ("d2", "d3", "service_method", "transit_days", "interested_party")
 
+# 除了期間輸入之外，`intake.note` 也會改變封鎖判斷——它餵進 `detect_fact_issues()`
+# 的比對字串。實測：五個期間欄位全部確認後把 note 清空，`requires_human_conclusion`
+# 由 True 翻成 False、`submit_allowed` 由 False 翻成 True。
+# 所以「可以解除結論封鎖的輸入」比「期間輸入」多一欄，兩份清單要分開命名，
+# 不要讓人以為期間欄位就是全部。
+BLOCK_DECISION_INPUT_FIELDS = DEADLINE_INPUT_FIELDS + ("note",)
+
 # 承辦人可以在收文頁確認（看過、可改過）的欄位。白名單制：
 # 只有列在這裡的欄位可以把 `intake_origin` 從 llm 翻成 human，
 # 避免呼叫端塞一個不存在的欄位進來、或用確認機制夾帶其他狀態。
@@ -103,8 +110,8 @@ CONFIRMABLE_INTAKE_FIELDS = (
 )
 
 UNCONFIRMED_INTAKE_SIGNAL = (
-    "抽取日期未經承辦人確認，結論段維持交人工"
-    "（{fields} 由模型抽取；這些欄位決定期間與訴願法 77 條款，"
+    "抽取欄位未經承辦人確認，結論段維持交人工"
+    "（{fields} 由模型抽取；這些欄位決定期間、訴願法 77 條款與事實爭點偵測，"
     "未經確認前不得用它們解除結論封鎖）"
 )
 UNCONFIRMED_INTAKE_HANDOFF = (

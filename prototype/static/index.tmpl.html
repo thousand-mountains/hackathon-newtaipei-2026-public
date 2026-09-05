@@ -538,6 +538,13 @@ footer b{color:#C9DCEE;font-weight:500}
         <!-- live 模式：改送達／提起日期會打 POST /api/deadline 重算，結果與限制寫在這裡 -->
         <p class="hint" id="recalcnote" style="display:none;margin:2px 0 0"></p>
         <p class="hint" id="confirmnote" style="margin:10px 0 0;line-height:1.75"></p>
+        <!-- 判斷卡 7：確認要是一個明示動作。按鈕本身不能代表「有人看過」——
+             那正是覆核打穿的假設。勾了才啟用「啟動幕僚團分析」。 -->
+        <label class="confirmline" id="confirmbox" style="margin-top:12px">
+          <input type="checkbox" id="f_confirm">
+          <span>我已核對上列全部欄位（含送達方式／在途期間／利害關係人／補充說明）。
+            這些欄位決定期滿日、訴願法 77 條款與事實爭點偵測；勾選後系統才會採信它們。</span>
+        </label>
       </div>
     </div>
   </div>
