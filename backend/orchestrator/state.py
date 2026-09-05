@@ -136,7 +136,22 @@ class CaseState:
             raise AssertionError("不變式違反：算出期滿日卻沒有攤開算式 steps")
 
     def assert_verified_invariant(self) -> None:
-        """requires_human_conclusion=true 時，doc[] 不得存在 origin=llm 的結論句。"""
+        """C 型封鎖時必須成立的兩條不變式。**兩條都不看句子的文字內容。**
+
+        1. **結構**：`conclusion` 槽位不得有模型生成的句子（N5 會把它從 slots 刪掉，
+           出現就代表封鎖的結構本身破了）。
+        2. **送出**：`requires_human_conclusion=true` ⇒ 必須有 case 層的
+           `conclusion_requires_human` 阻擋項，且 `submit_allowed` 為 false。
+
+        為什麼不再用 `detect_conclusion_like` 複驗：前幾版的不變式重跑同一個偵測器，
+        等於用同一把尺量兩次——片語層漏抓的它也漏抓，卻給人「有兩道防線」的錯覺。
+        連續三輪對抗覆核都點出這件事。第 2 條只看案件性質，**改草稿文字繞不過它**。
+
+        ⚠️ 但它**不是絕對的**：`requires_human_conclusion` 的輸入來自 N1／N2 的抽取結果
+        （`origin_registry` 標明 `case_type` 是 `llm_derived`），抽取錯誤會讓這個開關關掉，
+        整條 case 層封鎖就不存在。第四輪覆核用「改一個 N1 抽的日期」實測成功。
+        **所以正確的說法是「不能靠改草稿文字繞過」，不是「沒有任何寫法能繞過」。**
+        """
         if not self.screen.get("requires_human_conclusion"):
             return
         for block in self.gate.get("doc", []):
@@ -146,6 +161,18 @@ class CaseState:
                         f"P0 不變式違反：requires_human_conclusion=true 但句子 {s.get('id')} "
                         f"是模型生成的結論段（US-8 AC-8.3）"
                     )
+        if not self.gate:
+            return  # 守門還沒跑，第 2 條還輪不到
+        reasons = {b.get("reason") for b in self.gate.get("blockers", [])}
+        if "conclusion_requires_human" not in reasons:
+            raise AssertionError(
+                "P0 不變式違反：requires_human_conclusion=true 但 blockers 沒有 case 層的 "
+                "conclusion_requires_human——C 型案件必須一律阻擋送出"
+            )
+        if self.gate.get("submit_allowed"):
+            raise AssertionError(
+                "P0 不變式違反：requires_human_conclusion=true 但 submit_allowed=true"
+            )
 
     def as_dict(self) -> dict[str, Any]:
         return dataclasses.asdict(self)

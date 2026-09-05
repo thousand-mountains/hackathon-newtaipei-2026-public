@@ -8,6 +8,11 @@
 | `amended`     | ⚠ 已修正（條次異動），附新舊條號    | y    | 否       |
 | `out_of_scope`| ◇ 庫外，未驗證（超出資料集範圍）    | y    | 否       |
 | `missing`     | ✗ 查無此號（庫內查無或格式不成立）  | r    | **是**   |
+| `unparseable` | ？ 無法解析（號碼寫法讀不懂）        | y    | 否（但整句降「請人工判斷」層） |
+
+第五態 `unparseable` 是本輪加固新增的（architecture §8.1 原本只寫四態）：
+「讀不懂這個號碼」跟「這個號碼不存在」是兩件事，混在一起就是編造。
+它必須存在，否則解析失敗只剩兩條爛路——猜一個數字（誤讀→綠燈）或整筆丟掉（漏抓→綠燈）。
 
 為什麼判解也是四態不是二態：白名單只有 17 筆，而真實決定書引用的判解幾乎必然超出
 白名單——二態設計會讓系統用自己的正確輸出把送出鈕鎖死（architecture §8.1）。
@@ -22,18 +27,26 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
-from backend.retrieval.lawtable import extract_all_law_refs
+from backend.retrieval.lawtable import CN_NUMERAL_CHARS, extract_all_law_refs, parse_number
 
 STATE_OK = "ok"
 STATE_AMENDED = "amended"
 STATE_OUT_OF_SCOPE = "out_of_scope"
 STATE_MISSING = "missing"
+# 第五態（本輪加固新增）：抓得到這筆引用，但**號碼寫法無法無歧義解析**。
+# 為什麼不併進既有四態：
+#   - 併進 `missing`（紅、阻擋）＝宣稱「這個號碼不存在」，那是系統沒有的知識 → 誤攔。
+#   - 併進 `out_of_scope`（黃）＝宣稱「格式成立但庫外」，同樣是編造事實。
+#   - 靜默丟掉 ＝ 系統回「本句未附引用」→ 綠燈放行，正是本次要修掉的失敗模式。
+# 正確語意是「系統讀不懂這個號碼」：黃燈、不阻擋、但整句降到「請人工判斷」層。
+STATE_UNPARSEABLE = "unparseable"
 
 STATE_TO_LAMP = {
     STATE_OK: "g",
     STATE_AMENDED: "y",
     STATE_OUT_OF_SCOPE: "y",
     STATE_MISSING: "r",
+    STATE_UNPARSEABLE: "y",
 }
 
 STATE_TO_MARK = {
@@ -41,32 +54,97 @@ STATE_TO_MARK = {
     STATE_AMENDED: "⚠ 已修正",
     STATE_OUT_OF_SCOPE: "◇ 庫外，未驗證",
     STATE_MISSING: "✗ 查無此號",
+    STATE_UNPARSEABLE: "？ 無法解析",
 }
 
 BLOCKING_STATES = (STATE_MISSING,)
 
-# 判解字號 regex，沿用 prototype/static/app.js:61 的模式，並補上 v0 漏掉的字別。
-# 字別漏一個就等於那種引用完全隱形（抽不到 → 系統回「本句未附引用」→ 綠燈放行）。
+UNPARSEABLE_NOTE = (
+    "號碼寫法無法無歧義解析（可能是罕見國字寫法、OCR 誤字或排版斷字），"
+    "系統**不猜**一個數字去比對，請人工確認正確號碼後再採用。"
+)
+
+_CN = re.escape(CN_NUMERAL_CHARS)
+# 號碼字元類：半形／全形／國字三種寫法都要進得來。抓不進來 = 那種寫法整個隱形。
+_NUMTOK = rf"(?:[0-9０-９]+|[{_CN}]+)"
+
+# 判解字號 regex，沿用 prototype/static/app.js:61 的模式，並補上 v0 漏掉的字別與國字寫法。
+# 字別漏一個、或國字年度／號數抓不進來，就等於那種引用完全隱形
+#（抽不到 → 系統回「本句未附引用」→ 綠燈放行）。
 PREC_TYPES = "簡上|裁聲|抗|判|裁|訴|上|簡|聲|再|更"
 PREC_RE = re.compile(
     r"(最高行政法院|臺北高等行政法院|高雄高等行政法院|臺中高等行政法院|臺灣新北地方法院)?"
-    rf"\s*([0-9０-９]{{1,3}})\s*年?\s*度?\s*({PREC_TYPES})\s*字\s*第\s*([0-9０-９]+)\s*號"
+    rf"\s*({_NUMTOK})\s*年?\s*度?\s*({PREC_TYPES})\s*字\s*第\s*({_NUMTOK})\s*號"
 )
-INTERP_RE = re.compile(r"釋字第\s*([0-9０-９]+)\s*號")
+INTERP_RE = re.compile(rf"釋字第\s*({_NUMTOK})\s*號")
 
-# 函釋：CONSTITUTION §2 明列「每一個法條、判解字號、**函釋**」都必須可驗。
+# ── 函釋 ────────────────────────────────────────────────────────────
+# CONSTITUTION §2 明列「每一個法條、判解字號、**函釋**」都必須可驗。
 # 快照沒有函釋白名單，所以本系統一律無法驗證——但必須讓它在畫面上是黃的，不是隱形的。
-# 典型形式：「內政部112年5月1日台內營字第1120801234號函」。
-DIRECTIVE_RE = re.compile(
-    r"([一-龥]{2,12}?(?:部|署、|署|局|府|會|委員會))?\s*"
-    r"(?:[0-9０-９]{2,3}\s*年\s*[0-9０-９]{1,2}\s*月\s*[0-9０-９]{1,2}\s*日\s*)?"
-    r"([一-龥]{2,8}字)\s*第\s*([0-9０-９]+)\s*號\s*(?:函釋|函|令)"
+#
+# **結構性規則**：函釋引用的辨識鍵是「**發文字號結構**」＝（機關名｜發文日期）＋「X字第N號」，
+# 而**不是**結尾那個「函」字。結尾詞（函／函釋／令／書函／公告／釋示）只是可選後綴，
+# 少一個後綴就整筆隱形，正是舊版漏掉「…號書函」與括號內無「函」字者的原因。
+#
+# 與判解字號的區辨也是結構性的、不是靠關鍵字：
+#   判解 = 「<年度>年度<字別>字第 N 號」（年度，沒有月日）
+#   函釋 = 「<機關><年月日>X字第 N 號」（完整發文日期，或緊鄰機關名）
+# 兩者在結構上互斥，所以「無後綴」的形式只在**有完整年月日**或**緊鄰機關名**時才認列。
+_AGENCY = r"[一-龥]{2,12}?(?:委員會|部|署|局|府|會|處|廳|司|院|中心)"
+# 發文日期兩種寫法都要吃：「112年5月1日」與公文常見的點式「88.5.10」。
+_DATE = (
+    r"(?:[0-9０-９]{2,3}\s*年\s*[0-9０-９]{1,2}\s*月\s*[0-9０-９]{1,2}\s*日"
+    r"|[0-9０-９]{2,3}\s*[.．]\s*[0-9０-９]{1,2}\s*[.．]\s*[0-9０-９]{1,2})"
 )
+# 發文字別（台內營字、府授環字…）**不含「年」「度」**。這是結構性區辨，不是關鍵字黑名單：
+# 判解字號長成「一一二年度判字第123號」，若字別容許含年／度，`_AGENCY` 會吃掉「最高行政法院」、
+# `_WORD` 吃掉「年度判字」，整筆判解就被誤判成函釋，畫面上還會對評審顯示
+# 「函釋不在本系統驗證範圍」這句與事實不符的說明。
+# 末字不得是「釋」：「釋字第747號解釋」是司法院解釋，不是機關發文字號——
+# 若不排除，`釋字` 會被當成發文字別而讓同一筆引用同時算成函釋與釋字兩筆。
+_WORD = r"(?:(?![年度])[一-龥]){1,7}(?:(?![年度釋])[一-龥])字"
+# 號數：半形／全形／國字都要進得來（國字號數的函釋原本整筆隱形），可帶「-1」「之1」尾綴。
+_DNO = rf"(?:[0-9０-９]+|[{_CN}]+)(?:\s*[-－之]\s*[0-9０-９]+)?"
+_SUFFIX = r"(?:函釋|書函|函|令|公告|釋示|解釋)"
+
+# 三條路徑，依序掃描、重疊者只取第一條命中的（避免同一筆算兩次）
+DIRECTIVE_PATTERNS = (
+    # 1) 有明確後綴（含 v0 漏掉的「書函」「公告」「釋示」）
+    re.compile(rf"({_AGENCY})?\s*(?:{_DATE}\s*)?({_WORD})\s*第\s*({_DNO})\s*號\s*{_SUFFIX}"),
+    # 2) 無後綴，但有完整發文日期（年月日或點式）——判解只有「年度」，不會有月日，故不會誤收
+    re.compile(rf"({_AGENCY})?\s*{_DATE}\s*({_WORD})\s*第\s*({_DNO})\s*號"),
+    # 3) 無後綴、無日期，但機關名緊鄰字別（「內政部台內營字第…號」）
+    re.compile(rf"({_AGENCY})\s*({_WORD})\s*第\s*({_DNO})\s*號"),
+)
+# 對外仍保留單一名稱（v0 有引用），指向主要路徑
+DIRECTIVE_RE = DIRECTIVE_PATTERNS[0]
 
 
-def _int(s: str) -> int:
-    """int() 本身吃全形數字，這層只是把意圖寫明白。"""
-    return int(s.translate(str.maketrans("０１２３４５６７８９", "0123456789")))
+# 機關名比對會把前導虛詞一起吃進去（「參內政部…」），逐字剝掉再顯示。
+DIRECTIVE_STOP_PREFIX = set("依按查據參另及與暨爰本該之以由自如見並且或者其惟至揆諸準用適用核符即則故是有無得應照又")
+
+
+def find_directives(text: str) -> list[tuple[int, int, str | None, str, str, str]]:
+    """回傳 [(start, end, 機關, 字別, 號數, 原文)]，重疊區間只留先命中的那條。"""
+    out: list[tuple[int, int, str | None, str, str, str]] = []
+    taken: list[tuple[int, int]] = []
+    for pattern in DIRECTIVE_PATTERNS:
+        for m in pattern.finditer(text):
+            if any(not (m.end() <= s or m.start() >= e) for s, e in taken):
+                continue
+            taken.append((m.start(), m.end()))
+            start, agency = m.start(), m.group(1)
+            while agency and len(agency) > 2 and agency[0] in DIRECTIVE_STOP_PREFIX:
+                agency = agency[1:]
+                start += 1
+            out.append((start, m.end(), agency, m.group(2), m.group(3), text[start:m.end()]))
+    out.sort(key=lambda x: x[0])
+    return out
+
+
+def _int(s: str) -> int | None:
+    """半形／全形／國字寫法的號碼 → 整數；**無法解析回 None，不猜**。"""
+    return parse_number(s)
 
 
 def current_roc_year(today: dt.date | None = None) -> int:
@@ -87,6 +165,20 @@ class Citation:
     state_origin: str = "rule"
     payload: dict[str, Any] = field(default_factory=dict)
 
+    @property
+    def ref_key(self) -> str | None:
+        """跨模組比對用的**穩定鍵**：法條 = 「法規名|條號」。
+
+        為什麼需要它：`resolved_id`（`L-建築法-73`）與 N4 `laws[].id`（`L1`）是兩個
+        命名空間，交集是空集合；舊版靠 `raw == laws[].t` 這種顯示字串巧合對上，
+        字串格式一變就靜默失效還不報錯。這個鍵直接來自結構化欄位，不經過顯示層。
+        """
+        law = self.payload.get("law")
+        article = self.payload.get("article")
+        if self.kind != "law" or not law or not article:
+            return None
+        return f"{law}|{article}"
+
     def as_dict(self) -> dict[str, Any]:
         return {
             "raw": self.raw,
@@ -95,6 +187,7 @@ class Citation:
             "mark": STATE_TO_MARK[self.state],
             "lamp": self.lamp,
             "resolved_id": self.resolved_id,
+            "ref_key": self.ref_key,
             "note": self.note,
             "blocking": self.blocking,
             "state_origin": self.state_origin,
@@ -114,7 +207,17 @@ class CitationChecker:
         self._max_roc_year = current_roc_year(today)
 
     # ── 法條 ────────────────────────────────────────────────────────
-    def check_law(self, law: str, article: str, raw: str) -> Citation:
+    def check_law(self, law: str, article: str | None, raw: str) -> Citation:
+        if article is None:
+            # 條號無法解析：不比對、不猜、不宣稱存在或不存在（黃燈交人工）
+            return Citation(
+                raw=raw,
+                kind="law",
+                state=STATE_UNPARSEABLE,
+                lamp=STATE_TO_LAMP[STATE_UNPARSEABLE],
+                note=f"抓到「{raw}」，但{UNPARSEABLE_NOTE}",
+                payload={"law": law, "article": None},
+            )
         amend = next((a for a in self.amendments if a.get("law") == law and a.get("old") == article), None)
         if amend:
             return Citation(
@@ -157,7 +260,17 @@ class CitationChecker:
         )
 
     # ── 判解 ────────────────────────────────────────────────────────
-    def check_precedent(self, court: str | None, year: int, typ: str, no: int, raw: str) -> Citation:
+    def check_precedent(self, court: str | None, year: int | None, typ: str, no: int | None, raw: str) -> Citation:
+        if year is None or no is None:
+            # 年度或號數讀不懂（罕見國字寫法、OCR 誤字）：不猜、不靜默丟掉
+            return Citation(
+                raw=raw,
+                kind="precedent",
+                state=STATE_UNPARSEABLE,
+                lamp=STATE_TO_LAMP[STATE_UNPARSEABLE],
+                note=f"抓到判解字號「{raw}」，但{UNPARSEABLE_NOTE}",
+                payload={"year": year, "type": typ, "no": no},
+            )
         # 格式不成立：年度超出可能範圍（未來年度）或號數為 0
         if year < 1 or year > self._max_roc_year or no < 1:
             return Citation(
@@ -207,7 +320,16 @@ class CitationChecker:
         )
 
     # ── 釋字 ────────────────────────────────────────────────────────
-    def check_interpretation(self, no: int, raw: str) -> Citation:
+    def check_interpretation(self, no: int | None, raw: str) -> Citation:
+        if no is None:
+            return Citation(
+                raw=raw,
+                kind="interpretation",
+                state=STATE_UNPARSEABLE,
+                lamp=STATE_TO_LAMP[STATE_UNPARSEABLE],
+                note=f"抓到釋字「{raw}」，但{UNPARSEABLE_NOTE}",
+                payload={"no": None},
+            )
         if no in self.interpretations:
             return Citation(
                 raw=raw,
@@ -254,9 +376,9 @@ class CitationChecker:
         # 函釋先掃，並記下佔用區間——「台內營字第1120801234號函」裡的
         # 「112年5月1日」會被判解 regex 誤讀成年度，不排除會產生幽靈判解引用。
         directive_spans: list[tuple[int, int]] = []
-        for m in DIRECTIVE_RE.finditer(text):
-            directive_spans.append((m.start(), m.end()))
-            out.append(self.check_directive(m.group(1), m.group(2), m.group(3), m.group(0)))
+        for start, end, agency, word, no, raw in find_directives(text):
+            directive_spans.append((start, end))
+            out.append(self.check_directive(agency, word, no, raw))
         for m in PREC_RE.finditer(text):
             if any(s <= m.start() < e for s, e in directive_spans):
                 continue
@@ -268,7 +390,8 @@ class CitationChecker:
 
 
 def summarize(citations: list[Citation]) -> dict[str, int]:
-    counts = {STATE_OK: 0, STATE_AMENDED: 0, STATE_OUT_OF_SCOPE: 0, STATE_MISSING: 0}
+    counts = {STATE_OK: 0, STATE_AMENDED: 0, STATE_OUT_OF_SCOPE: 0, STATE_MISSING: 0,
+              STATE_UNPARSEABLE: 0}
     for c in citations:
         counts[c.state] = counts.get(c.state, 0) + 1
     return counts
