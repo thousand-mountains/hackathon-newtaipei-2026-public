@@ -48,19 +48,36 @@
 | 加值 | 9 | 資料：manifest、`ingest_kb.py`、逾期回放集 | 2.5h | 5 |
 | 加值 | 16 | AC16 掃描件視覺讀取驗證 | 0.5h | 3b |
 
-必要層 **18.0h**、加值層 **5.5h**、合計 **23.5h**。plan-guardian 記帳：必要層超過 18h 即停加值層；總計超過 24h 升報 tech-lead。
+必要層 **18.0h**、加值層 **5.5h**、合計 **23.5h**。plan-guardian 記帳：必要層超過 18h 即停加值層；總計超過 24h 升報 tech-lead。**加值層砍序**（plan-guardian 2026-09-07 建議）：先砍 8b＋7b（2.5h），再砍 Task 9 的 ingest／回放（保留 `build_manifest.py` 0.5h），最後 Task 16。
 
 **注意**：Task 9 的 `ingest_kb.py` 是 KB 建置所需，但 KB 建置本身是 Ci 在 console 手動做（賽前清單），不阻塞必要層；必要層的 AC7 用手動建好的 KB 驗。
 
 ## 驗收條件
 
-見 spec §8 AC1–AC16。每個 task 末尾列出對應 AC 與可執行指令。必要層必須全過；加值層的 AC10、AC12、AC13、AC16 可標「未做」。
+必要層必過（每條：跑什麼 → 看到什麼）：
+
+| AC | 跑什麼 | 看到什麼 |
+|---|---|---|
+| AC1 | `python3 backend/tests/run_all.py` | exit 0；fixture 行為與 payload 與 `5261f3c` 相同 |
+| AC2 | 同上 | `scan_core_path_dependencies` 綠（strands/boto3 只在 llm/、retrieval/kb.py） |
+| AC3 | 同上 | `scan_llm_import_graph` 綠（N2/N3/N4/N6 不 import backend.llm／strands） |
+| AC4 | `RUN_MODE=bedrock` 起服務，`scripts/live_acceptance.py` | N1：12 欄 `intake_origin=llm`、`conf` 0–1、`run_meta.model_ids.extract` 非空 |
+| AC5 | 同上 | `doc[]` 每句 `cite_ids` ⊆ N4 結果 id ∪ 工具命中 id |
+| AC6 | 同上（synthetic-blocked-01） | `requires_human_conclusion=true`、無 `slot=conclusion, origin=llm` 句、`submit_allowed=false` |
+| AC7 | 同上，兩個合成案 | 每案 `cases` ≥ 3 件同案型；相似案卡標「KB 命中，未對資料集實檔驗證」 |
+| AC8 | 同上 | `from_node=n5`：N1–N4 與 base 相同、`node_timings` 只有 n5/n6、`base_run_id` 正確；無 base 回 400 |
+| AC9 | 同上 | `from_node=n2`+`confirmed_intake`：`node_timings` 無 n1、`intake_origin.d2=human` |
+| AC11 | Task 7a Step 4 指令 | 假 model id → `GET /runs/{id}` 502 含 `node`/`error`，payload 無 fixture 內容 |
+| AC14 | Task 11 Step 7 的 `git grep` | 無輸出 |
+| AC15 | `live_acceptance.py` | 上傳 txt → `intake.no/d2/d3/service_method` 與 fixture 一致、N2 案型一致 |
+
+加值層：AC10（SSE）、AC12（ingest 冪等）、AC13（回放一致率報告）、AC16（掃描件）可標「未做」。live AC 需 Bedrock 開通；未開通時標「未驗」，不得以非 AWS 模型輸出充當證據。
 
 ## 備援方案
 
 | 到最遲放棄時刻仍紅 | 降級成 |
 |---|---|
-| Bedrock 帳號未開通（Task 3/3b/4/10 的 live 測試跑不了） | 必要層以 fixture＋monkeypatch 完成並 commit；live AC 用 `MODEL_PROVIDER=openai` 做出證據並標「暫代」，demo 前切回 Bedrock 重跑；仍不通則 demo 走 fixture，`run_meta.run_mode` 如實顯示 |
+| Bedrock 帳號未開通（Task 3/3b/4/10 的 live 測試跑不了） | 必要層以 fixture＋monkeypatch 完成並 commit；live AC 標「未驗」；`MODEL_PROVIDER=openai` 只准用來調 prompt，**其輸出不得當 AC 證據**（賽制僅限 AWS 基礎模型）；demo 走 fixture，`run_meta.run_mode` 如實顯示 |
 | Managed KB recall 三案不到 3/5（AC7） | `RETRIEVER=lawtable_only`，相似案卡維持「庫外」降級 log；KB 改自管方案列 §13 待拍板 |
 | 掃描 PDF 視覺讀取抽不出必填欄位 | 本來就是設計：N1 degraded → NEEDS_INPUT → 承辦人手動表單（architecture §3.5），不加 OCR 套件 |
 | 加值層來不及 | 全部不做。前端用輪詢等結果、沒有每卡按鈕；`from_node` 續跑仍可由 curl 展示 |
@@ -2072,7 +2089,7 @@ def build_retriever(kind: str, *, exclude_case: str | None = None):
             "src": h.source,
             "origin": "retrieval",
             "verified": h.verified,
-            "note": h.note,
+            "note": h.note or "KB 命中，未對資料集實檔驗證（manifest 對檔為加值層 Task 9）",
             "outcome": p.get("outcome"),
             "provenance": p.get("provenance"),
             "text": p.get("text", "")[:600],
@@ -2092,7 +2109,8 @@ def build_retriever(kind: str, *, exclude_case: str | None = None):
                 "logs": (
                     [[f"查詢句：{case_query[:80]}…", ""],
                      [f"結果分布：{'；'.join(f'{k} {v} 件' for k, v in sorted(_count(c['outcome'] for c in cases).items()))}", ""],
-                     ["決定結果照檔名／主文，不由模型推測（CONSTITUTION §2）", ""]]
+                     ["決定結果照檔名／主文，不由模型推測（CONSTITUTION §2）", ""],
+                     ["相似案為 KB 命中，尚未對資料集實檔逐筆驗證；燈號歸 N6", "y"]]
                     if similar_available else
                     [[SIMILAR_CASE_UNAVAILABLE_REASON, "r"],
                      ["本節點不編造任何案號或相似度分數（CONSTITUTION §2）", ""]]
@@ -3171,7 +3189,7 @@ if __name__ == "__main__":
 
 ```python
 def test_public_overdue_replay_agreement_at_least_99_percent():
-    """爬蟲 251 件 77-2 不受理案回放：期間引擎判逾期與訴願會一致 ≥ 99%（spec AC13）。檔案不存在就跳過（不假裝有跑）。"""
+    """爬蟲 77-2 不受理案回放（spec AC13）：**只報告一致率，不 assert**。檔案不存在就跳過（不假裝有跑）。"""
     import datetime as dt
     import json
     import pathlib
@@ -3188,7 +3206,8 @@ def test_public_overdue_replay_agreement_at_least_99_percent():
                       filing_date=dt.date.fromisoformat(r["filing_date"]), transit_days=0, interested_party=False)
         agree += int(bool(res.overdue) == r["expected_overdue"])
     rate = agree / len(rows)
-    assert_true(rate >= 0.99, f"一致率 {rate:.3%} 低於 99%（{agree}/{len(rows)}）")
+    # 只報告不 assert：這是量測不是紅線，日期 heuristics 偏差不該卡住全套測試（plan-guardian 2026-09-07）
+    print(f"  info  公開案回放一致率 {rate:.3%}（{agree}/{len(rows)}）；目標 ≥ 99%，未達即寫入 docs/evidence 的 replay-mismatch.md")
 ```
 
 `.gitignore` 加：
@@ -3206,7 +3225,7 @@ python3 scripts/build_manifest.py --official "/Users/claireliang/Desktop/aws_hac
 cat data/local/kb/ingest_report.md | head
 python3 scripts/replay_overdue_public.py --crawl "/Users/claireliang/Desktop/aws_hackthon/爬蟲_訴願決定書/data/cases.jsonl"
 python3 backend/tests/run_all.py
-git grep -nE "<REDACTED-ACCOUNT-ID>|<REDACTED-KB-ID>|AKIA" -- . ':!plans' ':!docs/spec'   # 期望：無輸出（AC14）
+git grep -nE "\b[0-9]{12}\b|AKIA[0-9A-Z]{16}" -- backend docs plans scripts   # 期望：無輸出（AC14；不排除任何目錄）
 ```
 
 Expected：manifest 約 130 筆 official + 2,347 筆 public；`ingest_report.md` 列出 CJK 比例不足的檔；回放測試通過或列出實際一致率（低於 99% 就把不一致案號寫進 `docs/evidence/2026-09-07-bedrock-live/replay-mismatch.md`，這是發現不是失敗）。
@@ -3460,7 +3479,7 @@ git commit -m "test(live): AC16 掃描件視覺讀取實測與證據"
 
 「實作：僅抽取與草稿兩節點用 Bedrock AgentCore 包」→「實作：僅抽取與草稿兩節點呼叫 Bedrock（Strands Agent，於 `backend/llm/`）；AgentCore 為 Stretch（architecture §13 #5）。2026-09-07 修訂。」
 
-- [ ] **Step 3: CLAUDE.md 規矩段**
+- [ ] **Step 3: CLAUDE.md 規矩段**（**已於開工前由控制端改好並 commit**，此步只確認內容一致）
 
 「部署走 **AWS**…；**不碰** GCP `<other-gcp-project>`、不借用其他專案的任何 secret。」→「部署走 **AWS**（賽制：僅限 AWS 服務提供之基礎模型）。**開發期可用開發用 AWS 帳號**（profile `<dev-profile>`，2026-09-06 Claire 拍板；帳號 ID、KB id 一律不進程式與文件），賽方帳號到手即以 `scripts/ingest_kb.py` 重建並切換；**不碰** GCP `<other-gcp-project>`。」
 
@@ -3476,11 +3495,15 @@ git commit -m "test(live): AC16 掃描件視覺讀取實測與證據"
 
 新增「2026-09-07 bedrock-live-nodes 分支」段：做了什麼（Task 1–10 逐條）、live AC 的證據路徑、**沒做什麼**（ask／AgentCore／PDF document input／冪等 run_id）、憑證狀態（Support Case 編號、Bedrock 是否已通）、啟動指令（fixture 與 bedrock 兩組）。
 
+- [ ] **Step 6b: run_all.py 的 secret 掃描納入 12 碼帳號 ID**
+
+在 `SECRET_PATTERNS` 加一列 `(r"\b[0-9]{12}\b", "疑似 AWS 帳號 ID（12 碼數字）")`。合成案號是 10 碼，不會誤中。
+
 - [ ] **Step 7: 跑全套與 secret 掃描，Commit**
 
 ```bash
 python3 backend/tests/run_all.py
-git grep -nE "<REDACTED-ACCOUNT-ID>|<REDACTED-KB-ID>|AKIA" -- . ':!plans' ':!docs/spec' ':!HANDOFF*.md'
+git grep -nE "\b[0-9]{12}\b|AKIA[0-9A-Z]{16}" -- backend docs plans scripts HANDOFF*.md CLAUDE.md
 git add docs/architecture.md docs/spec/prototype-spec.md CLAUDE.md backend/DEPLOY.md backlog.md HANDOFF.md
 git commit -m "docs: 同步 Strands 限 N1/N5、Managed KB、開發期帳號規矩、續跑與 SSE；ask/AgentCore 列 Phase S"
 ```

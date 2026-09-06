@@ -49,7 +49,7 @@
 | D1 | Strands **只在 N1／N5 內部**使用，編排層仍是自寫 state machine | architecture §13 #6 原「不用 Strands」→ 改為「限 N1/N5 內部，import 在函式內」 |
 | D2 | KB 用 **Managed Knowledge Base**，不自管 vector store、不控制 chunking | architecture §8 原「chunking=NONE、自附 metadata」→ 改；§13 新增待拍板「Managed KB recall 實測須 ≥ 60%」 |
 | D3 | AgentCore 維持 **Stretch**，本規格不碰 | architecture §13 #5 立場不變；spec §4.6「僅抽取與草稿兩節點用 AgentCore 包」須改為「用 Strands 包」 |
-| D4 | 開發期使用開發用 AWS 帳號（`<dev-profile>`，<REDACTED-ACCOUNT-ID>），賽方帳號到手後以 ingest 腳本重建 | `CLAUDE.md`「不借用其他專案的任何 secret」→ 改為「開發期可用開發用 AWS；GCP 仍不碰；賽方帳號到手即切換」。**Claire 拍板** |
+| D4 | 開發期使用開發用 AWS 帳號（profile 名與帳號 ID 只在 `.env`／`~/.aws`，不進文件），賽方帳號到手後以 ingest 腳本重建 | `CLAUDE.md`「不借用其他專案的任何 secret」→ 改為「開發期可用開發用 AWS；GCP 仍不碰；賽方帳號到手即切換」。**Claire 拍板** |
 | D5 | live 呼叫失敗**不自動退回 fixture**，節點拋錯、API 回 502 帶原因 | 延續 `NodeCtx.require_fixture` 精神，CONSTITUTION §1 |
 | D6 | 重跑只能「從某節點往下全部重跑」，N6 永遠最後重跑；不提供單節點重跑 | 新增契約 |
 | D7 | 上傳案 `upload-` 前綴存 `backend/output/uploads/`（gitignored），只能在 bedrock 模式跑；卷證文字三層路由（txt／pdftotext／PDF 視覺讀），不裝 OCR 套件 | `graph.load_case` 原本只放行 `synthetic-`；上傳目錄不進 git 故不違 CONSTITUTION §6 |
@@ -64,7 +64,7 @@
                                                                        orchestrator.run_case(...)
                                                                        ├ 載入 base_run 的 CaseState（若有）
                                                                        ├ 從 from_node 起依序 dispatch 到 n6
-                                                                       │   N1 ──▶ llm.client.structured()        ── Bedrock Converse
+                                                                       │   N1 ──▶ llm.client.extract_intake()   ── Bedrock Converse
                                                                        │   N2/N3 純程式
                                                                        │   N4 ──▶ retrieval.kb.search()          ── Bedrock KB Retrieve
                                                                        │   N5 ──▶ llm.client.structured_with_tools()  ── Converse（工具：retrieve 限函釋/判解）
@@ -95,19 +95,21 @@ def load_model():
     """MODEL_PROVIDER=bedrock（預設）| openai。Bedrock 用 strands BedrockModel，
     model_id 與 region_name 一律由環境變數顯式帶入（避開 strands 預設 us-west-2）。"""
 
-def structured(system: str, user: str, schema: type[BaseModel], *, retries=3, timeout_s=60) -> BaseModel:
-    """無工具的 Agent，structured_output(schema)。失敗 raise LLMError，不吐假資料。"""
+def extract_intake(document_text: str, *, pdf_documents: list[tuple[str, bytes]] | None = None, retries=3, backoff_s=1.5) -> dict:
+    """N1 用。無工具的 Agent，structured_output_model=ExtractionResult；回 {intake, conf, quotes, facts_excerpt, usage, model_id}。失敗 raise LLMError，不吐假資料。"""
 
-def structured_with_tools(system, user, schema, tools: list, *, max_tool_calls=6, ...) -> tuple[BaseModel, list[ToolCall]]:
-    """給 N5。回傳結構化結果與工具呼叫紀錄（含 retrieve 命中的 src），供 N6 對引用。"""
+def draft_sentences(context: dict, slots: list[str], retrieve_fn=None, *, retries=3, backoff_s=1.5) -> dict:
+    """N5 用。可掛 retrieve_refs 工具；回 {slots: {slot: [{t, cite_ids, basis, source_kind, unsupported?}]}, tool_calls, usage, model_id}。"""
+
+# 測試接縫：_invoke_structured(system, user, schema_name, tools=None, model_kind, attachments=None) -> (dict, usage)
 ```
 
 `MODEL_PROVIDER=openai` **僅供開發期調 prompt**（AppealAssist 在 Bedrock 未通時的做法），不得進交付路徑（architecture §1 第 5 條「不引入非 AWS 模型到交付路徑」）；demo 前必須切回 Bedrock 重跑 AC4–AC7。
 
 `schemas.py`：
 
-- `ExtractionResult`：對齊 architecture §3.1 N1 輸出（`no, type, person, org, d1, d2, d3, agent, note, service_method, transit_days, interested_party, facts_text` 各帶 `value` 與 `conf`）。參考 AppealAssist `PetitionFields`。
-- `DraftResult`：`sentences: list[{slot, text, source_ids}]`，slot ∈ 現有 `MAX_SENTENCES_PER_SLOT` 的 slot 集合。**不含** `lamp`、`verified`——那是 N6 的欄位，模型不得產出。
+- `ExtractionResult`：對齊 architecture §3.1 N1 輸出（`no, type, person, org, d1, d2, d3, agent, note, service_method, transit_days, interested_party` 各帶 `value`、`conf`、`quote`；另有 `facts_excerpt: list[{text, page, quote_ref}]`）。參考 AppealAssist `PetitionFields`。
+- `DraftResult`：`reasoning: list[DraftSentence]`、`conclusion: list[DraftSentence]`，`DraftSentence = {t, cite_ids, basis, source_kind}`（與合成案例 `draft_fixture` 同形，`build_doc_skeleton` 不改）。**不含** `lamp`、`verified`——那是 N6 的欄位，模型不得產出。
 
 模型 id 環境變數：`BEDROCK_MODEL_ID_EXTRACT`、`BEDROCK_MODEL_ID_DRAFT`（預設值皆由 `.env.example` 說明，程式內無寫死）。`run_meta.model_ids` 在 bedrock 模式填實際值，fixture 模式維持 `None`。
 
@@ -118,18 +120,18 @@ def structured_with_tools(system, user, schema, tools: list, *, max_tool_calls=6
 | `ctx.run_mode` | 行為 |
 |---|---|
 | `fixture` | 現有重播程式碼，不動 |
-| `bedrock` | 讀 `prompts/n1_extract.md`，把卷證文字（`state.files` 對應的 txt，Phase 1 先接 txt，PDF document input 列 stretch）餵 `client.structured(ExtractionResult)`；每欄 `origin="llm"`、`conf` 用模型值；`conf < CONF_THRESHOLD` 的欄位觸發現有 `degraded → NEEDS_INPUT` 路徑 |
+| `bedrock` | 讀 `prompts/n1_extract.md`，把 §5.7 路由後的卷證（文字，或 `pdf_visual` 的 PDF 附件）餵 `client.extract_intake()`；每欄 `origin="llm"`、`conf` 用模型值；`conf < CONF_THRESHOLD` 的欄位觸發現有 `degraded → NEEDS_INPUT` 路徑 |
 | 其他 | 維持 raise `NotImplementedError` |
 
 narrative 的降級文案由「離線重播」改為實際情況，不得再出現「fixture」字樣。
 
 ### 5.3 N5 主筆 live 分支
 
-- `client.structured_with_tools(DraftResult, tools=[retrieve_refs])`。
+- `client.draft_sentences(context, slots, retrieve_fn)`，工具 `retrieve_refs`。
 - prompt 內塞入 N4 結果（法條、相似案含決定結果）。**相似案與法條不給模型自己查**。
 - 唯一工具 `retrieve_refs(query)`：呼叫 `retrieval.kb.search(query, filters={"prefix": ["行政函釋/", "司法院釋字及行政判解/"]})`，用途是替爭點對照補函釋或判解原文。`max_tool_calls=6`。
 - `requires_human_conclusion=True` 時：prompt 明講不寫結論，且程式端再刪除 `slot=conclusion` 的句子（雙保險，現有 `dropped_conclusion` 邏輯沿用）。
-- 每句 `source_ids` 必須出現在「N4 結果 ∪ 工具回傳 src」集合內，否則該句標 `unsupported`，交 N6 判紅。N6 邏輯不變。
+- 每句 `cite_ids` 必須出現在「N4 結果 id ∪ 工具回傳 id」集合內，否則該句標 `unsupported`，交 N6 判紅。N6 邏輯不變。
 
 ### 5.4 N4 通道 B：`backend/retrieval/kb.py`
 
@@ -145,7 +147,7 @@ class KBRetriever:
 - boto3 `bedrock-agent-runtime.retrieve`，`retrievalConfiguration={"managedSearchConfiguration": {"numberOfResults": min(top_k*3, 50)}}`。多抓三倍再後過濾（Managed KB filter 不支援路徑比對，AppealAssist 實測）。
 - 後過濾：`score < KB_MIN_SCORE` 丟；`_file_type == "PDF"` 丟；URI 前綴不在 `filters["prefix"]`（預設 `["歷史訴願決定書/"]`）丟；`filters["exclude_case"]` 命中丟（demo 案的來源決定書）。
 - `Hit.source` = 去掉 bucket 與 `kb/{official|public}/` 之後的相對路徑，`Hit.verified` 由 N6 對 manifest 決定，`Hit.payload` 帶 `{"score", "text", "provenance": "official" | "public_crawl"}`。
-- 查詢句：N1 抽出的事實段**原文**（`facts_text`），不用改寫句（AppealAssist ask 模式教訓：改寫句漏撤銷案）。現有 `n4_retrieval.build_query()` 調整。
+- 查詢句：N1 抽出的事實段**原文**（`facts_excerpt[].text` 加 `intake.note`），不用改寫句（AppealAssist ask 模式教訓：改寫句漏撤銷案）。現有 `n4_retrieval.build_query()` 調整。
 - 環境變數：`BEDROCK_KB_ID`、`AWS_REGION`、`KB_MIN_SCORE`（預設 0.25）。`RETRIEVER=kb` 才啟用，否則維持 `UnavailableRetriever`。
 - 通道 A（法條）維持 `lawtable`，不進 KB。
 
@@ -259,7 +261,7 @@ s3://{S3_KB_BUCKET}/
 
 ### 6.4 搬遷程序
 
-1. 開發用帳號：建 bucket、建 Managed KB、跑 `ingest_kb.py`、實測三個 demo 案 recall。
+1. 開發用帳號：建 bucket、建 Managed KB、跑 `ingest_kb.py`、實測兩個合成案 recall。
 2. 賽方帳號到手：換 `AWS_PROFILE`、`S3_KB_BUCKET`，建 KB，重跑 `ingest_kb.py`，把新 `BEDROCK_KB_ID` 填進部署環境。程式零改動。
 3. 兩邊 `kb_snapshot_date` 與 manifest hash 一致即視為搬遷完成。
 
@@ -289,11 +291,11 @@ s3://{S3_KB_BUCKET}/
 |---|---|---|
 | AC1 | fixture 模式行為零變化 | `python3 backend/tests/run_all.py` 全綠；HANDOFF.md 的 Playwright 腳本 exit 0 |
 | AC2 | 零依賴測試路徑不變 | `run_all.py` 靜態掃描通過（strands/boto3 import 皆在函式內） |
-| AC3 | N2/N3/N4/N6 無 LLM 依賴 | ast 檢查腳本 `scripts/check_llm_imports.py` exit 0 |
+| AC3 | N2/N3/N4/N6 無 LLM 依賴 | `run_all.py` 的 `scan_llm_import_graph`（ast 遞迴）綠 |
 | AC4 | N1 live 抽取 | `RUN_MODE=bedrock` 對 `synthetic-ordinary-01` 的卷證 txt 跑 N1，12 個 intake 欄位全部有 `origin=llm` 與 0–1 的 `conf`；`run_meta.model_ids.extract` 非空 |
-| AC5 | N5 live 組稿且引用可驗 | 同案跑到 N6，`doc[]` 每句 `source_ids` ⊆ N4 結果 ∪ 工具回傳；N6 無 `unsupported` 以外的新狀態 |
+| AC5 | N5 live 組稿且引用可驗 | 同案跑到 N6，`doc[]` 每句 `cite_ids` ⊆ N4 結果 ∪ 工具回傳；N6 無 `unsupported` 以外的新狀態 |
 | AC6 | C 型封鎖在 live 下仍成立 | `synthetic-blocked-01` live 跑完 `requires_human_conclusion=true` 且 `doc[]` 無 `slot=conclusion, origin=llm` |
-| AC7 | KB recall | 三個 demo 案的來源決定書排除後，top-5 至少 3 件同案型（`case_type` 相同）；記錄於 `docs/evidence/…/kb-recall.md` |
+| AC7 | KB recall | 現有兩個合成案（`synthetic-ordinary-01` 空污、`synthetic-blocked-01` 建築法）各跑一次，top-5 至少 3 件同案型（`case_type` 相同）；相似案卡在 manifest 對檔前一律標「KB 命中，未對資料集實檔驗證」；記錄於 `docs/evidence/…/kb-recall.md` |
 | AC8 | 續跑正確 | `from_node=n5, base_run_id=R`：N1–N4 結果與 R 位元相同、N5/N6 重算、`run_meta.base_run_id==R`；`from_node=n5` 不帶 base 回 400 |
 | AC9 | 確認欄位不重抽 | `from_node=n2` + `confirmed_intake`：`node_timings` 無 `n1`，模型呼叫次數為 1（N5） |
 | AC10 | SSE | `curl -N /api/runs/{id}/events` 收到 6 對 `node_start/node_done` 與 1 個 `run_done`，順序符合 `NODE_ORDER` |
@@ -302,7 +304,7 @@ s3://{S3_KB_BUCKET}/
 | AC13 | 期間回放 | `overdue-public.jsonl` 回放一致率 ≥ 99%，輸出報告進 `docs/evidence/` |
 | AC15 | 上傳案端到端 | 把 `synthetic-ordinary-01` 的 `documents[]` 文字以 txt 上傳建案，bedrock 跑完 `intake.no/d2/d3/service_method` 與該案 fixture 一致、N2 案型一致 |
 | AC16（加值） | 掃描件視覺讀取 | 同一份文字排成圖片存 PDF（無文字層）上傳，N1 走 `pdf_visual`，clerk 敘述含「視覺讀取」，`intake.type` 與 `d3` 抽得出；抽不出如實記錄 |
-| AC14 | secret 掃描 | `git grep -nE "<REDACTED-ACCOUNT-ID>|<REDACTED-KB-ID>|AKIA"` 無結果 |
+| AC14 | secret 掃描 | `git grep -nE "\b[0-9]{12}\b|AKIA[0-9A-Z]{16}" -- backend docs plans scripts` 無結果（12 碼數字視為疑似 AWS 帳號 ID；`run_all.py` 的 secret 掃描同步納入此 regex） |
 
 AC4–AC11、AC15、AC16 標 `@live`，需要 Bedrock 開通；其餘在 fixture 下可跑。必要層必過：AC1–AC9、AC11、AC14、AC15；加值層：AC10、AC12、AC13、AC16。
 
@@ -319,12 +321,13 @@ AC4–AC11、AC15、AC16 標 `@live`，需要 Bedrock 開通；其餘在 fixture
 
 | # | 風險 | 處置 |
 |---|---|---|
-| R1 | 開發用帳號 Bedrock 仍 `Operation not allowed`（帳號驗證中，PAID/ACTIVE 已確認） | Support Case 已建議送出；程式開發不受阻（fixture + monkeypatch）；賽方是否提供帳號在 `#hack-general` 確認 |
+| R1 | 開發用帳號 Bedrock 仍 `Operation not allowed`（帳號驗證中，PAID/ACTIVE 已確認） | Support Case 已建議送出；程式開發不受阻（fixture + monkeypatch）；live AC 標「未驗」，**不得以 `MODEL_PROVIDER=openai` 的輸出充當 AC 證據**（賽制僅限 AWS 基礎模型）；賽方是否提供帳號在 `#hack-general` 確認 |
 | R2 | Managed KB 不可控 chunking 導致 recall 不足 | AC7 實測；不足則 §13 待拍板改自管 KB + S3 Vectors（architecture §8 原案），介面不變 |
 | R3 | Sonnet 5 在東京需跨區 inference profile | 開通後 `list-inference-profiles` 確認；model id 走環境變數 |
 | R4 | live 模式下 N1 兩次抽取結果不同 | D6 + AC9：確認後從 n2 續跑，不重抽 |
 | R6 | 手寫掃描件的視覺讀取品質未實測（手上沒有真實訴願書） | AC16 用自造掃描件量測；賽場遇到抽不出就走手動表單，這是設計不是失敗 |
-| R5 | 開發期借開發用帳號與 CLAUDE.md 衝突 | D4 由 Claire 拍板並改文件；權限分類器目前擋 `--profile <dev-profile>`，需在 `.claude/settings.local.json` 加允許規則，否則 live 測試由人手動跑 |
+| R7 | 賽方「僅供競賽之用」資料集上傳到非競賽用帳號的 S3 是 CONSTITUTION §6 的邊界 | bucket 私有、只放 `kb/` 前綴 txt、賽方帳號到手後重建並**刪除**開發用帳號的 bucket 與 KB；Claire 2026-09-06 拍板「先用開發用帳號」 |
+| R5 | 開發期借開發用帳號與 CLAUDE.md 衝突 | D4 由 Claire 拍板並改文件；權限分類器目前擋開發用 profile 的 aws 指令，需在 `.claude/settings.local.json` 加允許規則，否則 live 測試由人手動跑 |
 
 ## 11. 前置條件
 
