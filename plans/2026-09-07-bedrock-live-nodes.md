@@ -21,6 +21,7 @@
 - 模型只寫句子：N5 不得產出 `lamp`／`l`／`why`／`verified`，這些由 N6 決定。
 - `MODEL_PROVIDER=openai` 僅供開發期調 prompt，demo 前必須切回 Bedrock 重跑 AC4–AC7。
 - 每個 task 結束 `python3 backend/tests/run_all.py` 必須 exit 0 再 commit。
+- **import 一律放模組頂層，不放函式內**（Claire 2026-09-07 拍板，適用已寫與未寫的所有 backend/ 程式含測試）。第三方套件在**豁免檔**（`backend/llm/`、`backend/retrieval/kb.py`、`backend/api/`）以模組頂層 `try: import X` / `except ImportError: X = None` 守衛，缺套件時在**呼叫點** raise `LLMError`／`ValueError` 說明缺什麼；非豁免檔不得 import 第三方套件。`run_all.py` 的 `scan_top_level_imports()` 用 ast 強制：任何 Import／ImportFrom 出現在 FunctionDef／ClassDef 內即違規。
 
 ## 目標（plans/README 格式）
 
@@ -319,9 +320,7 @@ LLM_FORBIDDEN_NODES = ("n2_classify", "n3_procedure", "n4_retrieval", "n6_gate")
 
 
 def _imports_of(path: pathlib.Path) -> set[str]:
-    """用 ast 抓一個檔案 import 的頂層模組名（含函式內的 import）。"""
-    import ast
-
+    """用 ast 抓一個檔案 import 的頂層模組名。"""
     tree = ast.parse(path.read_text(encoding="utf-8"))
     out: set[str] = set()
     for node in ast.walk(tree):
@@ -648,7 +647,7 @@ class DraftResult(BaseModel):
 """唯一允許 import strands 的檔案（spec 2026-09-07 D1）。
 
 對外只有三個函式：extract_intake()、draft_sentences()、model_ids()。
-strands／boto3 的 import 全部在函式內，fixture 模式與測試路徑永遠不會觸碰它們。
+strands 與 pydantic schema 在模組頂層以 try/except ImportError 守衛（未安裝時為 None），fixture 模式與測試路徑不需要它們；缺套件時 `_load_model()` 於呼叫點 raise LLMError。
 測試接縫是 _invoke_structured()：節點測試與本檔測試都只 monkeypatch 它。
 """
 from __future__ import annotations
@@ -984,9 +983,7 @@ def run(state: CaseState, ctx: NodeCtx, case_fixture: dict[str, Any] | None = No
         if not docs:
             raise ValueError(f"合成案例 {case_fixture.get('id')!r} 缺 documents 區塊（bedrock 模式需要卷證全文）")
         document_text = "\n\n".join(f"《{d['n']}》\n{d['text']}" for d in docs)
-        from backend.llm import client as llm_client  # 只有這個分支會 import（CONSTITUTION §4 的實作面）
-
-        out = llm_client.extract_intake(document_text)  # LLMError 直接往上拋
+        out = llm_client.extract_intake(document_text)  # LLMError 直接往上拋；llm_client 在模組頂層 import（strands 由 client.py 守衛）
         payload = {k: out[k] for k in ("intake", "conf", "quotes", "facts_excerpt")}
         generation = {"mode": "bedrock_live", "model_id": out["model_id"], "usage": out["usage"]}
         mode_log = [f"模型即時抽取：{out['model_id']}，信心值為模型自報", ""]
@@ -1402,8 +1399,7 @@ def list_upload_cases(uploads_dir: pathlib.Path | None = None) -> list[str]:
 def load_case(case_id: str, data_dir: pathlib.Path | None = None) -> dict[str, Any]:
     """synthetic-：合成案例檔；upload-：承辦人上傳（output/uploads/，不進 git）；其他一律拒絕（CONSTITUTION §3、§6）。"""
     if case_id.startswith("upload-"):
-        from backend.intake.uploads import load_upload_case
-        return load_upload_case(case_id)
+        return load_upload_case(case_id)  # 模組頂層 import
     if not case_id.startswith("synthetic-"):
         raise ValueError(
             f"案例 id {case_id!r} 不是 synthetic- 或 upload- 前綴。本系統只處理合成測資與承辦人上傳的卷證，"
@@ -1417,7 +1413,6 @@ def load_case(case_id: str, data_dir: pathlib.Path | None = None) -> dict[str, A
 
 
 def list_cases(data_dir: pathlib.Path | None = None) -> dict[str, list[str]]:
-    from backend.intake.uploads import list_upload_cases
     return {"synthetic": list_synthetic_cases(data_dir), "uploaded": list_upload_cases()}
 
 
@@ -1463,8 +1458,6 @@ def digest_from_state(state: CaseState) -> str:
                 pdfs.append((d["n"], d["bytes"]))
             else:
                 text_parts.append(f"《{d['n']}》\n{d['text']}")
-        from backend.llm import client as llm_client
-
         out = llm_client.extract_intake("\n\n".join(text_parts), pdf_documents=pdfs or None)
         payload = {k: out[k] for k in ("intake", "conf", "quotes", "facts_excerpt")}
         generation = {"mode": "bedrock_live", "model_id": out["model_id"], "usage": out["usage"],
@@ -1952,7 +1945,7 @@ Expected: 5 個新測試 FAIL，`ModuleNotFoundError: backend.retrieval.kb`
 """Bedrock Managed Knowledge Base 檢索（N4 通道 B、N5 retrieve_refs 工具共用）。
 
 這是**檢索**不是 LLM：boto3 `bedrock-agent-runtime.retrieve`，不生成任何文字。
-run_all.py 對本檔具名豁免第三方依賴；boto3 的 import 放在函式內，fixture 模式不會觸碰。
+run_all.py 對本檔具名豁免第三方依賴；boto3 在模組頂層以 try/except ImportError 守衛，fixture 模式不需要它。
 
 Managed KB 的 filter 不支援路徑比對（AppealAssist 實測），所以多抓三倍再在這裡後過濾：
 分數門檻、URI 前綴、PDF 一律丟（Managed KB 對這批 PDF 解析全是亂碼）、demo 案來源決定書排除。
@@ -1962,6 +1955,11 @@ from __future__ import annotations
 import re
 import urllib.parse
 from typing import Any
+
+try:
+    import boto3  # 檢索用；只有本檔、llm/、api/ 可以 import 第三方套件
+except ImportError:  # fixture 模式不需要
+    boto3 = None
 
 from backend.config import settings
 from backend.retrieval.base import Hit
@@ -2000,8 +1998,8 @@ class KBRetriever:
 
     def _c(self):
         if self._client is None:
-            import boto3  # 檢索用；只有本檔與 llm/ 可以 import 第三方套件
-
+            if boto3 is None:
+                raise ValueError("boto3 未安裝：RETRIEVER=kb 需要 pip install boto3（見 requirements.txt）")
             self._client = boto3.client("bedrock-agent-runtime", region_name=self.region)
         return self._client
 
@@ -2125,14 +2123,12 @@ def build_retriever(kind: str, *, exclude_case: str | None = None):
 `graph.py` 的 `run_case` 內把 `ctx = NodeCtx(run_mode=mode, snapshot=snapshot)` 改成：
 
 ```python
-    from backend.retrieval.kb import build_retriever  # 檢索元件（非 LLM）；lawtable_only 回 None
-
-    from backend.config.settings import retriever_kind
-    retriever = build_retriever(retriever_kind(), exclude_case=fixture.get("exclude_case"))
+    retriever = build_retriever(  # build_retriever／retriever_kind 皆模組頂層 import
+        retriever_kind(), exclude_case=fixture.get("exclude_case"))
     ctx = NodeCtx(run_mode=mode, snapshot=snapshot, retriever=retriever)
 ```
 
-（`import` 放函式內是為了讓 `scan_llm_import_graph` 的遞迴看得清楚 N4 → kb.py 是檢索邊；kb.py 不 import backend.llm。）
+（graph.py 頂部 `from backend.retrieval.kb import build_retriever`、`from backend.config.settings import retriever_kind`；kb.py 不 import backend.llm，`scan_llm_import_graph` 只看 N2/N3/N4/N6，graph 不在禁單。）
 
 - [ ] **Step 6: origin registry**
 
@@ -2436,8 +2432,7 @@ retriever 注入（Task 5 已加）保留。迴圈改成：
 def _model_ids_if_live(mode: str) -> dict[str, Any] | None:
     if mode != "bedrock":
         return None
-    from backend.llm.client import model_ids  # 只在 live 模式 import；graph 不在 LLM 禁單內
-    return model_ids()
+    return model_ids()  # graph.py 頂部 `from backend.llm.client import model_ids`；graph 不在 LLM 禁單內
 ```
 
 結尾：
@@ -2445,8 +2440,7 @@ def _model_ids_if_live(mode: str) -> dict[str, Any] | None:
 ```python
     state.run_meta["summary"] = summary_line(state.run_meta)
     if persist:
-        from backend.orchestrator.runstore import save_run
-        save_run(state)
+        save_run(state)  # 頂部 import
     emit("run_done", {"final_state": state.state})
     return state
 ```
@@ -2550,6 +2544,8 @@ BUS = RunEvents()
 import 區加：
 
 ```python
+import uuid  # noqa: E402
+
 from fastapi import BackgroundTasks  # noqa: E402
 
 from backend.api.events import BUS  # noqa: E402
@@ -2629,8 +2625,7 @@ def create_run(case_id: str, background: BackgroundTasks, body: RunIn | None = N
             raise HTTPException(status_code=500, detail={"origin_violations": payload["origin_violations"]})
         return payload
 
-    import uuid
-    rid = f"run-{case_id}-{uuid.uuid4().hex[:12]}"
+    rid = f"run-{case_id}-{uuid.uuid4().hex[:12]}"  # uuid 於頂部 import
     BUS.start(rid)
     background.add_task(_run_in_background, case_id, rid, kwargs)
     return JSONResponse({"run_id": rid, "status": "running", "result_url": f"/api/runs/{rid}"}, status_code=202)

@@ -46,12 +46,13 @@
 
 | 決策 | 內容 | 影響的既有文件 |
 |---|---|---|
-| D1 | Strands **只在 N1／N5 內部**使用，編排層仍是自寫 state machine | architecture §13 #6 原「不用 Strands」→ 改為「限 N1/N5 內部，import 在函式內」 |
+| D1 | Strands **只在 N1／N5 內部**使用，編排層仍是自寫 state machine | architecture §13 #6 原「不用 Strands」→ 改為「限 N1/N5 內部；import 於模組頂層，strands 以 try/except ImportError 守衛」 |
 | D2 | KB 用 **Managed Knowledge Base**，不自管 vector store、不控制 chunking | architecture §8 原「chunking=NONE、自附 metadata」→ 改；§13 新增待拍板「Managed KB recall 實測須 ≥ 60%」 |
 | D3 | AgentCore 維持 **Stretch**，本規格不碰 | architecture §13 #5 立場不變；spec §4.6「僅抽取與草稿兩節點用 AgentCore 包」須改為「用 Strands 包」 |
 | D4 | 開發期使用開發用 AWS 帳號（profile 名與帳號 ID 只在 `.env`／`~/.aws`，不進文件），賽方帳號到手後以 ingest 腳本重建 | `CLAUDE.md`「不借用其他專案的任何 secret」→ 改為「開發期可用開發用 AWS；GCP 仍不碰；賽方帳號到手即切換」。**Claire 拍板** |
 | D5 | live 呼叫失敗**不自動退回 fixture**，節點拋錯、API 回 502 帶原因 | 延續 `NodeCtx.require_fixture` 精神，CONSTITUTION §1 |
 | D6 | 重跑只能「從某節點往下全部重跑」，N6 永遠最後重跑；不提供單節點重跑 | 新增契約 |
+| D8 | 所有 import 放模組頂層；豁免檔第三方套件以 `try/except ImportError` 守衛，缺套件於呼叫點 raise；`run_all.py` 以 ast 強制 | Claire 2026-09-07 拍板；影響 Task 2、3 已寫程式（需重構）與後續全部 |
 | D7 | 上傳案 `upload-` 前綴存 `backend/output/uploads/`（gitignored），只能在 bedrock 模式跑；卷證文字三層路由（txt／pdftotext／PDF 視覺讀），不裝 OCR 套件 | `graph.load_case` 原本只放行 `synthetic-`；上傳目錄不進 git 故不違 CONSTITUTION §6 |
 
 ## 4. 呼叫形狀
@@ -88,7 +89,7 @@ backend/llm/
     n5_draft.md
 ```
 
-`client.py` 對外三個函式，strands／boto3 的 import 一律放在函式內部（`backend/tests/run_all.py` 的零依賴靜態掃描才能過，fixture 模式不觸碰）：
+`client.py` 對外三個函式。**import 一律在模組頂層**（D8，Claire 2026-09-07 拍板，全 backend/ 適用含測試）；strands 與 pydantic schema 以 `try/except ImportError` 守衛為 `None`，缺套件時於呼叫點 raise `LLMError`。`run_all.py` 新增 `scan_top_level_imports()` 以 ast 禁止函式內 import：
 
 ```python
 def load_model():
@@ -290,7 +291,7 @@ s3://{S3_KB_BUCKET}/
 | # | 條件 | 驗證方式 |
 |---|---|---|
 | AC1 | fixture 模式行為零變化 | `python3 backend/tests/run_all.py` 全綠；HANDOFF.md 的 Playwright 腳本 exit 0 |
-| AC2 | 零依賴測試路徑不變 | `run_all.py` 靜態掃描通過（strands/boto3 import 皆在函式內） |
+| AC2 | 零依賴測試路徑不變 | `run_all.py` 靜態掃描通過（第三方 import 只在豁免檔，且以頂層 try/except 守衛）；`scan_top_level_imports` 綠 |
 | AC3 | N2/N3/N4/N6 無 LLM 依賴 | `run_all.py` 的 `scan_llm_import_graph`（ast 遞迴）綠 |
 | AC4 | N1 live 抽取 | `RUN_MODE=bedrock` 對 `synthetic-ordinary-01` 的卷證 txt 跑 N1，12 個 intake 欄位全部有 `origin=llm` 與 0–1 的 `conf`；`run_meta.model_ids.extract` 非空 |
 | AC5 | N5 live 組稿且引用可驗 | 同案跑到 N6，`doc[]` 每句 `cite_ids` ⊆ N4 結果 ∪ 工具回傳；N6 無 `unsupported` 以外的新狀態 |
