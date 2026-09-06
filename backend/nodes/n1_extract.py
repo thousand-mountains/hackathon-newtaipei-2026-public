@@ -70,9 +70,17 @@ def run(state: CaseState, ctx: NodeCtx, case_fixture: dict[str, Any] | None = No
             route[name] = kind
             notes.extend(f"{name}：{n}" for n in (d.get("notes") or []))
             if kind == "pdf_visual":
+                blob = d.get("bytes")
+                if not blob:
+                    # 送 b"" 過去，模型「讀」的是一份不存在的文件，而 input_route 仍會記成
+                    # pdf_visual——等於宣稱視覺讀過了。寧可中止（CONSTITUTION §1）。
+                    raise ValueError(
+                        f"卷證 {name!r} 標為 pdf_visual 卻沒有檔案內容（documents[].bytes 為空）；"
+                        f"不送空檔案給模型，也不假裝讀過"
+                    )
                 # 序號前綴：Bedrock 的 document name 只收 ASCII，多份中文檔名會被清成同一個字串，
                 # 模型分不出哪份是哪份。原檔名保留在 input_route，前端要顯示的是那一份。
-                pdfs.append((f"{i}-{name}", d.get("bytes") or b""))
+                pdfs.append((f"{i}-{name}", blob))
             else:
                 text_parts.append(f"《{name}》\n{d.get('text') or ''}")
         out = llm_client.extract_intake("\n\n".join(text_parts), pdf_documents=pdfs or None)  # LLMError 直接往上拋

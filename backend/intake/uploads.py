@@ -41,11 +41,19 @@ def save_upload(files: list[tuple[str, bytes]], uploads_dir: pathlib.Path | None
     if not files:
         raise ValueError("至少要上傳一個檔案")
     h = hashlib.sha256()
+    seen: set[str] = set()
     for name, data in files:
         if pathlib.Path(name).suffix.lower() not in ALLOWED_SUFFIXES:
             raise ValueError(f"只接受 {ALLOWED_SUFFIXES}，實得 {name!r}")
         if len(data) > MAX_BYTES:
             raise ValueError(f"{name!r} 超過 {MAX_BYTES} bytes")
+        # 清過的檔名撞在一起時**先擋下來**：兩份都寫進同一個路徑的話，磁碟上只會剩後者，
+        # 但 case.json 的 files[] 仍宣稱收到兩份——那是對承辦人虛報卷證份數。
+        # 寧可回一句「請改名再上傳」，也不要靜默吃掉一份。
+        safe = _safe_name(name)
+        if safe in seen:
+            raise ValueError(f"檔名重複：{safe!r}（清理後同名的檔案會互相覆蓋）。請改名後再上傳。")
+        seen.add(safe)
         h.update(name.encode("utf-8"))
         h.update(data)
     case_id = f"upload-{h.hexdigest()[:12]}"

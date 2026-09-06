@@ -443,3 +443,51 @@ def test_n2_n3_digest_falls_back_to_n1_output():
     assert_in("露天燃燒稻稈", d)
     assert_in("經稽查查獲", d)
     assert_in("主張未收受", d)
+
+
+def test_save_upload_refuses_colliding_filenames():
+    """兩份檔案清成同一個檔名時必須拒絕，不能後者默默蓋掉前者。
+
+    `_safe_name` 只取 basename，所以「卷證/訴願書.txt」與「訴願書.txt」會落在同一個路徑：
+    覆蓋之後磁碟上只剩一份，但 `case.json` 的 `files[]` 仍宣稱有兩份——
+    那就是對承辦人虛報「這些卷證我都收到了」。寧可擋下來請人改名。
+    """
+    d = pathlib.Path(tempfile.mkdtemp())
+    try:
+        save_upload([("卷證/訴願書.txt", "甲（合成測資）".encode("utf-8")),
+                     ("訴願書.txt", "乙（合成測資）".encode("utf-8"))], uploads_dir=d)
+    except ValueError as e:
+        assert_in("訴願書.txt", str(e), "要講出是哪個檔名撞在一起")
+    else:
+        raise AssertionError("同名檔案會互相覆蓋、files[] 會虛報份數，必須拒絕")
+
+
+def test_n1_bedrock_refuses_pdf_visual_without_bytes():
+    """pdf_visual 卻沒有 bytes：直接 raise，不要送一份空的 PDF 給模型。
+
+    送 b"" 過去的話，模型「讀」的是一份不存在的文件，回來的欄位會被記成
+    input_route 裡的 pdf_visual——等於宣稱視覺讀過了。這是分層誠實違規（CONSTITUTION §1）。
+    """
+    calls = {"n": 0}
+
+    def fake_extract(document_text, *, pdf_documents=None, **kw):
+        calls["n"] += 1
+        raise AssertionError("空的 pdf_visual 不該走到模型呼叫")
+
+    fixture = {
+        "id": "upload-y", "files": [], "provenance": {"kind": "uploaded"},
+        "documents": [{"n": "scan.pdf", "kind": "pdf_visual", "text": "", "cjk_ratio": 0.0}],
+    }
+    orig = client.extract_intake
+    client.extract_intake = fake_extract
+    try:
+        n1_extract.run(
+            CaseState(case_id="upload-y", run_mode="bedrock"), NodeCtx(run_mode="bedrock"), case_fixture=fixture
+        )
+    except ValueError as e:
+        assert_in("scan.pdf", str(e), "要指名是哪一份卷證缺內容")
+    else:
+        raise AssertionError("pdf_visual 缺 bytes 必須 raise，不得送空檔案")
+    finally:
+        client.extract_intake = orig
+    assert_eq(calls["n"], 0, "不該呼叫到模型")
