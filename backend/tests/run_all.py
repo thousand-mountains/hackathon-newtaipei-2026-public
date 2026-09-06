@@ -6,8 +6,10 @@
 """
 from __future__ import annotations
 
+import ast
 import pathlib
 import re
+import subprocess
 import sys
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
@@ -110,8 +112,6 @@ def scan_prototype_dist_reproducible() -> list[str]:
     各說各話」。做法是實際跑一次 build.py 再比對位元組，跑完把原檔還原，
     不在測試裡留下副作用。
     """
-    import subprocess
-
     build = PROTOTYPE / "build.py"
     dist = PROTOTYPE / "dist" / "index.html"
     if not build.exists():
@@ -185,8 +185,6 @@ LLM_FORBIDDEN_NODES = ("n2_classify", "n3_procedure", "n4_retrieval", "n6_gate")
 
 def _imports_of(path: pathlib.Path) -> set[str]:
     """用 ast 抓一個檔案 import 的頂層模組名（含函式內的 import）。"""
-    import ast
-
     tree = ast.parse(path.read_text(encoding="utf-8"))
     out: set[str] = set()
     for node in ast.walk(tree):
@@ -233,6 +231,40 @@ def scan_llm_import_graph() -> list[str]:
     return problems
 
 
+def scan_top_level_imports() -> list[str]:
+    """backend/ 所有 import 必須在模組頂層（Claire 2026-09-07 拍板，spec D8）。
+
+    為什麼要有這條：函式內 import 是「這個相依只在某條分支才需要」的隱藏開關——
+    import 錯誤要跑到那條分支才炸，讀檔案的人也看不出模組真正依賴什麼。
+    第三方套件缺席要用**模組頂層的 try/except ImportError 守衛**表達，
+    缺什麼、缺了會怎樣，都寫在檔案開頭給人看見。
+
+    允許：模組層、模組層的 try/except／if 區塊內（第三方套件守衛）。
+    禁止：任何 FunctionDef／AsyncFunctionDef／ClassDef 內的 Import／ImportFrom。"""
+    problems: list[str] = []
+    for p in _scan_files():
+        if p.suffix != ".py":
+            continue
+        tree = ast.parse(p.read_text(encoding="utf-8"))
+
+        def walk(node: ast.AST, inside_def: bool, path: pathlib.Path = p) -> None:
+            for child in ast.iter_child_nodes(node):
+                if isinstance(child, (ast.Import, ast.ImportFrom)) and inside_def:
+                    problems.append(
+                        f"{path.relative_to(ROOT)}:{child.lineno}："
+                        f"import 在函式／類別內，必須放模組頂層（spec D8）"
+                    )
+                walk(
+                    child,
+                    inside_def
+                    or isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)),
+                    path,
+                )
+
+        walk(tree, False)
+    return problems
+
+
 def main() -> int:
     print("=" * 72)
     print("Phase 0 backend pipeline：統整測試")
@@ -262,6 +294,7 @@ def main() -> int:
         ("prototype/dist 可由 build.py 完全重現（不得手改建置產物）", scan_prototype_dist_reproducible),
         ("核心與測試路徑零外部依賴（具名例外：backend/api/、backend/llm/、backend/retrieval/kb.py）", scan_core_path_dependencies),
         ("N2/N3/N4/N6 無 LLM 依賴（ast 遞迴，含 strands）", scan_llm_import_graph),
+        ("所有 import 在模組頂層（spec D8）", scan_top_level_imports),
     ]
     for label, fn in checks:
         problems = fn()

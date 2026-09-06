@@ -33,6 +33,7 @@ from backend.config.settings import (
     load_snapshot,
     run_mode,
 )
+from backend.intake.uploads import list_upload_cases, load_upload_case
 from backend.nodes import n1_extract, n2_classify, n3_procedure, n4_retrieval, n5_draft, n6_gate
 from backend.orchestrator.narrative import (
     conclusion_block_criterion,
@@ -70,8 +71,6 @@ def load_case(case_id: str, data_dir: pathlib.Path | None = None) -> dict[str, A
       連 id 都不接受，避免有人把真實資料丟進來就跑得起來。
     """
     if case_id.startswith("upload-"):
-        from backend.intake.uploads import load_upload_case
-
         return load_upload_case(case_id)
     if not case_id.startswith("synthetic-"):
         raise ValueError(
@@ -87,8 +86,6 @@ def load_case(case_id: str, data_dir: pathlib.Path | None = None) -> dict[str, A
 
 def list_cases(data_dir: pathlib.Path | None = None) -> dict[str, list[str]]:
     """兩種來源分開列，不混成一份看不出差別的清單。"""
-    from backend.intake.uploads import list_upload_cases
-
     return {"synthetic": list_synthetic_cases(data_dir), "uploaded": list_upload_cases()}
 
 

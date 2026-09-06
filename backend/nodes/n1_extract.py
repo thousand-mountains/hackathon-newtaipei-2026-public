@@ -10,14 +10,19 @@
   **不吞掉改吐 fixture**——降級成重播而不講，就是最典型的分層誠實違規。
 - 其餘（如 `local`）：仍未實作，`ctx.require_fixture()` 明確 raise NotImplementedError。
 
-`backend.llm` 只在 bedrock 分支內 import：fixture 模式與測試路徑沒裝 strands 也要能跑。
+`backend.llm.client` 在模組頂層 import（spec 2026-09-07 D8）：它自己用 try/except
+守住 strands，沒裝也 import 得動，所以本檔不必把 import 藏進 bedrock 分支。
 兩條分支的輸出形狀相同（含 `data["generation"]` 說明這批欄位是怎麼來的）。
+
+註：N1 依賴 backend.llm 是設計如此；**零 LLM 依賴的紅線管的是 N2/N3/N4/N6**
+（CONSTITUTION §4，由 run_all 的 scan_llm_import_graph 把關），那四個節點都不 import N1。
 """
 from __future__ import annotations
 
 import time
 from typing import Any
 
+from backend.llm import client as llm_client
 from backend.orchestrator.state import CaseState, NodeCtx, NodeResult
 
 # 必填欄位與信心門檻（architecture §3.1）。門檻 0.80 是假設值，待真實資料實測校準。
@@ -70,8 +75,6 @@ def run(state: CaseState, ctx: NodeCtx, case_fixture: dict[str, Any] | None = No
                 pdfs.append((f"{i}-{name}", d.get("bytes") or b""))
             else:
                 text_parts.append(f"《{name}》\n{d.get('text') or ''}")
-        from backend.llm import client as llm_client  # 只有這個分支會 import（CONSTITUTION §4 的實作面）
-
         out = llm_client.extract_intake("\n\n".join(text_parts), pdf_documents=pdfs or None)  # LLMError 直接往上拋
         payload = {k: out[k] for k in ("intake", "conf", "quotes", "facts_excerpt")}
         generation = {

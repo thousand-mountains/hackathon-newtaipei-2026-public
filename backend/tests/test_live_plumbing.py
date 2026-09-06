@@ -2,9 +2,28 @@
 from __future__ import annotations
 
 import os
+import pathlib
+import tempfile
 from contextlib import contextmanager
 
+import backend.intake.uploads as up
 from backend.config import settings
+from backend.intake.documents import CJK_RATIO_THRESHOLD, cjk_ratio, route_documents
+from backend.intake.uploads import (
+    MAX_BYTES,
+    list_upload_cases,
+    load_upload_case,
+    save_upload,
+)
+from backend.llm import client
+from backend.nodes import n1_extract
+from backend.orchestrator.graph import (
+    digest_from_state,
+    list_synthetic_cases,
+    load_case,
+    run_case,
+)
+from backend.orchestrator.state import CaseState, NodeCtx
 from backend.tests.harness import assert_eq, assert_in, assert_true
 
 
@@ -64,8 +83,6 @@ def _fake_extraction() -> dict:
 
 
 def test_extract_intake_reshapes_structured_result():
-    from backend.llm import client
-
     def fake(system, user, schema_name, tools=None, model_kind="extract", **kw):
         assert_eq(schema_name, "ExtractionResult")
         assert_in("訴願書全文", user)
@@ -87,8 +104,6 @@ def test_extract_intake_reshapes_structured_result():
 
 
 def test_extract_intake_rejects_unknown_service_method():
-    from backend.llm import client
-
     bad = _fake_extraction()
     bad["service_method"]["value"] = "by_pigeon"
     orig = client._invoke_structured
@@ -106,8 +121,6 @@ def test_extract_intake_rejects_unknown_service_method():
 
 
 def test_draft_sentences_filters_cite_ids_outside_context():
-    from backend.llm import client
-
     def fake(system, user, schema_name, tools=None, model_kind="draft", **kw):
         assert_eq(schema_name, "DraftResult")
         return {
@@ -134,8 +147,6 @@ def test_draft_sentences_filters_cite_ids_outside_context():
 
 
 def test_client_raises_llm_error_after_retries():
-    from backend.llm import client
-
     calls = {"n": 0}
 
     def boom(*a, **k):
@@ -159,8 +170,6 @@ def test_client_raises_llm_error_after_retries():
 
 def test_extract_intake_passes_pdf_documents_as_attachments():
     """Task 3b：掃描件走視覺讀——PDF 原樣往下傳，且提示模型讀附件。"""
-    from backend.llm import client
-
     seen: dict = {}
 
     def fake(system, user, schema_name, tools=None, model_kind="extract", attachments=None, **kw):
@@ -182,8 +191,6 @@ def test_extract_intake_passes_pdf_documents_as_attachments():
 
 def test_safe_doc_name_keeps_only_bedrock_allowed_characters():
     """Bedrock document 區塊的 name 只收英數／空白／連字號／括號。"""
-    from backend.llm import client
-
     assert_eq(client._safe_doc_name("原處分書.pdf"), "_____pdf")  # 4 個中文字 + 1 個點
     assert_eq(client._safe_doc_name("case (1) [a].pdf"), "case (1) [a]_pdf")
     assert_eq(client._safe_doc_name("原"), "_")
@@ -196,8 +203,6 @@ def test_load_model_openai_requires_explicit_model_id():
 
     檢查排在 import 之前，才會在**沒裝 strands 的機器**上吐出「缺哪個變數」而不是 ModuleNotFoundError。
     """
-    from backend.llm import client
-
     with env(MODEL_PROVIDER="openai", OPENAI_API_KEY="k", OPENAI_MODEL_ID=None):
         try:
             client._load_model("extract")
@@ -208,8 +213,6 @@ def test_load_model_openai_requires_explicit_model_id():
 
 
 def test_load_model_bedrock_reports_missing_settings_before_importing_strands():
-    from backend.llm import client
-
     with env(MODEL_PROVIDER=None, BEDROCK_MODEL_ID_EXTRACT=None, AWS_REGION="r"):
         try:
             client._load_model("extract")
@@ -221,8 +224,6 @@ def test_load_model_bedrock_reports_missing_settings_before_importing_strands():
 
 def test_extract_intake_rejects_non_integer_transit_days_without_retrying():
     """值域錯誤是模型輸出不合格，不是暫時性失敗——直接 LLMError，不燒重試額度。"""
-    from backend.llm import client
-
     bad = _fake_extraction()
     bad["transit_days"]["value"] = "七日"
     calls = {"n": 0}
@@ -252,12 +253,10 @@ def test_extract_intake_rejects_non_integer_transit_days_without_retrying():
 
 
 def _ordinary_fixture():
-    from backend.orchestrator.graph import load_case
     return load_case("synthetic-ordinary-01")
 
 
 def test_synthetic_cases_carry_documents_text():
-    from backend.orchestrator.graph import list_synthetic_cases, load_case
     for cid in list_synthetic_cases():
         fx = load_case(cid)
         docs = fx.get("documents") or []
@@ -268,10 +267,6 @@ def test_synthetic_cases_carry_documents_text():
 
 
 def test_n1_bedrock_branch_uses_client_and_marks_origin_llm():
-    from backend.llm import client
-    from backend.nodes import n1_extract
-    from backend.orchestrator.state import CaseState, NodeCtx
-
     seen = {}
 
     def fake_extract(document_text, **kw):
@@ -302,10 +297,6 @@ def test_n1_bedrock_branch_uses_client_and_marks_origin_llm():
 
 
 def test_n1_bedrock_branch_propagates_llm_error():
-    from backend.llm import client
-    from backend.nodes import n1_extract
-    from backend.orchestrator.state import CaseState, NodeCtx
-
     orig = client.extract_intake
     client.extract_intake = lambda *a, **k: (_ for _ in ()).throw(client.LLMError("boom"))
     try:
@@ -321,8 +312,6 @@ def test_n1_bedrock_branch_propagates_llm_error():
 
 
 def test_n1_still_raises_for_unknown_mode():
-    from backend.nodes import n1_extract
-    from backend.orchestrator.state import CaseState, NodeCtx
     try:
         n1_extract.run(CaseState(case_id="x", run_mode="local"), NodeCtx(run_mode="local"), case_fixture=_ordinary_fixture())
     except NotImplementedError:
@@ -336,10 +325,6 @@ def test_n1_still_raises_for_unknown_mode():
 
 
 def test_cjk_ratio_and_routing_with_injected_extractor():
-    import pathlib
-    import tempfile
-
-    from backend.intake.documents import CJK_RATIO_THRESHOLD, cjk_ratio, route_documents
 
     assert_true(cjk_ratio("訴願人於農地露天燃燒") > 0.9)
     assert_true(cjk_ratio("abc def 123") == 0.0)
@@ -358,10 +343,6 @@ def test_cjk_ratio_and_routing_with_injected_extractor():
 
 
 def test_save_and_load_upload_case_shape_and_prefix():
-    import pathlib
-    import tempfile
-
-    from backend.intake.uploads import list_upload_cases, load_upload_case, save_upload
 
     d = pathlib.Path(tempfile.mkdtemp())
     meta = save_upload([("訴願書.txt", "訴願書全文（合成）".encode("utf-8"))], uploads_dir=d)
@@ -377,10 +358,6 @@ def test_save_and_load_upload_case_shape_and_prefix():
 
 
 def test_save_upload_rejects_bad_suffix_and_oversize():
-    import pathlib
-    import tempfile
-
-    from backend.intake.uploads import MAX_BYTES, save_upload
 
     d = pathlib.Path(tempfile.mkdtemp())
     for files in ([("x.docx", b"1")], [("x.pdf", b"0" * (MAX_BYTES + 1))]):
@@ -393,8 +370,6 @@ def test_save_upload_rejects_bad_suffix_and_oversize():
 
 
 def test_load_case_dispatches_on_prefix():
-    from backend.orchestrator.graph import load_case
-
     assert_eq(load_case("synthetic-ordinary-01")["id"], "synthetic-ordinary-01")
     for bad in ("real-123", "upload-does-not-exist"):
         try:
@@ -406,16 +381,9 @@ def test_load_case_dispatches_on_prefix():
 
 
 def test_upload_case_in_fixture_mode_is_refused_honestly():
-    import pathlib
-    import tempfile
-
-    from backend.intake.uploads import save_upload
-    from backend.orchestrator.graph import run_case
 
     d = pathlib.Path(tempfile.mkdtemp())
     meta = save_upload([("訴願書.txt", "訴願書全文（合成）".encode("utf-8"))], uploads_dir=d)
-    import backend.intake.uploads as up
-
     orig = up.UPLOADS_DIR
     up.UPLOADS_DIR = d
     try:
@@ -430,10 +398,6 @@ def test_upload_case_in_fixture_mode_is_refused_honestly():
 
 
 def test_n1_bedrock_passes_pdf_visual_docs_as_attachments():
-    from backend.llm import client
-    from backend.nodes import n1_extract
-    from backend.orchestrator.state import CaseState, NodeCtx
-
     seen = {}
 
     def fake_extract(document_text, *, pdf_documents=None, **kw):
@@ -472,9 +436,6 @@ def test_n1_bedrock_passes_pdf_visual_docs_as_attachments():
 
 
 def test_n2_n3_digest_falls_back_to_n1_output():
-    from backend.orchestrator.graph import digest_from_state
-    from backend.orchestrator.state import CaseState
-
     st = CaseState(case_id="upload-x", run_mode="bedrock")
     st.facts_excerpt = [{"text": "訴願人於農地露天燃燒稻稈。"}, {"text": "經稽查查獲。"}]
     st.intake = {"note": "主張未收受處分書"}

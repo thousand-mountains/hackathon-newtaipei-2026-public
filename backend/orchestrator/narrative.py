@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from backend.config import settings
 from backend.config.settings import AGENTS_NARRATIVE
 
 PLACEHOLDER_CONCLUSION_TEXT = "（結論段由承辦人判斷後填寫）"
@@ -218,8 +219,6 @@ def conclusion_block_criterion(
     （fail-safe → substantive → 高風險爭點），這樣「哪一條才是操作判準」才會講對。
     漂移由契約測試釘住：`blocked` 必須等於 `screen.requires_human_conclusion`。
     """
-    from backend.config import settings
-
     art77 = screen.get("art77") or {}
     fact_issues = screen.get("fact_issues") or []
     case_type = ((classification or {}).get("class") or {}).get("case_type") or ""

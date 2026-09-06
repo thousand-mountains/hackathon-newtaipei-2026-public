@@ -1,19 +1,40 @@
 """唯一允許 import strands 的檔案（spec 2026-09-07 D1）。
 
 對外只有三個函式：extract_intake()、draft_sentences()、model_ids()。
-strands／pydantic／boto3 的 import 全部在函式內——fixture 模式與測試路徑永遠不會觸碰它們，
-所以一台只裝了 python3 的機器也 import 得動本檔（模組頂層只有 stdlib 與 backend.config.settings）。
+strands／pydantic 的 import 全部在**模組頂層**，用 try/except ImportError 守衛
+（spec 2026-09-07 D8）：一台只裝了 python3 的機器仍然 import 得動本檔，缺席的名字
+變成 None，由呼叫點吐 LLMError 說清楚缺什麼。**不准把 import 藏回函式內**——
+那樣讀檔案的人看不出這個模組到底依賴什麼，錯誤也要跑到某條分支才炸。
 測試接縫是 _invoke_structured()：節點測試與本檔測試都只 monkeypatch 它。
 """
 from __future__ import annotations
 
 import json
+import os
 import pathlib
 import re
 import time
 from typing import Any, Callable
 
 from backend.config import settings
+
+try:
+    from strands import Agent, tool
+    from strands.models.bedrock import BedrockModel
+except ImportError:  # 未安裝 strands：fixture 模式與測試路徑不需要它，缺時於呼叫點 raise LLMError
+    Agent = tool = BedrockModel = None
+try:
+    from strands.models.openai import OpenAIModel
+except ImportError:  # openai 分支只供開發期調 prompt，缺 extra 也不該擋住整個模組
+    OpenAIModel = None
+try:
+    from backend.llm import schemas
+except ImportError:  # pydantic 未安裝
+    schemas = None
+
+_STRANDS_MISSING = (
+    "strands 未安裝：RUN_MODE=bedrock 需要 pip install strands-agents（見 requirements.txt）"
+)
 
 PROMPTS = pathlib.Path(__file__).parent / "prompts"
 INTAKE_FIELDS = (
@@ -54,13 +75,11 @@ def _safe_doc_name(name: str) -> str:
 def _load_model(model_kind: str):
     """MODEL_PROVIDER=bedrock（預設）| openai。region 與 model id 一律顯式帶入。
 
-    **設定檢查一律排在 import strands 之前**：這樣在沒裝 strands 的機器上，
-    設定漏了會吐「缺哪個環境變數」，而不是一句無關的 ModuleNotFoundError。
+    **設定檢查一律排在碰 strands 之前**：這樣在沒裝 strands 的機器上，
+    設定漏了會吐「缺哪個環境變數」，而不是一句無關的「strands 未安裝」。
     """
     provider = settings.model_provider()
     if provider == "openai":
-        import os
-
         model_id = os.environ.get("OPENAI_MODEL_ID")
         if not model_id:
             # 刻意不給預設 model id：程式不得出現任何 model id 的實際值，
@@ -69,8 +88,8 @@ def _load_model(model_kind: str):
         if not os.environ.get("OPENAI_API_KEY"):
             raise LLMError("MODEL_PROVIDER=openai 需要環境變數 OPENAI_API_KEY")
 
-        from strands.models.openai import OpenAIModel
-
+        if OpenAIModel is None:
+            raise LLMError(_STRANDS_MISSING)
         return OpenAIModel(
             client_args={"api_key": os.environ["OPENAI_API_KEY"]},
             model_id=model_id,
@@ -81,8 +100,8 @@ def _load_model(model_kind: str):
     if not model_id or not region:
         raise LLMError(f"缺 BEDROCK_MODEL_ID_{model_kind.upper()} 或 AWS_REGION（見 .env.example）")
 
-    from strands.models.bedrock import BedrockModel
-
+    if BedrockModel is None:
+        raise LLMError(_STRANDS_MISSING)
     return BedrockModel(model_id=model_id, region_name=region, temperature=0.0, max_tokens=8000)
 
 
@@ -94,10 +113,8 @@ def _invoke_structured(system: str, user: str, schema_name: str, tools: list | N
     attachments 是 [(檔名, PDF bytes)]；有值時 prompt 改成內容區塊清單，讓模型直接讀頁面
     （掃描件沒有文字層，只能走視覺讀）。
     """
-    from strands import Agent
-
-    from backend.llm import schemas
-
+    if Agent is None or schemas is None:
+        raise LLMError(_STRANDS_MISSING if Agent is None else "pydantic 未安裝：結構化輸出 schema 載不起來")
     schema = getattr(schemas, schema_name)
     agent = Agent(model=_load_model(model_kind), system_prompt=system, tools=tools or [], callback_handler=None)
     prompt: Any = user
@@ -191,7 +208,8 @@ def draft_sentences(context: dict, slots: list[str], retrieve_fn: Callable[[str]
     tool_calls: list[dict] = []
     tools: list = []
     if retrieve_fn is not None:
-        from strands import tool
+        if tool is None:
+            raise LLMError(_STRANDS_MISSING)
 
         @tool
         def retrieve_refs(query: str) -> str:

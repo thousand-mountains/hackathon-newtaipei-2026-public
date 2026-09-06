@@ -49,6 +49,12 @@ from fastapi.responses import FileResponse, JSONResponse  # noqa: E402
 from fastapi.staticfiles import StaticFiles  # noqa: E402
 from pydantic import BaseModel  # noqa: E402
 
+try:  # spec D8：import 一律模組頂層。uvicorn 只有「直接執行本檔」才用得到，
+    # 缺它不該讓 `import backend.api.app` 失敗（官方啟動指令走 `python -m uvicorn`）。
+    import uvicorn  # noqa: E402
+except ImportError:
+    uvicorn = None
+
 from backend.config import settings  # noqa: E402
 from backend.config.settings import PROVENANCE, load_snapshot, run_mode  # noqa: E402
 from backend.engine.deadline import compute  # noqa: E402
@@ -387,6 +393,10 @@ if FRONTEND_DIST.is_dir():
 
 
 if __name__ == "__main__":
-    import uvicorn
-
+    if uvicorn is None:
+        raise SystemExit(
+            "uvicorn 未安裝。官方啟動指令見本檔開頭的 DEPLOY 說明："
+            'uv run --with fastapi --with "uvicorn[standard]" --with pydantic '
+            "--with python-multipart -- python -m uvicorn backend.api.app:app"
+        )
     uvicorn.run(app, host="127.0.0.1", port=8080)

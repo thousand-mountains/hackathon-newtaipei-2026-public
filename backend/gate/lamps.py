@@ -16,6 +16,7 @@ import re
 from typing import Any
 
 from backend.config.origin_registry import TIER_HUMAN, TIER_SOURCED, TIER_VERIFIABLE
+from backend.config.settings import UNCONFIRMED_INTAKE_SIGNAL
 from backend.gate.citations import (
     STATE_AMENDED,
     STATE_MISSING,
@@ -164,8 +165,6 @@ def requires_human_conclusion(
     # 所以：**只要是靠未確認的抽取欄位算出來的程序結論，就不准拿它解除封鎖。**
     unconfirmed_procedural_unlock = bool(art77.get("clause")) and not procedural_inputs_confirmed
     if unconfirmed_procedural_unlock:
-        from backend.config.settings import UNCONFIRMED_INTAKE_SIGNAL
-
         signals.append(
             UNCONFIRMED_INTAKE_SIGNAL.format(fields="、".join(unconfirmed_fields) or "（未指明）")
         )

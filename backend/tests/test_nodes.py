@@ -20,11 +20,12 @@ from backend.gate.citations import (
     STATE_OUT_OF_SCOPE,
     CitationChecker,
 )
-from backend.gate.lamps import lamp_for_states, requires_human_conclusion
+from backend.engine.deadline import compute
+from backend.gate.lamps import detect_conclusion_like, lamp_for_states, requires_human_conclusion
 from backend.nodes import n1_extract, n2_classify, n3_procedure, n4_retrieval, n5_draft, n6_gate
 from backend.orchestrator.state import CaseState, NodeCtx
 from backend.retrieval.base import UnavailableRetriever
-from backend.retrieval.lawtable import LawTableRetriever
+from backend.retrieval.lawtable import LawTableRetriever, cn_to_int
 from backend.tests.harness import assert_eq, assert_in, assert_true
 
 SNAPSHOT = load_snapshot()
@@ -122,8 +123,6 @@ def test_n2_returns_unknown_when_no_signal():
 # ── N3 程序審查 ────────────────────────────────────────────────────
 def test_n3_deadline_matches_engine_directly():
     """薄殼不得改寫引擎結果：N3 的輸出必須等於直接呼叫 engine.compute。"""
-    from backend.engine.deadline import compute
-
     state = CaseState(case_id="synthetic-unit-01")
     state.intake = {"service_method": "deposit", "d2": "2024-06-13", "d3": "2024-07-20"}
     state.classification = {"class": {"case_type": "違反空氣污染防制法事件"}}
@@ -435,8 +434,6 @@ def test_anaphoric_law_reference_resolves_to_antecedent():
 
 def test_anaphora_without_antecedent_is_visible_not_silent():
     """找不到前行詞時不猜是哪部法，但也不能靜靜放過——要留在畫面上是黃的。"""
-    from backend.gate.lamps import lamp_for_states
-
     ck = CitationChecker(SNAPSHOT)
     r = ck.check_text("又同法第999條亦有明文。")
     assert_eq(len(r), 1, "沒有前行詞的回指仍要被抽出來，不得整個消失")
@@ -461,8 +458,6 @@ def test_chinese_numeral_articles_are_detected():
 
 
 def test_cn_numeral_parser():
-    from backend.retrieval.lawtable import cn_to_int
-
     for s, want in [("七十三", 73), ("九百九十九", 999), ("十四", 14), ("二十", 20),
                     ("一百零五", 105), ("一百", 100), ("五", 5), ("一百零一", 101)]:
         assert_eq(cn_to_int(s), want, f"國字數字 {s} 轉換錯誤")
@@ -506,8 +501,6 @@ def test_law_name_split_by_whitespace_still_detected():
 
 
 def test_conclusion_like_text_detection():
-    from backend.gate.lamps import detect_conclusion_like
-
     assert_true(
         detect_conclusion_like("綜上，原處分認事用法均有違誤，應予撤銷，由原處分機關另為適法之處分。"),
         "主文型語句必須被偵測到",

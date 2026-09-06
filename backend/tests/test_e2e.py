@@ -8,7 +8,10 @@ from __future__ import annotations
 
 import json
 import pathlib
+import tempfile
 
+from backend import cli
+from backend.config.origin_registry import check_payload
 from backend.config.settings import (
     BLOCK_DECISION_INPUT_FIELDS,
     CONFIRMABLE_INTAKE_FIELDS,
@@ -99,8 +102,6 @@ def test_origin_violation_checker_actually_catches_violations():
     這條測試反過來驗**檢查器本身**——餵它一份違規 payload，它必須抓到。
     檢查器抓不到違規時，「零違規」這個結果就沒有意義。
     """
-    from backend.config.origin_registry import check_payload
-
     clean = {"doc": [{"ss": [{"id": "s1", "origin": "llm", "l_origin": "rule", "why_origin": "rule"}]}]}
     assert_eq(check_payload(clean), [], "合規的 payload 不該被誤報")
 
@@ -121,8 +122,6 @@ def test_origin_violation_checker_actually_catches_violations():
 # 所以同一個案例現在有兩個基準，兩個都要測。
 def _write_tmp_case(case_id: str, fixture: dict) -> pathlib.Path:
     """把一份改過的 fixture 寫進暫存目錄，回傳可餵給 `run_case(data_dir=...)` 的路徑。"""
-    import tempfile
-
     tmp = pathlib.Path(tempfile.mkdtemp())
     (tmp / f"{case_id}.json").write_text(json.dumps(fixture, ensure_ascii=False), encoding="utf-8")
     return tmp
@@ -402,10 +401,6 @@ def test_conclusion_block_cannot_be_bypassed_via_reasoning_slot():
 
     這條測試直接複現那個攻擊：把主文句塞進 reasoning，斷言必須被擋下來。
     """
-    import json
-    import pathlib
-    import tempfile
-
     fx = load_case(BLOCKED)
     fx["draft_fixture"]["reasoning"].append(
         {
@@ -503,8 +498,6 @@ def test_degradation_is_always_visible():
 
 
 def test_cli_exit_codes():
-    from backend import cli
-
     assert_eq(cli.main(["--case", ORDINARY, "--quiet"]), 0, "正常案例 CLI 必須 exit 0")
     assert_eq(cli.main(["--case", BLOCKED, "--quiet"]), 0, "對抗案例流程本身跑完，也是 exit 0（攔下是正確行為）")
     assert_eq(cli.main(["--case", "synthetic-does-not-exist"]), 1, "找不到案例要 exit 1")

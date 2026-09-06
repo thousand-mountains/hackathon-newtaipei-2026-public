@@ -12,6 +12,7 @@
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import pathlib
 import re
@@ -25,9 +26,10 @@ from backend.gate.citations import (
     STATE_OK,
     STATE_OUT_OF_SCOPE,
     STATE_UNPARSEABLE,
+    Citation,
     CitationChecker,
 )
-from backend.gate.lamps import detect_conclusion_like, normalize_for_structure
+from backend.gate.lamps import WHY_RECORD, detect_conclusion_like, normalize_for_structure
 from backend.nodes import n6_gate
 from backend.orchestrator.graph import build_payload, load_case, run_case
 from backend.orchestrator.state import CaseState, NodeCtx
@@ -617,10 +619,8 @@ def test_draft_citation_without_stable_key_fails_loudly():
     state.screen["requires_human_conclusion"] = False
     state.retrieval = {"laws": [], "cases": [], "retrieval_meta": {}}
     # 直接注入一個抽得到、卻組不出鍵的法條引用（條號解析不出來的情形）
-    import backend.nodes.n6_gate as _n6
-    from backend.gate.citations import Citation
-    orig = _n6.CitationChecker.check_text
-    _n6.CitationChecker.check_text = lambda self, text: (
+    orig = n6_gate.CitationChecker.check_text
+    n6_gate.CitationChecker.check_text = lambda self, text: (
         [Citation(raw="建築法", kind="law", state="out_of_scope", lamp="y",
                   note="條號無法解析", payload={"law": "建築法", "article": None})]
         if "建築法" in text else []
@@ -628,7 +628,7 @@ def test_draft_citation_without_stable_key_fails_loudly():
     try:
         n6_gate.run(state, _ctx())
     finally:
-        _n6.CitationChecker.check_text = orig
+        n6_gate.CitationChecker.check_text = orig
     assert_true(
         any(b["reason"] == "citation_not_keyed" for b in state.gate["blockers"]),
         "草稿引用組不出穩定鍵時必須具名列出，不得靜默通過",
@@ -1043,8 +1043,6 @@ def test_record_why_does_not_claim_unverified_verbatim_fidelity():
     原文寫「卷證原文直錄，未經改寫或生成」——但 `facts_excerpt` 由 N1（live 檔位是 LLM）
     透傳，全流程沒有任何一處把它與來源文件逐字比對。這是**具體的事實宣稱**，不能亂講。
     """
-    from backend.gate.lamps import WHY_RECORD
-
     assert_true("未經改寫" not in WHY_RECORD, "不得宣稱未經改寫——系統無從擔保")
     assert_true("逐字比對" in WHY_RECORD or "覆核原文" in WHY_RECORD, "必須把限制講出來")
 
@@ -1075,9 +1073,6 @@ def test_empty_draft_is_not_submittable():
     覆核實測：把 reasoning／conclusion／facts 全清空 → 0 blockers → submit_allowed=True，
     畫面同時掛著一句紅燈的「未擷取到事實段」佔位句。空文件不是通過，是沒東西可審。
     """
-    import json
-    import tempfile
-
     fx = load_case(ORDINARY)
     fx["draft_fixture"]["reasoning"] = []
     fx["draft_fixture"]["conclusion"] = []
@@ -1337,8 +1332,6 @@ def test_pipeline_is_still_deterministic():
     分析結果本身沒有變——但原本的寫法看不出這件事，只會說「跑 5 次不一致」。
     現在先把差異列出來再判斷，訊息裡直接指出是哪個路徑。
     """
-    import hashlib
-
     for case_id in (ORDINARY, BLOCKED):
         a = _leaf_paths(build_payload(run_case(case_id, mode="fixture")))
         b = _leaf_paths(build_payload(run_case(case_id, mode="fixture")))

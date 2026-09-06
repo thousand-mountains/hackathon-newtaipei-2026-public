@@ -25,7 +25,9 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from backend.config.origin_registry import ORIGIN_TO_TIER, registered_origin  # noqa: E402
+from backend.config.settings import SUBSTANTIVE_TYPES  # noqa: E402
 from backend.orchestrator.graph import build_payload, list_synthetic_cases, run_case  # noqa: E402
+from backend.orchestrator.narrative import conclusion_block_criterion  # noqa: E402
 from backend.tests.harness import assert_eq, assert_in, assert_true  # noqa: E402
 
 CASES = ("synthetic-ordinary-01", "synthetic-blocked-01")
@@ -449,9 +451,6 @@ def test_fact_issue_is_not_presented_as_the_blocking_reason_when_it_is_not() -> 
     1. 本案的 `reason_id` 是程序判準，不是爭點；
     2. 拿掉爭點後 `blocked` 仍為 True（證明爭點在本案確實不是操作條件）。
     """
-    from backend.config.settings import SUBSTANTIVE_TYPES
-    from backend.orchestrator.narrative import conclusion_block_criterion
-
     p = payload("synthetic-blocked-01")
     criterion = p["handoff"]["criterion"]
     assert_eq(
