@@ -244,3 +244,88 @@ def test_extract_intake_rejects_non_integer_transit_days_without_retrying():
     finally:
         client._invoke_structured = orig
     assert_eq(calls["n"], 1, "值域錯誤不得進重試")
+
+
+# ── Task 3：合成案例 documents ＋ N1 三向分流 ─────────────────────
+# bedrock 分支的測試一律 monkeypatch `client.extract_intake`（唯一接縫），
+# 所以不裝 strands、沒有憑證也能跑；跑的是分流、卷證餵入與錯誤傳遞。
+
+
+def _ordinary_fixture():
+    from backend.orchestrator.graph import load_case
+    return load_case("synthetic-ordinary-01")
+
+
+def test_synthetic_cases_carry_documents_text():
+    from backend.orchestrator.graph import list_synthetic_cases, load_case
+    for cid in list_synthetic_cases():
+        fx = load_case(cid)
+        docs = fx.get("documents") or []
+        assert_true(len(docs) >= 1, f"{cid} 缺 documents")
+        joined = "".join(d["text"] for d in docs)
+        for ex in fx["extraction"].get("facts_excerpt", []):
+            assert_in(ex["text"], joined, f"{cid} 的 facts_excerpt 必須逐字出現在 documents 內")
+
+
+def test_n1_bedrock_branch_uses_client_and_marks_origin_llm():
+    from backend.llm import client
+    from backend.nodes import n1_extract
+    from backend.orchestrator.state import CaseState, NodeCtx
+
+    seen = {}
+
+    def fake_extract(document_text, **kw):
+        seen["text"] = document_text
+        e = _fake_extraction()
+        return {
+            "intake": {k: e[k]["value"] for k in client.INTAKE_FIELDS},
+            "conf": {k: e[k]["conf"] for k in client.INTAKE_FIELDS},
+            "quotes": {k: e[k]["quote"] for k in client.INTAKE_FIELDS},
+            "facts_excerpt": e["facts_excerpt"],
+            "usage": {"input_tokens": 1, "output_tokens": 1},
+            "model_id": "model-x",
+        }
+
+    orig = client.extract_intake
+    client.extract_intake = fake_extract
+    try:
+        state = CaseState(case_id="synthetic-ordinary-01", run_mode="bedrock")
+        r = n1_extract.run(state, NodeCtx(run_mode="bedrock"), case_fixture=_ordinary_fixture())
+    finally:
+        client.extract_intake = orig
+    assert_in("寄存於轄區派出所", seen["text"], "卷證全文必須餵給模型")
+    assert_eq(state.intake_origin["d2"], "llm")
+    assert_eq(state.intake["service_method"], "deposit")
+    assert_eq(r.data["generation"]["model_id"], "model-x")
+    assert_true(not any("fixture" in log[0] or "重播" in log[0] for log in r.narrative["clerk"]["logs"]),
+                "bedrock 分支的敘述不得再說自己是重播")
+
+
+def test_n1_bedrock_branch_propagates_llm_error():
+    from backend.llm import client
+    from backend.nodes import n1_extract
+    from backend.orchestrator.state import CaseState, NodeCtx
+
+    orig = client.extract_intake
+    client.extract_intake = lambda *a, **k: (_ for _ in ()).throw(client.LLMError("boom"))
+    try:
+        try:
+            n1_extract.run(CaseState(case_id="x", run_mode="bedrock"), NodeCtx(run_mode="bedrock"),
+                           case_fixture=_ordinary_fixture())
+        except client.LLMError:
+            pass
+        else:
+            raise AssertionError("LLMError 必須往上拋，不得吞掉改吐 fixture")
+    finally:
+        client.extract_intake = orig
+
+
+def test_n1_still_raises_for_unknown_mode():
+    from backend.nodes import n1_extract
+    from backend.orchestrator.state import CaseState, NodeCtx
+    try:
+        n1_extract.run(CaseState(case_id="x", run_mode="local"), NodeCtx(run_mode="local"), case_fixture=_ordinary_fixture())
+    except NotImplementedError:
+        pass
+    else:
+        raise AssertionError("local 模式仍未實作，必須 raise")

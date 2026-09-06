@@ -1,12 +1,17 @@
-"""N1 抽取節點（LLM 位置，Phase 0 為 fixture 重播）。
+"""N1 抽取節點（LLM 位置：fixture 重播 / bedrock 即時抽取 兩條分支）。
 
-紅線（CONSTITUTION §1）：
-`RUN_MODE != "fixture"` 時**明確 raise NotImplementedError**，絕不靜默回一份
-看起來像模型抽出來、其實是寫死的資料。fixture 模式下每個欄位都標 `origin="llm"`
-並附信心值，讓下游與 UI 知道這是「模型讀出來的」而不是「人填的」。
+紅線（CONSTITUTION §1）：這個節點永遠不准靜默回一份看起來像模型抽出來、
+其實是寫死的資料。三向分流各自說清楚自己是什麼：
 
-fixture 模式的誠實限制：這個檔位是重播，`conf` 是 fixture 裡寫好的數字，
-不是本次執行實際量到的信心，`narrative` 會把這件事寫出來。
+- `fixture`：重播合成案例的 `extraction` 區塊。`conf` 是 fixture 裡寫好的數字，
+  不是本次執行實際量到的信心，`narrative` 會把這件事寫出來。
+- `bedrock`：把 `case_fixture["documents"]` 的卷證全文餵給
+  `backend.llm.client.extract_intake`。失敗直接往上拋 `LLMError`，
+  **不吞掉改吐 fixture**——降級成重播而不講，就是最典型的分層誠實違規。
+- 其餘（如 `local`）：仍未實作，`ctx.require_fixture()` 明確 raise NotImplementedError。
+
+`backend.llm` 只在 bedrock 分支內 import：fixture 模式與測試路徑沒裝 strands 也要能跑。
+兩條分支的輸出形狀相同（含 `data["generation"]` 說明這批欄位是怎麼來的）。
 """
 from __future__ import annotations
 
@@ -22,18 +27,58 @@ CONF_THRESHOLD = 0.80
 
 def run(state: CaseState, ctx: NodeCtx, case_fixture: dict[str, Any] | None = None) -> NodeResult:
     started = time.perf_counter()
-    ctx.require_fixture("N1 抽取節點")
-
     if case_fixture is None:
-        raise ValueError("N1 fixture 模式需要 case_fixture（合成案例檔內容）")
-    extraction = case_fixture.get("extraction")
-    if not extraction:
-        raise ValueError(f"合成案例 {case_fixture.get('id')!r} 缺 extraction 區塊")
+        raise ValueError("N1 需要 case_fixture（合成案例檔內容）")
 
-    intake: dict[str, Any] = dict(extraction.get("intake", {}))
-    conf: dict[str, float] = dict(extraction.get("conf", {}))
-    quotes: dict[str, Any] = dict(extraction.get("quotes", {}))
-    facts_excerpt: list[dict[str, Any]] = list(extraction.get("facts_excerpt", []))
+    if ctx.run_mode == "fixture":
+        extraction = case_fixture.get("extraction")
+        if not extraction:
+            raise ValueError(f"合成案例 {case_fixture.get('id')!r} 缺 extraction 區塊")
+        payload = {
+            "intake": dict(extraction.get("intake", {})),
+            "conf": dict(extraction.get("conf", {})),
+            "quotes": dict(extraction.get("quotes", {})),
+            "facts_excerpt": list(extraction.get("facts_excerpt", [])),
+        }
+        generation = {"mode": "fixture_replay", "model_id": None, "usage": None}
+        mode_log = ["離線重播（fixture）：信心值為合成案例既有標註，非本次實測", "y"]
+    elif ctx.run_mode == "bedrock":
+        docs = case_fixture.get("documents") or []
+        if not docs:
+            raise ValueError(
+                f"合成案例 {case_fixture.get('id')!r} 缺 documents 區塊（bedrock 模式需要卷證全文）"
+            )
+        document_text = "\n\n".join(f"《{d['n']}》\n{d['text']}" for d in docs)
+        from backend.llm import client as llm_client  # 只有這個分支會 import（CONSTITUTION §4 的實作面）
+
+        out = llm_client.extract_intake(document_text)  # LLMError 直接往上拋
+        payload = {k: out[k] for k in ("intake", "conf", "quotes", "facts_excerpt")}
+        generation = {"mode": "bedrock_live", "model_id": out["model_id"], "usage": out["usage"]}
+        mode_log = [f"模型即時抽取：{out['model_id']}，信心值為模型自報", ""]
+    else:
+        ctx.require_fixture("N1 抽取節點")  # 維持既有 raise 訊息
+        raise AssertionError("unreachable")
+
+    return _finish(state, started, payload, generation, mode_log)
+
+
+def _finish(
+    state: CaseState,
+    started: float,
+    payload: dict[str, Any],
+    generation: dict[str, Any],
+    mode_log: list[str],
+    extra_logs: list[list[str]] | None = None,
+) -> NodeResult:
+    """兩條分支共用的收尾：寫 state、算降級、組 NodeResult。
+
+    `extra_logs` 讓呼叫端補幾行只有該分支說得出來的敘述（例如卷證來源路由），
+    接在既有 log 之後，不影響共用的三行。
+    """
+    intake = payload["intake"]
+    conf = payload["conf"]
+    quotes = payload["quotes"]
+    facts_excerpt = payload["facts_excerpt"]
 
     low_conf = [f for f in REQUIRED_FIELDS if conf.get(f, 0.0) < CONF_THRESHOLD]
     missing = [f for f in REQUIRED_FIELDS if f not in intake or intake.get(f) in (None, "")]
@@ -64,6 +109,8 @@ def run(state: CaseState, ctx: NodeCtx, case_fixture: dict[str, Any] | None = No
             "facts_excerpt": facts_excerpt,
             # 事實段的唯一生產者是卷證原文摘錄；抓不到就留空交人工，不由 N5 生成
             "facts_excerpt_available": bool(facts_excerpt),
+            # 這批欄位是重播還是模型即時抽的，連同 model_id／用量一起說清楚
+            "generation": generation,
         },
         degraded=degraded,
         degrade_reason=reason,
@@ -77,7 +124,8 @@ def run(state: CaseState, ctx: NodeCtx, case_fixture: dict[str, Any] | None = No
                         f"低信心欄位：{'、'.join(low_conf) if low_conf else '無'}",
                         "y" if low_conf else "",
                     ],
-                    ["離線重播（fixture）：信心值為合成案例既有標註，非本次實測", "y"],
+                    mode_log,
+                    *(extra_logs or []),
                 ],
             }
         },

@@ -60,14 +60,28 @@ def _minimal_fixture(**over):
 
 # ── N1 抽取 ────────────────────────────────────────────────────────
 def test_n1_raises_when_not_fixture_mode():
+    """未實作的模式必須 raise；已實作的 bedrock 分支也不得退回 fixture 資料。
+
+    `bedrock` 自 2026-09-07 起是真分支（走 backend.llm.client），所以不再列在
+    NotImplementedError 的清單裡。但它守的還是同一條紅線：卷證全文不在時
+    要炸掉（ValueError），不准偷偷重播 `extraction` 區塊當成模型抽取結果。
+    bedrock 成功路徑與 LLMError 傳遞由 test_live_plumbing 覆蓋。
+    """
     state = CaseState(case_id="synthetic-unit-01")
-    for mode in ("local", "bedrock"):
+    for mode in ("local",):
         try:
             n1_extract.run(state, _ctx(mode), case_fixture=_minimal_fixture())
         except NotImplementedError as e:
             assert_in("Bedrock", str(e), "raise 訊息要說明需要 Bedrock 憑證")
         else:
             raise AssertionError(f"RUN_MODE={mode} 時 N1 必須 raise，不得靜默回 fixture 資料")
+
+    try:
+        n1_extract.run(state, _ctx("bedrock"), case_fixture=_minimal_fixture())  # 無 documents
+    except ValueError as e:
+        assert_in("documents", str(e), "raise 訊息要說明缺的是卷證全文")
+    else:
+        raise AssertionError("bedrock 模式缺 documents 時必須 raise，不得靜默回 fixture 資料")
 
 
 def test_n1_marks_every_field_origin_llm():
