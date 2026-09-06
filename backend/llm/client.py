@@ -52,29 +52,37 @@ def _safe_doc_name(name: str) -> str:
 
 
 def _load_model(model_kind: str):
-    """MODEL_PROVIDER=bedrock（預設）| openai。region 與 model id 一律顯式帶入。"""
+    """MODEL_PROVIDER=bedrock（預設）| openai。region 與 model id 一律顯式帶入。
+
+    **設定檢查一律排在 import strands 之前**：這樣在沒裝 strands 的機器上，
+    設定漏了會吐「缺哪個環境變數」，而不是一句無關的 ModuleNotFoundError。
+    """
     provider = settings.model_provider()
     if provider == "openai":
         import os
-
-        from strands.models.openai import OpenAIModel
 
         model_id = os.environ.get("OPENAI_MODEL_ID")
         if not model_id:
             # 刻意不給預設 model id：程式不得出現任何 model id 的實際值，
             # 而且 openai 只供開發期調 prompt，寫死一個預設等於幫它偷偷上路。
             raise LLMError("MODEL_PROVIDER=openai 需要環境變數 OPENAI_MODEL_ID（本檔不預設任何 model id）")
+        if not os.environ.get("OPENAI_API_KEY"):
+            raise LLMError("MODEL_PROVIDER=openai 需要環境變數 OPENAI_API_KEY")
+
+        from strands.models.openai import OpenAIModel
+
         return OpenAIModel(
             client_args={"api_key": os.environ["OPENAI_API_KEY"]},
             model_id=model_id,
             params={"max_tokens": 8000, "temperature": 0},
         )
-    from strands.models.bedrock import BedrockModel
-
     model_id = settings.bedrock_model_id(model_kind)
     region = settings.aws_region()
     if not model_id or not region:
         raise LLMError(f"缺 BEDROCK_MODEL_ID_{model_kind.upper()} 或 AWS_REGION（見 .env.example）")
+
+    from strands.models.bedrock import BedrockModel
+
     return BedrockModel(model_id=model_id, region_name=region, temperature=0.0, max_tokens=8000)
 
 
@@ -148,7 +156,16 @@ def extract_intake(document_text: str, *, pdf_documents: list[tuple[str, bytes]]
         if f == "service_method" and v is not None and v not in SERVICE_METHODS:
             raise LLMError(f"抽取結果 service_method={v!r} 不在 {SERVICE_METHODS}")
         if f == "transit_days":
-            v = int(v) if v not in (None, "") else 0
+            # 值域錯誤是「模型輸出不合格」，跟 throttling 那種暫時性失敗不同：
+            # 重試三次也只會拿到同一份壞資料。跟 service_method 一樣直接 LLMError，
+            # 訊息帶欄位名，不讓原生 ValueError 帶著 "invalid literal for int()" 浮上去。
+            if v in (None, ""):
+                v = 0
+            else:
+                try:
+                    v = int(v)
+                except (TypeError, ValueError):
+                    raise LLMError(f"抽取結果 transit_days={v!r} 不是整數") from None
         if f == "interested_party":
             v = bool(v) if v is not None else False
         intake[f] = v

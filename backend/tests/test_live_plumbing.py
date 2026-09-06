@@ -189,3 +189,58 @@ def test_safe_doc_name_keeps_only_bedrock_allowed_characters():
     assert_eq(client._safe_doc_name("原"), "_")
     assert_eq(client._safe_doc_name(""), "doc")
     assert_eq(len(client._safe_doc_name("a" * 200)), 60)
+
+
+def test_load_model_openai_requires_explicit_model_id():
+    """openai 分支不預設任何 model id；缺變數要在 import strands 之前就 raise LLMError。
+
+    檢查排在 import 之前，才會在**沒裝 strands 的機器**上吐出「缺哪個變數」而不是 ModuleNotFoundError。
+    """
+    from backend.llm import client
+
+    with env(MODEL_PROVIDER="openai", OPENAI_API_KEY="k", OPENAI_MODEL_ID=None):
+        try:
+            client._load_model("extract")
+        except client.LLMError as e:
+            assert_in("OPENAI_MODEL_ID", str(e))
+        else:
+            raise AssertionError("缺 OPENAI_MODEL_ID 必須 raise LLMError")
+
+
+def test_load_model_bedrock_reports_missing_settings_before_importing_strands():
+    from backend.llm import client
+
+    with env(MODEL_PROVIDER=None, BEDROCK_MODEL_ID_EXTRACT=None, AWS_REGION="r"):
+        try:
+            client._load_model("extract")
+        except client.LLMError as e:
+            assert_in("BEDROCK_MODEL_ID_EXTRACT", str(e))
+        else:
+            raise AssertionError("缺 BEDROCK_MODEL_ID_EXTRACT 必須 raise LLMError")
+
+
+def test_extract_intake_rejects_non_integer_transit_days_without_retrying():
+    """值域錯誤是模型輸出不合格，不是暫時性失敗——直接 LLMError，不燒重試額度。"""
+    from backend.llm import client
+
+    bad = _fake_extraction()
+    bad["transit_days"]["value"] = "七日"
+    calls = {"n": 0}
+
+    def once(*a, **k):
+        calls["n"] += 1
+        return bad, None
+
+    orig = client._invoke_structured
+    client._invoke_structured = once
+    try:
+        with env(BEDROCK_MODEL_ID_EXTRACT="m", AWS_REGION="r"):
+            try:
+                client.extract_intake("x", retries=3, backoff_s=0.0)
+            except client.LLMError as e:
+                assert_in("transit_days", str(e))
+            else:
+                raise AssertionError("非整數在途期間必須 raise LLMError")
+    finally:
+        client._invoke_structured = orig
+    assert_eq(calls["n"], 1, "值域錯誤不得進重試")
