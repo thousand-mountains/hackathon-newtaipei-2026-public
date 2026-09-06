@@ -26,46 +26,54 @@
 
 做完之後：在有 Bedrock 憑證的機器上 `RUN_MODE=bedrock RETRIEVER=kb` 起服務，前端載入 `synthetic-ordinary-01`，五步畫面由真模型抽取與真 KB 檢索的結果渲染；收文頁確認欄位後續跑不重抽；每張幕僚卡有「重新產生」；沒有憑證的機器 `RUN_MODE=fixture` 一切照舊。
 
-## 步驟（task 總覽）
+## 步驟（task 總覽，分兩層）
 
-| # | Task | 預估 | 依賴 |
-|---|---|---|---|
-| 1 | 設定與紅線掃描擴充 | 1.0h | — |
-| 2 | `backend/llm/` client、schemas、prompts | 2.5h | 1 |
-| 3 | 合成案例加 `documents`；N1 bedrock 分支 | 1.5h | 2 |
-| 4 | N5 bedrock 分支（含 retrieve 工具介面） | 2.0h | 2 |
-| 5 | `retrieval/kb.py` + N4 通道 B + 編排層注入 | 2.0h | 1 |
-| 6 | run 持久化與 `from_node` 續跑 | 2.0h | 3,4,5 |
-| 7 | SSE 節點事件與 API 擴充 | 2.0h | 6 |
-| 8 | 前端：202/SSE 分流、每卡重新產生 | 2.0h | 7 |
-| 9 | 資料：manifest、`ingest_kb.py`、逾期回放集 | 2.5h | 5 |
-| 10 | live 驗收腳本（AC4–AC11） | 1.0h | 7,9 |
-| 11 | 文件同步 | 1.0h | 全部 |
+**必要層**：做完這層，「上傳一份訴願書 PDF → 真模型抽取 → 真 KB 檢索 → 確認欄位後續跑不重抽」整條成立。**加值層**只在必要層全綠且 plan-guardian 記帳未超 18h 時才開工。
 
-合計 **19.5h**（含 buffer 前）。plan-guardian 記帳：超過 24h 升報 tech-lead 砍 Task 8 的每卡按鈕或 Task 9 的回放集。
+| 層 | # | Task | 預估 | 依賴 |
+|---|---|---|---|---|
+| 必要 | 1 | 設定與紅線掃描擴充 | 1.0h | — |
+| 必要 | 2 | `backend/llm/` client、schemas、prompts | 2.5h | 1 |
+| 必要 | 3 | 合成案例加 `documents`；N1 bedrock 分支 | 1.5h | 2 |
+| 必要 | 3b | 上傳案件 API、卷證文字路由（pdftotext／視覺讀）、N2/N3 改吃 N1 輸出 | 3.0h | 3 |
+| 必要 | 4 | N5 bedrock 分支（含 retrieve 工具介面） | 2.0h | 2 |
+| 必要 | 5 | `retrieval/kb.py` + N4 通道 B + 編排層注入 | 2.0h | 1 |
+| 必要 | 6 | run 持久化與 `from_node` 續跑 | 2.0h | 3b,4,5 |
+| 必要 | 7a | API：`RunIn` 擴充、bedrock 模式 202、`GET /api/runs/{id}`（輪詢） | 1.0h | 6 |
+| 必要 | 8a | 前端：拖曳區真上傳、`postRun` 輪詢等待、確認後從 n2 續跑 | 1.0h | 7a |
+| 必要 | 10 | live 驗收腳本（AC4–AC9、AC11、AC15） | 1.0h | 8a |
+| 必要 | 11 | 文件同步 | 1.0h | 全部 |
+| 加值 | 7b | SSE 節點事件流 | 1.0h | 7a |
+| 加值 | 8b | 前端：SSE 進度、每卡重新產生列 | 1.5h | 7b |
+| 加值 | 9 | 資料：manifest、`ingest_kb.py`、逾期回放集 | 2.5h | 5 |
+| 加值 | 16 | AC16 掃描件視覺讀取驗證 | 0.5h | 3b |
+
+必要層 **18.0h**、加值層 **5.5h**、合計 **23.5h**。plan-guardian 記帳：必要層超過 18h 即停加值層；總計超過 24h 升報 tech-lead。
+
+**注意**：Task 9 的 `ingest_kb.py` 是 KB 建置所需，但 KB 建置本身是 Ci 在 console 手動做（賽前清單），不阻塞必要層；必要層的 AC7 用手動建好的 KB 驗。
 
 ## 驗收條件
 
-見 spec §8 AC1–AC14。每個 task 末尾列出對應 AC 與可執行指令。
+見 spec §8 AC1–AC16。每個 task 末尾列出對應 AC 與可執行指令。必要層必須全過；加值層的 AC10、AC12、AC13、AC16 可標「未做」。
 
 ## 備援方案
 
 | 到最遲放棄時刻仍紅 | 降級成 |
 |---|---|
-| Bedrock 帳號未開通（Task 3/4/10 的 live 測試跑不了） | Task 1–9 全部以 fixture＋monkeypatch 完成並 commit；live AC 標「待憑證」；demo 走 fixture，`run_meta.run_mode` 如實顯示 |
+| Bedrock 帳號未開通（Task 3/3b/4/10 的 live 測試跑不了） | 必要層以 fixture＋monkeypatch 完成並 commit；live AC 用 `MODEL_PROVIDER=openai` 做出證據並標「暫代」，demo 前切回 Bedrock 重跑；仍不通則 demo 走 fixture，`run_meta.run_mode` 如實顯示 |
 | Managed KB recall 三案不到 3/5（AC7） | `RETRIEVER=lawtable_only`，相似案卡維持「庫外」降級 log；KB 改自管方案列 §13 待拍板 |
-| Task 8 前端來不及 | 只做 202/SSE 分流與「確認後續跑」，每卡按鈕砍掉；後端 `from_node` 仍可由 curl 展示 |
-| Task 9 回放集來不及 | 只做 manifest 與 ingest；回放集列 Phase S |
+| 掃描 PDF 視覺讀取抽不出必填欄位 | 本來就是設計：N1 degraded → NEEDS_INPUT → 承辦人手動表單（architecture §3.5），不加 OCR 套件 |
+| 加值層來不及 | 全部不做。前端用輪詢等結果、沒有每卡按鈕；`from_node` 續跑仍可由 curl 展示 |
 
 ## 最遲放棄時刻
 
-- Task 1–7：**9/10 18:00**
-- Task 8–9：**9/11 12:00**
-- Task 10–11：**9/11 20:00**（賽前一天收尾，不帶未完成的 live 分支進賽場）
+- 必要層 Task 1–7a：**9/10 12:00**
+- 必要層 Task 8a、10、11：**9/10 20:00**
+- 加值層：**9/11 12:00**（過了就不碰，9/11 下午只做 demo 演練）
 
 ## 預估時數
 
-19.5h（見上表）。
+必要 18.0h ＋ 加值 5.5h ＝ 23.5h。
 
 ---
 
@@ -84,6 +92,9 @@
 | `backend/nodes/n5_draft.py` | 修改 | 三向分流；抽出 `_finish()`；`retrieve_refs` 工具閘 |
 | `backend/retrieval/kb.py` | 新建 | `KBRetriever`（boto3 lazy import） |
 | `backend/nodes/n4_retrieval.py` | 修改 | 通道 B 改用 `ctx.retriever`，產 `cases[]` |
+| `backend/intake/__init__.py`、`backend/intake/documents.py` | 新建 | 卷證文字路由：txt／pdftotext／視覺讀候選，算中文比例 |
+| `backend/intake/uploads.py` | 新建 | 上傳案件目錄：`save_upload()`、`load_upload_case()`，`upload-` 前綴 |
+| `backend/nodes/n2_classify.py`、`backend/nodes/n3_procedure.py` | 修改 | `digest` 缺省時由 N1 輸出組成 |
 | `backend/orchestrator/runstore.py` | 新建 | `save_run()`／`load_run()`／`restore_state()` |
 | `backend/orchestrator/graph.py` | 修改 | `run_case(base_state, from_node, overrides, on_event)`；注入 retriever；`model_ids` |
 | `backend/api/events.py` | 新建 | 進程內事件匯流排（threading） |
@@ -383,7 +394,8 @@ class LLMError(RuntimeError): ...
 
 def model_ids() -> dict[str, str | None]      # {"extract": ..., "draft": ..., "provider": ...}
 
-def extract_intake(document_text: str) -> dict
+def extract_intake(document_text: str, *, pdf_documents: list[tuple[str, bytes]] | None = None) -> dict
+# pdf_documents：Task 3b 才會傳（掃描 PDF 走視覺讀）
 # 回 {"intake": {12 欄: value}, "conf": {欄: float}, "quotes": {欄: str}, "facts_excerpt": [{text,page,quote_ref}],
 #     "usage": {"input_tokens", "output_tokens"} | None, "model_id": str}
 
@@ -419,7 +431,7 @@ def _fake_extraction() -> dict:
 def test_extract_intake_reshapes_structured_result():
     from backend.llm import client
 
-    def fake(system, user, schema_name, tools=None, model_kind="extract"):
+    def fake(system, user, schema_name, tools=None, model_kind="extract", **kw):
         assert_eq(schema_name, "ExtractionResult")
         assert_in("訴願書全文", user)
         return _fake_extraction(), {"input_tokens": 10, "output_tokens": 5}
@@ -461,7 +473,7 @@ def test_extract_intake_rejects_unknown_service_method():
 def test_draft_sentences_filters_cite_ids_outside_context():
     from backend.llm import client
 
-    def fake(system, user, schema_name, tools=None, model_kind="draft"):
+    def fake(system, user, schema_name, tools=None, model_kind="draft", **kw):
         assert_eq(schema_name, "DraftResult")
         return {
             "reasoning": [
@@ -1032,6 +1044,496 @@ Expected: 全綠。既有 `test_n1_*` 三個測試不變仍 ok；`test_contract`
 git add backend/data/synthetic backend/nodes/n1_extract.py backend/tests/test_live_plumbing.py
 git commit -m "feat(n1): bedrock 分支呼叫 llm.client.extract_intake；合成案例補 documents 卷證全文"
 ```
+
+---
+
+### Task 3b: 上傳案件 API、卷證文字路由、N2/N3 改吃 N1 輸出
+
+**Files:**
+- Create: `backend/intake/__init__.py`（空）、`backend/intake/documents.py`、`backend/intake/uploads.py`
+- Modify: `backend/orchestrator/graph.py`（`load_case`、`list_cases`、`_dispatch` 的 digest）
+- Modify: `backend/nodes/n1_extract.py`（bedrock 分支改用 `documents.py` 的路由結果）
+- Modify: `backend/nodes/n2_classify.py`、`backend/nodes/n3_procedure.py`（digest 缺省時的來源）
+- Modify: `backend/llm/client.py`（`extract_intake` 加 `pdf_documents`）
+- Modify: `backend/api/app.py`（`POST /api/cases`、`GET /api/cases` 含上傳案）
+- Test: `backend/tests/test_live_plumbing.py`
+
+**Interfaces:**
+- Produces：
+
+```python
+# backend/intake/documents.py
+CJK_RATIO_THRESHOLD = 0.60
+@dataclass
+class Document:
+    n: str                 # 檔名
+    kind: str              # "txt" | "pdf_text" | "pdf_visual"
+    text: str              # txt 或 pdftotext 結果；pdf_visual 為 ""（送 bytes 給模型）
+    cjk_ratio: float
+    path: pathlib.Path
+def cjk_ratio(text: str) -> float
+def route_documents(case_dir: pathlib.Path, text_extractor=None) -> list[Document]
+    # text_extractor(pdf_path) -> str，預設呼叫 pdftotext -layout；找不到 pdftotext 時 PDF 一律 pdf_visual
+
+# backend/intake/uploads.py
+UPLOADS_DIR = OUTPUT_DIR / "uploads"
+ALLOWED_SUFFIXES = (".pdf", ".txt")
+MAX_BYTES = 20 * 1024 * 1024
+def save_upload(files: list[tuple[str, bytes]], uploads_dir=None) -> dict   # 回 case.json 內容（含 case_id）
+def load_upload_case(case_id: str, uploads_dir=None) -> dict               # 形狀同合成案例檔：id, label, provenance, files, documents
+def list_upload_cases(uploads_dir=None) -> list[str]
+
+# backend/llm/client.py（修改）
+def extract_intake(document_text: str, *, pdf_documents: list[tuple[str, bytes]] | None = None,
+                   retries: int = 3, backoff_s: float = 1.5) -> dict
+
+# graph.py
+def load_case(case_id, data_dir=None) -> dict   # synthetic- 走既有路徑；upload- 走 load_upload_case；其他 raise ValueError
+def list_cases(data_dir=None) -> dict            # {"synthetic": [...], "uploaded": [...]}
+```
+
+- N2／N3 的 `digest`：`_dispatch` 傳入 `fixture.get("case_digest") or digest_from_state(state)`，其中 `digest_from_state = " ".join(facts_excerpt[].text) + " " + intake.note`。
+
+- [ ] **Step 1: 寫失敗測試**
+
+```python
+def test_cjk_ratio_and_routing_with_injected_extractor():
+    import pathlib, tempfile
+    from backend.intake.documents import CJK_RATIO_THRESHOLD, cjk_ratio, route_documents
+    assert_true(cjk_ratio("訴願人於農地露天燃燒") > 0.9)
+    assert_true(cjk_ratio("abc def 123") == 0.0)
+    d = pathlib.Path(tempfile.mkdtemp())
+    (d / "a.txt").write_text("訴願書全文（合成）", encoding="utf-8")
+    (d / "digital.pdf").write_bytes(b"%PDF-1.4 fake")
+    (d / "scan.pdf").write_bytes(b"%PDF-1.4 fake")
+    def extractor(p):
+        return "裁處書（合成）本文" if p.name == "digital.pdf" else "\x0c\x0c   "
+    docs = route_documents(d, text_extractor=extractor)
+    kinds = {x.n: x.kind for x in docs}
+    assert_eq(kinds, {"a.txt": "txt", "digital.pdf": "pdf_text", "scan.pdf": "pdf_visual"})
+    assert_true(all(x.cjk_ratio >= CJK_RATIO_THRESHOLD for x in docs if x.kind != "pdf_visual"))
+
+
+def test_save_and_load_upload_case_shape_and_prefix():
+    import pathlib, tempfile
+    from backend.intake.uploads import list_upload_cases, load_upload_case, save_upload
+    d = pathlib.Path(tempfile.mkdtemp())
+    meta = save_upload([("訴願書.txt", "訴願書全文（合成）".encode("utf-8"))], uploads_dir=d)
+    assert_true(meta["case_id"].startswith("upload-"))
+    assert_eq(meta["provenance"]["kind"], "uploaded")
+    fx = load_upload_case(meta["case_id"], uploads_dir=d)
+    assert_eq(fx["id"], meta["case_id"])
+    assert_eq([f["n"] for f in fx["files"]], ["訴願書.txt"])
+    assert_eq(fx["documents"][0]["kind"], "txt")
+    assert_in("訴願書全文", fx["documents"][0]["text"])
+    assert_true("extraction" not in fx and "draft_fixture" not in fx, "上傳案沒有 fixture 區塊")
+    assert_eq(list_upload_cases(uploads_dir=d), [meta["case_id"]])
+
+
+def test_save_upload_rejects_bad_suffix_and_oversize():
+    import pathlib, tempfile
+    from backend.intake.uploads import MAX_BYTES, save_upload
+    d = pathlib.Path(tempfile.mkdtemp())
+    for files in ([("x.docx", b"1")], [("x.pdf", b"0" * (MAX_BYTES + 1))]):
+        try:
+            save_upload(files, uploads_dir=d)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"{files[0][0]} 必須被拒絕")
+
+
+def test_load_case_dispatches_on_prefix():
+    from backend.orchestrator.graph import load_case
+    assert_eq(load_case("synthetic-ordinary-01")["id"], "synthetic-ordinary-01")
+    for bad in ("real-123", "upload-does-not-exist"):
+        try:
+            load_case(bad)
+        except (ValueError, FileNotFoundError):
+            pass
+        else:
+            raise AssertionError(f"{bad} 必須 raise")
+
+
+def test_upload_case_in_fixture_mode_is_refused_honestly():
+    import pathlib, tempfile
+    from backend.intake.uploads import save_upload
+    from backend.orchestrator.graph import run_case
+    d = pathlib.Path(tempfile.mkdtemp())
+    meta = save_upload([("訴願書.txt", "訴願書全文（合成）".encode("utf-8"))], uploads_dir=d)
+    import backend.intake.uploads as up
+    orig = up.UPLOADS_DIR; up.UPLOADS_DIR = d
+    try:
+        try:
+            run_case(meta["case_id"], mode="fixture", persist=False)
+        except ValueError as e:
+            assert_in("bedrock", str(e), "要說清楚上傳案只能在 bedrock 模式跑")
+        else:
+            raise AssertionError("上傳案在 fixture 模式沒有 extraction 可重播，必須 raise")
+    finally:
+        up.UPLOADS_DIR = orig
+
+
+def test_n1_bedrock_passes_pdf_visual_docs_as_attachments():
+    from backend.llm import client
+    from backend.nodes import n1_extract
+    from backend.orchestrator.state import CaseState, NodeCtx
+    seen = {}
+    def fake_extract(document_text, *, pdf_documents=None, **kw):
+        seen["text"] = document_text; seen["pdfs"] = pdf_documents
+        e = _fake_extraction()
+        return {"intake": {k: e[k]["value"] for k in client.INTAKE_FIELDS}, "conf": {k: e[k]["conf"] for k in client.INTAKE_FIELDS},
+                "quotes": {}, "facts_excerpt": e["facts_excerpt"], "usage": None, "model_id": "m"}
+    fixture = {"id": "upload-x", "files": [], "provenance": {"kind": "uploaded"},
+               "documents": [{"n": "a.txt", "kind": "txt", "text": "訴願書全文", "cjk_ratio": 1.0, "path": None},
+                             {"n": "scan.pdf", "kind": "pdf_visual", "text": "", "cjk_ratio": 0.0, "bytes": b"%PDF-1.4 fake"}]}
+    orig = client.extract_intake; client.extract_intake = fake_extract
+    try:
+        r = n1_extract.run(CaseState(case_id="upload-x", run_mode="bedrock"), NodeCtx(run_mode="bedrock"), case_fixture=fixture)
+    finally:
+        client.extract_intake = orig
+    assert_in("訴願書全文", seen["text"])
+    assert_eq(seen["pdfs"], [("scan.pdf", b"%PDF-1.4 fake")])
+    assert_eq(r.data["generation"]["input_route"], {"a.txt": "txt", "scan.pdf": "pdf_visual"})
+    assert_true(any("視覺" in log[0] for log in r.narrative["clerk"]["logs"]), "視覺讀取要在敘述裡講出來")
+
+
+def test_n2_n3_digest_falls_back_to_n1_output():
+    from backend.orchestrator.graph import digest_from_state
+    from backend.orchestrator.state import CaseState
+    st = CaseState(case_id="upload-x", run_mode="bedrock")
+    st.facts_excerpt = [{"text": "訴願人於農地露天燃燒稻稈。"}, {"text": "經稽查查獲。"}]
+    st.intake = {"note": "主張未收受處分書"}
+    d = digest_from_state(st)
+    assert_in("露天燃燒稻稈", d); assert_in("經稽查查獲", d); assert_in("主張未收受", d)
+```
+
+- [ ] **Step 2: 跑測試確認失敗**
+
+Run: `python3 backend/tests/run_all.py`
+Expected: 7 個新測試 FAIL（`backend.intake` 不存在）
+
+- [ ] **Step 3: 寫 documents.py**
+
+```python
+# backend/intake/documents.py
+"""卷證文字路由（spec 2026-09-07 §5.8）。不裝 OCR 套件。
+
+  .txt                        → kind=txt
+  .pdf 且中文比例 ≥ 0.60       → kind=pdf_text（pdftotext -layout）
+  .pdf 且中文比例 < 0.60       → kind=pdf_visual（整份 PDF 以 document 區塊餵模型視覺讀）
+找不到 pdftotext 時 PDF 一律 pdf_visual，並在 route 結果標明。哪一層、比例多少，N1 narrative 會寫出來。
+"""
+from __future__ import annotations
+
+import pathlib
+import re
+import shutil
+import subprocess
+from dataclasses import dataclass, field
+from typing import Callable
+
+CJK_RATIO_THRESHOLD = 0.60
+_CJK = re.compile(r"[一-鿿]")
+PDF_VISUAL_MAX_BYTES = 4_500_000  # Bedrock Converse document 區塊單檔上限
+
+
+@dataclass
+class Document:
+    n: str
+    kind: str
+    text: str
+    cjk_ratio: float
+    path: pathlib.Path | None
+    notes: list[str] = field(default_factory=list)
+
+    def as_dict(self) -> dict:
+        d = {"n": self.n, "kind": self.kind, "text": self.text, "cjk_ratio": self.cjk_ratio,
+             "path": str(self.path) if self.path else None, "notes": self.notes}
+        if self.kind == "pdf_visual" and self.path:
+            d["bytes"] = self.path.read_bytes()
+        return d
+
+
+def cjk_ratio(text: str) -> float:
+    letters = [c for c in text if not c.isspace() and c != "\x0c"]
+    if not letters:
+        return 0.0
+    return round(sum(1 for c in letters if _CJK.match(c)) / len(letters), 3)
+
+
+def _pdftotext(p: pathlib.Path) -> str:
+    if shutil.which("pdftotext") is None:
+        raise FileNotFoundError("pdftotext 不在 PATH（brew install poppler）")
+    r = subprocess.run(["pdftotext", "-layout", str(p), "-"], capture_output=True, text=True, timeout=60)
+    if r.returncode != 0:
+        raise RuntimeError(f"pdftotext 失敗：{r.stderr.strip()[:200]}")
+    return r.stdout
+
+
+def route_documents(case_dir: pathlib.Path, text_extractor: Callable[[pathlib.Path], str] | None = None) -> list[Document]:
+    extractor = text_extractor or _pdftotext
+    out: list[Document] = []
+    for p in sorted(case_dir.iterdir()):
+        if p.name == "case.json" or p.name.startswith("."):
+            continue
+        if p.suffix.lower() == ".txt":
+            t = p.read_text(encoding="utf-8", errors="ignore")
+            out.append(Document(p.name, "txt", t, cjk_ratio(t), p))
+        elif p.suffix.lower() == ".pdf":
+            notes: list[str] = []
+            try:
+                t = extractor(p)
+            except (FileNotFoundError, RuntimeError, subprocess.TimeoutExpired) as e:
+                t, notes = "", [f"文字抽取不可用：{e}"]
+            ratio = cjk_ratio(t)
+            if ratio >= CJK_RATIO_THRESHOLD:
+                out.append(Document(p.name, "pdf_text", t, ratio, p, notes))
+            else:
+                if p.stat().st_size > PDF_VISUAL_MAX_BYTES:
+                    notes.append(f"PDF 超過 {PDF_VISUAL_MAX_BYTES} bytes，無法視覺讀取；請人工補欄位")
+                    out.append(Document(p.name, "pdf_text", t, ratio, p, notes))  # 送殘缺文字，N1 會 degraded
+                else:
+                    notes.append(f"中文比例 {ratio} < {CJK_RATIO_THRESHOLD}，改以視覺讀取")
+                    out.append(Document(p.name, "pdf_visual", "", ratio, p, notes))
+    return out
+```
+
+- [ ] **Step 4: 寫 uploads.py**
+
+```python
+# backend/intake/uploads.py
+"""上傳案件：backend/output/uploads/upload-<id>/{原檔..., case.json}。output/ 已 gitignored（CONSTITUTION §6）。
+
+上傳案沒有 extraction／draft_fixture／case_digest：它只能在 bedrock 模式跑，fixture 模式會被 run_case 拒絕。
+"""
+from __future__ import annotations
+
+import datetime as dt
+import hashlib
+import json
+import pathlib
+import re
+
+from backend.config.settings import OUTPUT_DIR
+from backend.intake.documents import route_documents
+
+UPLOADS_DIR = OUTPUT_DIR / "uploads"
+ALLOWED_SUFFIXES = (".pdf", ".txt")
+MAX_BYTES = 20 * 1024 * 1024
+_SAFE = re.compile(r"[^\w一-鿿.\-（）()]+")
+
+PROVENANCE_UPLOADED = {
+    "kind": "uploaded",
+    "note": "本案卷證由承辦人上傳，抽取結果為模型即時產出，未經人工確認前不得用於解除結論封鎖。",
+    "banner": "上傳案件：卷證來自使用者上傳，內容未進 git、未離開本服務所在環境。",
+}
+
+
+def _safe_name(n: str) -> str:
+    n = pathlib.Path(n).name
+    return _SAFE.sub("_", n) or "file"
+
+
+def save_upload(files: list[tuple[str, bytes]], uploads_dir: pathlib.Path | None = None) -> dict:
+    if not files:
+        raise ValueError("至少要上傳一個檔案")
+    h = hashlib.sha256()
+    for name, data in files:
+        if pathlib.Path(name).suffix.lower() not in ALLOWED_SUFFIXES:
+            raise ValueError(f"只接受 {ALLOWED_SUFFIXES}，實得 {name!r}")
+        if len(data) > MAX_BYTES:
+            raise ValueError(f"{name!r} 超過 {MAX_BYTES} bytes")
+        h.update(name.encode()); h.update(data)
+    case_id = f"upload-{h.hexdigest()[:12]}"
+    d = (uploads_dir or UPLOADS_DIR) / case_id
+    d.mkdir(parents=True, exist_ok=True)
+    meta_files = []
+    for name, data in files:
+        p = d / _safe_name(name)
+        p.write_bytes(data)
+        meta_files.append({"n": p.name, "s": f"{len(data)} bytes", "x": "承辦人上傳"})
+    meta = {"case_id": case_id, "id": case_id, "label": f"上傳案件 {case_id}", "provenance": PROVENANCE_UPLOADED,
+            "files": meta_files, "uploaded_at": dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat()}
+    (d / "case.json").write_text(json.dumps(meta, ensure_ascii=False, indent=1), encoding="utf-8")
+    return meta
+
+
+def load_upload_case(case_id: str, uploads_dir: pathlib.Path | None = None) -> dict:
+    if not re.match(r"^upload-[0-9a-f]{12}$", case_id or ""):
+        raise ValueError(f"上傳案 id 格式不合法：{case_id!r}")
+    d = (uploads_dir or UPLOADS_DIR) / case_id
+    if not (d / "case.json").exists():
+        raise FileNotFoundError(f"找不到上傳案 {case_id}")
+    meta = json.loads((d / "case.json").read_text(encoding="utf-8"))
+    meta["documents"] = [doc.as_dict() for doc in route_documents(d)]
+    return meta
+
+
+def list_upload_cases(uploads_dir: pathlib.Path | None = None) -> list[str]:
+    d = uploads_dir or UPLOADS_DIR
+    if not d.exists():
+        return []
+    return sorted(p.name for p in d.iterdir() if p.is_dir() and (p / "case.json").exists())
+```
+
+- [ ] **Step 5: graph.py：`load_case` 分流、`list_cases`、digest 來源、fixture 模式拒絕上傳案**
+
+`load_case` 改為：
+
+```python
+def load_case(case_id: str, data_dir: pathlib.Path | None = None) -> dict[str, Any]:
+    """synthetic-：合成案例檔；upload-：承辦人上傳（output/uploads/，不進 git）；其他一律拒絕（CONSTITUTION §3、§6）。"""
+    if case_id.startswith("upload-"):
+        from backend.intake.uploads import load_upload_case
+        return load_upload_case(case_id)
+    if not case_id.startswith("synthetic-"):
+        raise ValueError(
+            f"案例 id {case_id!r} 不是 synthetic- 或 upload- 前綴。本系統只處理合成測資與承辦人上傳的卷證，"
+            f"真實競賽資料不進 git、不由本流程讀取（CONSTITUTION §3、§6）。"
+        )
+    d = data_dir or SYNTHETIC_DIR
+    p = d / f"{case_id}.json"
+    if not p.exists():
+        raise CaseNotFound(f"找不到合成案例 {p}。現有案例：{', '.join(list_synthetic_cases(d)) or '（無）'}")
+    return json.loads(p.read_text(encoding="utf-8"))
+
+
+def list_cases(data_dir: pathlib.Path | None = None) -> dict[str, list[str]]:
+    from backend.intake.uploads import list_upload_cases
+    return {"synthetic": list_synthetic_cases(data_dir), "uploaded": list_upload_cases()}
+
+
+def digest_from_state(state: CaseState) -> str:
+    """上傳案沒有 fixture 的 case_digest：分類與爭點偵測改吃 N1 抽出的事實段與備註（同一份抽取結果）。"""
+    parts = [str(x.get("text") or "") for x in (state.facts_excerpt or [])] + [str((state.intake or {}).get("note") or "")]
+    return " ".join(p for p in parts if p).strip()
+```
+
+`run_case` 內 `fixture = load_case(...)` 之後加：
+
+```python
+    if case_id.startswith("upload-") and mode == "fixture":
+        raise ValueError("上傳案件沒有可重播的 fixture，只能在 RUN_MODE=bedrock 執行；fixture 模式請選 synthetic- 案例。")
+```
+
+`_dispatch` 的 N2／N3 改為：
+
+```python
+    if node == "n2":
+        return n2_classify.run(state, ctx, digest=digest or digest_from_state(state))
+    if node == "n3":
+        return n3_procedure.run(state, ctx, digest=digest or digest_from_state(state))
+```
+
+`build_payload` 的 `"provenance": PROVENANCE` 改為 `"provenance": state.provenance or PROVENANCE`；`CaseState` 加欄位 `provenance: dict[str, Any] = field(default_factory=dict)`；`run_case` 在設 `state.files` 時加 `state.provenance = dict(fixture.get("provenance") or {})`（合成案例的 provenance 區塊本來就有 `kind: synthetic`，前端橫幅改讀 payload 的 `provenance.banner`，有就用、沒有沿用 `PROVENANCE.banner`）。`origin_registry.ORIGIN["provenance.*"]` 已是 static，不用改。
+
+- [ ] **Step 6: N1 bedrock 分支改用路由結果；client 加 `pdf_documents`**
+
+`n1_extract.py` bedrock 分支改為：
+
+```python
+    elif ctx.run_mode == "bedrock":
+        docs = case_fixture.get("documents") or []
+        if not docs:
+            raise ValueError(f"案例 {case_fixture.get('id')!r} 缺 documents（bedrock 模式需要卷證）")
+        text_parts, pdfs, route, notes = [], [], {}, []
+        for d in docs:
+            kind = d.get("kind", "txt")
+            route[d["n"]] = kind
+            notes.extend(f"{d['n']}：{n}" for n in (d.get("notes") or []))
+            if kind == "pdf_visual":
+                pdfs.append((d["n"], d["bytes"]))
+            else:
+                text_parts.append(f"《{d['n']}》\n{d['text']}")
+        from backend.llm import client as llm_client
+
+        out = llm_client.extract_intake("\n\n".join(text_parts), pdf_documents=pdfs or None)
+        payload = {k: out[k] for k in ("intake", "conf", "quotes", "facts_excerpt")}
+        generation = {"mode": "bedrock_live", "model_id": out["model_id"], "usage": out["usage"],
+                      "input_route": route, "route_notes": notes}
+        mode_log = [f"模型即時抽取：{out['model_id']}，信心值為模型自報", ""]
+        extra_logs = [[f"卷證輸入：{'、'.join(f'{n}（{k}）' for n, k in route.items())}", ""]]
+        if pdfs:
+            extra_logs.append([f"{len(pdfs)} 份 PDF 文字抽取不足，改由模型視覺讀取整份頁面", "y"])
+        extra_logs.extend([[n, "y"] for n in notes])
+```
+
+`_finish()` 加參數 `extra_logs: list[list[str]] | None = None`，在 narrative logs 末尾 `*(extra_logs or [])`。fixture 分支傳 `None`。合成案例的 `documents[]` 沒有 `kind` 欄位，預設視為 `txt`（Task 3 的 JSON 不用改）。
+
+`client.py`：
+
+```python
+def _invoke_structured(system, user, schema_name, tools=None, model_kind="extract", attachments=None):
+    ...
+    prompt = user if not attachments else (
+        [{"text": user}] + [{"document": {"format": "pdf", "name": re.sub(r"[^A-Za-z0-9\-\(\)\[\] ]", "_", n)[:60] or "doc",
+                                          "source": {"bytes": b}}} for n, b in attachments])
+    result = agent(prompt, structured_output_model=schema)
+
+
+def extract_intake(document_text: str, *, pdf_documents: list[tuple[str, bytes]] | None = None,
+                   retries: int = 3, backoff_s: float = 1.5) -> dict:
+    system = _prompt("n1_extract")
+    user = ("以下是卷證原文。若附有 PDF 文件，請直接閱讀其頁面內容（可能是掃描件）。請依 schema 抽出欄位。\n\n"
+            f"【卷證文字】\n{document_text or '（無文字層，請閱讀附件 PDF）'}")
+    raw, usage = _with_retries(lambda: _invoke_structured(system, user, "ExtractionResult", None, "extract",
+                                                          attachments=pdf_documents), retries, backoff_s)
+```
+
+（頂部加 `import re`。Task 2 測試裡的 `fake(system, user, schema_name, tools=None, model_kind="extract")` 全部加 `**kw`。Bedrock document 區塊的 `name` 只接受英數、空白、連字號、括號，所以中文檔名要改寫，原檔名保留在 `input_route`。）
+
+- [ ] **Step 7: API：`POST /api/cases`、`GET /api/cases`**
+
+`app.py` import 加 `from fastapi import File, UploadFile` 與 `from backend.intake.uploads import save_upload`、`from backend.orchestrator.graph import list_cases`。
+
+```python
+@app.get("/api/cases")
+def cases() -> dict:
+    lst = list_cases()
+    return {"cases": lst["synthetic"] + lst["uploaded"], "synthetic": lst["synthetic"], "uploaded": lst["uploaded"],
+            "note": "synthetic- 為合成測資；upload- 為承辦人上傳，僅存於本服務 output/ 目錄，不進 git。"}
+
+
+@app.post("/api/cases", status_code=201)
+async def create_case(files: list[UploadFile] = File(...)) -> dict:
+    """上傳卷證建案（spec 2026-09-07 §5.8）。只收 .pdf／.txt，單檔 20 MB。回 case_id 供 POST /runs 使用。
+
+    上傳案只能在 RUN_MODE=bedrock 跑；fixture 模式下 POST /runs 會回 400 說明。"""
+    payload = []
+    for f in files:
+        payload.append((f.filename or "file", await f.read()))
+    try:
+        meta = save_upload(payload)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    return {"case_id": meta["case_id"], "files": meta["files"], "provenance": meta["provenance"],
+            "next": f"/api/cases/{meta['case_id']}/runs"}
+```
+
+`_health_checks` 的第 2 項維持只驗合成案例（上傳案不是健康檢查的對象）。`uv run` 的 `--with` 要多 `python-multipart`（FastAPI 檔案上傳需要），`requirements.txt` 加 `python-multipart~=0.0.9`。
+
+- [ ] **Step 8: 跑全套**
+
+Run: `python3 backend/tests/run_all.py`
+Expected: 全綠。`scan_core_path_dependencies`：`backend/intake/` 只用 stdlib，不需豁免。
+
+- [ ] **Step 9: 手動驗證上傳（fixture 服務即可驗 400 訊息）**
+
+```bash
+printf '訴願書（合成）\n訴願人：（合成）測試\n' > /tmp/synthetic-petition.txt
+curl -s -F "files=@/tmp/synthetic-petition.txt" http://127.0.0.1:8080/api/cases        # 201 + upload-xxxx
+curl -s -X POST http://127.0.0.1:8080/api/cases/upload-xxxx/runs -w "\n%{http_code}\n"  # 400：只能在 bedrock 模式
+```
+
+- [ ] **Step 10: Commit**
+
+```bash
+git add backend/intake backend/orchestrator/graph.py backend/orchestrator/state.py backend/nodes/n1_extract.py backend/nodes/n2_classify.py backend/nodes/n3_procedure.py backend/llm/client.py backend/api/app.py backend/requirements.txt backend/tests/test_live_plumbing.py
+git commit -m "feat(intake): 上傳案件 API 與卷證文字路由（pdftotext／視覺讀候選）；N1 收 PDF 附件；N2/N3 digest 改吃 N1 輸出"
+```
+
+**對應 AC**：AC15（Task 10 腳本）。
 
 ---
 
@@ -1945,7 +2447,7 @@ git commit -m "feat(orchestrator): run 持久化與 base_state+from_node 續跑�
 
 ---
 
-### Task 7: SSE 節點事件與 API 擴充
+### Task 7a: API：`RunIn` 擴充、bedrock 模式 202、`GET /api/runs/{id}`（必要層）
 
 **Files:**
 - Create: `backend/api/events.py`
@@ -1954,21 +2456,23 @@ git commit -m "feat(orchestrator): run 持久化與 base_state+from_node 續跑�
 
 **Interfaces:**
 - Produces：
-  - `POST /api/cases/{case_id}/runs` body `RunIn{confirmed_intake?, base_run_id?, from_node?, overrides?}`：fixture → 200 + payload；bedrock → 202 `{run_id, events_url, result_url}`
-  - `GET /api/runs/{run_id}` → 200 payload；404；409 `{status:"running"}`；502 `{node, error}`
-  - `GET /api/runs/{run_id}/events` → `text/event-stream`，事件 `node_start|node_done|run_done|run_failed`，`data` 為 JSON
-  - `GET /api/health` 在 `RUN_MODE=bedrock` 或 `RETRIEVER=kb` 時多一項 `live_settings`，缺變數 → 503
+  - `POST /api/cases/{case_id}/runs` body `RunIn{confirmed_intake?, base_run_id?, from_node?, overrides?}`：fixture → 200 + payload；bedrock → 202 `{run_id, status:"running", result_url}`
+  - `GET /api/runs/{run_id}` → 200 payload；409 `{status:"running"}`（前端輪詢）；502 `{node, error}`；404
+  - `GET /api/health` 多一項 `live_settings`，缺變數 → 503
+  - `backend.api.events.BUS`：`start(run_id)`、`push(run_id, kind, data)`、`status(run_id)`；`stream()` 留給 Task 7b
 
 - [ ] **Step 1: 寫 events.py**
 
 ```python
 # backend/api/events.py
-"""進程內事件匯流排：run_id → 事件序列。SSE 端點輪詢它，背景執行緒往裡面塞。
+"""進程內執行狀態與事件：run_id → 事件序列與狀態。
 
-單 process、單機、demo 量級。不持久化；process 重啟事件就沒了（結果仍在 runstore）。
+Task 7a 用 status()（輪詢）；Task 7b 用 stream()（SSE）。單 process、demo 量級、不持久化；
+process 重啟事件就沒了，結果仍在 runstore。
 """
 from __future__ import annotations
 
+import json
 import threading
 import time
 from typing import Any
@@ -1978,7 +2482,7 @@ class RunEvents:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._events: dict[str, list[dict[str, Any]]] = {}
-        self._status: dict[str, dict[str, Any]] = {}  # run_id → {"status": running|done|failed, "error": ...}
+        self._status: dict[str, dict[str, Any]] = {}
 
     def start(self, run_id: str) -> None:
         with self._lock:
@@ -1998,9 +2502,7 @@ class RunEvents:
             return dict(self._status[run_id]) if run_id in self._status else None
 
     def stream(self, run_id: str, poll_s: float = 0.2, idle_timeout_s: float = 300.0):
-        """yield 已格式化的 SSE 字串；run_done／run_failed 之後結束。"""
-        import json
-
+        """yield SSE 字串；run_done／run_failed 之後結束（Task 7b 的端點用）。"""
         sent = 0
         idle = 0.0
         while True:
@@ -2031,7 +2533,6 @@ import 區加：
 
 ```python
 from fastapi import BackgroundTasks  # noqa: E402
-from fastapi.responses import StreamingResponse  # noqa: E402
 
 from backend.api.events import BUS  # noqa: E402
 from backend.orchestrator.runstore import RunNotFound, load_run  # noqa: E402
@@ -2054,11 +2555,11 @@ class RunIn(BaseModel):
     overrides: dict[str, Any] | None = None
 ```
 
-新增共用函式與端點（放在 `create_run` 之前）：
+新增共用函式（放在 `create_run` 之前）：
 
 ```python
 def _translate(e: Exception) -> HTTPException:
-    if isinstance(e, (CaseNotFound, RunNotFound)):
+    if isinstance(e, (CaseNotFound, RunNotFound, FileNotFoundError)):
         return HTTPException(status_code=404, detail=str(e))
     if isinstance(e, ValueError):
         return HTTPException(status_code=400, detail=str(e))
@@ -2080,23 +2581,21 @@ def _run_kwargs(body: RunIn | None) -> dict[str, Any]:
     return kw
 
 
-def _run_in_background(case_id: str, run_id_holder: dict, kwargs: dict[str, Any]) -> None:
-    rid = run_id_holder["run_id"]
+def _run_in_background(case_id: str, rid: str, kwargs: dict[str, Any]) -> None:
     try:
-        run_case(case_id, on_event=lambda k, d: BUS.push(rid, k, d), **kwargs)
-    except Exception as e:  # noqa: BLE001 — run_failed 事件已由 graph 發出；這裡只確保狀態收斂
-        if BUS.status(rid) and BUS.status(rid)["status"] == "running":
+        run_case(case_id, on_event=lambda k, d: BUS.push(rid, k, d), run_id=rid, **kwargs)
+    except Exception as e:  # noqa: BLE001 — graph 已發 run_failed；這裡只確保狀態收斂
+        st = BUS.status(rid)
+        if st and st["status"] == "running":
             BUS.push(rid, "run_failed", {"node": None, "error": f"{type(e).__name__}: {e}"})
 ```
-
-**run_id 的產生點**：202 要先回 `run_id`，所以 API 端先產 `rid` 再以 `run_case(..., run_id=rid)` 傳入（Task 6 已加該參數）。
 
 `create_run` 改為：
 
 ```python
 @app.post("/api/cases/{case_id}/runs")
 def create_run(case_id: str, background: BackgroundTasks, body: RunIn | None = None):
-    """fixture：同步 200 + payload（現況）。bedrock：202 + run_id，前端訂 SSE（architecture §6.1 2b）。"""
+    """fixture：同步 200 + payload（現況）。bedrock：202 + run_id，前端輪詢 GET /api/runs/{id}（architecture §6.1 2b）。"""
     try:
         kwargs = _run_kwargs(body)
     except Exception as e:  # noqa: BLE001
@@ -2115,12 +2614,8 @@ def create_run(case_id: str, background: BackgroundTasks, body: RunIn | None = N
     import uuid
     rid = f"run-{case_id}-{uuid.uuid4().hex[:12]}"
     BUS.start(rid)
-    background.add_task(_run_in_background, case_id, {"run_id": rid}, {**kwargs, "run_id": rid})
-    return JSONResponse(
-        {"run_id": rid, "status": "running",
-         "events_url": f"/api/runs/{rid}/events", "result_url": f"/api/runs/{rid}"},
-        status_code=202,
-    )
+    background.add_task(_run_in_background, case_id, rid, kwargs)
+    return JSONResponse({"run_id": rid, "status": "running", "result_url": f"/api/runs/{rid}"}, status_code=202)
 
 
 @app.get("/api/runs/{run_id}")
@@ -2136,22 +2631,13 @@ def get_run(run_id: str):
     except (RunNotFound, ValueError) as e:
         raise _translate(e) from e
     return build_payload(state)
-
-
-@app.get("/api/runs/{run_id}/events")
-def run_events(run_id: str):
-    if BUS.status(run_id) is None:
-        raise HTTPException(status_code=404, detail=f"沒有這個 run 的事件流：{run_id}（process 重啟後事件不保留，結果請打 GET /api/runs/{run_id}）")
-    return StreamingResponse(BUS.stream(run_id), media_type="text/event-stream",
-                             headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"})
 ```
 
-`submit_case` 的 `run_case(...)` 呼叫改成 `run_case(case_id, **_run_kwargs(body))`，例外處理改用 `_translate`。
+`submit_case` 的 `run_case(...)` 改成 `run_case(case_id, **_run_kwargs(body))`，例外處理改用 `_translate`。
 
 `_health_checks()` 加第 4 項：
 
 ```python
-    # 4. live 模式的環境變數齊不齊（缺就 503，不讓服務假裝能跑）
     missing = settings.missing_live_settings()
     checks.append({
         "name": "live_settings",
@@ -2164,7 +2650,7 @@ def run_events(run_id: str):
 - [ ] **Step 3: 手動驗證（fixture 模式不變）**
 
 ```bash
-uv run --with fastapi --with "uvicorn[standard]" --with pydantic -- python -m uvicorn backend.api.app:app --port 8080 &
+uv run --with fastapi --with "uvicorn[standard]" --with pydantic --with python-multipart -- python -m uvicorn backend.api.app:app --port 8080 &
 sleep 2
 curl -s -o /dev/null -w "%{http_code}\n" -X POST http://127.0.0.1:8080/api/cases/synthetic-ordinary-01/runs   # 200
 RID=$(curl -s -X POST http://127.0.0.1:8080/api/cases/synthetic-ordinary-01/runs | python3 -c "import sys,json;print(json.load(sys.stdin)['run_id'])")
@@ -2176,53 +2662,90 @@ curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1:8080/api/runs/run-nope
 kill %1
 ```
 
-- [ ] **Step 4: 手動驗證（bedrock 模式的 202 與 SSE，不需真憑證）**
-
-用假設定讓它走 202 分流，N1 會因缺 documents／憑證而 `run_failed`，剛好驗證失敗事件：
+- [ ] **Step 4: 手動驗證（bedrock 模式 202 與失敗路徑，不需真憑證）**
 
 ```bash
 RUN_MODE=bedrock AWS_REGION=x BEDROCK_MODEL_ID_EXTRACT=x BEDROCK_MODEL_ID_DRAFT=x \
-uv run --with fastapi --with "uvicorn[standard]" --with pydantic --with strands-agents --with boto3 -- \
+uv run --with fastapi --with "uvicorn[standard]" --with pydantic --with python-multipart --with strands-agents --with boto3 -- \
   python -m uvicorn backend.api.app:app --port 8080 &
 sleep 2
 R=$(curl -s -X POST http://127.0.0.1:8080/api/cases/synthetic-ordinary-01/runs); echo "$R"   # 202 body 含 run_id
 RID=$(echo "$R" | python3 -c "import sys,json;print(json.load(sys.stdin)['run_id'])")
-curl -N -s --max-time 20 http://127.0.0.1:8080/api/runs/$RID/events                          # 看到 node_start n1 → run_failed
-curl -s -w "\n%{http_code}\n" http://127.0.0.1:8080/api/runs/$RID                            # 502 + {node:"n1", error:...}
+sleep 8; curl -s -w "\n%{http_code}\n" http://127.0.0.1:8080/api/runs/$RID                  # 502 + {node:"n1", error:...}（假 model id 呼叫失敗）
 kill %1
 ```
 
-Expected：SSE 有 `event: node_start`（n1）與 `event: run_failed`，`GET /api/runs/{id}` 回 502 且 body 不含任何 fixture 草稿（AC11 的形狀）。
+Expected：502 body 含 `node` 與原始錯誤字串，且不含任何 fixture 草稿（AC11 的形狀）。
 
 - [ ] **Step 5: 跑全套並 Commit**
 
-Run: `python3 backend/tests/run_all.py` → exit 0
-
 ```bash
-git add backend/api/events.py backend/api/app.py backend/orchestrator/graph.py
-git commit -m "feat(api): bedrock 模式 202 + SSE 節點事件；GET /api/runs/{id}；RunIn 支援 base_run_id/from_node/overrides；health 檢查 live 變數"
+python3 backend/tests/run_all.py
+git add backend/api/events.py backend/api/app.py
+git commit -m "feat(api): bedrock 模式 202 + GET /api/runs/{id} 輪詢；RunIn 支援 base_run_id/from_node/overrides；health 檢查 live 變數"
 ```
 
 ---
 
-### Task 8: 前端：202/SSE 分流、每卡重新產生
+### Task 7b: SSE 節點事件流（加值層）
+
+**Files:**
+- Modify: `backend/api/app.py`
+
+**Interfaces:**
+- Produces：`GET /api/runs/{run_id}/events` → `text/event-stream`，事件 `node_start|node_done|run_done|run_failed|timeout`，`data` 為 JSON；202 body 多 `events_url`。
+
+- [ ] **Step 1: 加端點**
+
+import 加 `from fastapi.responses import StreamingResponse  # noqa: E402`。`create_run` 的 202 body 加 `"events_url": f"/api/runs/{rid}/events"`。新增：
+
+```python
+@app.get("/api/runs/{run_id}/events")
+def run_events(run_id: str):
+    if BUS.status(run_id) is None:
+        raise HTTPException(status_code=404, detail=f"沒有這個 run 的事件流：{run_id}（process 重啟後事件不保留，結果請打 GET /api/runs/{run_id}）")
+    return StreamingResponse(BUS.stream(run_id), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"})
+```
+
+- [ ] **Step 2: 手動驗證**
+
+沿用 Task 7a Step 4 的假設定服務：
+
+```bash
+R=$(curl -s -X POST http://127.0.0.1:8080/api/cases/synthetic-ordinary-01/runs)
+RID=$(echo "$R" | python3 -c "import sys,json;print(json.load(sys.stdin)['run_id'])")
+curl -N -s --max-time 20 http://127.0.0.1:8080/api/runs/$RID/events    # event: node_start {n1} → event: run_failed
+```
+
+有真憑證時應看到 6 對 `node_start/node_done` 與 `run_done`（AC10）。
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add backend/api/app.py
+git commit -m "feat(api): GET /api/runs/{id}/events SSE 節點事件流"
+```
+
+---
+
+### Task 8a: 前端：拖曳區真上傳、`postRun` 輪詢等待、確認後從 n2 續跑（必要層）
 
 **Files:**
 - Modify: `prototype/static/app.js`
-- Modify: `prototype/static/index.tmpl.html`
-- Rebuild: `python3 prototype/build.py`（dist 必須由 build 重現，`run_all.py` 會比對）
+- Rebuild: `python3 prototype/build.py`
 
 **Interfaces:**
-- Consumes：Task 7 的 202 body `{run_id, events_url, result_url}`、SSE 事件、`GET /api/runs/{id}`
-- Produces：`postRun(body)` 統一入口；`L.runId` 記最近一次 run；`#regenbar` 四個按鈕
+- Consumes：`POST /api/cases`（201 `{case_id}`）、`POST /runs`（200 或 202）、`GET /api/runs/{id}`（200／409／502）
+- Produces：`postRun(body, onProgress)`；`L.runId`；`uploadFiles(fileList)`
 
-- [ ] **Step 1: 在 app.js 加 `postRun()`，取代兩處直接 fetch**
+- [ ] **Step 1: `postRun()`（輪詢版）**
 
 在 `runConfirmed()` 之前加：
 
 ```javascript
 /* 統一的執行入口：fixture 後端回 200+payload；bedrock 後端回 202+run_id，
-   接著訂 SSE 逐節點更新進度，run_done 後再 GET 結果。任何失敗都拋出，不用舊資料續跑。 */
+   接著每 2 秒 GET /api/runs/{id}，409 表示還在跑、200 為結果、其他為失敗。任何失敗都拋出，不用舊資料續跑。 */
 async function postRun(body, onProgress){
   const res=await fetch('api/cases/'+encodeURIComponent(L.chosen)+'/runs',{
     method:'POST',headers:{'Content-Type':'application/json','Accept':'application/json'},
@@ -2230,23 +2753,19 @@ async function postRun(body, onProgress){
   if(res.status===200){const p=await res.json(); L.runId=p.run_id; return p;}
   if(res.status!==202)throw new Error('runs HTTP '+res.status+' '+(await res.text()).slice(0,200));
   const ticket=await res.json(); L.runId=ticket.run_id;
-  await new Promise((resolve,reject)=>{
-    const es=new EventSource(ticket.events_url.replace(/^\//,''));
-    const NAMES={n1:'卷證書記官 抽取中',n2:'分類調查官',n3:'程序審查官',n4:'法規／案例檢索',n5:'決定書主筆 組稿中',n6:'品管守門員 驗證中'};
-    es.addEventListener('node_start',e=>{const d=JSON.parse(e.data); onProgress&&onProgress(NAMES[d.node]||d.node,d);});
-    es.addEventListener('node_done',e=>{const d=JSON.parse(e.data); onProgress&&onProgress((NAMES[d.node]||d.node)+' 完成（'+d.elapsed_ms+' ms）',d);});
-    es.addEventListener('run_done',()=>{es.close();resolve();});
-    es.addEventListener('run_failed',e=>{es.close();const d=JSON.parse(e.data);reject(new Error('節點 '+d.node+' 失敗：'+d.error));});
-    es.addEventListener('timeout',()=>{es.close();reject(new Error('事件流逾時'));});
-    es.onerror=()=>{es.close();reject(new Error('事件流中斷'));};
-  });
-  const r=await fetch(ticket.result_url.replace(/^\//,''),{headers:{'Accept':'application/json'}});
-  if(!r.ok)throw new Error('結果 HTTP '+r.status+' '+(await r.text()).slice(0,200));
-  return await r.json();
+  const started=Date.now();
+  for(;;){
+    await new Promise(r=>setTimeout(r,2000));
+    const r=await fetch(ticket.result_url.replace(/^\//,''),{headers:{'Accept':'application/json'}});
+    if(r.status===409){onProgress&&onProgress('六節點執行中…'+Math.round((Date.now()-started)/1000)+' 秒');continue;}
+    if(r.status===200)return await r.json();
+    const t=await r.text();
+    throw new Error('執行失敗 HTTP '+r.status+' '+t.slice(0,300));
+  }
 }
 ```
 
-把開頭載入那段（`const rr=await fetch('api/cases/'+...+'/runs',{method:'POST',...}); if(!rr.ok)...; payload=await rr.json();`）改成：
+把開頭載入那段的 `const rr=await fetch('api/cases/'+...+'/runs',{method:'POST',...}); if(!rr.ok)...; payload=await rr.json();` 改成：
 
 ```javascript
     L.chosen=chosen;
@@ -2261,7 +2780,87 @@ async function postRun(body, onProgress){
     applyLivePayload(await postRun(body,(m)=>{hint.textContent=m;}));
 ```
 
-- [ ] **Step 2: 每卡重新產生**
+- [ ] **Step 2: 拖曳區真的上傳**
+
+把 `app.js` 第 134 行附近「拖進來的檔案不會被讀取」那段改成：
+
+```javascript
+/* 拖進來的檔案會 POST /api/cases 建成 upload- 案例，接著跑六節點。
+   fixture 後端會回 400（上傳案只能在 bedrock 模式跑），那就把訊息顯示出來，不用舊資料假裝。 */
+async function uploadFiles(fileList){
+  const fd=new FormData();
+  for(const f of fileList)fd.append('files',f,f.name);
+  const hint=$('#go1hint');
+  hint.textContent='上傳卷證中…';
+  try{
+    const res=await fetch('api/cases',{method:'POST',body:fd});
+    if(!res.ok)throw new Error('上傳 HTTP '+res.status+' '+(await res.text()).slice(0,200));
+    const meta=await res.json();
+    L.chosen=meta.case_id; L.runId=null;
+    const sel=$('#casesel'); if(sel){const o=document.createElement('option');o.value=meta.case_id;o.textContent=meta.case_id+'（上傳）';sel.appendChild(o);sel.value=meta.case_id;}
+    hint.textContent='已建案 '+meta.case_id+'，卷證書記官抽取中…';
+    applyLivePayload(await postRun({}, (m)=>{hint.textContent=m;}));
+    hint.textContent='';
+  }catch(e){
+    hint.textContent='上傳或抽取失敗（'+String(e&&e.message||e)+'）——未以舊資料續跑。';
+  }
+}
+const dropEl=document.getElementById('drop'), fileIn=document.getElementById('filein');
+if(dropEl&&fileIn){
+  dropEl.addEventListener('click',()=>fileIn.click());
+  dropEl.addEventListener('dragover',e=>{e.preventDefault();dropEl.classList.add('hot');});
+  dropEl.addEventListener('dragleave',()=>dropEl.classList.remove('hot'));
+  dropEl.addEventListener('drop',e=>{e.preventDefault();dropEl.classList.remove('hot');if(MODE==='live')uploadFiles(e.dataTransfer.files);});
+  fileIn.addEventListener('change',()=>{if(MODE==='live'&&fileIn.files.length)uploadFiles(fileIn.files);});
+}
+```
+
+`#casesel` 是案例下拉選單的 id，若模板用別的 id（HANDOFF 提到「案例下拉選單」），以模板為準改名。橫幅改讀 `payload.provenance.banner`（上傳案會是「上傳案件：…」）。
+
+- [ ] **Step 3: 重建 dist、跑全套、瀏覽器驗證**
+
+```bash
+python3 prototype/build.py && python3 backend/tests/run_all.py
+uv run --with playwright -- python docs/evidence/2026-09-05-integration/verify_ui.py synthetic-ordinary-01 /tmp/shots; echo $?
+```
+
+Expected：run_all 全綠（dist 可重現）；Playwright 腳本 exit 0；fixture 服務下拖一個 txt 進去，hint 顯示後端 400 的訊息「只能在 RUN_MODE=bedrock 執行」。
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add prototype/static/app.js prototype/dist/index.html
+git commit -m "feat(ui): 拖曳區真上傳建案；postRun 統一入口（200 同步／202 輪詢）；確認後從 n2 續跑不重抽"
+```
+
+---
+
+### Task 8b: 前端：SSE 進度、每卡重新產生列（加值層）
+
+**Files:**
+- Modify: `prototype/static/app.js`、`prototype/static/index.tmpl.html`
+- Rebuild: `python3 prototype/build.py`
+
+- [ ] **Step 1: `postRun()` 改用 SSE（有 `events_url` 才用，否則維持輪詢）**
+
+在 `postRun` 的 202 分支、輪詢迴圈之前加：
+
+```javascript
+  if(ticket.events_url&&window.EventSource){
+    await new Promise((resolve,reject)=>{
+      const es=new EventSource(ticket.events_url.replace(/^\//,''));
+      const NAMES={n1:'卷證書記官 抽取中',n2:'分類調查官',n3:'程序審查官',n4:'法規／案例檢索',n5:'決定書主筆 組稿中',n6:'品管守門員 驗證中'};
+      es.addEventListener('node_start',e=>{const d=JSON.parse(e.data); onProgress&&onProgress(NAMES[d.node]||d.node,d);});
+      es.addEventListener('node_done',e=>{const d=JSON.parse(e.data); onProgress&&onProgress((NAMES[d.node]||d.node)+' 完成（'+d.elapsed_ms+' ms）',d);});
+      es.addEventListener('run_done',()=>{es.close();resolve();});
+      es.addEventListener('run_failed',e=>{es.close();const d=JSON.parse(e.data);reject(new Error('節點 '+d.node+' 失敗：'+d.error));});
+      es.addEventListener('timeout',()=>{es.close();reject(new Error('事件流逾時'));});
+      es.onerror=()=>{es.close();resolve();};   // 事件流斷了就退回輪詢，不算失敗
+    });
+  }
+```
+
+- [ ] **Step 2: 每卡重新產生列**
 
 `index.tmpl.html` 在 `id="demoload"` 那個元素之後加：
 
@@ -2275,7 +2874,15 @@ async function postRun(body, onProgress){
 </div>
 ```
 
-app.js 在 `applyLivePayload()` 之後加：
+`<style>` 加：
+
+```css
+.regenbar{display:flex;gap:.5rem;align-items:center;flex-wrap:wrap;margin:.5rem 0;font-size:.9rem}
+.regenbar-label{opacity:.7}
+.regenbar input{flex:1;min-width:14rem}
+```
+
+app.js 在 `applyLivePayload()` 之後加，並在 live 載入完成與 `applyLivePayload()` 末尾各呼叫一次 `wireRegenBar()`：
 
 ```javascript
 function wireRegenBar(){
@@ -2297,31 +2904,12 @@ function wireRegenBar(){
 }
 ```
 
-在 `bootApp()`（或 live 分支載入完成、`setBadge('live',...)` 之後）呼叫 `wireRegenBar()`。`applyLivePayload()` 末尾也呼叫一次讓 `L.runId` 變動後按鈕狀態一致。CSS 在模板 `<style>` 加：
-
-```css
-.regenbar{display:flex;gap:.5rem;align-items:center;flex-wrap:wrap;margin:.5rem 0;font-size:.9rem}
-.regenbar-label{opacity:.7}
-.regenbar input{flex:1;min-width:14rem}
-```
-
-- [ ] **Step 3: 重建 dist 並跑 run_all**
+- [ ] **Step 3: 重建、跑全套、瀏覽器驗證，Commit**
 
 ```bash
 python3 prototype/build.py && python3 backend/tests/run_all.py
-```
-
-Expected：`scan_prototype_dist_reproducible` 綠；全套 exit 0。
-
-- [ ] **Step 4: 瀏覽器驗證（fixture 後端）**
-
-起服務，開 `http://127.0.0.1:8080/`：徽章 live；`#regenbar` 可見；按「重新產生草稿」後徽章 tooltip 的 run_id 改變、畫面無 JS error（用 HANDOFF.md 的 `docs/evidence/2026-09-05-integration/verify_ui.py` 重跑，exit 0）。
-
-- [ ] **Step 5: Commit**
-
-```bash
 git add prototype/static/app.js prototype/static/index.tmpl.html prototype/dist/index.html
-git commit -m "feat(ui): postRun 統一入口（200 同步／202+SSE）；確認後從 n2 續跑不重抽；每卡重新產生列"
+git commit -m "feat(ui): SSE 逐節點進度；每卡重新產生列（from_node + n4_query）"
 ```
 
 ---
@@ -2640,7 +3228,7 @@ git commit -m "feat(data): KB manifest 與冪等入庫腳本（兩批來源分�
 
 ---
 
-### Task 10: live 驗收腳本（AC4–AC11）
+### Task 10: live 驗收腳本（AC4–AC9、AC11、AC15；AC10 為加值層）
 
 **Files:**
 - Create: `scripts/live_acceptance.py`
@@ -2710,13 +3298,14 @@ def run(base: str, case: str, body: dict | None = None) -> tuple[int, dict | str
         return code, ticket, []
     rid = ticket["run_id"]
     events: list[str] = []
-    with urllib.request.urlopen(base + ticket["events_url"], timeout=300) as r:
-        for line in r:
-            line = line.decode().strip()
-            if line.startswith("event:"):
-                events.append(line.split(":", 1)[1].strip())
-            if events and events[-1] in ("run_done", "run_failed", "timeout"):
-                break
+    if ticket.get("events_url"):  # Task 7b 做了才有；沒有就純輪詢
+        with urllib.request.urlopen(base + ticket["events_url"], timeout=300) as r:
+            for line in r:
+                line = line.decode().strip()
+                if line.startswith("event:"):
+                    events.append(line.split(":", 1)[1].strip())
+                if events and events[-1] in ("run_done", "run_failed", "timeout"):
+                    break
     code, payload = wait_run(base, rid)
     return code, payload, events
 
@@ -2731,7 +3320,8 @@ def main() -> int:
     check("health live_settings", code == 200, json.dumps(health, ensure_ascii=False)[:200])
 
     code, p, ev = run(a.base, "synthetic-ordinary-01")
-    check("AC10 SSE 6 對 start/done + run_done", ev.count("node_start") == 6 and ev.count("node_done") == 6 and ev[-1] == "run_done", " → ".join(ev))
+    if ev:
+        check("AC10 SSE 6 對 start/done + run_done（加值層）", ev.count("node_start") == 6 and ev.count("node_done") == 6 and ev[-1] == "run_done", " → ".join(ev))
     ok = code == 200 and isinstance(p, dict)
     check("AC4 N1 live：12 欄 origin=llm、conf 0–1、model_id 非空", ok and all(p["intake_origin"].get(k) == "llm" for k in p["intake"] if k not in ("auto_fields", "auto_toast")) and all(0 <= v <= 1 for v in p["intake_conf"].values()) and bool((p["run_meta"]["model_ids"] or {}).get("extract")), f"model_ids={p['run_meta'].get('model_ids') if ok else code}")
     if ok:
@@ -2752,7 +3342,28 @@ def main() -> int:
     okb = code == 200 and isinstance(pb, dict)
     check("AC6 C 型封鎖在 live 成立", okb and pb["screen"]["requires_human_conclusion"] is True and not any(s.get("slot") == "conclusion" and s.get("origin") == "llm" and not s.get("placeholder") for b in pb["doc"] for s in b["ss"]) and pb["submit_allowed"] is False, f"blockers={[b.get('reason') for b in pb.get('blockers', [])] if okb else code}")
 
-    say("\nAC11（模型 id 設成不存在值 → 502 且 payload 無 fixture 內容）需另起一個服務實例驗證，指令見 plan Task 7 Step 4。")
+    # AC15：上傳合成訴願書 txt → 抽取結果與該案 fixture 一致
+    import json as _json, pathlib as _pl, urllib.request as _ur, uuid as _uuid
+    fx = _json.loads(_pl.Path("backend/data/synthetic/synthetic-ordinary-01.json").read_text(encoding="utf-8"))
+    boundary = "----ac15" + _uuid.uuid4().hex
+    body = b""
+    for d in fx["documents"]:
+        body += (f"--{boundary}\r\nContent-Disposition: form-data; name=\"files\"; filename=\"{d['n'].replace('.pdf', '.txt')}\"\r\n"
+                 f"Content-Type: text/plain\r\n\r\n").encode() + d["text"].encode() + b"\r\n"
+    body += f"--{boundary}--\r\n".encode()
+    req = _ur.Request(a.base + "/api/cases", data=body, method="POST",
+                      headers={"Content-Type": f"multipart/form-data; boundary={boundary}"})
+    with _ur.urlopen(req, timeout=60) as r:
+        cid = _json.loads(r.read().decode())["case_id"]
+    codeu, pu, _ = run(a.base, cid)
+    oku = codeu == 200 and isinstance(pu, dict)
+    want = fx["extraction"]["intake"]
+    same = oku and all(str(pu["intake"].get(k)) == str(want[k]) for k in ("no", "d2", "d3", "service_method"))
+    check("AC15 上傳 txt → N1 抽取與 fixture 一致（no/d2/d3/service_method）、N2 案型一致",
+          same and pu["classification"]["class"]["case_type"] == want["type"],
+          f"got={{k: pu['intake'].get(k) for k in ('no','d2','d3','service_method')} if oku else codeu}")
+
+    say("\nAC10（SSE 6 對事件）屬加值層，Task 7b 完成後才驗；AC11（模型 id 設成不存在值 → 502 且 payload 無 fixture 內容）需另起一個服務實例驗證，指令見 plan Task 7a Step 4。")
     print("\n".join(OUT))
     return 1 if FAILS else 0
 
@@ -2780,6 +3391,56 @@ Expected：exit 0，`acceptance.md` 每列 ✅。AC11 依 Task 7 Step 4 另跑�
 ```bash
 git add scripts/live_acceptance.py docs/evidence/2026-09-07-bedrock-live
 git commit -m "test(live): AC4–AC11 驗收腳本與證據"
+```
+
+---
+
+### Task 16: AC16 掃描件視覺讀取驗證（加值層）
+
+**Files:**
+- Create: `scripts/make_scanned_pdf.py`、`docs/evidence/2026-09-07-bedrock-live/ac16.md`
+
+- [ ] **Step 1: 造一份「掃描」PDF**
+
+把 `synthetic-ordinary-01.json` 的 `documents[]` 文字排成圖片再存成 PDF（沒有文字層）。用 Pillow：
+
+```bash
+uv run --with pillow -- python3 - <<'PY'
+import json, pathlib
+from PIL import Image, ImageDraw, ImageFont
+fx = json.load(open("backend/data/synthetic/synthetic-ordinary-01.json", encoding="utf-8"))
+font = ImageFont.truetype("/System/Library/Fonts/STHeiti Light.ttc", 28)
+pages = []
+for d in fx["documents"]:
+    img = Image.new("RGB", (1240, 1754), "white"); dr = ImageDraw.Draw(img); y = 80
+    for line in (f"《{d['n']}》\n" + d["text"]).splitlines():
+        dr.text((80, y), line, fill="black", font=font); y += 44
+    pages.append(img)
+out = pathlib.Path("/tmp/synthetic-scan.pdf"); pages[0].save(out, save_all=True, append_images=pages[1:])
+print(out)
+PY
+pdftotext /tmp/synthetic-scan.pdf - | wc -c     # 期望接近 0：沒有文字層
+```
+
+- [ ] **Step 2: 上傳並跑 live，落證據**
+
+```bash
+CID=$(curl -s -F "files=@/tmp/synthetic-scan.pdf" http://127.0.0.1:8080/api/cases | python3 -c "import sys,json;print(json.load(sys.stdin)['case_id'])")
+R=$(curl -s -X POST http://127.0.0.1:8080/api/cases/$CID/runs); RID=$(echo "$R" | python3 -c "import sys,json;print(json.load(sys.stdin)['run_id'])")
+until curl -s -o /tmp/ac16.json -w "%{http_code}" http://127.0.0.1:8080/api/runs/$RID | grep -qv 409; do sleep 3; done
+python3 -c "
+import json; p=json.load(open('/tmp/ac16.json'))
+print('route:', p['run_meta'].get('degraded'), '| type:', p['intake'].get('type'), '| d3:', p['intake'].get('d3'))
+print([l for l in p['agents'] if l.get('k')=='clerk'])" | tee docs/evidence/2026-09-07-bedrock-live/ac16.md
+```
+
+Expected：clerk 敘述含「視覺讀取」；`intake.type` 與 `d3` 抽得出（AC16）。抽不出就如實記錄，這是手寫／掃描能力的量測，不是失敗。
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add scripts/make_scanned_pdf.py docs/evidence/2026-09-07-bedrock-live/ac16.md
+git commit -m "test(live): AC16 掃描件視覺讀取實測與證據"
 ```
 
 ---
@@ -2828,6 +3489,7 @@ git commit -m "docs: 同步 Strands 限 N1/N5、Managed KB、開發期帳號規�
 
 ## Self-Review 紀錄
 
-- **Spec coverage**：§5.1→Task 2；§5.2→Task 3；§5.3→Task 4；§5.4→Task 5；§5.5→Task 6；§5.6→Task 7＋8；§5.7→Task 1＋2；§6→Task 9；§7→Task 3/4/5/7 的失敗路徑與 Task 10 AC11；§8 AC1–AC3→每 task 的 run_all，AC4–AC11→Task 10，AC12→Task 9 Step 5，AC13→Task 9 Step 3，AC14→Task 9/11；§9→Task 11。
-- **Placeholder scan**：無 TBD／TODO；所有程式步驟附完整程式碼。Task 3 Step 1 的 `synthetic-blocked-01` documents 文字由執行者依該檔既有欄位撰寫，規則已寫明（facts_excerpt 逐字出現）。
-- **Type consistency**：`client.extract_intake() -> dict{intake,conf,quotes,facts_excerpt,usage,model_id}` 在 Task 2 定義、Task 3 使用；`client.draft_sentences(context, slots, retrieve_fn) -> dict{slots,tool_calls,usage,model_id}` 在 Task 2 定義、Task 4 使用；`Hit.payload{outcome,provenance,text}` 在 Task 5 kb.py 產、N4 與 N5 消費；`run_case(base_state, from_node, overrides, on_event, persist, run_id)` 在 Task 6 定義，Task 7 使用；`NodeCtx.retriever` 既有欄位，Task 4/5 使用。
+- **Spec coverage**：§5.1→Task 2；§5.2→Task 3；§5.3→Task 4；§5.4→Task 5；§5.5→Task 6；§5.6→Task 7a（202／輪詢）＋7b（SSE）＋8a／8b；§5.7→Task 1＋2；§5.8（上傳與卷證路由）→Task 3b＋8a；§6→Task 9（加值）；§7→Task 3/3b/4/5/7a 的失敗路徑與 Task 10 AC11；§8 AC1–AC3→每 task 的 run_all，AC4–AC9、AC11、AC15→Task 10，AC10→Task 7b，AC12→Task 9，AC13→Task 9，AC14→Task 9/11，AC16→Task 16；§9→Task 11。
+- **Placeholder scan**：無 TBD／TODO；所有程式步驟附完整程式碼。Task 3 Step 1 的 `synthetic-blocked-01` documents 文字由執行者依該檔既有欄位撰寫，規則已寫明（facts_excerpt 逐字出現）。Task 8a 的 `#casesel` 若模板 id 不同，以模板為準。
+- **Type consistency**：`client.extract_intake(document_text, *, pdf_documents=None) -> dict{intake,conf,quotes,facts_excerpt,usage,model_id}` 在 Task 2 定義、Task 3／3b 使用；`client.draft_sentences(context, slots, retrieve_fn) -> dict{slots,tool_calls,usage,model_id}` 在 Task 2 定義、Task 4 使用；`Hit.payload{outcome,provenance,text}` 在 Task 5 產、N4 與 N5 消費；`run_case(base_state, from_node, overrides, on_event, persist, run_id)` 在 Task 6 定義，Task 7a 使用；`documents[].kind ∈ {txt,pdf_text,pdf_visual}` 在 Task 3b 定義，N1 消費（Task 3 的合成案例缺 `kind` 視為 txt）；`digest_from_state()` 在 Task 3b 定義，`_dispatch` 使用；`BUS.status/push/start` 在 Task 7a 定義，`stream()` 由 Task 7b 的端點使用。
+- **兩層切分**：必要層 1→2→3→3b→4→5→6→7a→8a→10→11；加值層 7b→8b、9、16 互相獨立，可任意砍。

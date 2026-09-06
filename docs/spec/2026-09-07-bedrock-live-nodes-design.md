@@ -24,12 +24,17 @@
 |---|---|---|
 | A | `backend/llm/` | N1、N5 的模型呼叫層；Strands `Agent` + `BedrockModel`，`MODEL_PROVIDER` 可切 |
 | B | `backend/retrieval/kb.py` + `scripts/ingest_kb.py` | N4 通道 B 接 Managed KB；冪等入庫腳本，換帳號重跑即搬遷 |
+| B2 | `backend/intake/` + `POST /api/cases` | 上傳訴願書／原處分書（PDF、txt）建案；卷證文字路由 pdftotext／視覺讀；N2、N3 改吃 N1 輸出 |
 | C | 可續跑執行 | `CaseState` 持久化、`POST /runs` 收 `base_run_id` + `from_node`，從指定節點往下重跑到 N6 |
 | D | SSE 節點事件 | bedrock 模式 `POST /runs` 回 202，`GET /runs/{id}/events` 逐節點推進；fixture 模式維持同步 |
 | E | 資料 | 兩批來源分前綴上 S3、manifest 進 git、爬蟲 251 件逾期案變成期間引擎回放測試集 |
 | F | 文件同步 | `docs/architecture.md` §4.1／§8／§13、`CLAUDE.md` 帳號那條、`backend/DEPLOY.md` |
 
+工作包分**必要層**（A、B、B2、C、D 的 202＋輪詢、F）與**加值層**（D 的 SSE 與每卡按鈕、E）；plan 對應 Task 順序。
+
 ### 不做（列 backlog Phase S）
+
+- 獨立 OCR 服務（Textract 不支援中文；Bedrock Data Automation 要建 project 與非同步 job，30 小時內是坑；Tesseract 多一個依賴且手寫中文效果差）。掃描件走 §5.8 的視覺讀取，抽不出就手動表單（architecture §3.5）。
 
 - ask 追問 agent。`backlog.md`、`docs/spec/`、`docs/architecture.md` 沒有任何 story 或驗收條件要求對話。
 - AgentCore Runtime 部署。唯一價值是承載 ask 那種有記憶的 agent；沒有 ask 就沒有理由。
@@ -47,6 +52,7 @@
 | D4 | 開發期使用開發用 AWS 帳號（`<dev-profile>`，<REDACTED-ACCOUNT-ID>），賽方帳號到手後以 ingest 腳本重建 | `CLAUDE.md`「不借用其他專案的任何 secret」→ 改為「開發期可用開發用 AWS；GCP 仍不碰；賽方帳號到手即切換」。**Claire 拍板** |
 | D5 | live 呼叫失敗**不自動退回 fixture**，節點拋錯、API 回 502 帶原因 | 延續 `NodeCtx.require_fixture` 精神，CONSTITUTION §1 |
 | D6 | 重跑只能「從某節點往下全部重跑」，N6 永遠最後重跑；不提供單節點重跑 | 新增契約 |
+| D7 | 上傳案 `upload-` 前綴存 `backend/output/uploads/`（gitignored），只能在 bedrock 模式跑；卷證文字三層路由（txt／pdftotext／PDF 視覺讀），不裝 OCR 套件 | `graph.load_case` 原本只放行 `synthetic-`；上傳目錄不進 git 故不違 CONSTITUTION §6 |
 
 ## 4. 呼叫形狀
 
@@ -190,7 +196,26 @@ event: run_done     data: {"run_id":"...","final_state":"VERIFIED"}   // 或 run
 - `GET /api/runs/{run_id}`：回完整 payload（`build_payload(state)`），前端收到 `node_done` 後可立即取部分 payload 渲染該節點的卡。
 - fixture 模式：`POST /runs` 維持 200 + 完整 payload，前端偵測狀態碼分流。斷網備援路徑不變。
 
-### 5.7 設定與 secret
+### 5.7 上傳案件與卷證文字路由
+
+**入口**：`POST /api/cases`（multipart，`.pdf`／`.txt`，單檔 20 MB）→ `backend/output/uploads/upload-<sha12>/{原檔, case.json}` → 回 `{case_id, files, provenance{kind:"uploaded"}}`。接著照常 `POST /api/cases/upload-xxx/runs`。fixture 模式對上傳案回 400（沒有可重播的 fixture，不假裝）。
+
+**卷證文字路由**（`backend/intake/documents.py`，不裝 OCR 套件）：
+
+| 輸入 | 路由 | 進 N1 的形式 |
+|---|---|---|
+| `.txt` | `txt` | 文字 |
+| `.pdf`，`pdftotext -layout` 後中文比例 ≥ 0.60 | `pdf_text` | 文字 |
+| `.pdf`，中文比例 < 0.60（掃描件、CID 字型） | `pdf_visual` | 整份 PDF 以 Converse `document` 區塊餵模型視覺讀（單檔 4.5 MB 上限，超過則送殘缺文字並註記） |
+| 以上仍抽不出必填欄位 | — | N1 `degraded` → `NEEDS_INPUT` → 承辦人手動表單（architecture §3.5，既有） |
+
+走了哪一層、中文比例多少，寫進 N1 `generation.input_route` 與 clerk 敘述（分層誠實）。
+
+**下游改吃 N1 輸出**：N2 分類與 N3 事實爭點偵測原本吃合成案例的 `case_digest`；上傳案沒有它，改由 `facts_excerpt[].text` 與 `intake.note` 組成 `digest_from_state()`。合成案例仍用 `case_digest`，fixture 行為不變。
+
+**Provenance**：payload 的 `provenance` 改讀案例自帶的區塊（合成案例本來就有 `kind: synthetic`），上傳案為 `kind: uploaded` 並帶橫幅「卷證來自使用者上傳，未進 git」。
+
+### 5.8 設定與 secret
 
 - 新增環境變數（全部在 `backend/DEPLOY.md` 說明、`.env.example` 給名稱不給值）：`MODEL_PROVIDER`、`BEDROCK_MODEL_ID_EXTRACT`、`BEDROCK_MODEL_ID_DRAFT`、`BEDROCK_KB_ID`、`AWS_REGION`、`AWS_PROFILE`（本機）、`RETRIEVER`、`KB_MIN_SCORE`、`S3_KB_BUCKET`。
 - `settings.py` 維持紅線：不出現任何帳號 ID、KB id、model id 的實際值。
@@ -252,6 +277,8 @@ s3://{S3_KB_BUCKET}/
 | 模型輸出不符 schema | strands structured_output 重試，仍失敗視同呼叫失敗 | 同第一列 |
 | N1 conf 不足 | 現有 `NEEDS_INPUT` 路徑 | 收文頁要求補欄位 |
 | `from_node` 給了但 `base_run_id` 找不到 | 400 | — |
+| 上傳案在 fixture 模式 | `POST /runs` 回 400「只能在 RUN_MODE=bedrock 執行」 | hint 顯示原因，不用舊資料 |
+| PDF 無文字層且 > 4.5 MB | 送殘缺文字，N1 必填欄位抽不出 → `NEEDS_INPUT` | 收文頁要求手動補欄位，敘述註明原因 |
 | `RUN_MODE=bedrock` 但缺 `BEDROCK_*` 變數 | 啟動時 `/api/health` 回 503 列缺哪些 | 健康檢查頁 |
 
 任何情境都**不自動切回 fixture**。
@@ -273,9 +300,11 @@ s3://{S3_KB_BUCKET}/
 | AC11 | 失敗不假裝 | 把 `BEDROCK_MODEL_ID_EXTRACT` 設成不存在的 id，`GET /runs/{id}` 回 502，body 含 `node:"n1"` 與原始錯誤字串；無任何 fixture 內容出現在 payload |
 | AC12 | 入庫冪等 | `ingest_kb.py` 連跑兩次，第二次上傳數 0，ingestion job 仍成功 |
 | AC13 | 期間回放 | `overdue-public.jsonl` 回放一致率 ≥ 99%，輸出報告進 `docs/evidence/` |
+| AC15 | 上傳案端到端 | 把 `synthetic-ordinary-01` 的 `documents[]` 文字以 txt 上傳建案，bedrock 跑完 `intake.no/d2/d3/service_method` 與該案 fixture 一致、N2 案型一致 |
+| AC16（加值） | 掃描件視覺讀取 | 同一份文字排成圖片存 PDF（無文字層）上傳，N1 走 `pdf_visual`，clerk 敘述含「視覺讀取」，`intake.type` 與 `d3` 抽得出；抽不出如實記錄 |
 | AC14 | secret 掃描 | `git grep -nE "<REDACTED-ACCOUNT-ID>|<REDACTED-KB-ID>|AKIA"` 無結果 |
 
-AC4–AC11 標 `@live`，需要 Bedrock 開通；其餘在 fixture 下可跑。
+AC4–AC11、AC15、AC16 標 `@live`，需要 Bedrock 開通；其餘在 fixture 下可跑。必要層必過：AC1–AC9、AC11、AC14、AC15；加值層：AC10、AC12、AC13、AC16。
 
 ## 9. 文件同步（工作包 F）
 
@@ -294,6 +323,7 @@ AC4–AC11 標 `@live`，需要 Bedrock 開通；其餘在 fixture 下可跑。
 | R2 | Managed KB 不可控 chunking 導致 recall 不足 | AC7 實測；不足則 §13 待拍板改自管 KB + S3 Vectors（architecture §8 原案），介面不變 |
 | R3 | Sonnet 5 在東京需跨區 inference profile | 開通後 `list-inference-profiles` 確認；model id 走環境變數 |
 | R4 | live 模式下 N1 兩次抽取結果不同 | D6 + AC9：確認後從 n2 續跑，不重抽 |
+| R6 | 手寫掃描件的視覺讀取品質未實測（手上沒有真實訴願書） | AC16 用自造掃描件量測；賽場遇到抽不出就走手動表單，這是設計不是失敗 |
 | R5 | 開發期借開發用帳號與 CLAUDE.md 衝突 | D4 由 Claire 拍板並改文件；權限分類器目前擋 `--profile <dev-profile>`，需在 `.claude/settings.local.json` 加允許規則，否則 live 測試由人手動跑 |
 
 ## 11. 前置條件
