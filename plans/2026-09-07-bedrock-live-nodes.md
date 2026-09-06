@@ -78,7 +78,7 @@
 | 到最遲放棄時刻仍紅 | 降級成 |
 |---|---|
 | Bedrock 帳號未開通（Task 3/3b/4/10 的 live 測試跑不了） | 必要層以 fixture＋monkeypatch 完成並 commit；live AC 標「未驗」；`MODEL_PROVIDER=openai` 只准用來調 prompt，**其輸出不得當 AC 證據**（賽制僅限 AWS 基礎模型）；demo 走 fixture，`run_meta.run_mode` 如實顯示 |
-| Managed KB recall 三案不到 3/5（AC7） | `RETRIEVER=lawtable_only`，相似案卡維持「庫外」降級 log；KB 改自管方案列 §13 待拍板 |
+| Managed KB recall 三案不到 3/5（AC7） | 分兩級，先便宜的：**第一級 rerank**——Retrieve 已多抓 3 倍（15 件）再依 `KB_MIN_SCORE` 過濾，改為在同一次 `retrieve` 呼叫加 `rerankingConfiguration`（Bedrock Rerank 模型，非生成、無捏造風險），或由 LLM **只在這 15 件真實候選中挑 id 排序**（輸出集合 ⊆ 候選 id，決定結果仍照檔名，違者整批棄用）；以 `RERANK=none|bedrock|llm` 旗標切換，預設 `none`，改動只在 `retrieval/kb.py` 與 N4 通道 B；重跑 AC7 為證。**第二級**——rerank 後仍不到 3/5：`RETRIEVER=lawtable_only`，相似案卡維持「庫外」降級 log；KB 改自管方案列 §13 待拍板 |
 | 掃描 PDF 視覺讀取抽不出必填欄位 | 本來就是設計：N1 degraded → NEEDS_INPUT → 承辦人手動表單（architecture §3.5），不加 OCR 套件 |
 | 加值層來不及 | 全部不做。前端用輪詢等結果、沒有每卡按鈕；`from_node` 續跑仍可由 curl 展示 |
 
@@ -3473,7 +3473,7 @@ git commit -m "test(live): AC16 掃描件視覺讀取實測與證據"
 
   - §4.1 表格下方加一段：「**2026-09-07 補充（spec D1）**：Strands 限 `backend/llm/client.py` 內部使用，供 N1／N5 structured output；編排層仍為自寫 state machine。`run_all.py` 的 `scan_llm_import_graph` 強制 N2/N3/N4/N6 不得 import strands 或 backend.llm。」
   - §8 「Chunking 不用 KB 自動切」那列改為：「**改用 Managed Knowledge Base（2026-09-07 D2）**：chunking 由服務決定；每檔即一份決定書／函釋／判解，法規不入庫。recall 門檻見 §13。」
-  - §13 第 5 項現況欄加「維持 Stretch（spec 2026-09-07 §2 不做）」；第 6 項改「**已拍板**：Strands 限 N1/N5 內部（D1）」；新增第 18 項「Managed KB recall：三個 demo 案 top-5 同案型 ≥ 3（AC7）；不足則改自管 KB + S3 Vectors」與第 19 項「開發期使用開發用 AWS 帳號（D4，Claire 2026-09-06 拍板）；賽方帳號到手即以 `scripts/ingest_kb.py` 重建」。
+  - §13 第 5 項現況欄加「維持 Stretch（spec 2026-09-07 §2 不做）」；第 6 項改「**已拍板**：Strands 限 N1/N5 內部（D1）」；新增第 18 項「Managed KB recall：三個 demo 案 top-5 同案型 ≥ 3（AC7）；不足時**先加 rerank**（`RERANK=bedrock`：KB Retrieve 的 `rerankingConfiguration`；或 `RERANK=llm`：LLM 只在已撈回的 15 件真實候選中挑 id，輸出 ⊆ 候選、結果照檔名不推測，見 CONSTITUTION #2），rerank 後仍不足才改自管 KB + S3 Vectors；rerank 留在 N4 通道 B 內，不是第三個 LLM 節點；但 `RERANK=llm` 會讓 N4 import `backend.llm`，與 AC3／`scan_llm_import_graph` 衝突，故第一級**預設走 `bedrock`**，`llm` 只在拍板同意豁免 `retrieval/` 時才開」與第 19 項「開發期使用開發用 AWS 帳號（D4，Claire 2026-09-06 拍板）；賽方帳號到手即以 `scripts/ingest_kb.py` 重建」。
 
 - [ ] **Step 2: prototype-spec.md §4.6**
 
