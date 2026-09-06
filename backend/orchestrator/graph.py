@@ -62,14 +62,20 @@ def list_synthetic_cases(data_dir: pathlib.Path | None = None) -> list[str]:
 
 
 def load_case(case_id: str, data_dir: pathlib.Path | None = None) -> dict[str, Any]:
-    """只讀 `synthetic-` 前綴的檔案。
+    """依前綴分流案例來源。
 
-    CONSTITUTION §3／§6：本 Phase 不存在、也不得讀取任何真實競賽資料。
-    路徑名不帶 synthetic 前綴的一律拒絕，避免有人把真實資料丟進來就跑得起來。
+    - `synthetic-`：`backend/data/synthetic/` 的合成案例檔（進 git）。
+    - `upload-`：承辦人上傳的卷證（`backend/output/uploads/`，**不進 git**）。
+    - 其他一律拒絕：CONSTITUTION §3／§6，真實競賽資料不由本流程讀取，
+      連 id 都不接受，避免有人把真實資料丟進來就跑得起來。
     """
+    if case_id.startswith("upload-"):
+        from backend.intake.uploads import load_upload_case
+
+        return load_upload_case(case_id)
     if not case_id.startswith("synthetic-"):
         raise ValueError(
-            f"案例 id {case_id!r} 不是 synthetic- 前綴。本系統只處理合成測資，"
+            f"案例 id {case_id!r} 不是 synthetic- 或 upload- 前綴。本系統只處理合成測資與承辦人上傳的卷證，"
             f"真實競賽資料不進 git、不由本流程讀取（CONSTITUTION §3、§6）。"
         )
     d = data_dir or SYNTHETIC_DIR
@@ -77,6 +83,25 @@ def load_case(case_id: str, data_dir: pathlib.Path | None = None) -> dict[str, A
     if not p.exists():
         raise CaseNotFound(f"找不到合成案例 {p}。現有案例：{', '.join(list_synthetic_cases(d)) or '（無）'}")
     return json.loads(p.read_text(encoding="utf-8"))
+
+
+def list_cases(data_dir: pathlib.Path | None = None) -> dict[str, list[str]]:
+    """兩種來源分開列，不混成一份看不出差別的清單。"""
+    from backend.intake.uploads import list_upload_cases
+
+    return {"synthetic": list_synthetic_cases(data_dir), "uploaded": list_upload_cases()}
+
+
+def digest_from_state(state: CaseState) -> str:
+    """N2／N3 的案情摘要來源：N1 抽出的事實段原文 ＋ intake.note。
+
+    合成案例有預先寫好的 `case_digest`（fixture 重播用）；上傳案沒有，
+    分類與爭點偵測只能吃 N1 這一次抽出來的東西——**同一份抽取結果，不另外生一份**。
+    純字串拼接，零 LLM（CONSTITUTION §4）。
+    """
+    parts = [str(x.get("text") or "") for x in (state.facts_excerpt or [])]
+    parts.append(str((state.intake or {}).get("note") or ""))
+    return " ".join(p for p in parts if p).strip()
 
 
 def _apply_confirmed_intake(state: CaseState, confirmed: dict[str, Any] | None) -> None:
@@ -133,6 +158,10 @@ def run_case(
     """
     fixture = load_case(case_id, data_dir)
     mode = mode or run_mode()
+    if case_id.startswith("upload-") and mode == "fixture":
+        raise ValueError(
+            "上傳案件沒有可重播的 fixture，只能在 RUN_MODE=bedrock 執行；fixture 模式請選 synthetic- 案例。"
+        )
     snapshot = load_snapshot()
     digest = fixture.get("case_digest", "")
 
@@ -142,6 +171,9 @@ def run_case(
     # `run_meta.run_id_note` 誠實寫出「冪等復用尚未實作」，不假裝有做。
     state.run_id = f"run-{case_id}-{uuid.uuid4().hex[:12]}"
     state.files = list(fixture.get("files") or [])
+    # 案件層的來源聲明（合成／上傳）。build_payload 會疊在服務層的 PROVENANCE 上，
+    # 讓前端橫幅講的是**這一件**卷證從哪裡來，不是服務預設的那一句。
+    state.provenance = dict(fixture.get("provenance") or {})
     ctx = NodeCtx(run_mode=mode, snapshot=snapshot)
 
     run_started = time.perf_counter()
@@ -194,9 +226,9 @@ def _dispatch(node, state, ctx, fixture, digest):
     if node == "n1":
         return n1_extract.run(state, ctx, case_fixture=fixture)
     if node == "n2":
-        return n2_classify.run(state, ctx, digest=digest)
+        return n2_classify.run(state, ctx, digest=digest or digest_from_state(state))
     if node == "n3":
-        return n3_procedure.run(state, ctx, digest=digest)
+        return n3_procedure.run(state, ctx, digest=digest or digest_from_state(state))
     if node == "n4":
         # cited_laws 刻意不傳：N4 自己從 state（N1/N2/N3 的結果）組查詢句。
         return n4_retrieval.run(state, ctx)
@@ -362,7 +394,11 @@ def build_payload(state: CaseState) -> dict[str, Any]:
         "case_id": state.case_id,
         "run_id": state.run_id,
         "state": state.state,
-        "provenance": PROVENANCE,
+        # 服務層聲明打底，案件層（合成案例檔／上傳案的 case.json）覆蓋。
+        # **不是整塊換掉**：合成案例的 provenance 區塊沒有 banner／dataset_scope，
+        # 整塊換會讓前端橫幅從「合成測資：……」掉回泛稱的「示範案件」——
+        # 那是誠實度的倒退，不是重構。
+        "provenance": {**PROVENANCE, **(state.provenance or {})},
         "files": state.files,
         "intake": intake_view,
         "intake_conf": state.intake_conf,

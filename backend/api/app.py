@@ -2,7 +2,7 @@
 
 跑法（**唯一的官方啟動指令**，見 `backend/DEPLOY.md`）：
 
-    uv run --with fastapi --with "uvicorn[standard]" --with pydantic -- \
+    uv run --with fastapi --with "uvicorn[standard]" --with pydantic --with python-multipart -- \
         python -m uvicorn backend.api.app:app --host 127.0.0.1 --port 8080
 
     → http://127.0.0.1:8080/   五步動線 UI（live 接後端）
@@ -18,7 +18,8 @@
 |------|-----------------------------|--------------------------------------------|
 | GET  | `/`                         | 五步動線 UI（`prototype/dist/index.html`） |
 | GET  | `/api/health`               | 健康檢查：**實際**載入快照與合成案例       |
-| GET  | `/api/cases`                | 列出可用的合成案例                         |
+| GET  | `/api/cases`                | 列出可用案例（合成 + 承辦人上傳）          |
+| POST | `/api/cases`                | 上傳卷證建案，回 `case_id`（只收 .pdf／.txt）|
 | POST | `/api/cases/{case_id}/runs` | 跑完六節點，回 `run_id` + 完整 CASE payload |
 | POST | `/api/cases/{case_id}/submit` | 送出審議：後端重算後 200／409（§6.1 #9）  |
 | POST | `/api/deadline`             | 期間計算（沿用 prototype/app.py 的契約）    |
@@ -42,7 +43,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from fastapi import FastAPI, HTTPException  # noqa: E402
+from fastapi import FastAPI, File, HTTPException, UploadFile  # noqa: E402
 from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
 from fastapi.responses import FileResponse, JSONResponse  # noqa: E402
 from fastapi.staticfiles import StaticFiles  # noqa: E402
@@ -51,9 +52,10 @@ from pydantic import BaseModel  # noqa: E402
 from backend.config import settings  # noqa: E402
 from backend.config.settings import PROVENANCE, load_snapshot, run_mode  # noqa: E402
 from backend.engine.deadline import compute  # noqa: E402
+from backend.intake.uploads import save_upload  # noqa: E402
 from backend.orchestrator.graph import (  # noqa: E402
-    CaseNotFound,
     build_payload,
+    list_cases,
     list_synthetic_cases,
     load_case,
     run_case,
@@ -172,7 +174,35 @@ def health() -> JSONResponse:
 
 @app.get("/api/cases")
 def cases() -> dict:
-    return {"cases": list_synthetic_cases(), "note": "只提供合成測資，真實競賽資料不由本服務讀取。"}
+    """兩種來源分開列。`cases` 是合併後的相容清單（舊呼叫端仍讀這個鍵）。"""
+    lst = list_cases()
+    return {
+        "cases": lst["synthetic"] + lst["uploaded"],
+        "synthetic": lst["synthetic"],
+        "uploaded": lst["uploaded"],
+        "note": "synthetic- 為合成測資；upload- 為承辦人上傳，僅存於本服務 output/ 目錄，不進 git。",
+    }
+
+
+@app.post("/api/cases", status_code=201)
+async def create_case(files: list[UploadFile] = File(...)) -> dict:
+    """上傳卷證建案（spec 2026-09-07 §5.8）。只收 .pdf／.txt，單檔 20 MB。
+
+    回 `case_id` 供 `POST /api/cases/{case_id}/runs` 使用。上傳案沒有可重播的 fixture，
+    **只能在 RUN_MODE=bedrock 跑**；fixture 檔位下打 runs 會拿到 400 並附上原因。
+    檔案落在 `backend/output/uploads/`（gitignored），不外送任何第三方（CONSTITUTION §6）。
+    """
+    payload = [(f.filename or "file", await f.read()) for f in files]
+    try:
+        meta = save_upload(payload)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    return {
+        "case_id": meta["case_id"],
+        "files": meta["files"],
+        "provenance": meta["provenance"],
+        "next": f"/api/cases/{meta['case_id']}/runs",
+    }
 
 
 @app.post("/api/cases/{case_id}/runs")
@@ -186,7 +216,7 @@ def create_run(case_id: str, body: RunIn | None = None) -> dict:
     """
     try:
         state = run_case(case_id, confirmed_intake=(body.confirmed_intake if body else None))
-    except CaseNotFound as e:
+    except FileNotFoundError as e:  # CaseNotFound 與上傳案的「找不到目錄」都在這裡
         raise HTTPException(status_code=404, detail=str(e)) from e
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
@@ -222,7 +252,7 @@ def submit_case(case_id: str, body: RunIn | None = None) -> JSONResponse:
     """
     try:
         state = run_case(case_id, confirmed_intake=(body.confirmed_intake if body else None))
-    except CaseNotFound as e:
+    except FileNotFoundError as e:  # CaseNotFound 與上傳案的「找不到目錄」都在這裡
         raise HTTPException(status_code=404, detail=str(e)) from e
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e

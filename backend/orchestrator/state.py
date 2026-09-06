@@ -91,6 +91,10 @@ class CaseState:
     # Phase 0 沒有真實上傳流程，值取自合成案例檔的 `files` 區塊，由編排層搬進來。
     files: list[dict[str, Any]] = field(default_factory=list)
 
+    # 案件層來源聲明（合成案例檔／上傳案 case.json 的 provenance 區塊，origin=static）。
+    # 由編排層 `graph.run_case()` 搬進來；空 dict = 沿用服務層的 settings.PROVENANCE。
+    provenance: dict[str, Any] = field(default_factory=dict)
+
     # N1 抽取
     intake: dict[str, Any] = field(default_factory=dict)
     intake_conf: dict[str, float] = field(default_factory=dict)

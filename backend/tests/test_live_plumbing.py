@@ -329,3 +329,156 @@ def test_n1_still_raises_for_unknown_mode():
         pass
     else:
         raise AssertionError("local 模式仍未實作，必須 raise")
+
+
+# ── Task 3b：卷證文字路由、上傳案件、N2/N3 digest 來源 ─────────────
+# route_documents 的 PDF 文字抽取一律用注入的 extractor，測試不依賴機器上有沒有 pdftotext。
+
+
+def test_cjk_ratio_and_routing_with_injected_extractor():
+    import pathlib
+    import tempfile
+
+    from backend.intake.documents import CJK_RATIO_THRESHOLD, cjk_ratio, route_documents
+
+    assert_true(cjk_ratio("訴願人於農地露天燃燒") > 0.9)
+    assert_true(cjk_ratio("abc def 123") == 0.0)
+    d = pathlib.Path(tempfile.mkdtemp())
+    (d / "a.txt").write_text("訴願書全文（合成）", encoding="utf-8")
+    (d / "digital.pdf").write_bytes(b"%PDF-1.4 fake")
+    (d / "scan.pdf").write_bytes(b"%PDF-1.4 fake")
+
+    def extractor(p):
+        return "裁處書（合成）本文" if p.name == "digital.pdf" else "\x0c\x0c   "
+
+    docs = route_documents(d, text_extractor=extractor)
+    kinds = {x.n: x.kind for x in docs}
+    assert_eq(kinds, {"a.txt": "txt", "digital.pdf": "pdf_text", "scan.pdf": "pdf_visual"})
+    assert_true(all(x.cjk_ratio >= CJK_RATIO_THRESHOLD for x in docs if x.kind != "pdf_visual"))
+
+
+def test_save_and_load_upload_case_shape_and_prefix():
+    import pathlib
+    import tempfile
+
+    from backend.intake.uploads import list_upload_cases, load_upload_case, save_upload
+
+    d = pathlib.Path(tempfile.mkdtemp())
+    meta = save_upload([("訴願書.txt", "訴願書全文（合成）".encode("utf-8"))], uploads_dir=d)
+    assert_true(meta["case_id"].startswith("upload-"))
+    assert_eq(meta["provenance"]["kind"], "uploaded")
+    fx = load_upload_case(meta["case_id"], uploads_dir=d)
+    assert_eq(fx["id"], meta["case_id"])
+    assert_eq([f["n"] for f in fx["files"]], ["訴願書.txt"])
+    assert_eq(fx["documents"][0]["kind"], "txt")
+    assert_in("訴願書全文", fx["documents"][0]["text"])
+    assert_true("extraction" not in fx and "draft_fixture" not in fx, "上傳案沒有 fixture 區塊")
+    assert_eq(list_upload_cases(uploads_dir=d), [meta["case_id"]])
+
+
+def test_save_upload_rejects_bad_suffix_and_oversize():
+    import pathlib
+    import tempfile
+
+    from backend.intake.uploads import MAX_BYTES, save_upload
+
+    d = pathlib.Path(tempfile.mkdtemp())
+    for files in ([("x.docx", b"1")], [("x.pdf", b"0" * (MAX_BYTES + 1))]):
+        try:
+            save_upload(files, uploads_dir=d)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"{files[0][0]} 必須被拒絕")
+
+
+def test_load_case_dispatches_on_prefix():
+    from backend.orchestrator.graph import load_case
+
+    assert_eq(load_case("synthetic-ordinary-01")["id"], "synthetic-ordinary-01")
+    for bad in ("real-123", "upload-does-not-exist"):
+        try:
+            load_case(bad)
+        except (ValueError, FileNotFoundError):
+            pass
+        else:
+            raise AssertionError(f"{bad} 必須 raise")
+
+
+def test_upload_case_in_fixture_mode_is_refused_honestly():
+    import pathlib
+    import tempfile
+
+    from backend.intake.uploads import save_upload
+    from backend.orchestrator.graph import run_case
+
+    d = pathlib.Path(tempfile.mkdtemp())
+    meta = save_upload([("訴願書.txt", "訴願書全文（合成）".encode("utf-8"))], uploads_dir=d)
+    import backend.intake.uploads as up
+
+    orig = up.UPLOADS_DIR
+    up.UPLOADS_DIR = d
+    try:
+        try:
+            run_case(meta["case_id"], mode="fixture")
+        except ValueError as e:
+            assert_in("bedrock", str(e), "要說清楚上傳案只能在 bedrock 模式跑")
+        else:
+            raise AssertionError("上傳案在 fixture 模式沒有 extraction 可重播，必須 raise")
+    finally:
+        up.UPLOADS_DIR = orig
+
+
+def test_n1_bedrock_passes_pdf_visual_docs_as_attachments():
+    from backend.llm import client
+    from backend.nodes import n1_extract
+    from backend.orchestrator.state import CaseState, NodeCtx
+
+    seen = {}
+
+    def fake_extract(document_text, *, pdf_documents=None, **kw):
+        seen["text"] = document_text
+        seen["pdfs"] = pdf_documents
+        e = _fake_extraction()
+        return {
+            "intake": {k: e[k]["value"] for k in client.INTAKE_FIELDS},
+            "conf": {k: e[k]["conf"] for k in client.INTAKE_FIELDS},
+            "quotes": {},
+            "facts_excerpt": e["facts_excerpt"],
+            "usage": None,
+            "model_id": "m",
+        }
+
+    fixture = {
+        "id": "upload-x", "files": [], "provenance": {"kind": "uploaded"},
+        "documents": [
+            {"n": "a.txt", "kind": "txt", "text": "訴願書全文", "cjk_ratio": 1.0, "path": None},
+            {"n": "scan.pdf", "kind": "pdf_visual", "text": "", "cjk_ratio": 0.0, "bytes": b"%PDF-1.4 fake"},
+        ],
+    }
+    orig = client.extract_intake
+    client.extract_intake = fake_extract
+    try:
+        r = n1_extract.run(
+            CaseState(case_id="upload-x", run_mode="bedrock"), NodeCtx(run_mode="bedrock"), case_fixture=fixture
+        )
+    finally:
+        client.extract_intake = orig
+    assert_in("訴願書全文", seen["text"])
+    # 檔名加序號前綴：多份中文檔名 PDF 會被 _safe_doc_name 清成同一個名字，序號讓模型分得出來
+    assert_eq(seen["pdfs"], [("2-scan.pdf", b"%PDF-1.4 fake")])
+    assert_eq(r.data["generation"]["input_route"], {"a.txt": "txt", "scan.pdf": "pdf_visual"})
+    assert_true(any("視覺" in log[0] for log in r.narrative["clerk"]["logs"]), "視覺讀取要在敘述裡講出來")
+
+
+def test_n2_n3_digest_falls_back_to_n1_output():
+    from backend.orchestrator.graph import digest_from_state
+    from backend.orchestrator.state import CaseState
+
+    st = CaseState(case_id="upload-x", run_mode="bedrock")
+    st.facts_excerpt = [{"text": "訴願人於農地露天燃燒稻稈。"}, {"text": "經稽查查獲。"}]
+    st.intake = {"note": "主張未收受處分書"}
+    d = digest_from_state(st)
+    assert_in("露天燃燒稻稈", d)
+    assert_in("經稽查查獲", d)
+    assert_in("主張未收受", d)

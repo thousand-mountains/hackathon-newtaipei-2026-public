@@ -12,6 +12,7 @@
 fastapi~=0.115.0
 uvicorn[standard]~=0.32.0
 pydantic~=2.9.0
+python-multipart~=0.0.9   # api/app.py：POST /api/cases 的 multipart 檔案上傳
 
 # ── live 分支（RUN_MODE=bedrock / RETRIEVER=kb 才會 import；fixture 模式與測試路徑不需要）──
 boto3~=1.35.0            # retrieval/kb.py：bedrock-agent-runtime Retrieve

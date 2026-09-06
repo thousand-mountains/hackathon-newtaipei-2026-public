@@ -42,24 +42,56 @@ def run(state: CaseState, ctx: NodeCtx, case_fixture: dict[str, Any] | None = No
         }
         generation = {"mode": "fixture_replay", "model_id": None, "usage": None}
         mode_log = ["離線重播（fixture）：信心值為合成案例既有標註，非本次實測", "y"]
+        extra_logs = None
     elif ctx.run_mode == "bedrock":
         docs = case_fixture.get("documents") or []
         if not docs:
             raise ValueError(
-                f"合成案例 {case_fixture.get('id')!r} 缺 documents 區塊（bedrock 模式需要卷證全文）"
+                f"案例 {case_fixture.get('id')!r} 缺 documents 區塊（bedrock 模式需要卷證）"
             )
-        document_text = "\n\n".join(f"《{d['n']}》\n{d['text']}" for d in docs)
+        text_parts: list[str] = []
+        pdfs: list[tuple[str, bytes]] = []
+        route: dict[str, str] = {}
+        notes: list[str] = []
+        for i, d in enumerate(docs, 1):
+            name = d.get("n")
+            if not name:
+                raise ValueError(
+                    f"案例 {case_fixture.get('id')!r} 的第 {i} 份卷證缺檔名（documents[].n）；"
+                    f"沒有檔名就無法在敘述裡交代這一份是怎麼讀的"
+                )
+            # 合成案例的 documents[] 沒有 kind 欄位——它們都是純文字，缺省視為 txt
+            kind = d.get("kind") or "txt"
+            route[name] = kind
+            notes.extend(f"{name}：{n}" for n in (d.get("notes") or []))
+            if kind == "pdf_visual":
+                # 序號前綴：Bedrock 的 document name 只收 ASCII，多份中文檔名會被清成同一個字串，
+                # 模型分不出哪份是哪份。原檔名保留在 input_route，前端要顯示的是那一份。
+                pdfs.append((f"{i}-{name}", d.get("bytes") or b""))
+            else:
+                text_parts.append(f"《{name}》\n{d.get('text') or ''}")
         from backend.llm import client as llm_client  # 只有這個分支會 import（CONSTITUTION §4 的實作面）
 
-        out = llm_client.extract_intake(document_text)  # LLMError 直接往上拋
+        out = llm_client.extract_intake("\n\n".join(text_parts), pdf_documents=pdfs or None)  # LLMError 直接往上拋
         payload = {k: out[k] for k in ("intake", "conf", "quotes", "facts_excerpt")}
-        generation = {"mode": "bedrock_live", "model_id": out["model_id"], "usage": out["usage"]}
+        generation = {
+            "mode": "bedrock_live",
+            "model_id": out["model_id"],
+            "usage": out["usage"],
+            # 每一份卷證走哪一層、為什麼——**不能只回抽出來的欄位而不交代來源**
+            "input_route": route,
+            "route_notes": notes,
+        }
         mode_log = [f"模型即時抽取：{out['model_id']}，信心值為模型自報", ""]
+        extra_logs = [[f"卷證輸入：{'、'.join(f'{n}（{k}）' for n, k in route.items())}", ""]]
+        if pdfs:
+            extra_logs.append([f"{len(pdfs)} 份 PDF 文字抽取不足，改由模型視覺讀取整份頁面", "y"])
+        extra_logs.extend([[n, "y"] for n in notes])
     else:
         ctx.require_fixture("N1 抽取節點")  # 維持既有 raise 訊息
         raise AssertionError("unreachable")
 
-    return _finish(state, started, payload, generation, mode_log)
+    return _finish(state, started, payload, generation, mode_log, extra_logs)
 
 
 def _finish(
