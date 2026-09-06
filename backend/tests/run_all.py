@@ -20,6 +20,7 @@ from backend.tests import (  # noqa: E402
     test_deadline,
     test_e2e,
     test_gate_hardening,
+    test_live_plumbing,
     test_nodes,
 )
 
@@ -140,20 +141,30 @@ def scan_prototype_dist_reproducible() -> list[str]:
     return []
 
 
-# `backend/api/` 是 Web 介面層，依任務指定的範圍升級使用 fastapi/uvicorn/pydantic。
-# 這個豁免是**具名的**：檢查項名稱與下面的訊息都會把例外講出來，
+# 這些豁免是**具名的**：檢查項名稱與下面的訊息都會把例外講出來，
 # 不能用「零外部依賴」的名字掩蓋一個已經存在的例外。
-DEPENDENCY_EXEMPT_DIRS = ("api",)
+# 具名豁免（每一個都要說得出理由）：
+#   api/            Web 介面層（fastapi/pydantic）
+#   llm/            唯一允許 import strands 的目錄（spec 2026-09-07 D1）
+#   retrieval/kb.py Bedrock Knowledge Base 的 boto3 呼叫——它是檢索，不是 LLM
+DEPENDENCY_EXEMPT_DIRS = ("api", "llm")
+DEPENDENCY_EXEMPT_FILES = ("retrieval/kb.py",)
 
 
 def scan_core_path_dependencies() -> list[str]:
-    """核心與測試路徑不得 import 第三方套件（`backend/api/` 為具名例外）。"""
+    """核心與測試路徑不得 import 第三方套件（見 DEPENDENCY_EXEMPT_* 的具名例外）。"""
     stdlib = set(sys.stdlib_module_names)
     allowed_local = {"backend"}
+    exempt = ", ".join(
+        [f"backend/{d}/" for d in DEPENDENCY_EXEMPT_DIRS]
+        + [f"backend/{f}" for f in DEPENDENCY_EXEMPT_FILES]
+    )
     problems: list[str] = []
     targets = [
         p for p in _scan_files()
-        if p.suffix == ".py" and not any(d in p.parts for d in DEPENDENCY_EXEMPT_DIRS)
+        if p.suffix == ".py"
+        and not any(d in p.parts for d in DEPENDENCY_EXEMPT_DIRS)
+        and not any(str(p.relative_to(BACKEND)).replace("\\", "/") == f for f in DEPENDENCY_EXEMPT_FILES)
     ]
     for p in targets:
         text = p.read_text(encoding="utf-8")
@@ -164,8 +175,61 @@ def scan_core_path_dependencies() -> list[str]:
             line = text[: m.start()].count("\n") + 1
             problems.append(
                 f"{p.relative_to(ROOT)}:{line}：核心/測試路徑 import 了非 stdlib 模組 {mod!r}"
-                f"（唯一豁免是 backend/{'/'.join(DEPENDENCY_EXEMPT_DIRS)}/）"
+                f"（具名豁免只有 {exempt}）"
             )
+    return problems
+
+
+LLM_FORBIDDEN_NODES = ("n2_classify", "n3_procedure", "n4_retrieval", "n6_gate")
+
+
+def _imports_of(path: pathlib.Path) -> set[str]:
+    """用 ast 抓一個檔案 import 的頂層模組名（含函式內的 import）。"""
+    import ast
+
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    out: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            out.update(a.name for a in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            out.add(node.module)
+    return out
+
+
+def scan_llm_import_graph() -> list[str]:
+    """N2/N3/N4/N6 不得直接或間接 import backend.llm（CONSTITUTION §4）。
+
+    遞迴走 backend.* 的 import 邊；碰到 backend.llm 即違規。boto3 本身不在禁單裡
+    （retrieval/kb.py 合法使用），禁的是 LLM 模組。"""
+    problems: list[str] = []
+    for node in LLM_FORBIDDEN_NODES:
+        # 節點檔不見了就要出聲：否則遞迴從一個不存在的模組起步，永遠掃不到東西、
+        # 這條檢查會安靜地變成永遠綠的（改名一個節點就能無聲繞過紅線）。
+        start = BACKEND / "nodes" / f"{node}.py"
+        if not start.exists():
+            problems.append(f"找不到 {start.relative_to(ROOT)}，LLM 依賴檢查無從進行（清單與檔名已漂移）")
+            continue
+        seen: set[str] = set()
+        stack = [f"backend.nodes.{node}"]
+        while stack:
+            mod = stack.pop()
+            if mod in seen:
+                continue
+            seen.add(mod)
+            if mod == "backend.llm" or mod.startswith("backend.llm."):
+                problems.append(f"backend/nodes/{node}.py 間接 import 了 {mod}（規則引擎零 LLM 依賴）")
+                break
+            cand = ROOT.joinpath(*mod.split(".")).with_suffix(".py")
+            if not cand.exists():
+                cand = ROOT.joinpath(*mod.split(".")) / "__init__.py"
+            if not cand.exists():
+                continue
+            for imp in _imports_of(cand):
+                if imp.startswith("backend"):
+                    stack.append(imp)
+                elif imp.split(".")[0] in ("strands", "strands_agents"):
+                    problems.append(f"{cand.relative_to(ROOT)} import 了 {imp}（只有 backend/llm/ 可以）")
     return problems
 
 
@@ -180,6 +244,7 @@ def main() -> int:
         ("端到端整合測試", [test_e2e]),
         ("CASE payload 契約（architecture §6.2）", [test_contract]),
         ("守門加固對抗測試", [test_gate_hardening]),
+        ("live 分支管線（settings／llm client／kb／續跑，全部 monkeypatch）", [test_live_plumbing]),
     ]
     total_pass = total = 0
     all_failures: list[str] = []
@@ -195,7 +260,8 @@ def main() -> int:
     checks = [
         ("secret／禁用雲端字樣（backend/ + prototype/）", scan_redlines),
         ("prototype/dist 可由 build.py 完全重現（不得手改建置產物）", scan_prototype_dist_reproducible),
-        ("核心與測試路徑零外部依賴（backend/api/ 為具名例外：Web 介面層）", scan_core_path_dependencies),
+        ("核心與測試路徑零外部依賴（具名例外：backend/api/、backend/llm/、backend/retrieval/kb.py）", scan_core_path_dependencies),
+        ("N2/N3/N4/N6 無 LLM 依賴（ast 遞迴，含 strands）", scan_llm_import_graph),
     ]
     for label, fn in checks:
         problems = fn()

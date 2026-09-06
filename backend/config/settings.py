@@ -1,7 +1,8 @@
 """全域設定與靜態聲明（origin=static）。
 
 紅線：本檔不得出現任何憑證、金鑰或雲端端點。RUN_MODE 以外的環境變數
-一律在 `backend/DEPLOY.md` 說明變數名稱，值由部署環境（AWS 自身的 secret 管理）注入。
+一律在 `backend/DEPLOY.md` 與根目錄 `.env.example` 說明變數名稱（只有名稱與用途，
+沒有值），值由部署環境（AWS 自身的 secret 管理）注入。
 """
 from __future__ import annotations
 
@@ -21,6 +22,66 @@ DEFAULT_RUN_MODE = "fixture"
 def run_mode() -> str:
     """RUN_MODE 三檔：fixture（唯一今晚支援）／local／bedrock。"""
     return os.environ.get("RUN_MODE", DEFAULT_RUN_MODE)
+
+
+RUNS_DIR = OUTPUT_DIR / "runs"
+
+DEFAULT_MODEL_PROVIDER = "bedrock"
+DEFAULT_RETRIEVER = "lawtable_only"
+DEFAULT_KB_MIN_SCORE = 0.25
+
+
+def model_provider() -> str:
+    """bedrock（預設）| openai。openai **僅供開發期調 prompt**，不得進交付路徑。"""
+    return os.environ.get("MODEL_PROVIDER", DEFAULT_MODEL_PROVIDER).lower()
+
+
+def bedrock_model_id(kind: str) -> str | None:
+    """kind: extract | draft。值一律來自環境變數，本檔不寫任何 model id。"""
+    if kind not in ("extract", "draft"):
+        raise ValueError(f"未知模型用途 {kind!r}")
+    return os.environ.get(f"BEDROCK_MODEL_ID_{kind.upper()}") or None
+
+
+def aws_region() -> str | None:
+    return os.environ.get("AWS_REGION") or None
+
+
+def retriever_kind() -> str:
+    """lawtable_only（預設）| kb。"""
+    return os.environ.get("RETRIEVER", DEFAULT_RETRIEVER)
+
+
+def kb_id() -> str | None:
+    return os.environ.get("BEDROCK_KB_ID") or None
+
+
+def kb_min_score() -> float:
+    return float(os.environ.get("KB_MIN_SCORE", DEFAULT_KB_MIN_SCORE))
+
+
+def kb_bucket() -> str | None:
+    return os.environ.get("S3_KB_BUCKET") or None
+
+
+def missing_live_settings(mode: str | None = None, retriever: str | None = None) -> list[str]:
+    """回傳目前模式下缺少的環境變數名。健康檢查用：缺就 503，不假裝正常。"""
+    mode = mode or run_mode()
+    retriever = retriever or retriever_kind()
+    missing: list[str] = []
+    if mode == "bedrock":
+        if not aws_region():
+            missing.append("AWS_REGION")
+        if not bedrock_model_id("extract"):
+            missing.append("BEDROCK_MODEL_ID_EXTRACT")
+        if not bedrock_model_id("draft"):
+            missing.append("BEDROCK_MODEL_ID_DRAFT")
+    if retriever == "kb":
+        if not aws_region() and "AWS_REGION" not in missing:
+            missing.append("AWS_REGION")
+        if not kb_id():
+            missing.append("BEDROCK_KB_ID")
+    return missing
 
 
 # 常駐合成／去識別化聲明（CONSTITUTION §3、§6）
