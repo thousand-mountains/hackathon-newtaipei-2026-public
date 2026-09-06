@@ -61,7 +61,9 @@ def _load_model(model_kind: str):
 
         model_id = os.environ.get("OPENAI_MODEL_ID")
         if not model_id:
-            raise LLMError("MODEL_PROVIDER=openai 需要 OPENAI_MODEL_ID（見 .env.example）")
+            # 刻意不給預設 model id：程式不得出現任何 model id 的實際值，
+            # 而且 openai 只供開發期調 prompt，寫死一個預設等於幫它偷偷上路。
+            raise LLMError("MODEL_PROVIDER=openai 需要環境變數 OPENAI_MODEL_ID（本檔不預設任何 model id）")
         return OpenAIModel(
             client_args={"api_key": os.environ["OPENAI_API_KEY"]},
             model_id=model_id,
