@@ -42,3 +42,150 @@ def test_missing_live_settings_names_every_absent_variable():
             assert_in(name, missing)
     with env(BEDROCK_MODEL_ID_EXTRACT="m1", BEDROCK_MODEL_ID_DRAFT="m2", AWS_REGION="r", BEDROCK_KB_ID="k"):
         assert_eq(settings.missing_live_settings("bedrock", "kb"), [])
+
+
+# ── Task 2：backend/llm/ client ──────────────────────────────────
+# 這四個測試全部 monkeypatch `client._invoke_structured`（唯一測試接縫），
+# 所以不裝 strands／pydantic 也能跑；跑的是 reshape、值域驗證、cite_ids 白名單與重試語意。
+
+
+def _fake_extraction() -> dict:
+    fields = {
+        "no": ("synthetic-1130000001", 0.97), "type": ("違反空氣污染防制法事件", 0.93),
+        "person": ("（合成）吳○庭", 0.9), "org": ("新北市政府（合成測資）", 0.95),
+        "d1": ("2024-06-11", 0.88), "d2": ("2024-06-13", 0.94), "d3": ("2024-07-20", 0.96),
+        "agent": ("無", 0.8), "note": ("訴願人主張未實際收受處分書。", 0.7),
+        "service_method": ("deposit", 0.91), "transit_days": (0, 0.85), "interested_party": (False, 0.85),
+    }
+    return {
+        **{k: {"value": v, "conf": c, "quote": f"quote-{k}"} for k, (v, c) in fields.items()},
+        "facts_excerpt": [{"text": "訴願人於農地露天燃燒稻稈。", "page": 2, "quote_ref": "synthetic-原處分裁處書.pdf#p2"}],
+    }
+
+
+def test_extract_intake_reshapes_structured_result():
+    from backend.llm import client
+
+    def fake(system, user, schema_name, tools=None, model_kind="extract", **kw):
+        assert_eq(schema_name, "ExtractionResult")
+        assert_in("訴願書全文", user)
+        return _fake_extraction(), {"input_tokens": 10, "output_tokens": 5}
+
+    orig = client._invoke_structured
+    client._invoke_structured = fake
+    try:
+        with env(BEDROCK_MODEL_ID_EXTRACT="model-x", AWS_REGION="r"):
+            out = client.extract_intake("訴願書全文：……")
+    finally:
+        client._invoke_structured = orig
+    assert_eq(out["intake"]["d2"], "2024-06-13")
+    assert_eq(out["conf"]["service_method"], 0.91)
+    assert_eq(out["quotes"]["no"], "quote-no")
+    assert_eq(len(out["facts_excerpt"]), 1)
+    assert_eq(out["model_id"], "model-x")
+    assert_eq(out["usage"]["input_tokens"], 10)
+
+
+def test_extract_intake_rejects_unknown_service_method():
+    from backend.llm import client
+
+    bad = _fake_extraction()
+    bad["service_method"]["value"] = "by_pigeon"
+    orig = client._invoke_structured
+    client._invoke_structured = lambda *a, **k: (bad, None)
+    try:
+        with env(BEDROCK_MODEL_ID_EXTRACT="m", AWS_REGION="r"):
+            try:
+                client.extract_intake("x")
+            except client.LLMError as e:
+                assert_in("service_method", str(e))
+            else:
+                raise AssertionError("未知送達方式必須 raise LLMError")
+    finally:
+        client._invoke_structured = orig
+
+
+def test_draft_sentences_filters_cite_ids_outside_context():
+    from backend.llm import client
+
+    def fake(system, user, schema_name, tools=None, model_kind="draft", **kw):
+        assert_eq(schema_name, "DraftResult")
+        return {
+            "reasoning": [
+                {"t": "按訴願法第14條……", "cite_ids": ["L1"], "basis": "訴願法第14條", "source_kind": "law"},
+                {"t": "另參最高行 999 判……", "cite_ids": ["L9"], "basis": None, "source_kind": "ref"},
+            ],
+            "conclusion": [{"t": "訴願不受理。", "cite_ids": ["L4"], "basis": "訴願法第77條", "source_kind": "law"}],
+        }, None
+
+    ctx = {"intake": {}, "facts_excerpt": [], "screen": {},
+           "laws": [{"id": "L1"}, {"id": "L4"}], "cases": [{"id": "C1"}]}
+    orig = client._invoke_structured
+    client._invoke_structured = fake
+    try:
+        with env(BEDROCK_MODEL_ID_DRAFT="m", AWS_REGION="r"):
+            out = client.draft_sentences(ctx, slots=["reasoning"])
+    finally:
+        client._invoke_structured = orig
+    assert_eq(list(out["slots"].keys()), ["reasoning"], "只回要求的 slot，conclusion 不得出現")
+    assert_eq(out["slots"]["reasoning"][0]["cite_ids"], ["L1"])
+    assert_eq(out["slots"]["reasoning"][1]["cite_ids"], [], "L9 不在 N4 結果也不在工具命中，必須被清空")
+    assert_true(out["slots"]["reasoning"][1].get("unsupported") is True)
+
+
+def test_client_raises_llm_error_after_retries():
+    from backend.llm import client
+
+    calls = {"n": 0}
+
+    def boom(*a, **k):
+        calls["n"] += 1
+        raise RuntimeError("simulated throttling")
+
+    orig = client._invoke_structured
+    client._invoke_structured = boom
+    try:
+        with env(BEDROCK_MODEL_ID_EXTRACT="m", AWS_REGION="r"):
+            try:
+                client.extract_intake("x", retries=3, backoff_s=0.0)
+            except client.LLMError as e:
+                assert_in("simulated throttling", str(e))
+            else:
+                raise AssertionError("必須 raise LLMError")
+    finally:
+        client._invoke_structured = orig
+    assert_eq(calls["n"], 3)
+
+
+def test_extract_intake_passes_pdf_documents_as_attachments():
+    """Task 3b：掃描件走視覺讀——PDF 原樣往下傳，且提示模型讀附件。"""
+    from backend.llm import client
+
+    seen: dict = {}
+
+    def fake(system, user, schema_name, tools=None, model_kind="extract", attachments=None, **kw):
+        seen["attachments"] = attachments
+        seen["user"] = user
+        return _fake_extraction(), None
+
+    orig = client._invoke_structured
+    client._invoke_structured = fake
+    try:
+        with env(BEDROCK_MODEL_ID_EXTRACT="m", AWS_REGION="r"):
+            client.extract_intake("", pdf_documents=[("原處分書.pdf", b"%PDF-1.4")])
+    finally:
+        client._invoke_structured = orig
+    assert_eq(seen["attachments"], [("原處分書.pdf", b"%PDF-1.4")])
+    assert_in("請直接閱讀其頁面內容", seen["user"])
+    assert_in("（無文字層，請閱讀附件 PDF）", seen["user"])
+
+
+def test_safe_doc_name_keeps_only_bedrock_allowed_characters():
+    """Bedrock document 區塊的 name 只收英數／空白／連字號／括號。"""
+    from backend.llm import client
+
+    assert_eq(client._safe_doc_name("原處分書.pdf"), "_____pdf")  # 4 個中文字 + 1 個點
+    assert_eq(client._safe_doc_name("case (1) [a].pdf"), "case (1) [a]_pdf")
+    assert_eq(client._safe_doc_name("原"), "_")
+    assert_eq(client._safe_doc_name(""), "doc")
+    assert_eq(len(client._safe_doc_name("a" * 200)), 60)
