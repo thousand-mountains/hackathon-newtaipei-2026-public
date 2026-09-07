@@ -9,6 +9,7 @@ from contextlib import contextmanager
 
 import backend.intake.uploads as up
 from backend.config import settings
+from backend.config.settings import load_snapshot
 from backend.engine import deadline as deadline_engine
 from backend.intake.documents import CJK_RATIO_THRESHOLD, cjk_ratio, route_documents
 from backend.intake.uploads import (
@@ -18,7 +19,7 @@ from backend.intake.uploads import (
     save_upload,
 )
 from backend.llm import client
-from backend.nodes import n1_extract, n5_draft
+from backend.nodes import n1_extract, n4_retrieval, n5_draft
 from backend.orchestrator.graph import (
     digest_from_state,
     list_synthetic_cases,
@@ -27,6 +28,7 @@ from backend.orchestrator.graph import (
 )
 from backend.orchestrator.state import CaseState, NodeCtx
 from backend.retrieval.base import Hit
+from backend.retrieval.kb import KBRetriever, build_retriever
 from backend.tests.harness import assert_eq, assert_in, assert_true
 
 
@@ -690,3 +692,109 @@ def test_n5_logs_when_upstream_retrieval_is_empty():
         client.draft_sentences = orig
     logs = [row[0] for row in r.narrative["draft"]["logs"]]
     assert_true(any("上游檢索結果為空" in text for text in logs), f"缺空檢索的說明 log：{logs}")
+
+
+# ── Task 5：Managed KB 檢索器與 N4 通道 B ────────────────────────────
+class _FakeBedrockAgentRuntime:
+    """模擬 boto3 bedrock-agent-runtime client 的 retrieve()。"""
+
+    def __init__(self, results):
+        self.results = results
+        self.calls = []
+
+    def retrieve(self, **kw):
+        self.calls.append(kw)
+        return {"retrievalResults": self.results}
+
+
+def _kb_result(uri_tail, score, text, file_type="TXT"):
+    return {"score": score,
+            "content": {"text": text},
+            "location": {"s3Location": {"uri": f"s3://bucket/kb/official/{uri_tail}"}},
+            "metadata": {"_file_type": file_type, "_source_uri": f"s3://bucket/kb/official/{uri_tail}"}}
+
+
+def test_kb_retriever_filters_by_prefix_score_filetype_and_exclusion():
+    fake = _FakeBedrockAgentRuntime([
+        _kb_result("歷史訴願決定書/113年/16.113年-違反洗錢防制法事件-79I-駁回.txt", 0.9, "主文：訴願駁回。"),
+        _kb_result("歷史訴願決定書/114年/1131030896-撤銷.txt", 0.8, "撤銷"),          # exclude_case 命中
+        _kb_result("行政函釋/法務部93.txt", 0.95, "函釋"),                              # 前綴不符
+        _kb_result("歷史訴願決定書/112年/低分.txt", 0.1, "低分"),                       # 分數不足
+        _kb_result("歷史訴願決定書/112年/舊PDF.pdf", 0.9, "亂碼", file_type="PDF"),      # PDF 一律丟
+    ])
+    r = KBRetriever(kb_id="kb-x", region="r", min_score=0.25, client=fake)
+    hits = r.search("露天燃燒", filters={"prefix": ["歷史訴願決定書/"], "exclude_case": "1131030896"}, top_k=5)
+    assert_eq([h.source for h in hits], ["歷史訴願決定書/113年/16.113年-違反洗錢防制法事件-79I-駁回.txt"])
+    assert_eq(hits[0].payload["outcome"], "駁回")
+    assert_eq(hits[0].payload["provenance"], "official")
+    assert_true(hits[0].verified is False, "verified 由 N6 對 manifest 決定，檢索不自己宣稱")
+    call = fake.calls[0]
+    assert_eq(call["knowledgeBaseId"], "kb-x")
+    assert_eq(call["retrievalConfiguration"]["managedSearchConfiguration"]["numberOfResults"], 15, "多抓三倍再後過濾")
+
+
+def test_kb_retriever_parses_public_prefix_and_outcome_from_filename():
+    res = _kb_result("x", 0.9, "t")
+    res["location"]["s3Location"]["uri"] = "s3://b/kb/public/新北訴願決定書_全量/1121051256_不受理.txt"
+    res["metadata"]["_source_uri"] = res["location"]["s3Location"]["uri"]
+    r = KBRetriever(kb_id="k", region="r", client=_FakeBedrockAgentRuntime([res]))
+    hits = r.search("q", filters={"prefix": ["新北訴願決定書_全量/"]})
+    assert_eq(hits[0].payload["provenance"], "public_crawl")
+    assert_eq(hits[0].payload["outcome"], "不受理")
+
+
+def test_build_retriever_requires_env_for_kb():
+    with env(BEDROCK_KB_ID=None, AWS_REGION=None):
+        try:
+            build_retriever("kb")
+        except ValueError as e:
+            assert_in("BEDROCK_KB_ID", str(e))
+        else:
+            raise AssertionError("缺變數必須 raise")
+    assert_true(build_retriever("lawtable_only") is None)
+
+
+def test_n4_uses_injected_retriever_for_similar_cases():
+    class FakeKB:
+        name = "bedrock_kb"
+
+        def __init__(self):
+            self.queries = []
+
+        def search(self, query, filters=None, top_k=5):
+            self.queries.append((query, filters, top_k))
+            return [Hit(id="kb-1", title="113年-違反空氣污染防制法事件-駁回", score=0.88,
+                        source="歷史訴願決定書/113年/x-駁回.txt",
+                        payload={"outcome": "駁回", "provenance": "official", "text": "主文：訴願駁回。"})]
+
+        def meta(self):
+            return {"backend": "bedrock_kb", "available": True}
+
+    st = CaseState(case_id="synthetic-ordinary-01", run_mode="bedrock")
+    st.intake = {"type": "違反空氣污染防制法事件", "note": "主張未收受"}
+    st.facts_excerpt = [{"text": "訴願人於農地露天燃燒稻稈。", "page": 2}]
+    st.classification = {"class": {"case_type": "違反空氣污染防制法事件", "law_hits": ["空氣污染防制法"]}}
+    st.screen = {"art77": {"clause": "77-2"}, "deadline": {"steps": []}}
+    kb = FakeKB()
+    r = n4_retrieval.run(st, NodeCtx(run_mode="bedrock", snapshot=load_snapshot(), retriever=kb))
+    assert_eq(len(st.retrieval["cases"]), 1)
+    c = st.retrieval["cases"][0]
+    assert_eq(c["id"], "C1")
+    assert_eq(c["outcome"], "駁回")
+    assert_eq(c["src"], "歷史訴願決定書/113年/x-駁回.txt")
+    assert_eq(c["origin"], "retrieval")
+    assert_true(c["lamp"] is None, "燈號歸 N6")
+    assert_in("露天燃燒稻稈", kb.queries[0][0], "查詢句必須含事實段原文")
+    assert_eq(kb.queries[0][1]["prefix"], ["歷史訴願決定書/"])
+    assert_eq(st.retrieval["retrieval_meta"]["backend"], "lawtable+bedrock_kb")
+    assert_true(r.degraded is False, "兩條通道都有結果就不是降級")
+
+
+def test_n4_without_retriever_keeps_phase0_behaviour():
+    st = CaseState(case_id="x", run_mode="fixture")
+    st.classification = {"class": {"case_type": "違反建築法事件", "law_hits": ["建築法"]}}
+    st.screen = {"art77": {}, "deadline": {"steps": []}}
+    r = n4_retrieval.run(st, NodeCtx(run_mode="fixture", snapshot=load_snapshot()))
+    assert_eq(st.retrieval["cases"], [])
+    assert_eq(st.retrieval["retrieval_meta"]["backend"], "lawtable_only")
+    assert_true(r.degraded is True)

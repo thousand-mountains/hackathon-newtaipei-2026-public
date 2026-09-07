@@ -7,15 +7,17 @@
 但快照只索引條號、不含條文原文，所以 `q`（條文原文）欄位一律留空並附說明——
 **不由系統補寫條文文字**，那會變成編造。
 
-**通道 B：相似歷史案（誠實回空）**
-CONSTITUTION §2 的直接要求。賽方 101 份歷史決定書不在本機、不進 git、S3 不公開，
-所以這條通道在 Phase 0 **回空 list**，並標「庫外，未驗證」。
-不編造任何案號、案由、相似度分數——沒有就是沒有。
+**通道 B：相似歷史案（有檢索器才有內容）**
+CONSTITUTION §2 的直接要求。編排層有注入 `ctx.retriever`（`RETRIEVER=kb`）時，
+這條通道回 Managed KB 的命中，`outcome` 照檔名／主文抄、`verified` 一律 False；
+沒有注入時**回空 list** 並標「庫外，未驗證」——不編造任何案號、案由、相似度分數。
+兩種情形的說法不同，畫面上要分得出來是「查無」還是「查不了」。
 """
 from __future__ import annotations
 
 import re
 import time
+from collections import Counter as _count
 from typing import Any
 
 from backend.orchestrator.state import CaseState, NodeCtx, NodeResult
@@ -154,7 +156,9 @@ def run(state: CaseState, ctx: NodeCtx, cited_laws: list[str] | None = None) -> 
     started = time.perf_counter()
     snapshot = ctx.snapshot or {}
     lawtable = LawTableRetriever(snapshot)
-    similar = UnavailableRetriever("similar_cases", SIMILAR_CASE_UNAVAILABLE_REASON)
+    similar = ctx.retriever if ctx.retriever is not None else UnavailableRetriever(
+        "similar_cases", SIMILAR_CASE_UNAVAILABLE_REASON
+    )
     law_names = list((snapshot.get("laws") or {}).keys())
 
     # ── 通道 A：法規查表（真實）──────────────────────────────────
@@ -197,18 +201,51 @@ def run(state: CaseState, ctx: NodeCtx, cited_laws: list[str] | None = None) -> 
             }
         )
 
-    # ── 通道 B：相似歷史案（誠實回空）────────────────────────────
-    cases = similar.search(query_text, top_k=3)
-    assert cases == [], "相似案通道在 Phase 0 必須回空"
+    # ── 通道 B：相似歷史案 ────────────────────────────────────────
+    # 查詢句只用卷證原文（事實段 + intake.note）+ 案型；不用改寫句（改寫句會漏撤銷案，AppealAssist ask 模式實測）。
+    record_terms = [str(x.get("text") or "") for x in (state.facts_excerpt or [])] + [
+        str((state.intake or {}).get("note") or "")
+    ]
+    case_query = "；".join(
+        [t for t in record_terms if t]
+        + ([(state.classification.get("class") or {}).get("case_type") or ""] if state.classification else [])
+    )
+    case_hits = (
+        similar.search(case_query or query_text, filters={"prefix": ["歷史訴願決定書/"]}, top_k=5)
+        if case_query or query_text
+        else []
+    )
+    cases: list[dict[str, Any]] = []
+    for i, h in enumerate(case_hits, start=1):
+        p = h.payload or {}
+        cases.append(
+            {
+                "id": f"C{i}",
+                "t": h.title,
+                "sim": int(round(h.score * 100)),
+                "tag": None,          # 歸 N6
+                "d": None,            # 同/異說明模板：Phase S
+                "src": h.source,
+                "origin": "retrieval",
+                "verified": h.verified,
+                "note": h.note or "KB 命中，未對資料集實檔驗證（manifest 對檔為加值層 Task 9）",
+                "outcome": p.get("outcome"),
+                "provenance": p.get("provenance"),
+                "text": p.get("text", "")[:600],
+                "lamp": None,
+            }
+        )
+    similar_available = ctx.retriever is not None
 
     retrieval_meta = {
-        "backend": "lawtable_only",
+        "backend": "lawtable+bedrock_kb" if similar_available else "lawtable_only",
         "law_channel": lawtable.meta(),
         "similar_case_channel": similar.meta(),
         "recall_at5_last_eval": None,
         "recall_note": "檢索評測需要 leave-one-out 的歷史決定書資料集，本機無資料，未量測。",
         "kb_snapshot_date": snapshot.get("generated"),
         "query_text": query_text,
+        "case_query_text": case_query,
         # 查詢句由哪些案情訊號組成，逐項可查（回歸測試 test_e2e 會驗這裡沒有草稿來源）
         "query_sources": query_sources,
         "query_independence": (
@@ -217,15 +254,17 @@ def run(state: CaseState, ctx: NodeCtx, cited_laws: list[str] | None = None) -> 
         ),
         "substantive_article_gap": SUBSTANTIVE_ARTICLE_UNKNOWN,
     }
-    state.retrieval = {"laws": laws, "cases": [], "retrieval_meta": retrieval_meta}
+    state.retrieval = {"laws": laws, "cases": cases, "retrieval_meta": retrieval_meta}
 
     elapsed = int((time.perf_counter() - started) * 1000)
     verified_n = sum(1 for l in laws if l["verified"])
     return NodeResult(
         ok=True,
         # 相似案通道不可用屬已知限制，不算節點失敗；但一定要 degraded 外顯
-        degraded=True,
-        degrade_reason="相似歷史案通道不可用（無資料集），僅法規查表通道有結果",
+        degraded=not similar_available,
+        degrade_reason=(
+            None if similar_available else "相似歷史案通道不可用（無資料集），僅法規查表通道有結果"
+        ),
         data=state.retrieval,
         elapsed_ms=elapsed,
         narrative={
@@ -243,11 +282,29 @@ def run(state: CaseState, ctx: NodeCtx, cited_laws: list[str] | None = None) -> 
                 ],
             },
             "case": {
-                "out": "相似歷史案：0 筆（庫外，未驗證）。",
-                "logs": [
-                    [SIMILAR_CASE_UNAVAILABLE_REASON, "r"],
-                    ["本節點不編造任何案號或相似度分數（CONSTITUTION §2）", ""],
-                ],
+                "out": (
+                    f"相似歷史案：{len(cases)} 筆（{', '.join(sorted({c['provenance'] or '?' for c in cases})) or '無'}）。"
+                    if similar_available
+                    else "相似歷史案：0 筆（庫外，未驗證）。"
+                ),
+                "logs": (
+                    [
+                        [f"查詢句：{case_query[:80]}…", ""],
+                        [
+                            # outcome 可能是 None（檔名讀不出主文），跟字串混在一起 sorted() 會炸，
+                            # 所以在這裡補一個明講「讀不出來」的標籤，不假裝它是某個結果。
+                            f"結果分布：{'；'.join(f'{k} {v} 件' for k, v in sorted(_count(c['outcome'] or '未標示' for c in cases).items()))}",
+                            "",
+                        ],
+                        ["決定結果照檔名／主文，不由模型推測（CONSTITUTION §2）", ""],
+                        ["相似案為 KB 命中，尚未對資料集實檔逐筆驗證；燈號歸 N6", "y"],
+                    ]
+                    if similar_available
+                    else [
+                        [SIMILAR_CASE_UNAVAILABLE_REASON, "r"],
+                        ["本節點不編造任何案號或相似度分數（CONSTITUTION §2）", ""],
+                    ]
+                ),
             },
         },
     )

@@ -31,6 +31,7 @@ from backend.config.settings import (
     SYNTHETIC_DIR,
     TOKEN_NOTE,
     load_snapshot,
+    retriever_kind,
     run_mode,
 )
 from backend.intake.uploads import list_upload_cases, load_upload_case
@@ -41,6 +42,7 @@ from backend.orchestrator.narrative import (
     summary_line,
 )
 from backend.orchestrator.state import CaseState, NodeCtx, utc_now_iso
+from backend.retrieval.kb import build_retriever
 
 NODE_ORDER = ("n1", "n2", "n3", "n4", "n5", "n6")
 STATE_AFTER = {
@@ -171,7 +173,11 @@ def run_case(
     # 案件層的來源聲明（合成／上傳）。build_payload 會疊在服務層的 PROVENANCE 上，
     # 讓前端橫幅講的是**這一件**卷證從哪裡來，不是服務預設的那一句。
     state.provenance = dict(fixture.get("provenance") or {})
-    ctx = NodeCtx(run_mode=mode, snapshot=snapshot)
+    # 相似案檢索器由編排層注入（architecture §10：retrieval 是共用元件，不是 N4 的內部實作）。
+    # `RETRIEVER=lawtable_only`（預設）回 None，N4 通道 B 維持誠實回空。
+    # kb.py 是檢索元件、不 import backend.llm，所以 N4 拿到它仍符合「規則引擎零 LLM 依賴」。
+    retriever = build_retriever(retriever_kind(), exclude_case=fixture.get("exclude_case"))
+    ctx = NodeCtx(run_mode=mode, snapshot=snapshot, retriever=retriever)
 
     run_started = time.perf_counter()
     node_timings: dict[str, int] = {}

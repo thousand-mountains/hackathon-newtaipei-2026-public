@@ -49,7 +49,7 @@ def aws_region() -> str | None:
 
 def retriever_kind() -> str:
     """lawtable_only（預設）| kb。"""
-    return os.environ.get("RETRIEVER", DEFAULT_RETRIEVER)
+    return os.environ.get("RETRIEVER", DEFAULT_RETRIEVER).lower()
 
 
 def kb_id() -> str | None:
