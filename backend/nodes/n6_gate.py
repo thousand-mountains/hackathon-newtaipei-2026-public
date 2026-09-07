@@ -6,7 +6,10 @@
 2. **燈號規則**：句子燈號 = 它所有引用狀態裡最嚴重的那一個；引擎句與卷證直錄句直接綠燈
    （⚠️ 卷證直錄的綠燈代表「來源是卷證、非模型撰寫」，**不代表已與來源文件逐字比對**——
    本階段沒有這個控制，見 `WHY_RECORD` 與 HANDOFF-GATE.md 判斷卡 8）。
-3. **cite_ids 解析**：草稿標的 `L*` 要能對回 N4 的檢索結果，對不到即進 blockers。
+3. **cite_ids 解析**：草稿標的 `L*` 要能對回 N4 的檢索結果，對不到即進 blockers
+   （`cite_id_unresolved`）；模型引了檢索結果之外的來源、已被 `llm/client.py` 白名單
+   清掉的句子（`unsupported` 旗標）一律判紅並匯總成 `cite_id_unsupported`
+   （spec §5.3，2026-09-07 新增）。**本節點只讀 doc 上的旗標，不 import backend.llm。**
 4. **C 型結論封鎖的事後覆核**：`requires_human_conclusion=true` 卻出現模型生成的結論句
    → 直接進 blockers 並記為 P0 訊號。
 5. **爭點 ref 補掛與交接卡**：用 N3 的 `fact_issues` 關鍵詞比對到句子上補 `I*`；
@@ -45,6 +48,7 @@ from backend.gate.citations import (
 from backend.gate.lamps import (
     WHY_CONCLUSION_LEAK,
     WHY_UNSOURCED_WHILE_BLOCKED,
+    WHY_UNSUPPORTED_CITATION,
     attach_issue_refs,
     citation_states_for,
     detect_conclusion_like,
@@ -89,6 +93,10 @@ def run(state: CaseState, ctx: NodeCtx) -> NodeResult:
 
     all_citations: list[dict[str, Any]] = []
     blockers: list[dict[str, Any]] = []
+    # 模型引了檢索結果以外的來源、被 client 端清掉的句子（spec §5.3）。
+    # N6 **只讀 doc 上的旗標**，不 import backend.llm——旗標由 N5 帶進來，
+    # 這個節點仍然零 LLM 依賴（CONSTITUTION §4）。
+    unsupported_hits: list[tuple[str, list[str]]] = []
 
     for block in doc:
         for s in block.get("ss", []):
@@ -116,6 +124,10 @@ def run(state: CaseState, ctx: NodeCtx) -> NodeResult:
 
             # cite_ids 解析：草稿標的 L* 必須對得回 N4 的檢索結果
             unresolved = [cid for cid in s.get("cite_ids", []) if cid.startswith("L") and cid not in law_index]
+            # 白名單外的引用已被清掉（`llm/client.py`），這裡讀旗標判紅。
+            # 清掉之後那句話就沒有出處了，不能因為「欄位是空的」而靜靜當作無引用句。
+            unsupported = bool(s.get("unsupported"))
+            dropped = [str(c) for c in (s.get("dropped_cite_ids") or [])]
 
             if origin in ("engine", "record", "human_required"):
                 # 可驗算層與卷證直錄層不吃引用燈號規則：引擎句本身就是算式，卷證句是原文
@@ -124,9 +136,17 @@ def run(state: CaseState, ctx: NodeCtx) -> NodeResult:
                 lamp = lamp_for_states(states)
                 if unresolved:
                     lamp = "r"
+            # 不分 origin 一律往紅的方向走：旗標只會出現在草稿句上，
+            # 萬一它出現在別的 origin 上，保守判紅也是對的方向。
+            if unsupported:
+                lamp = "r"
 
             s["l"] = lamp
-            s["why"] = why_for(lamp, origin, states, unresolved=bool(unresolved))
+            s["why"] = (
+                WHY_UNSUPPORTED_CITATION.format(dropped="、".join(dropped) or "未記錄")
+                if unsupported
+                else why_for(lamp, origin, states, unresolved=bool(unresolved))
+            )
             s["tier"] = (
                 tier_of("human_required")
                 if origin == "human_required"
@@ -147,6 +167,8 @@ def run(state: CaseState, ctx: NodeCtx) -> NodeResult:
                             "detail": f"{c.raw}：{c.note}",
                         }
                     )
+            if unsupported:
+                unsupported_hits.append((s["id"], dropped))
             for cid in unresolved:
                 blockers.append(
                     {
@@ -221,6 +243,27 @@ def run(state: CaseState, ctx: NodeCtx) -> NodeResult:
                     # 沒命中片語層、又指不出可查證的出處：不宣稱它是主文，但也不能說它有出處。
                     s["tier"] = tier_of("human_required")
                     s["why"] = WHY_UNSOURCED_WHILE_BLOCKED
+
+    # ── 模型引用了檢索結果之外的來源 ─────────────────────────────────
+    # spec §5.3 的「結構層第二道」。文字層的 `CitationChecker` 抓的是「這個法條號碼
+    # 在不在快照裡」，抓不到「模型指了一個 N4 從來沒給過的 id」——後者是引用可驗性
+    # 的另一種破口（CONSTITUTION §2）。匯總成**一條** blocker：這是同一件事的多個
+    # 實例，逐句一條會把清單塞滿而讓真訊號看不見（第三輪覆核的教訓）。
+    if unsupported_hits:
+        dropped_all = sorted({c for _sid, ids in unsupported_hits for c in ids})
+        blockers.append(
+            {
+                "sentence_id": None,
+                "sentence_ids": [sid for sid, _ids in unsupported_hits],
+                "reason": "cite_id_unsupported",
+                "detail": (
+                    f"{len(unsupported_hits)} 句（{'、'.join(sid for sid, _ in unsupported_hits)}）"
+                    f"引用了檢索結果之外的來源（{'、'.join(dropped_all) or '未記錄'}），"
+                    f"已由白名單清除。引用被清掉之後那些句子就指不出任何出處，不得逕行送出。"
+                ),
+                "severity": "P0",
+            }
+        )
 
     # ── 空草稿不得標成可送出 ─────────────────────────────────────────
     # `submit_allowed = not blockers` 只看 blockers，不看文件裡有沒有東西。
@@ -398,7 +441,15 @@ def run(state: CaseState, ctx: NodeCtx) -> NodeResult:
                         else "無阻擋項；送出端點會重新判斷一次後放行",
                         "r" if blockers else "",
                     ],
-                    *[[f"{b['reason']}｜{b['sentence_id']}：{b['detail']}", "r"] for b in blockers],
+                    *[
+                        [
+                            f"{b['reason']}｜"
+                            f"{b['sentence_id'] or '、'.join(b.get('sentence_ids') or []) or '（全案）'}"
+                            f"：{b['detail']}",
+                            "r",
+                        ]
+                        for b in blockers
+                    ],
                     [
                         f"結論段已封鎖，交接卡列 {len(handoff['questions'])} 個問題" if needs_human else "結論段未封鎖",
                         "r" if needs_human else "",

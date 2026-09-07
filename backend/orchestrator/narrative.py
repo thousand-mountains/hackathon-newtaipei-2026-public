@@ -26,8 +26,10 @@ PLACEHOLDER_CONCLUSION_TEXT = "（結論段由承辦人判斷後填寫）"
 # 兩種都是假訊號。**真正的引用查核本來就不靠 id**：N6 直接從句子本文與 basis 抽引用、
 # 對快照查四態，那條路徑不受影響（假法條照樣被攔）。
 #
-# 接上真實 N5 之後要打開這個開關——那時 N5 是看著 N4 的候選清單寫的，cite_ids 才有意義
-# （architecture §6.2：「N5 的 cite_ids 經 N6 解析比對」）。
+# **2026-09-07：bedrock 分支已打開這個開關**（N5 呼叫端傳 `carry_draft_cite_ids=True`）。
+# 那時 N5 是看著 N4 的候選清單寫的，cite_ids 才有意義（architecture §6.2：
+# 「N5 的 cite_ids 經 N6 解析比對」），而 client 端清掉的引用也要以 `unsupported`
+# 一路帶到 N6 判紅（spec §5.3）。**預設值仍是 False**：fixture 的手寫 id 語意沒有變。
 CARRY_DRAFT_CITE_IDS_DEFAULT = False
 
 
@@ -42,12 +44,24 @@ def _sentence(
     placeholder: bool = False,
     adversarial: bool = False,
     adversarial_note: str | None = None,
+    unsupported: bool = False,
+    dropped_cite_ids: list[str] | None = None,
 ) -> dict[str, Any]:
     """一句話的骨架。`l`／`why`／`refs` 留給 N6 填——模型不產燈號。
 
     `adversarial` 必須一路帶到 `doc[]`：對抗測資裡刻意注入的假引用如果在輸出 JSON 裡
     沒有標記，任何人只截 `doc[]`（或把它貼進簡報）就會看到一句沒有註記的假法條。
+
+    `unsupported`／`dropped_cite_ids` 同理，而且更嚴重：那是 client 端白名單清掉的引用
+    （模型引了檢索結果之外的來源）。只留在 `draft.slots` 的話 `doc[]` 與 N6 都看不到，
+    spec §5.3 承諾的「結構層第二道」就是空的（2026-09-07 覆核 I-3）。
+    **兩個鍵只在為真時才出現**：fixture 模板不會有這種句子，多加兩個永遠是 False 的鍵
+    等於改了 fixture 的 payload 形狀（AC1 要求零變化）。
     """
+    extra: dict[str, Any] = {}
+    if unsupported:
+        extra["unsupported"] = True
+        extra["dropped_cite_ids"] = list(dropped_cite_ids or [])
     return {
         "id": sid,
         "t": text,
@@ -65,6 +79,7 @@ def _sentence(
         # 分層誠實：這兩個欄位標明燈號與理由由誰產出，check_payload 會驗
         "l_origin": "rule",
         "why_origin": "rule",
+        **extra,
     }
 
 
@@ -80,6 +95,8 @@ def build_doc_skeleton(
 
     `carry_draft_cite_ids=False`（預設）時，草稿槽位帶的 `cite_ids` 不會進 `doc[]`——
     理由見模組頂端 `CARRY_DRAFT_CITE_IDS_DEFAULT` 的說明。引用查核不受影響（N6 從本文抽）。
+    這個開關同時管 `unsupported`／`dropped_cite_ids`：它們講的是「模型標的 cite_ids
+    有一部分不在白名單內」，跟 cite_ids 本身是同一組語意，開關要一起翻才前後一致。
     """
     doc: list[dict[str, Any]] = []
     counter = {"n": 0}
@@ -151,6 +168,8 @@ def build_doc_skeleton(
                 basis=s.get("basis"),
                 adversarial=bool(s.get("adversarial")),
                 adversarial_note=s.get("adversarial_note"),
+                unsupported=carry_draft_cite_ids and bool(s.get("unsupported")),
+                dropped_cite_ids=s.get("dropped_cite_ids"),
             )
         )
     doc.append(reasoning_block)
@@ -197,6 +216,8 @@ def build_doc_skeleton(
                     basis=s.get("basis"),
                     adversarial=bool(s.get("adversarial")),
                     adversarial_note=s.get("adversarial_note"),
+                    unsupported=carry_draft_cite_ids and bool(s.get("unsupported")),
+                    dropped_cite_ids=s.get("dropped_cite_ids"),
                 )
             )
     doc.append(conclusion_block)

@@ -20,7 +20,7 @@ from backend.intake.uploads import (
     save_upload,
 )
 from backend.llm import client
-from backend.nodes import n1_extract, n4_retrieval, n5_draft
+from backend.nodes import n1_extract, n4_retrieval, n5_draft, n6_gate
 from backend.orchestrator import runstore
 from backend.orchestrator.graph import (
     digest_from_state,
@@ -1263,3 +1263,82 @@ def test_resume_refuses_a_base_run_from_another_case():
         assert_in("synthetic-blocked-01", str(e))
     else:
         raise AssertionError("跨案件續跑必須 raise ValueError")
+
+
+# ── I-3：模型引用檢索結果外的來源 → N6 判紅並擋送出 ──────────────────────
+# spec §5.3 原本同時寫「標 unsupported 交 N6 判紅」與「N6 邏輯不變」（spec 自身矛盾）。
+# 控制端裁定：N6 端要有真的消費者，否則「結構層第二道」是空的。
+
+
+def _n6_ready_state(requires_human: bool = False) -> CaseState:
+    st = _screened_state(requires_human=requires_human)
+    # 給 laws 結構化鍵，否則 N6 會另外掛 retrieval_law_unkeyed，測試就分不清是哪一條在擋
+    st.retrieval = {
+        "laws": [
+            {"id": "L1", "t": "訴願法第14條", "law": "訴願法", "article": "14", "verified": True},
+            {"id": "L4", "t": "訴願法第77條", "law": "訴願法", "article": "77", "verified": True},
+        ],
+        "cases": [],
+        "retrieval_meta": {},
+    }
+    return st
+
+
+def test_unsupported_citation_reaches_n6_and_blocks_submit():
+    """client 端白名單清掉的引用必須一路帶到 doc[] 與 N6，不能只留在 draft.slots。"""
+    def fake_draft(context, slots, retrieve_fn=None, **kw):
+        return {
+            "slots": {
+                s: [{
+                    "t": f"{s}：本件依相關規定辦理。",
+                    "cite_ids": [],
+                    "basis": None,
+                    "source_kind": "law",
+                    "unsupported": True,
+                    "dropped_cite_ids": ["L9"],
+                }]
+                for s in slots
+            },
+            "tool_calls": [], "usage": None, "model_id": "m",
+        }
+
+    orig = client.draft_sentences
+    client.draft_sentences = fake_draft
+    try:
+        st = _n6_ready_state()
+        n5_draft.run(st, NodeCtx(run_mode="bedrock"), case_fixture=_ordinary_fixture())
+        n6_gate.run(st, NodeCtx(run_mode="bedrock", snapshot=load_snapshot()))
+    finally:
+        client.draft_sentences = orig
+
+    flagged = [
+        s
+        for block in st.gate["doc"]
+        for s in block.get("ss", [])
+        if s.get("unsupported")
+    ]
+    assert_true(flagged, "unsupported 旗標沒有帶進 doc[]（N6 看不到就等於沒有這道防線）")
+    for s in flagged:
+        assert_eq(s["l"], "r", "引用被清掉的句子必須紅燈")
+        assert_in("L9", s["why"] or "", "why 要指出被清掉的是哪個 id")
+        assert_in("檢索結果之外", s["why"] or "")
+        assert_eq(s["l_origin"], "rule", "燈號仍由規則產出，不是模型")
+
+    hits = [b for b in st.gate["blockers"] if b["reason"] == "cite_id_unsupported"]
+    assert_eq(len(hits), 1, "unsupported 要匯總成一條 blocker")
+    assert_eq(sorted(hits[0]["sentence_ids"]), sorted(s["id"] for s in flagged))
+    assert_in("L9", hits[0]["detail"])
+    assert_true(st.gate["submit_allowed"] is False, "帶不可驗引用的草稿不得標為可送出")
+
+
+def test_fixture_doc_sentences_have_no_unsupported_key():
+    """AC1：fixture 模式的 doc[] 句子形狀零變化（不得多出 unsupported／dropped_cite_ids）。"""
+    st = run_case("synthetic-ordinary-01", mode="fixture", persist=False)
+    n = 0
+    for block in st.draft["doc_skeleton"]:
+        for s in block.get("ss", []):
+            n += 1
+            assert_true("unsupported" not in s, f"{s['id']} 多了 unsupported 鍵")
+            assert_true("dropped_cite_ids" not in s, f"{s['id']} 多了 dropped_cite_ids 鍵")
+            assert_eq(s["cite_ids"], [], "fixture 的手寫 cite_ids 仍不得帶進 doc[]")
+    assert_true(n > 0, "前提不成立：doc[] 沒有句子")

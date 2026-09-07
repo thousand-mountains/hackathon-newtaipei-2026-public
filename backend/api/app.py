@@ -49,7 +49,7 @@ from fastapi import BackgroundTasks, FastAPI, File, HTTPException, UploadFile  #
 from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
 from fastapi.responses import FileResponse, JSONResponse  # noqa: E402
 from fastapi.staticfiles import StaticFiles  # noqa: E402
-from pydantic import BaseModel  # noqa: E402
+from pydantic import BaseModel, ConfigDict  # noqa: E402
 
 try:  # spec D8：import 一律模組頂層。uvicorn 只有「直接執行本檔」才用得到，
     # 缺它不該讓 `import backend.api.app` 失敗（官方啟動指令走 `python -m uvicorn`）。
@@ -108,7 +108,13 @@ class RunIn(BaseModel):
     `base_run_id` 去 `load_run()` 讀回來；若允許 request body 直接夾帶 state，
     呼叫端就能偽造一份「已人工確認、無 blocker」的狀態送進來，
     把 C 型案的結論封鎖（判斷卡 7／CONSTITUTION §1）整個關掉。
+
+    `extra="forbid"`：未知欄位一律 422，不靜默忽略（M-12）。上面那條安全邊界如果只寫在
+    docstring 裡，帶 `base_state` 的請求會安安靜靜地被丟掉——呼叫端以為它生效了，
+    看到的結果卻是後端自己讀回來的 base。拒絕比忽略誠實。
     """
+
+    model_config = ConfigDict(extra="forbid")
 
     confirmed_intake: dict[str, Any] | None = None
     base_run_id: str | None = None

@@ -77,6 +77,10 @@ def run(state: CaseState, ctx: NodeCtx, case_fixture: dict[str, Any] | None = No
         degraded, degrade_reason = True, "fixture 檔位：草稿為模板重播，非模型即時生成"
         mode_log = ["離線重播（fixture）：句子來自合成案例模板，非模型生成", "y"]
         extra_logs: list[list[str]] = []
+        # fixture 的 cite_ids 是寫測資的人在 N4 跑之前手填的，語意無效（見 narrative
+        # 模組頂端說明）→ 不帶進 doc[]，維持 AC1 的零變化。
+        carry_cite_ids = False
+        conclusion_source = "模板"
     elif ctx.run_mode == "bedrock":
         refs: list[dict[str, Any]] = []
         retrieve_fn = None
@@ -125,6 +129,11 @@ def run(state: CaseState, ctx: NodeCtx, case_fixture: dict[str, Any] | None = No
         extra_logs = [] if (context["laws"] or context["cases"]) else [
             ["上游檢索結果為空：模型的所有引用都會被清空並標 unsupported", "y"]
         ]
+        # bedrock 分支的 cite_ids 是模型看著 N4 的候選清單標的，語意有效
+        # （architecture §6.2），而 client 端清掉的引用要以 `unsupported` 帶到 N6 判紅
+        # （spec §5.3）。這個開關不翻，那道結構層防線就是空的（2026-09-07 覆核 I-3）。
+        carry_cite_ids = True
+        conclusion_source = "模型"
     else:
         ctx.require_fixture("N5 主筆節點")
         raise AssertionError("unreachable")
@@ -135,6 +144,7 @@ def run(state: CaseState, ctx: NodeCtx, case_fixture: dict[str, Any] | None = No
         deadline_result=state.screen.get("deadline") or {},
         draft_slots=produced,
         requires_human_conclusion=needs_human,
+        carry_draft_cite_ids=carry_cite_ids,
     )
 
     state.draft = {
@@ -162,7 +172,9 @@ def run(state: CaseState, ctx: NodeCtx, case_fixture: dict[str, Any] | None = No
                     *extra_logs,
                     [
                         "結論段已自 slots 陣列移除（結構性封鎖，非 prompt 請求）" if needs_human
-                        else "結論段由模型／模板組出，待守門驗證",
+                        # 依模式二選一：fixture 檔位沒有模型，寫「模型／模板」是文案倒退
+                        # （5261f3c 前的原文就是「由模板組出」）。M-3。
+                        else f"結論段由{conclusion_source}組出，待守門驗證",
                         "r" if needs_human else "",
                     ],
                     ["本節點不產燈號、不產 why、不產爭點 ref——那三樣歸守門", ""],
