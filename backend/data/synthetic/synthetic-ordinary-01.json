@@ -7,6 +7,8 @@
     "constitution": "CONSTITUTION §3（不編造測資背景）、§6（Demo 資產隔離）",
     "why_this_case": "驗證『程序可由日期直接算出』的動線：期間引擎攤開算式（可驗算層）、法條引用全部可對回快照（有出處層）、引擎 caveats 與中度爭點交人工（請人工判斷層）。此案不觸發結論段封鎖，用來對照 synthetic-blocked-01。"
   },
+  "exclude_case": "synthetic-src-0000000001",
+  "_exclude_case_note": "demo 案的來源決定書識別字串；KB 檢索時排除，避免相似案引用到自己。合成測資此值不對應任何真實檔案。",
   "files": [
     { "n": "synthetic-訴願書.pdf", "s": "—", "x": "訴願人 · 3 頁（合成）" },
     { "n": "synthetic-原處分裁處書.pdf", "s": "—", "x": "原處分機關 · 2 頁（合成）" }

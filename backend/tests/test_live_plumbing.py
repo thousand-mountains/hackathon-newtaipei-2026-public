@@ -8,6 +8,7 @@ import tempfile
 from contextlib import contextmanager
 
 import backend.intake.uploads as up
+import backend.orchestrator.graph as graph_mod
 from backend.config import settings
 from backend.config.settings import load_snapshot
 from backend.engine import deadline as deadline_engine
@@ -798,3 +799,64 @@ def test_n4_without_retriever_keeps_phase0_behaviour():
     assert_eq(st.retrieval["cases"], [])
     assert_eq(st.retrieval["retrieval_meta"]["backend"], "lawtable_only")
     assert_true(r.degraded is True)
+
+
+def test_n4_result_distribution_survives_unlabelled_outcome():
+    """檔名讀不出主文時 `outcome` 是 None——結果分布那行不得因為 None 混字串而炸掉。
+
+    這條釘的是 `_count(c['outcome'] or '未標示' ...)` 那個 `or`：拿掉它，
+    `sorted()` 會在 None 與 '駁回' 之間比大小，`TypeError` 直接打死整個 N4。
+    「未標示」是明講讀不出來，不是替它猜一個結果（CONSTITUTION §2）。
+    """
+    class MixedKB:
+        name = "bedrock_kb"
+
+        def search(self, query, filters=None, top_k=5):
+            return [
+                Hit(id="kb-1", title="113年-違反建築法事件-駁回", score=0.9,
+                    source="歷史訴願決定書/113年/a-駁回.txt",
+                    payload={"outcome": "駁回", "provenance": "official", "text": "主文：訴願駁回。"}),
+                Hit(id="kb-2", title="113年-違反建築法事件", score=0.7,
+                    source="歷史訴願決定書/113年/b.txt",
+                    payload={"outcome": None, "provenance": "official", "text": "（檔名不含結果字樣）"}),
+            ]
+
+        def meta(self):
+            return {"backend": "bedrock_kb", "available": True}
+
+    st = CaseState(case_id="synthetic-ordinary-01", run_mode="bedrock")
+    st.facts_excerpt = [{"text": "訴願人擅自變更建物使用。", "page": 1}]
+    st.classification = {"class": {"case_type": "違反建築法事件", "law_hits": ["建築法"]}}
+    st.screen = {"art77": {}, "deadline": {"steps": []}}
+    r = n4_retrieval.run(st, NodeCtx(run_mode="bedrock", snapshot=load_snapshot(), retriever=MixedKB()))
+    assert_eq(len(st.retrieval["cases"]), 2)
+    assert_true(st.retrieval["cases"][1]["outcome"] is None, "讀不出主文就留 None，不猜一個結果")
+    dist = [row[0] for row in r.narrative["case"]["logs"] if row[0].startswith("結果分布：")]
+    assert_eq(len(dist), 1, f"結果分布那行不見了：{r.narrative['case']['logs']}")
+    assert_in("駁回 1 件", dist[0])
+    assert_in("未標示 1 件", dist[0])
+
+
+def test_run_case_passes_fixture_exclude_case_into_build_retriever():
+    """demo 案不得檢索到自己的來源決定書——這條釘住 fixture → graph → build_retriever 的傳遞。
+
+    假的 build_retriever 回 None（等同 lawtable_only），所以不需要 boto3、
+    N4 通道 B 的行為也不變；被釘住的只有「參數有沒有真的傳過去」。
+    """
+    calls: list[tuple[str, str | None]] = []
+
+    def fake_build(kind, *, exclude_case=None):
+        calls.append((kind, exclude_case))
+        return None
+
+    orig = graph_mod.build_retriever
+    graph_mod.build_retriever = fake_build
+    try:
+        with env(RETRIEVER=None):
+            graph_mod.run_case("synthetic-ordinary-01", mode="fixture")
+    finally:
+        graph_mod.build_retriever = orig
+
+    assert_eq(len(calls), 1, "run_case 必須向編排層要一次 retriever")
+    assert_eq(calls[0][0], "lawtable_only", "kind 來自 settings.retriever_kind()")
+    assert_eq(calls[0][1], "synthetic-src-0000000001", "fixture 的 exclude_case 沒有傳到檢索器")
