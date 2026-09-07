@@ -25,11 +25,26 @@ let MODE='offline';   /* 'live' | 'offline' */
 let CASE=FIXTURE_CASE;
 let LIVE=null;        /* live 模式下的後端 payload 原文，未經前端改寫 */
 
+/* live 模式的狀態容器（chosen 案例、案例清單、上一次的 run_id）。
+   boot() 與 bootApp() 兩邊都要碰同一份——續跑要拿 runId、上傳建案要換 chosen——
+   所以放在模組層，而不是只活在 bootApp() 裡。 */
+const L={};
+
 function setBadge(mode,label,tip){
   const el=$('#modebadge'); if(!el)return;
   el.dataset.m=mode;
   el.innerHTML='<span class="dotm"></span>'+esc(label);
   if(tip)el.dataset.tip=tip;
+}
+
+/* 徽章上的 run_id 必須跟畫面上這一份 payload 是同一次執行。
+   換過 payload（承辦人確認續跑、上傳建案）就要重寫一次，
+   否則 tooltip 會拿上一次的 run_id 替這一頁的內容背書。 */
+function liveBadge(payload){
+  setBadge('live','live 後端・'+L.chosen,
+    '本頁資料來自後端六節點的一次實際執行（run_id '+((payload&&payload.run_id)||'—')+'，'+
+    'RUN_MODE='+((payload&&payload.run_meta&&payload.run_meta.run_mode)||'?')+'）。'+
+    '燈號、引用狀態、送出許可全部由後端守門節點判定，前端不重算。');
 }
 
 /* 幕僚卡片圖示是前端的表現層（architecture §6.2「前端有、後端不需要新增的」），
@@ -63,6 +78,39 @@ function adaptPayload(p){
   };
 }
 
+/* ================= 執行入口 ================= */
+/* 後端的錯誤原文照搬給承辦人看；FastAPI 把訊息包在 {detail:…} 裡，
+   拆出來才不會在畫面上出現一整串 JSON 標點蓋掉真正的那句話。 */
+async function errText(res){
+  const t=await res.text();
+  try{const d=JSON.parse(t).detail; return typeof d==='string'?d:(d?JSON.stringify(d):t);}
+  catch(_){return t;}
+}
+
+/* 全站唯一一個「叫後端跑六節點」的地方。兩個檔位的回應形狀不同，差異吸收在這裡：
+   - fixture：200 ＋ 完整 payload（同步跑完）。
+   - bedrock：202 ＋ {run_id,result_url}，之後每 2 秒 GET 一次；409 表示還在跑、
+     200 是結果、其他一律當失敗。
+   失敗一定往外拋：呼叫端的責任是把錯誤顯示出來，不是拿舊 payload 續跑（CONSTITUTION §1）。 */
+async function postRun(body,onProgress){
+  const res=await fetch('api/cases/'+encodeURIComponent(L.chosen)+'/runs',{
+    method:'POST',headers:{'Content-Type':'application/json','Accept':'application/json'},
+    body:JSON.stringify(body||{})});
+  if(res.status===200){const p=await res.json(); L.runId=p.run_id; return p;}
+  if(res.status!==202)throw new Error('runs HTTP '+res.status+'：'+(await errText(res)).slice(0,200));
+  /* 進行中的 run 先放 pendingRunId：**L.runId 只在跑完拿到 payload 時才更新**。
+     失敗的 run 沒有可讀的終態，讓它變成下一次的 base_run_id 只會換來一個 404。 */
+  const ticket=await res.json(); L.pendingRunId=ticket.run_id;
+  const started=Date.now();
+  for(;;){
+    await new Promise(r=>setTimeout(r,2000));
+    const r=await fetch(String(ticket.result_url||'').replace(/^\//,''),{headers:{'Accept':'application/json'}});
+    if(r.status===409){onProgress&&onProgress('六節點執行中…'+Math.round((Date.now()-started)/1000)+' 秒');continue;}
+    if(r.status===200){const p=await r.json(); L.runId=p.run_id||ticket.run_id; return p;}
+    throw new Error('執行失敗 HTTP '+r.status+'：'+(await errText(r)).slice(0,300));
+  }
+}
+
 /* ================= 啟動：先探後端，再決定用哪一份資料 ================= */
 async function boot(){
   let health=null, caseIds=[], payload=null, chosen=null;
@@ -84,10 +132,8 @@ async function boot(){
     chosen=caseIds.includes(want)?want
       :(caseIds.includes('synthetic-ordinary-01')?'synthetic-ordinary-01':caseIds[0]);
 
-    const rr=await fetch('api/cases/'+encodeURIComponent(chosen)+'/runs',
-                         {method:'POST',headers:{'Accept':'application/json'}});
-    if(!rr.ok)throw new Error('runs HTTP '+rr.status);
-    payload=await rr.json();
+    L.chosen=chosen;
+    payload=await postRun({},msg=>setBadge('live','live 後端・'+chosen+'・'+msg,''));
   }catch(e){
     MODE='offline';
     setBadge('offline','離線 fixture（未接後端）',
@@ -97,16 +143,13 @@ async function boot(){
     return;
   }
   MODE='live'; LIVE=payload; CASE=adaptPayload(payload);
-  setBadge('live','live 後端・'+chosen,
-    '本頁資料來自後端六節點的一次實際執行（run_id '+(payload.run_id||'—')+'，'+
-    'RUN_MODE='+((payload.run_meta&&payload.run_meta.run_mode)||'?')+'）。'+
-    '燈號、引用狀態、送出許可全部由後端守門節點判定，前端不重算。');
+  liveBadge(payload);
   bootApp({caseIds:caseIds,chosen:chosen,health:health});
 }
 
 /* ================= 主程式 ================= */
 function bootApp(live){
-  const L=live||{};
+  Object.assign(L,live||{});
   const isLive=MODE==='live';
 
 /* ================= 狀態 ================= */
@@ -131,15 +174,16 @@ $$('[data-back]').forEach(b=>b.onclick=()=>goto(+b.dataset.back));
 
 /* ================= 1 上傳 ================= */
 let DEMO_FILES=CASE.files||[];
-/* 拖進來的檔案**不會被讀取**。這個 demo 的案情一律來自後端的合成案例，
-   上傳只是動線示意——原本寫「✓ 已解析」會讓人以為系統剖析了他丟進來的 PDF。 */
+/* 離線模式（沒有後端可送）拖進來的檔案**不會被讀取**，只是動線示意——
+   原本寫「✓ 已解析」會讓人以為系統剖析了他丟進來的 PDF。
+   live 模式走 uploadFiles()，檔案是真的送到 POST /api/cases。 */
 const UPLOAD_NOTE='本 demo 不讀取上傳檔內容，案情來自後端合成案例';
 function addFile(f,i){
   const li=document.createElement('li');
   li.style.animationDelay=(i*90)+'ms';
   li.innerHTML=`<span class="mi doc">description</span>
     <span class="meta"><b>${esc(f.n)}</b><span>${esc(f.s)}　·　${esc(f.x)}</span></span>
-    <span class="ok" title="本 demo 不讀取上傳檔內容">已上傳</span><button aria-label="移除">×</button>`;
+    <span class="ok" title="${esc(f.x)}">已上傳</span><button aria-label="移除">×</button>`;
   li.querySelector('button').onclick=()=>{li.remove();updateGo1()};
   $('#filelist').appendChild(li);
   updateGo1();
@@ -180,6 +224,39 @@ function loadDemo(){
   },700);
 }
 $('#demoload').onclick=loadDemo;
+
+/* live 模式：拖進來的檔案真的 POST /api/cases 建成 upload- 案件，接著跑六節點。
+   fixture 檔位的後端會在 runs 回 400（上傳案沒有可重播的 fixture，只能在 RUN_MODE=bedrock 執行），
+   那就把後端那句話原樣顯示出來——不拿合成案例的畫面假裝剛剛剖析了他的卷證。
+   失敗時把 chosen／runId 退回原案例，也不把跑不動的選項留在下拉選單裡：
+   「沒有切換過去」跟「切換成功」是兩件事，畫面不能讓人分不出來。 */
+async function uploadFiles(fileList){
+  const files=[...(fileList||[])];
+  if(!files.length)return;
+  const hint=$('#go1hint'), prevCase=L.chosen, prevRun=L.runId;
+  hint.textContent='上傳卷證中…（'+files.length+' 個檔案）';
+  try{
+    const fd=new FormData();
+    files.forEach(f=>fd.append('files',f,f.name));
+    const res=await fetch('api/cases',{method:'POST',body:fd});
+    if(!res.ok)throw new Error('上傳 HTTP '+res.status+'：'+(await errText(res)).slice(0,200));
+    const meta=await res.json();
+    L.chosen=meta.case_id; L.runId=null;
+    hint.textContent='已建案 '+meta.case_id+'，卷證書記官抽取中…';
+    applyLivePayload(await postRun({},m=>{hint.textContent=m;}));
+    const sel=$('#caseselect');
+    if(sel&&![...sel.options].some(o=>o.value===meta.case_id))
+      sel.appendChild(Object.assign(document.createElement('option'),
+        {value:meta.case_id,textContent:meta.case_id+'（上傳）'}));
+    if(sel)sel.value=meta.case_id;
+    $('#demoload').textContent='載入案件（'+meta.case_id+'）';
+    loadDemo();
+  }catch(e){
+    L.chosen=prevCase; L.runId=prevRun;
+    hint.textContent='上傳或抽取失敗（'+String(e&&e.message||e)+'）——未以舊資料假裝成功，仍停留在案例 '+prevCase+'。';
+  }
+}
+
 const drop=$('#drop');
 drop.onclick=()=>$('#filein').click();
 drop.onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();loadDemo();}};
@@ -187,10 +264,15 @@ drop.onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();loadDemo(
 ['dragleave','drop'].forEach(t=>drop.addEventListener(t,e=>{e.preventDefault();drop.classList.remove('hot')}));
 drop.addEventListener('drop',e=>{
   const fs=[...(e.dataTransfer?.files||[])];
-  if(fs.length)fs.forEach((f,i)=>addFile({n:f.name,s:Math.round(f.size/1024)+' KB',x:UPLOAD_NOTE},i));
-  else loadDemo();
+  if(!fs.length){loadDemo();return;}
+  if(isLive)uploadFiles(fs);
+  else fs.forEach((f,i)=>addFile({n:f.name,s:Math.round(f.size/1024)+' KB',x:UPLOAD_NOTE},i));
 });
-$('#filein').onchange=e=>[...e.target.files].forEach((f,i)=>addFile({n:f.name,s:Math.round(f.size/1024)+' KB',x:UPLOAD_NOTE},i));
+$('#filein').onchange=e=>{
+  const fs=[...e.target.files];
+  if(isLive)uploadFiles(fs);
+  else fs.forEach((f,i)=>addFile({n:f.name,s:Math.round(f.size/1024)+' KB',x:UPLOAD_NOTE},i));
+};
 
 function updateGo1(){
   const files=$('#filelist').children.length;
@@ -239,11 +321,11 @@ async function runConfirmed(){
   const hint=$('#go1hint');
   hint.textContent='送出承辦人確認並重跑六節點…';
   try{
-    const res=await fetch('api/cases/'+encodeURIComponent(L.chosen)+'/runs',{
-      method:'POST',headers:{'Content-Type':'application/json','Accept':'application/json'},
-      body:JSON.stringify({confirmed_intake:collectIntake()})});
-    if(!res.ok)throw new Error('HTTP '+res.status);
-    applyLivePayload(await res.json());
+    const body={confirmed_intake:collectIntake()};
+    /* 有上一次的 run_id 就從 n2 續跑：卷證書記官（n1）已經抽過了，
+       承辦人確認改的是欄位不是卷證，再抽一次只會多花一次模型呼叫、還可能抽出不一樣的東西。 */
+    if(L.runId){body.base_run_id=L.runId; body.from_node='n2';}
+    applyLivePayload(await postRun(body,m=>{hint.textContent=m;}));
     hint.textContent='';
     return true;
   }catch(e){
@@ -259,6 +341,8 @@ function applyLivePayload(payload){
   ALLREFS=[...LAWS,...CASES,...ISSUES]; AGENTS=CASE.agents||[];
   rebuildSents();
   renderConfirmNote();
+  renderProv();
+  if(isLive)liveBadge(payload);
 }
 
 $('#go1').onclick=async ()=>{
@@ -955,7 +1039,12 @@ $('#go4').onclick=async ()=>{
     /* 六節點在 fixture 檔位都是次毫秒，逐項四捨五入後合計會是 0——
        畫面上顯示「0 ms」看起來像壞掉，寫成 <1 ms 才是那個數字真正的意思。 */
     $('#s_min').textContent=(total>0?total+' ms':'<1 ms');
-    $('#s_min_lb').textContent='後端六節點合計（'+Object.keys(nt).length+' 節點）';
+    /* 從 n2 續跑時 node_timings 只有重跑的那幾個節點。寫死「六節點」會變成
+       「六節點合計（5 節點）」——看起來像有一個節點掛了。照實說是哪幾個。 */
+    const nk=Object.keys(nt);
+    $('#s_min_lb').textContent=nk.length>=6
+      ? '後端六節點合計（'+nk.length+' 節點）'
+      : '本次重跑 '+nk.length+' 節點合計（'+nk.join('、')+'；其餘沿用上一次執行）';
     $('#s_cite').textContent=((LIVE&&LIVE.citations)||[]).length+' 筆';
     $('#s_cite_lb').textContent='引用查核筆數（四態）';
     const con=SENTS.find(s=>s.slot==='conclusion');
@@ -990,12 +1079,15 @@ $('#go4').onclick=async ()=>{
 $('#restart').onclick=()=>location.reload();
 
 /* ---- 資料來源標記（CONSTITUTION 原則 3／6） ---- */
-(function(){
+/* 橫幅一律照 payload.provenance 講：合成案是「合成測資」、上傳案是「上傳案件：…」。
+   換過 payload（確認續跑、上傳建案）就要重畫一次，否則橫幅會停在上一個案件的來源上。 */
+function renderProv(){
   const el=$('#prov'), pv=CASE.provenance||{};
   if(!el)return;
   el.textContent=pv.banner||'示範案件';
-  if(pv.note)el.dataset.tip=pv.note;
-})();
+  if(pv.note)el.dataset.tip=pv.note; else delete el.dataset.tip;
+}
+renderProv();
 
 updateGo1();
 }  /* ← bootApp 結束 */
