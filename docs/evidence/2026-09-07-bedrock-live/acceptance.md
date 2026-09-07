@@ -4,7 +4,7 @@
 |---|---|---|
 | health 200 且 live_settings ok | ✅ | HTTP 200、run_mode=fixture、checks=[('laws_snapshot', True), ('synthetic_cases', True), ('frontend_dist', True), ('live_settings', True)] |
 | synthetic-ordinary-01 跑完六節點 | ✅ | HTTP 200、run_mode=fixture |
-| AC10 SSE 6 對 start/done + run_done（加值層） | ⏸ | 加值層未做：ticket 沒有 events_url（Task 7b 未實作），無 SSE 可驗 |
+| AC10 SSE 6 對 start/done + run_done（加值層） | ⏸ | fixture 檔位的 POST /runs 同步回 200，沒有 ticket 也就沒有 events_url，無 SSE 可驗（端點 GET /api/runs/{id}/events 本身已實作，見 Task 7b commit 1b0db05；要驗 SSE 需對 RUN_MODE=bedrock 的服務跑，那時 /runs 回 202 帶 events_url） |
 | AC4 N1 live：12 欄 origin=llm、conf 0–1、model_id 非空 | ⏸ | 未驗（服務為 fixture 模式，需 Bedrock 開通） |
 | AC5 N5 live：每句 cite_ids ⊆ N4 ∪ 工具命中 | ⏸ | 未驗（服務為 fixture 模式，需 Bedrock 開通） |
 | AC7 KB recall：cases ≥ 3 且同案型 ≥ 3 | ⏸ | 未驗（服務為 fixture 模式，需 Bedrock 開通） |

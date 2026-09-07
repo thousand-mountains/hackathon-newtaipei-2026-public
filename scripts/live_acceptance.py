@@ -144,7 +144,7 @@ def run(
         # 不是讓 KeyError 把整張表一起帶走。
         return 502, {"error": "202 回應缺 run_id", "body": ticket}, []
     events: list[str] = []
-    if ticket.get("events_url"):  # Task 7b 做了才有；沒有就純輪詢
+    if ticket.get("events_url"):  # bedrock 檔位的 202 才有；沒有就純輪詢
         with urllib.request.urlopen(base + ticket["events_url"], timeout=300) as r:
             for raw_line in r:
                 line = raw_line.decode().strip()
@@ -341,7 +341,12 @@ def main() -> int:
             ),
         )
     else:
-        pending(AC10, "加值層未做：ticket 沒有 events_url（Task 7b 未實作），無 SSE 可驗")
+        pending(
+            AC10,
+            "fixture 檔位的 POST /runs 同步回 200，沒有 ticket 也就沒有 events_url，"
+            "無 SSE 可驗（端點 GET /api/runs/{id}/events 本身已實作，見 Task 7b commit 1b0db05；"
+            "要驗 SSE 需對 RUN_MODE=bedrock 的服務跑，那時 /runs 回 202 帶 events_url）",
+        )
 
     if not ok_main:
         say("\n主案例跑不起來，其餘 AC 無法驗。")
