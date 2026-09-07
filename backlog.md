@@ -72,3 +72,15 @@
 | HACK-S-14 | `RunIn` 改 `extra="forbid"`，未知欄位回 400 而不是靜默忽略 | backend | P3 | 未開始 |
 | HACK-S-15 | 逾期回放集補反例（非逾期案），讓一致率能驗到日期邏輯的邊界與非逾期分支，而不只是「正例判得準」 | backend＋qa | P1 | 未開始 |
 | HACK-S-16 | bedrock 檔位的 `from_node`／`overrides` 抽 `validate_run_args` 提前驗（現在跨模式續跑在背景 raise，API 以 502 回報，不是 400） | backend | P2 | 未開始 |
+
+### Phase S 追加（2026-09-08 真模型試跑發現）
+
+> 來源：`docs/evidence/2026-09-08-openai-smoke/`。**那批證據是非 AWS 模型跑的**，
+> 但下列問題與 provider 無關，換成 Bedrock 一樣會發生。
+
+| ID | Story | 負責 | 優先 | 狀態 |
+|---|---|---|---|---|
+| HACK-S-17 | 收文頁要讓承辦人一眼看出「期間計算的輸入還沒被確認」——真模型把 `d2`（送達日）抽成提起日的值且 conf 給 1.0，期間卡六句 `origin=engine` 全綠標「可驗算」，算的卻是錯的輸入。結論封鎖有守住（`submit_allowed=false`），但畫面看起來完全可信 | frontend＋backend | **P0** | 未開始 |
+| HACK-S-18 | 抽取的 `conf` 沒有鑑別力，不能當可信度指標——12 欄有 8 欄回 1.0，包含抽錯的 `d2`。prompt 已寫「抓不到就給低值，不要猜」仍無效。要嘛改用別的訊號（交叉比對／多次抽取一致性），要嘛在 UI 明說 conf 不可信 | backend＋qa | P1 | 未開始 |
+| HACK-S-19 | `PROVENANCE.note`（`settings.py`）、`/api/health` 的 `model_ids`／`model_ids_note`（`app.py:218`）、`agreement.note`（`n2_classify.py`）都寫死「fixture／離線重播檔位」字樣，bedrock 檔位下照樣輸出＝謊報（CONSTITUTION §1） | backend | P1 | 未開始 |
+| HACK-S-20 | 失敗的 run 不落地：`graph.py:325` 節點拋例外只 emit `run_failed` 就 `raise`，`save_run` 只有成功路徑走得到，事後查不到崩在哪一節點的完整 state | backend | P2 | 未開始 |

@@ -1,0 +1,1517 @@
+{
+ "case_id": "synthetic-ordinary-01",
+ "run_id": "run-synthetic-ordinary-01-436e7c5fa173",
+ "state": "VERIFIED",
+ "provenance": {
+  "kind": "synthetic",
+  "note": "本系統目前執行於 fixture（離線重播）模式，全部案例為合成測資（synthetic）。",
+  "banner": "合成測資：案情自公開決定書之結構反推改寫，人名、地址、案號均為虛構，不對應任何真實案件。",
+  "constitution": "CONSTITUTION §3（不編造測資背景）、§6（Demo 資產隔離）",
+  "dataset_scope": "引用驗證的範圍即 laws-snapshot.json 的涵蓋範圍（11 部法規、17 筆判解、2 則釋字）。標「庫外，未驗證」代表本系統無法驗證，不代表該字號不存在。",
+  "declaration": "本檔為合成測資（synthetic）。案情結構自公開決定書之程序爭點型態反推改寫；案號、人名、地址、機關承辦資訊均為虛構，不對應任何真實案件，亦未使用賽方競賽資料集。",
+  "why_this_case": "驗證『程序可由日期直接算出』的動線：期間引擎攤開算式（可驗算層）、法條引用全部可對回快照（有出處層）、引擎 caveats 與中度爭點交人工（請人工判斷層）。此案不觸發結論段封鎖，用來對照 synthetic-blocked-01。"
+ },
+ "files": [
+  {
+   "n": "synthetic-訴願書.pdf",
+   "s": "—",
+   "x": "訴願人 · 3 頁（合成）"
+  },
+  {
+   "n": "synthetic-原處分裁處書.pdf",
+   "s": "—",
+   "x": "原處分機關 · 2 頁（合成）"
+  }
+ ],
+ "intake": {
+  "no": "synthetic-1130000001",
+  "type": "違反空氣污染防制法事件",
+  "person": "吳○庭",
+  "org": "新北市政府",
+  "d1": "2024-06-11",
+  "d2": "2024-07-20",
+  "d3": "2024-07-20",
+  "agent": null,
+  "note": null,
+  "service_method": "deposit",
+  "transit_days": 2,
+  "interested_party": false,
+  "auto_fields": [
+   "d1",
+   "d2",
+   "d3",
+   "no",
+   "org",
+   "person",
+   "service_method",
+   "type"
+  ],
+  "auto_toast": "已由卷證擷取 8 個欄位，請確認"
+ },
+ "intake_conf": {
+  "no": 1.0,
+  "type": 1.0,
+  "person": 1.0,
+  "org": 1.0,
+  "d1": 1.0,
+  "d2": 1.0,
+  "d3": 1.0,
+  "agent": 0.0,
+  "note": 0.0,
+  "service_method": 1.0,
+  "transit_days": 0.5,
+  "interested_party": 0.5
+ },
+ "intake_origin": {
+  "no": "llm",
+  "type": "llm",
+  "person": "llm",
+  "org": "llm",
+  "d1": "llm",
+  "d2": "llm",
+  "d3": "llm",
+  "agent": "llm",
+  "note": "llm",
+  "service_method": "llm",
+  "transit_days": "llm",
+  "interested_party": "llm"
+ },
+ "intake_confirmed": [],
+ "facts_excerpt": [
+  {
+   "text": "訴願人於本市土城區農地露天燃燒稻稈及廢棄物，經環境保護局於民國 113 年 6 月 5 日現場稽查查獲，並以民國 113 年 6 月 11 日裁處書處以罰鍰。（合成卷證原文摘錄）",
+   "page": null,
+   "quote_ref": "synthetic-原處分裁處書.pdf#p1"
+  }
+ ],
+ "classification": {
+  "class": {
+   "case_type": "違反空氣污染防制法事件",
+   "basis": "採 N1 抽取之案由欄位（違反空氣污染防制法事件）",
+   "method": "rule_v0_fallback",
+   "method_note": "v0 fallback：規則式法規名比對。真正的 kNN 分類需要賽方 101 份歷史決定書向量庫，本機無此資料，待資料集到位後替換。",
+   "law_hits": [
+    "空氣污染防制法"
+   ],
+   "expected_outcome_prior": null,
+   "expected_outcome_prior_reason": "需歷史決定書分布統計，本機無資料集，不推估。"
+  },
+  "knn": [],
+  "knn_backend": "unavailable",
+  "agreement": {
+   "llm_type": "違反空氣污染防制法事件",
+   "knn_type": null,
+   "match": null,
+   "simulated": true,
+   "note": "離線重播檔位：kNN 通道不可用，LLM 判讀 vs kNN 投票之交叉比對未實際執行。"
+  }
+ },
+ "screen": {
+  "deadline": {
+   "effective_date": "2024-07-20",
+   "deadline": "2024-08-21",
+   "overdue": false,
+   "steps": [
+    {
+     "rule": "寄存送達自寄存之日起發生效力（不論實際何時領取）",
+     "basis": "行政程序法 74；最高行 108 判 531 意旨",
+     "value": "生效日 = 113/7/20"
+    },
+    {
+     "rule": "自送達生效之次日起算（始日不計入）",
+     "basis": "訴願法 14 I；民法 120 II",
+     "value": "起算日 = 113/7/21"
+    },
+    {
+     "rule": "法定期間 30 日",
+     "basis": "訴願法 14 I",
+     "value": "第 30 日 = 113/8/19"
+    },
+    {
+     "rule": "扣除在途期間 2 日（訴願人不在受理機關所在地）",
+     "basis": "訴願法 16；訴願扣除在途期間辦法（日數由查表提供）",
+     "value": "加計後 = 113/8/21"
+    },
+    {
+     "rule": "期滿日確定",
+     "basis": "以上各步",
+     "value": "訴願期間至 113/8/21 屆滿"
+    },
+    {
+     "rule": "以受理機關收受訴願書之日為提起日",
+     "basis": "訴願法 14 III",
+     "value": "提起日 113/7/20 ≤ 期滿日 → 未逾期"
+    }
+   ],
+   "caveats": [
+    "國定假日順延未納入（v0 僅處理週六日），期滿日落在國定假日者請對照行政機關辦公日曆。"
+   ]
+  },
+  "art77": {
+   "screened": [
+    "77-2"
+   ],
+   "hits": [],
+   "clause": null,
+   "basis": "期間未逾越（或無法判定），77 條第 2 款不成立；是否有其他不受理事由需人工審認。",
+   "requires_substantive_review": true,
+   "not_auto_screened": [
+    "77-1",
+    "77-3",
+    "77-4",
+    "77-5",
+    "77-6",
+    "77-7",
+    "77-8"
+   ],
+   "not_auto_screened_reason": "其餘各款屬法律判斷，本系統不自動判定，請承辦人審認。"
+  },
+  "fact_issues": [
+   {
+    "id": "I1",
+    "signal_id": "service_dispute",
+    "t": "爭點1：送達生效日之爭執",
+    "q": "訴願人是否爭執送達生效日？寄存送達之處所與應受送達處所是否相符？",
+    "severity": "medium",
+    "matched_keywords": [
+     "未實際收受"
+    ],
+    "src": "AI 不得代為認定，請承辦人核對卷證",
+    "origin": "rule"
+   }
+  ],
+  "requires_human_conclusion": true,
+  "human_conclusion_signals": [
+   "程序合法且須進入實體審查（案型：違反空氣污染防制法事件）"
+  ],
+  "procedural_inputs_confirmed": false,
+  "unconfirmed_procedural_fields": [
+   "d2",
+   "d3",
+   "service_method",
+   "transit_days",
+   "interested_party",
+   "note"
+  ]
+ },
+ "retrieval": {
+  "laws": [
+   {
+    "id": "L1",
+    "t": "行政程序法第74條",
+    "q": null,
+    "q_note": "條文原文不在快照內（快照只索引條號），本系統不代為補寫條文文字，請對照全國法規資料庫。",
+    "src": "laws-snapshot.json／行政程序法",
+    "origin": "retrieval",
+    "verified": true,
+    "note": "條號存在於快照（該法最大條號 175）",
+    "lamp": "g",
+    "tag": "✓ 在庫",
+    "law": "行政程序法",
+    "article": "74",
+    "gate_ref_key": "行政程序法|74",
+    "gate_status": "cited_and_gated",
+    "gate_note": "草稿有引用此條，燈號為守門逐句查核的結果。"
+   },
+   {
+    "id": "L2",
+    "t": "訴願法第14條",
+    "q": null,
+    "q_note": "條文原文不在快照內（快照只索引條號），本系統不代為補寫條文文字，請對照全國法規資料庫。",
+    "src": "laws-snapshot.json／訴願法",
+    "origin": "retrieval",
+    "verified": true,
+    "note": "條號存在於快照（該法最大條號 101）",
+    "lamp": "g",
+    "tag": "✓ 在庫",
+    "law": "訴願法",
+    "article": "14",
+    "gate_ref_key": "訴願法|14",
+    "gate_status": "cited_and_gated",
+    "gate_note": "草稿有引用此條，燈號為守門逐句查核的結果。"
+   },
+   {
+    "id": "L3",
+    "t": "民法第120條",
+    "q": null,
+    "q_note": "條文原文不在快照內（快照只索引條號），本系統不代為補寫條文文字，請對照全國法規資料庫。",
+    "src": "laws-snapshot.json／民法",
+    "origin": "retrieval",
+    "verified": true,
+    "note": "條號存在於快照（該法最大條號 1225）",
+    "lamp": "g",
+    "tag": "✓ 在庫",
+    "law": "民法",
+    "article": "120",
+    "gate_ref_key": "民法|120",
+    "gate_status": "cited_and_gated",
+    "gate_note": "草稿有引用此條，燈號為守門逐句查核的結果。"
+   },
+   {
+    "id": "L4",
+    "t": "訴願法第16條",
+    "q": null,
+    "q_note": "條文原文不在快照內（快照只索引條號），本系統不代為補寫條文文字，請對照全國法規資料庫。",
+    "src": "laws-snapshot.json／訴願法",
+    "origin": "retrieval",
+    "verified": true,
+    "note": "條號存在於快照（該法最大條號 101）",
+    "lamp": "g",
+    "tag": "✓ 在庫",
+    "law": "訴願法",
+    "article": "16",
+    "gate_ref_key": "訴願法|16",
+    "gate_status": "cited_and_gated",
+    "gate_note": "草稿有引用此條，燈號為守門逐句查核的結果。"
+   }
+  ],
+  "cases": [],
+  "retrieval_meta": {
+   "backend": "lawtable_only",
+   "law_channel": {
+    "backend": "lawtable",
+    "available": true,
+    "laws_indexed": 11,
+    "article_text_available": false,
+    "note": "快照只索引條號，不含條文原文；條文原文欄位在 Phase 0 一律留白，不由系統補寫。"
+   },
+   "similar_case_channel": {
+    "backend": "similar_cases",
+    "available": false,
+    "reason": "相似歷史案檢索需要賽方資料集（歷史訴願決定書）。該資料集僅供競賽之用，不進 git、不在本機，本次執行無任何相似案可回。此通道回空不是查無相似案，而是本系統目前無法檢索——標「庫外，未驗證」。",
+    "hits": 0,
+    "verified": false,
+    "label": "庫外，未驗證"
+   },
+   "recall_at5_last_eval": null,
+   "recall_note": "檢索評測需要 leave-one-out 的歷史決定書資料集，本機無資料，未量測。",
+   "kb_snapshot_date": "2026-08-22",
+   "query_text": "違反空氣污染防制法事件；空氣污染防制法；行政程序法第74條；訴願法第14條；民法第120條；訴願法第16條；訴願人於本市土城區農地露天燃燒稻稈及廢棄物，經環境保護局於民國 113 年 6 月 5 日現場稽查查獲，並以民國 113 年 6 月 11 日裁處書處以罰鍰。（合成卷證原文摘錄）",
+   "case_query_text": "訴願人於本市土城區農地露天燃燒稻稈及廢棄物，經環境保護局於民國 113 年 6 月 5 日現場稽查查獲，並以民國 113 年 6 月 11 日裁處書處以罰鍰。（合成卷證原文摘錄）；違反空氣污染防制法事件",
+   "case_query_extra_terms": [],
+   "query_sources": [
+    {
+     "from": "n2.classification.class.case_type",
+     "kind": "案型",
+     "terms": [
+      "違反空氣污染防制法事件"
+     ]
+    },
+    {
+     "from": "n2.classification.class.law_hits",
+     "kind": "案型對應法規名（無條號）",
+     "terms": [
+      "空氣污染防制法"
+     ],
+     "note": "實體法條號無法由案情自動判定：N2 只認得出案型對應的法規『名稱』（例如建築法），條號要由原處分書的裁處依據判定，而 Phase 0 沒有 PDF 視覺抽取、卷證摘錄裡也沒有條號。本節點**不猜條號**——所以檢索結果會以程序面法條為主，實體面只列得出法規名。"
+    },
+    {
+     "from": "n3.screen.deadline.steps[].basis",
+     "kind": "期間引擎逐步援引的法源",
+     "terms": [
+      "行政程序法第74條",
+      "訴願法第14條",
+      "民法第120條",
+      "訴願法第16條"
+     ],
+     "note": "期間引擎的依據字串裡若含判解字號（例『最高行 108 判 531 意旨』），本節點不檢索——法條查表通道只查條號，判解白名單的比對在守門節點（N6）做。"
+    },
+    {
+     "from": "n1.facts_excerpt + intake.note",
+     "kind": "卷證原文（原文照抄進查詢句，不改寫）",
+     "terms": [
+      "訴願人於本市土城區農地露天燃燒稻稈及廢棄物，經環境保護局於民國 113 年 6 月 5 日現場稽查查獲，並以民國 113 年 6 月 11 日裁處書處以罰鍰。（合成卷證原文摘錄）"
+     ]
+    }
+   ],
+   "query_independence": "查詢句只由 N1 卷證抽取、N2 案型、N3 程序結果組成，不含 N5 草稿的任何內容。檢索是獨立佐證，不是照著草稿要引用什麼去查什麼。",
+   "substantive_article_gap": "實體法條號無法由案情自動判定：N2 只認得出案型對應的法規『名稱』（例如建築法），條號要由原處分書的裁處依據判定，而 Phase 0 沒有 PDF 視覺抽取、卷證摘錄裡也沒有條號。本節點**不猜條號**——所以檢索結果會以程序面法條為主，實體面只列得出法規名。"
+  }
+ },
+ "laws": [
+  {
+   "id": "L1",
+   "t": "行政程序法第74條",
+   "q": null,
+   "q_note": "條文原文不在快照內（快照只索引條號），本系統不代為補寫條文文字，請對照全國法規資料庫。",
+   "src": "laws-snapshot.json／行政程序法",
+   "origin": "retrieval",
+   "verified": true,
+   "note": "條號存在於快照（該法最大條號 175）",
+   "lamp": "g",
+   "tag": "✓ 在庫",
+   "law": "行政程序法",
+   "article": "74",
+   "gate_ref_key": "行政程序法|74",
+   "gate_status": "cited_and_gated",
+   "gate_note": "草稿有引用此條，燈號為守門逐句查核的結果。"
+  },
+  {
+   "id": "L2",
+   "t": "訴願法第14條",
+   "q": null,
+   "q_note": "條文原文不在快照內（快照只索引條號），本系統不代為補寫條文文字，請對照全國法規資料庫。",
+   "src": "laws-snapshot.json／訴願法",
+   "origin": "retrieval",
+   "verified": true,
+   "note": "條號存在於快照（該法最大條號 101）",
+   "lamp": "g",
+   "tag": "✓ 在庫",
+   "law": "訴願法",
+   "article": "14",
+   "gate_ref_key": "訴願法|14",
+   "gate_status": "cited_and_gated",
+   "gate_note": "草稿有引用此條，燈號為守門逐句查核的結果。"
+  },
+  {
+   "id": "L3",
+   "t": "民法第120條",
+   "q": null,
+   "q_note": "條文原文不在快照內（快照只索引條號），本系統不代為補寫條文文字，請對照全國法規資料庫。",
+   "src": "laws-snapshot.json／民法",
+   "origin": "retrieval",
+   "verified": true,
+   "note": "條號存在於快照（該法最大條號 1225）",
+   "lamp": "g",
+   "tag": "✓ 在庫",
+   "law": "民法",
+   "article": "120",
+   "gate_ref_key": "民法|120",
+   "gate_status": "cited_and_gated",
+   "gate_note": "草稿有引用此條，燈號為守門逐句查核的結果。"
+  },
+  {
+   "id": "L4",
+   "t": "訴願法第16條",
+   "q": null,
+   "q_note": "條文原文不在快照內（快照只索引條號），本系統不代為補寫條文文字，請對照全國法規資料庫。",
+   "src": "laws-snapshot.json／訴願法",
+   "origin": "retrieval",
+   "verified": true,
+   "note": "條號存在於快照（該法最大條號 101）",
+   "lamp": "g",
+   "tag": "✓ 在庫",
+   "law": "訴願法",
+   "article": "16",
+   "gate_ref_key": "訴願法|16",
+   "gate_status": "cited_and_gated",
+   "gate_note": "草稿有引用此條，燈號為守門逐句查核的結果。"
+  }
+ ],
+ "cases": [],
+ "issues": [
+  {
+   "id": "I1",
+   "t": "爭點1：送達生效日之爭執",
+   "q": "訴願人是否爭執送達生效日？寄存送達之處所與應受送達處所是否相符？",
+   "src": "AI 不得代為認定，請承辦人核對卷證",
+   "lamp": "r",
+   "tag": "需人工認定",
+   "severity": "medium",
+   "origin": "rule"
+  }
+ ],
+ "doc": [
+  {
+   "ty": "title",
+   "text": "新北市政府 訴願決定書（合成測資草稿）",
+   "ind": 0,
+   "ss": []
+  },
+  {
+   "ty": "meta",
+   "text": "案號 synthetic-1130000001／案由 違反空氣污染防制法事件／訴願人 吳○庭",
+   "ind": 0,
+   "ss": []
+  },
+  {
+   "ty": "h",
+   "text": "事實",
+   "ind": 0,
+   "ss": []
+  },
+  {
+   "ty": "p",
+   "text": "",
+   "ind": 1,
+   "ss": [
+    {
+     "id": "s1",
+     "t": "訴願人於本市土城區農地露天燃燒稻稈及廢棄物，經環境保護局於民國 113 年 6 月 5 日現場稽查查獲，並以民國 113 年 6 月 11 日裁處書處以罰鍰。（合成卷證原文摘錄）",
+     "origin": "record",
+     "slot": "facts",
+     "adversarial": false,
+     "adversarial_note": null,
+     "cite_ids": [],
+     "basis": "synthetic-原處分裁處書.pdf#p1",
+     "engine": null,
+     "placeholder": false,
+     "l": "g",
+     "why": "本句標示為卷證直錄；本階段尚無法與來源文件逐字比對，請覆核原文後採用。",
+     "refs": [],
+     "l_origin": "rule",
+     "why_origin": "rule",
+     "tier": "有出處",
+     "citations": [],
+     "src": "synthetic-原處分裁處書.pdf#p1"
+    }
+   ]
+  },
+  {
+   "ty": "h",
+   "text": "理由",
+   "ind": 0,
+   "ss": []
+  },
+  {
+   "ty": "p",
+   "text": "",
+   "ind": 1,
+   "ss": [
+    {
+     "id": "s2",
+     "t": "訴願人吳○庭於新北市土城區農地露天燃燒稻稈及廢棄物，經環境保護局於民國113年6月5日現場稽查查獲，並於113年6月11日裁處罰鍰。",
+     "origin": "llm",
+     "slot": "reasoning",
+     "adversarial": false,
+     "adversarial_note": null,
+     "cite_ids": [],
+     "basis": null,
+     "engine": null,
+     "placeholder": false,
+     "l": "r",
+     "why": "模型引用了檢索結果之外的來源（synthetic-原處分裁處書.pdf#p1），已清除，該句視為無出處；後端送出端點會以 409 拒絕本案送出。",
+     "refs": [],
+     "l_origin": "rule",
+     "why_origin": "rule",
+     "unsupported": true,
+     "dropped_cite_ids": [
+      "synthetic-原處分裁處書.pdf#p1"
+     ],
+     "tier": "請人工判斷",
+     "citations": [],
+     "src": "2026-08-22"
+    },
+    {
+     "id": "s3",
+     "t": "本案訴願書於113年7月20日以寄存送達方式送達，依行政程序法第74條及最高行政法院108年判字第531號判決意旨，寄存送達自寄存之日起即發生效力。",
+     "origin": "llm",
+     "slot": "reasoning",
+     "adversarial": false,
+     "adversarial_note": null,
+     "cite_ids": [
+      "L1"
+     ],
+     "basis": "行政程序法第74條",
+     "engine": null,
+     "placeholder": false,
+     "l": "g",
+     "why": "所引法條／判解全部可對回資料集，字號已驗。",
+     "refs": [
+      "L1"
+     ],
+     "l_origin": "rule",
+     "why_origin": "rule",
+     "tier": "有出處",
+     "citations": [
+      {
+       "raw": "行政程序法第74條",
+       "kind": "law",
+       "state": "ok",
+       "mark": "✓ 在庫",
+       "lamp": "g",
+       "resolved_id": "L-行政程序法-74",
+       "ref_key": "行政程序法|74",
+       "note": "條號存在於快照（該法最大條號 175）。",
+       "blocking": false,
+       "state_origin": "rule"
+      },
+      {
+       "raw": "最高行政法院108年判字第531號",
+       "kind": "precedent",
+       "state": "ok",
+       "mark": "✓ 在庫",
+       "lamp": "g",
+       "resolved_id": "P-最高行政法院-108-判-531",
+       "ref_key": null,
+       "note": "資料集判解白名單命中（最高行政法院）。",
+       "blocking": false,
+       "state_origin": "rule"
+      }
+     ],
+     "src": "行政程序法第74條"
+    },
+    {
+     "id": "s4",
+     "t": "訴願期間自送達生效之次日起算，依訴願法第14條第一項及民法第120條第二項規定，起算日為113年7月21日。",
+     "origin": "llm",
+     "slot": "reasoning",
+     "adversarial": false,
+     "adversarial_note": null,
+     "cite_ids": [
+      "L2",
+      "L3"
+     ],
+     "basis": "訴願法第14條第一項、民法第120條第二項",
+     "engine": null,
+     "placeholder": false,
+     "l": "g",
+     "why": "所引法條／判解全部可對回資料集，字號已驗。",
+     "refs": [
+      "L3",
+      "L2"
+     ],
+     "l_origin": "rule",
+     "why_origin": "rule",
+     "tier": "有出處",
+     "citations": [
+      {
+       "raw": "訴願法第14條",
+       "kind": "law",
+       "state": "ok",
+       "mark": "✓ 在庫",
+       "lamp": "g",
+       "resolved_id": "L-訴願法-14",
+       "ref_key": "訴願法|14",
+       "note": "條號存在於快照（該法最大條號 101）。",
+       "blocking": false,
+       "state_origin": "rule"
+      },
+      {
+       "raw": "民法第120條",
+       "kind": "law",
+       "state": "ok",
+       "mark": "✓ 在庫",
+       "lamp": "g",
+       "resolved_id": "L-民法-120",
+       "ref_key": "民法|120",
+       "note": "條號存在於快照（該法最大條號 1225）。",
+       "blocking": false,
+       "state_origin": "rule"
+      }
+     ],
+     "src": "訴願法第14條第一項、民法第120條第二項"
+    },
+    {
+     "id": "s5",
+     "t": "訴願法第14條第一項規定訴願期間為30日，故本案訴願期間至113年8月19日止。",
+     "origin": "llm",
+     "slot": "reasoning",
+     "adversarial": false,
+     "adversarial_note": null,
+     "cite_ids": [
+      "L2"
+     ],
+     "basis": "訴願法第14條第一項",
+     "engine": null,
+     "placeholder": false,
+     "l": "g",
+     "why": "所引法條／判解全部可對回資料集，字號已驗。",
+     "refs": [
+      "L2"
+     ],
+     "l_origin": "rule",
+     "why_origin": "rule",
+     "tier": "有出處",
+     "citations": [
+      {
+       "raw": "訴願法第14條",
+       "kind": "law",
+       "state": "ok",
+       "mark": "✓ 在庫",
+       "lamp": "g",
+       "resolved_id": "L-訴願法-14",
+       "ref_key": "訴願法|14",
+       "note": "條號存在於快照（該法最大條號 101）。",
+       "blocking": false,
+       "state_origin": "rule"
+      }
+     ],
+     "src": "訴願法第14條第一項"
+    },
+    {
+     "id": "s6",
+     "t": "考量訴願人不在受理機關所在地，依訴願法第16條及訴願扣除在途期間辦法規定，扣除在途期間2日，訴願期間延長至113年8月21日。",
+     "origin": "llm",
+     "slot": "reasoning",
+     "adversarial": false,
+     "adversarial_note": null,
+     "cite_ids": [
+      "L4"
+     ],
+     "basis": "訴願法第16條",
+     "engine": null,
+     "placeholder": false,
+     "l": "g",
+     "why": "所引法條／判解全部可對回資料集，字號已驗。",
+     "refs": [
+      "L4"
+     ],
+     "l_origin": "rule",
+     "why_origin": "rule",
+     "tier": "有出處",
+     "citations": [
+      {
+       "raw": "訴願法第16條",
+       "kind": "law",
+       "state": "ok",
+       "mark": "✓ 在庫",
+       "lamp": "g",
+       "resolved_id": "L-訴願法-16",
+       "ref_key": "訴願法|16",
+       "note": "條號存在於快照（該法最大條號 101）。",
+       "blocking": false,
+       "state_origin": "rule"
+      }
+     ],
+     "src": "訴願法第16條"
+    },
+    {
+     "id": "s7",
+     "t": "本案訴願書於113年7月20日提出，未逾訴願期間，符合訴願法第14條第三項規定，以受理機關收受訴願書之日為提起日。",
+     "origin": "llm",
+     "slot": "reasoning",
+     "adversarial": false,
+     "adversarial_note": null,
+     "cite_ids": [
+      "L2"
+     ],
+     "basis": "訴願法第14條第三項",
+     "engine": null,
+     "placeholder": false,
+     "l": "g",
+     "why": "所引法條／判解全部可對回資料集，字號已驗。",
+     "refs": [
+      "L2"
+     ],
+     "l_origin": "rule",
+     "why_origin": "rule",
+     "tier": "有出處",
+     "citations": [
+      {
+       "raw": "訴願法第14條",
+       "kind": "law",
+       "state": "ok",
+       "mark": "✓ 在庫",
+       "lamp": "g",
+       "resolved_id": "L-訴願法-14",
+       "ref_key": "訴願法|14",
+       "note": "條號存在於快照（該法最大條號 101）。",
+       "blocking": false,
+       "state_origin": "rule"
+      }
+     ],
+     "src": "訴願法第14條第三項"
+    },
+    {
+     "id": "s8",
+     "t": "依據審查結果，訴願期間未逾越，故訴願不屬於訴願法第77條第2款不受理事由。",
+     "origin": "llm",
+     "slot": "reasoning",
+     "adversarial": false,
+     "adversarial_note": null,
+     "cite_ids": [
+      "L2"
+     ],
+     "basis": "訴願法第77條第2款",
+     "engine": null,
+     "placeholder": false,
+     "l": "r",
+     "why": "結論段已封鎖，但本句出現主文型語句。實質結論不得因為換個槽位就繞過封鎖；後端送出端點會以 409 拒絕本案送出。",
+     "refs": [],
+     "l_origin": "rule",
+     "why_origin": "rule",
+     "tier": "請人工判斷",
+     "citations": [
+      {
+       "raw": "訴願法第77條",
+       "kind": "law",
+       "state": "ok",
+       "mark": "✓ 在庫",
+       "lamp": "g",
+       "resolved_id": "L-訴願法-77",
+       "ref_key": "訴願法|77",
+       "note": "條號存在於快照（該法最大條號 101）。",
+       "blocking": false,
+       "state_origin": "rule"
+      }
+     ],
+     "src": "訴願法第77條第2款"
+    }
+   ]
+  },
+  {
+   "ty": "h",
+   "text": "期間計算（規則引擎逐步驗算）",
+   "ind": 0,
+   "ss": []
+  },
+  {
+   "ty": "p",
+   "text": "",
+   "ind": 1,
+   "ss": [
+    {
+     "id": "s9",
+     "t": "寄存送達自寄存之日起發生效力（不論實際何時領取）：生效日 = 113/7/20",
+     "origin": "engine",
+     "slot": "calculation",
+     "adversarial": false,
+     "adversarial_note": null,
+     "cite_ids": [],
+     "basis": "行政程序法 74；最高行 108 判 531 意旨",
+     "engine": "deadline",
+     "placeholder": false,
+     "l": "g",
+     "why": "期間由日期規則直接驗算，攤開算式可逐步覆核，無詮釋空間。",
+     "refs": [],
+     "l_origin": "rule",
+     "why_origin": "rule",
+     "tier": "可驗算",
+     "citations": [],
+     "src": "行政程序法 74；最高行 108 判 531 意旨"
+    },
+    {
+     "id": "s10",
+     "t": "自送達生效之次日起算（始日不計入）：起算日 = 113/7/21",
+     "origin": "engine",
+     "slot": "calculation",
+     "adversarial": false,
+     "adversarial_note": null,
+     "cite_ids": [],
+     "basis": "訴願法 14 I；民法 120 II",
+     "engine": "deadline",
+     "placeholder": false,
+     "l": "g",
+     "why": "期間由日期規則直接驗算，攤開算式可逐步覆核，無詮釋空間。",
+     "refs": [],
+     "l_origin": "rule",
+     "why_origin": "rule",
+     "tier": "可驗算",
+     "citations": [],
+     "src": "訴願法 14 I；民法 120 II"
+    },
+    {
+     "id": "s11",
+     "t": "法定期間 30 日：第 30 日 = 113/8/19",
+     "origin": "engine",
+     "slot": "calculation",
+     "adversarial": false,
+     "adversarial_note": null,
+     "cite_ids": [],
+     "basis": "訴願法 14 I",
+     "engine": "deadline",
+     "placeholder": false,
+     "l": "g",
+     "why": "期間由日期規則直接驗算，攤開算式可逐步覆核，無詮釋空間。",
+     "refs": [],
+     "l_origin": "rule",
+     "why_origin": "rule",
+     "tier": "可驗算",
+     "citations": [],
+     "src": "訴願法 14 I"
+    },
+    {
+     "id": "s12",
+     "t": "扣除在途期間 2 日（訴願人不在受理機關所在地）：加計後 = 113/8/21",
+     "origin": "engine",
+     "slot": "calculation",
+     "adversarial": false,
+     "adversarial_note": null,
+     "cite_ids": [],
+     "basis": "訴願法 16；訴願扣除在途期間辦法（日數由查表提供）",
+     "engine": "deadline",
+     "placeholder": false,
+     "l": "g",
+     "why": "期間由日期規則直接驗算，攤開算式可逐步覆核，無詮釋空間。",
+     "refs": [],
+     "l_origin": "rule",
+     "why_origin": "rule",
+     "tier": "可驗算",
+     "citations": [],
+     "src": "訴願法 16；訴願扣除在途期間辦法（日數由查表提供）"
+    },
+    {
+     "id": "s13",
+     "t": "期滿日確定：訴願期間至 113/8/21 屆滿",
+     "origin": "engine",
+     "slot": "calculation",
+     "adversarial": false,
+     "adversarial_note": null,
+     "cite_ids": [],
+     "basis": "以上各步",
+     "engine": "deadline",
+     "placeholder": false,
+     "l": "g",
+     "why": "期間由日期規則直接驗算，攤開算式可逐步覆核，無詮釋空間。",
+     "refs": [],
+     "l_origin": "rule",
+     "why_origin": "rule",
+     "tier": "可驗算",
+     "citations": [],
+     "src": "以上各步"
+    },
+    {
+     "id": "s14",
+     "t": "以受理機關收受訴願書之日為提起日：提起日 113/7/20 ≤ 期滿日 → 未逾期",
+     "origin": "engine",
+     "slot": "calculation",
+     "adversarial": false,
+     "adversarial_note": null,
+     "cite_ids": [],
+     "basis": "訴願法 14 III",
+     "engine": "deadline",
+     "placeholder": false,
+     "l": "g",
+     "why": "期間由日期規則直接驗算，攤開算式可逐步覆核，無詮釋空間。",
+     "refs": [],
+     "l_origin": "rule",
+     "why_origin": "rule",
+     "tier": "可驗算",
+     "citations": [],
+     "src": "訴願法 14 III"
+    }
+   ]
+  },
+  {
+   "ty": "h",
+   "text": "決定主文",
+   "ind": 0,
+   "ss": []
+  },
+  {
+   "ty": "p",
+   "text": "",
+   "ind": 1,
+   "ss": [
+    {
+     "id": "s15",
+     "t": "（結論段由承辦人判斷後填寫）",
+     "origin": "human_required",
+     "slot": "conclusion",
+     "adversarial": false,
+     "adversarial_note": null,
+     "cite_ids": [],
+     "basis": null,
+     "engine": null,
+     "placeholder": true,
+     "l": "r",
+     "why": "結論涉及法律判斷，系統不生成，僅提供交接問題清單。",
+     "refs": [],
+     "l_origin": "rule",
+     "why_origin": "rule",
+     "tier": "請人工判斷",
+     "citations": [],
+     "src": "2026-08-22"
+    }
+   ]
+  }
+ ],
+ "citations": [
+  {
+   "raw": "行政程序法第74條",
+   "kind": "law",
+   "state": "ok",
+   "mark": "✓ 在庫",
+   "lamp": "g",
+   "resolved_id": "L-行政程序法-74",
+   "ref_key": "行政程序法|74",
+   "note": "條號存在於快照（該法最大條號 175）。",
+   "blocking": false,
+   "state_origin": "rule",
+   "sentence_id": "s3"
+  },
+  {
+   "raw": "最高行政法院108年判字第531號",
+   "kind": "precedent",
+   "state": "ok",
+   "mark": "✓ 在庫",
+   "lamp": "g",
+   "resolved_id": "P-最高行政法院-108-判-531",
+   "ref_key": null,
+   "note": "資料集判解白名單命中（最高行政法院）。",
+   "blocking": false,
+   "state_origin": "rule",
+   "sentence_id": "s3"
+  },
+  {
+   "raw": "訴願法第14條",
+   "kind": "law",
+   "state": "ok",
+   "mark": "✓ 在庫",
+   "lamp": "g",
+   "resolved_id": "L-訴願法-14",
+   "ref_key": "訴願法|14",
+   "note": "條號存在於快照（該法最大條號 101）。",
+   "blocking": false,
+   "state_origin": "rule",
+   "sentence_id": "s4"
+  },
+  {
+   "raw": "民法第120條",
+   "kind": "law",
+   "state": "ok",
+   "mark": "✓ 在庫",
+   "lamp": "g",
+   "resolved_id": "L-民法-120",
+   "ref_key": "民法|120",
+   "note": "條號存在於快照（該法最大條號 1225）。",
+   "blocking": false,
+   "state_origin": "rule",
+   "sentence_id": "s4"
+  },
+  {
+   "raw": "訴願法第14條",
+   "kind": "law",
+   "state": "ok",
+   "mark": "✓ 在庫",
+   "lamp": "g",
+   "resolved_id": "L-訴願法-14",
+   "ref_key": "訴願法|14",
+   "note": "條號存在於快照（該法最大條號 101）。",
+   "blocking": false,
+   "state_origin": "rule",
+   "sentence_id": "s5"
+  },
+  {
+   "raw": "訴願法第16條",
+   "kind": "law",
+   "state": "ok",
+   "mark": "✓ 在庫",
+   "lamp": "g",
+   "resolved_id": "L-訴願法-16",
+   "ref_key": "訴願法|16",
+   "note": "條號存在於快照（該法最大條號 101）。",
+   "blocking": false,
+   "state_origin": "rule",
+   "sentence_id": "s6"
+  },
+  {
+   "raw": "訴願法第14條",
+   "kind": "law",
+   "state": "ok",
+   "mark": "✓ 在庫",
+   "lamp": "g",
+   "resolved_id": "L-訴願法-14",
+   "ref_key": "訴願法|14",
+   "note": "條號存在於快照（該法最大條號 101）。",
+   "blocking": false,
+   "state_origin": "rule",
+   "sentence_id": "s7"
+  },
+  {
+   "raw": "訴願法第77條",
+   "kind": "law",
+   "state": "ok",
+   "mark": "✓ 在庫",
+   "lamp": "g",
+   "resolved_id": "L-訴願法-77",
+   "ref_key": "訴願法|77",
+   "note": "條號存在於快照（該法最大條號 101）。",
+   "blocking": false,
+   "state_origin": "rule",
+   "sentence_id": "s8"
+  }
+ ],
+ "retrieval_divergence": {
+  "cited_not_retrieved": [
+   "最高行政法院108年判字第531號",
+   "訴願法第77條"
+  ],
+  "retrieved_not_cited": [],
+  "note": "N4 的檢索是獨立進行的（查詢句只由案情組成），所以它找到的法條與草稿實際引用的不會一一對應。落差不等於錯誤：引用對錯看 citations[] 的四態，這裡只說明兩份清單為什麼長得不一樣。實體法條號目前無法由案情自動判定（缺 PDF 視覺抽取），所以 cited_not_retrieved 會偏長，這是已知限制不是 bug。"
+ },
+ "citation_counts": {
+  "ok": 8,
+  "amended": 0,
+  "out_of_scope": 0,
+  "missing": 0
+ },
+ "lamp_stats": {
+  "r": 3,
+  "y": 0,
+  "g": 12
+ },
+ "blockers": [
+  {
+   "sentence_id": "s8",
+   "reason": "conclusion_like_text_outside_conclusion_slot",
+   "detail": "slot=reasoning／origin=llm 的句子命中主文型結構（法定處理結果：不受理（訴願法 §77））。實質結論不得因為換個槽位或換個寫法就繞過封鎖。",
+   "severity": "P0"
+  },
+  {
+   "sentence_id": null,
+   "sentence_ids": [
+    "s2"
+   ],
+   "reason": "cite_id_unsupported",
+   "detail": "1 句（s2）引用了檢索結果之外的來源（synthetic-原處分裁處書.pdf#p1），已由白名單清除。引用被清掉之後那些句子就指不出任何出處，不得逕行送出。",
+   "severity": "P0"
+  },
+  {
+   "sentence_id": null,
+   "reason": "conclusion_requires_human",
+   "detail": "本案結論涉及法律判斷，系統不生成結論段（C 型封鎖），草稿不得逕行送出；請承辦人依交接卡認定後自行完成結論。",
+   "severity": "P0"
+  }
+ ],
+ "issue_refs": [],
+ "handoff": {
+  "questions": [
+   "訴願人是否爭執送達生效日？寄存送達之處所與應受送達處所是否相符？",
+   "本件實體認定與法律障礙的轉折點落在哪一個爭點？卷內事證是否足以支持該認定？",
+   "擬採之處理結果（撤銷另處／駁回／不受理）為何？語氣需保留至何種程度？"
+  ],
+  "signals": [
+   "程序合法且須進入實體審查（案型：違反空氣污染防制法事件）"
+  ],
+  "note": "系統偵測到結論涉及法律判斷，已停止生成結論段。以下問題供承辦人核對卷證後自行認定。",
+  "criterion": {
+   "blocked": true,
+   "reason_id": "procedurally_valid_needs_substantive_review",
+   "text": "程序審查通過（未逾訴願法第14條之30日法定期間，無可直接算出的不受理事由），且案型「違反空氣污染防制法事件」屬需事實認定型——本案須進入實體審查，結論涉及法律判斷，結論段交由承辦人判斷。",
+   "fact_issue_role": "observation",
+   "fact_issue_label": "另外偵測到的事實認定爭點（提醒，非本案封鎖原因）",
+   "origin": "rule"
+  },
+  "observations": [],
+  "observations_label": "另外偵測到的事實認定爭點（提醒，非本案封鎖原因）"
+ },
+ "submit_allowed": false,
+ "agents": [
+  {
+   "k": "clerk",
+   "ico": "clerk",
+   "name": "卷證書記官",
+   "role": "抽取案件欄位與事實段原文",
+   "node": "n1",
+   "out": "自卷證擷取 12 個欄位，事實段原文 1 段。",
+   "logs": [
+    [
+     "必填欄位 4 項，信心門檻 0.80",
+     ""
+    ],
+    [
+     "低信心欄位：無",
+     ""
+    ],
+    [
+     "模型即時抽取：gpt-4.1-mini，信心值為模型自報",
+     ""
+    ],
+    [
+     "卷證輸入：synthetic-訴願書.pdf（txt）、synthetic-原處分裁處書.pdf（txt）",
+     ""
+    ]
+   ]
+  },
+  {
+   "k": "clf",
+   "ico": "clf",
+   "name": "分類調查官",
+   "role": "判定案型與訴願法 77 條款",
+   "node": "n2",
+   "out": "分類為「違反空氣污染防制法事件」（採 N1 抽取之案由欄位（違反空氣污染防制法事件））。",
+   "logs": [
+    [
+     "分類方法：規則式法規名比對（v0 fallback，非 kNN）",
+     "y"
+    ],
+    [
+     "交叉比對安全網未實際執行：kNN 通道無資料集",
+     "y"
+    ],
+    [
+     "命中法規名：空氣污染防制法",
+     ""
+    ]
+   ]
+  },
+  {
+   "k": "proc",
+   "ico": "proc",
+   "name": "程序審查官",
+   "role": "期間計算與程序合法性",
+   "node": "n3",
+   "out": "期滿日 2024-08-21，未逾期。偵測到 1 個事實認定爭點（高風險 0 個）。",
+   "logs": [
+    [
+     "期間計算共 6 個步驟，每步附法源",
+     ""
+    ],
+    [
+     "訴願法 77 條自動篩選：無命中",
+     ""
+    ],
+    [
+     "結論段封鎖（由承辦人判斷）",
+     "r"
+    ],
+    [
+     "封鎖判斷的輸入欄位未經承辦人確認：d2、d3、service_method、transit_days、interested_party、note——不得用程序結果解除結論封鎖",
+     "y"
+    ],
+    [
+     "國定假日順延未納入（v0 僅處理週六日），期滿日落在國定假日者請對照行政機關辦公日曆。",
+     "y"
+    ]
+   ]
+  },
+  {
+   "k": "law",
+   "ico": "law",
+   "name": "法規檢索官",
+   "role": "法條查表與條次異動比對",
+   "node": "n4",
+   "out": "以案情獨立檢索命中 4 筆法規依據，其中 4 筆條號可對回快照。（查詢句來自案型與程序審查結果，未參考草稿內容）",
+   "logs": [
+    [
+     "查表來源：laws-snapshot.json（11 部法規，產製於 2026-08-22）",
+     ""
+    ],
+    [
+     "查詢句來源：案型、案型對應法規名（無條號）、期間引擎逐步援引的法源、卷證原文（原文照抄進查詢句，不改寫）",
+     ""
+    ],
+    [
+     "條文原文未附：快照只索引條號，不代為補寫條文文字",
+     "y"
+    ],
+    [
+     "實體法條號無法由案情自動判定：N2 只認得出案型對應的法規『名稱』（例如建築法），條號要由原處分書的裁處依據判定，而 Phase 0 沒有 PDF 視覺抽取、卷證摘錄裡也沒有條號。本節點**不猜條號**——所以檢索結果會以程序面法條為主，實體面只列得出法規名。",
+     "y"
+    ],
+    [
+     "草稿實際引用了哪些法條，由守門節點逐句查核（見「草稿實際引用」清單），與本清單各自獨立",
+     ""
+    ],
+    [
+     "⚠ 本節點已降級：相似歷史案通道不可用（無資料集），僅法規查表通道有結果",
+     "r"
+    ]
+   ]
+  },
+  {
+   "k": "case",
+   "ico": "case",
+   "name": "案例檢索官",
+   "role": "相似歷史決定書檢索",
+   "node": "n4",
+   "out": "相似歷史案：0 筆（庫外，未驗證）。",
+   "logs": [
+    [
+     "相似歷史案檢索需要賽方資料集（歷史訴願決定書）。該資料集僅供競賽之用，不進 git、不在本機，本次執行無任何相似案可回。此通道回空不是查無相似案，而是本系統目前無法檢索——標「庫外，未驗證」。",
+     "r"
+    ],
+    [
+     "本節點不編造任何案號或相似度分數（CONSTITUTION §2）",
+     ""
+    ],
+    [
+     "⚠ 本節點已降級：相似歷史案通道不可用（無資料集），僅法規查表通道有結果",
+     "r"
+    ]
+   ]
+  },
+  {
+   "k": "draft",
+   "ico": "draft",
+   "name": "決定書主筆",
+   "role": "逐句組稿，只寫句子不寫可信度",
+   "node": "n5",
+   "out": "組出 7 句草稿（槽位：reasoning）。",
+   "logs": [
+    [
+     "模型即時生成（gpt-4.1-mini），工具呼叫 0 次",
+     ""
+    ],
+    [
+     "結論段已自 slots 陣列移除（結構性封鎖，非 prompt 請求）",
+     "r"
+    ],
+    [
+     "本節點不產燈號、不產 why、不產爭點 ref——那三樣歸守門",
+     ""
+    ]
+   ]
+  },
+  {
+   "k": "qc",
+   "ico": "qc",
+   "name": "品管守門員",
+   "role": "引用四態驗證與燈號判定",
+   "node": "n6",
+   "out": "驗證 8 個引用（在庫 8／已修正 0／庫外未驗證 0／查無 0）。燈號 綠 12／黃 0／紅 3。",
+   "logs": [
+    [
+     "不得送出：3 項（送出端點會以 409 拒絕）",
+     "r"
+    ],
+    [
+     "conclusion_like_text_outside_conclusion_slot｜s8：slot=reasoning／origin=llm 的句子命中主文型結構（法定處理結果：不受理（訴願法 §77））。實質結論不得因為換個槽位或換個寫法就繞過封鎖。",
+     "r"
+    ],
+    [
+     "cite_id_unsupported｜s2：1 句（s2）引用了檢索結果之外的來源（synthetic-原處分裁處書.pdf#p1），已由白名單清除。引用被清掉之後那些句子就指不出任何出處，不得逕行送出。",
+     "r"
+    ],
+    [
+     "conclusion_requires_human｜（全案）：本案結論涉及法律判斷，系統不生成結論段（C 型封鎖），草稿不得逕行送出；請承辦人依交接卡認定後自行完成結論。",
+     "r"
+    ],
+    [
+     "結論段已封鎖，交接卡列 3 個問題",
+     "r"
+    ],
+    [
+     "爭點 ref 補掛 0 處（規則比對，非模型認定）",
+     ""
+    ],
+    [
+     "「庫外，未驗證」代表本系統無法驗證，不代表該字號不存在",
+     "y"
+    ]
+   ]
+  }
+ ],
+ "token_note": "幕僚敘述中的數字由節點實際結果填入（architecture §3.2）；live 模式下前端不重算燈號與引用狀態，一律以後端輸出為準。",
+ "run_meta": {
+  "run_id": "run-synthetic-ordinary-01-436e7c5fa173",
+  "base_run_id": null,
+  "from_node": "n1",
+  "overrides": {},
+  "run_id_note": "支援 base_run_id + from_node 續跑；同一份 body 重送仍會產生新的 run_id（不做冪等去重）。",
+  "run_mode": "bedrock",
+  "started_at": "2026-09-07T16:05:12+00:00",
+  "elapsed_ms": 28539,
+  "node_timings": {
+   "n1": 16761,
+   "n2": 0,
+   "n3": 1,
+   "n4": 2,
+   "n5": 11770,
+   "n6": 2
+  },
+  "degraded": [
+   {
+    "node": "n4",
+    "reason": "相似歷史案通道不可用（無資料集），僅法規查表通道有結果",
+    "agents": [
+     "law",
+     "case"
+    ]
+   }
+  ],
+  "model_ids": {
+   "provider": "openai",
+   "extract": "gpt-4.1-mini",
+   "draft": "gpt-4.1-mini"
+  },
+  "model_ids_note": "MODEL_PROVIDER=openai：本次執行呼叫的**不是** AWS 服務提供之基礎模型，輸出僅供開發期調 prompt，**不得**作為驗收證據或 demo 內容（賽制限 AWS 基礎模型）。 ",
+  "kb_snapshot_date": "2026-08-22",
+  "final_state": "VERIFIED",
+  "summary": "本次執行 6 個節點，共 28539 ms，其中 1 個節點降級。"
+ },
+ "tiers": {
+  "可驗算": [
+   {
+    "id": "s9",
+    "slot": "calculation",
+    "t": "寄存送達自寄存之日起發生效力（不論實際何時領取）：生效日 = 113/7/20",
+    "l": "g",
+    "why": "期間由日期規則直接驗算，攤開算式可逐步覆核，無詮釋空間。",
+    "origin": "engine",
+    "basis": "行政程序法 74；最高行 108 判 531 意旨",
+    "refs": [],
+    "placeholder": false
+   },
+   {
+    "id": "s10",
+    "slot": "calculation",
+    "t": "自送達生效之次日起算（始日不計入）：起算日 = 113/7/21",
+    "l": "g",
+    "why": "期間由日期規則直接驗算，攤開算式可逐步覆核，無詮釋空間。",
+    "origin": "engine",
+    "basis": "訴願法 14 I；民法 120 II",
+    "refs": [],
+    "placeholder": false
+   },
+   {
+    "id": "s11",
+    "slot": "calculation",
+    "t": "法定期間 30 日：第 30 日 = 113/8/19",
+    "l": "g",
+    "why": "期間由日期規則直接驗算，攤開算式可逐步覆核，無詮釋空間。",
+    "origin": "engine",
+    "basis": "訴願法 14 I",
+    "refs": [],
+    "placeholder": false
+   },
+   {
+    "id": "s12",
+    "slot": "calculation",
+    "t": "扣除在途期間 2 日（訴願人不在受理機關所在地）：加計後 = 113/8/21",
+    "l": "g",
+    "why": "期間由日期規則直接驗算，攤開算式可逐步覆核，無詮釋空間。",
+    "origin": "engine",
+    "basis": "訴願法 16；訴願扣除在途期間辦法（日數由查表提供）",
+    "refs": [],
+    "placeholder": false
+   },
+   {
+    "id": "s13",
+    "slot": "calculation",
+    "t": "期滿日確定：訴願期間至 113/8/21 屆滿",
+    "l": "g",
+    "why": "期間由日期規則直接驗算，攤開算式可逐步覆核，無詮釋空間。",
+    "origin": "engine",
+    "basis": "以上各步",
+    "refs": [],
+    "placeholder": false
+   },
+   {
+    "id": "s14",
+    "slot": "calculation",
+    "t": "以受理機關收受訴願書之日為提起日：提起日 113/7/20 ≤ 期滿日 → 未逾期",
+    "l": "g",
+    "why": "期間由日期規則直接驗算，攤開算式可逐步覆核，無詮釋空間。",
+    "origin": "engine",
+    "basis": "訴願法 14 III",
+    "refs": [],
+    "placeholder": false
+   }
+  ],
+  "有出處": [
+   {
+    "id": "s1",
+    "slot": "facts",
+    "t": "訴願人於本市土城區農地露天燃燒稻稈及廢棄物，經環境保護局於民國 113 年 6 月 5 日現場稽查查獲，並以民國 113 年 6 月 11 日裁處書處以罰鍰。（合成卷證原文摘錄）",
+    "l": "g",
+    "why": "本句標示為卷證直錄；本階段尚無法與來源文件逐字比對，請覆核原文後採用。",
+    "origin": "record",
+    "basis": "synthetic-原處分裁處書.pdf#p1",
+    "refs": [],
+    "placeholder": false
+   },
+   {
+    "id": "s3",
+    "slot": "reasoning",
+    "t": "本案訴願書於113年7月20日以寄存送達方式送達，依行政程序法第74條及最高行政法院108年判字第531號判決意旨，寄存送達自寄存之日起即發生效力。",
+    "l": "g",
+    "why": "所引法條／判解全部可對回資料集，字號已驗。",
+    "origin": "llm",
+    "basis": "行政程序法第74條",
+    "refs": [
+     "L1"
+    ],
+    "placeholder": false
+   },
+   {
+    "id": "s4",
+    "slot": "reasoning",
+    "t": "訴願期間自送達生效之次日起算，依訴願法第14條第一項及民法第120條第二項規定，起算日為113年7月21日。",
+    "l": "g",
+    "why": "所引法條／判解全部可對回資料集，字號已驗。",
+    "origin": "llm",
+    "basis": "訴願法第14條第一項、民法第120條第二項",
+    "refs": [
+     "L3",
+     "L2"
+    ],
+    "placeholder": false
+   },
+   {
+    "id": "s5",
+    "slot": "reasoning",
+    "t": "訴願法第14條第一項規定訴願期間為30日，故本案訴願期間至113年8月19日止。",
+    "l": "g",
+    "why": "所引法條／判解全部可對回資料集，字號已驗。",
+    "origin": "llm",
+    "basis": "訴願法第14條第一項",
+    "refs": [
+     "L2"
+    ],
+    "placeholder": false
+   },
+   {
+    "id": "s6",
+    "slot": "reasoning",
+    "t": "考量訴願人不在受理機關所在地，依訴願法第16條及訴願扣除在途期間辦法規定，扣除在途期間2日，訴願期間延長至113年8月21日。",
+    "l": "g",
+    "why": "所引法條／判解全部可對回資料集，字號已驗。",
+    "origin": "llm",
+    "basis": "訴願法第16條",
+    "refs": [
+     "L4"
+    ],
+    "placeholder": false
+   },
+   {
+    "id": "s7",
+    "slot": "reasoning",
+    "t": "本案訴願書於113年7月20日提出，未逾訴願期間，符合訴願法第14條第三項規定，以受理機關收受訴願書之日為提起日。",
+    "l": "g",
+    "why": "所引法條／判解全部可對回資料集，字號已驗。",
+    "origin": "llm",
+    "basis": "訴願法第14條第三項",
+    "refs": [
+     "L2"
+    ],
+    "placeholder": false
+   }
+  ],
+  "請人工判斷": [
+   {
+    "id": "s2",
+    "slot": "reasoning",
+    "t": "訴願人吳○庭於新北市土城區農地露天燃燒稻稈及廢棄物，經環境保護局於民國113年6月5日現場稽查查獲，並於113年6月11日裁處罰鍰。",
+    "l": "r",
+    "why": "模型引用了檢索結果之外的來源（synthetic-原處分裁處書.pdf#p1），已清除，該句視為無出處；後端送出端點會以 409 拒絕本案送出。",
+    "origin": "llm",
+    "basis": null,
+    "refs": [],
+    "placeholder": false
+   },
+   {
+    "id": "s8",
+    "slot": "reasoning",
+    "t": "依據審查結果，訴願期間未逾越，故訴願不屬於訴願法第77條第2款不受理事由。",
+    "l": "r",
+    "why": "結論段已封鎖，但本句出現主文型語句。實質結論不得因為換個槽位就繞過封鎖；後端送出端點會以 409 拒絕本案送出。",
+    "origin": "llm",
+    "basis": "訴願法第77條第2款",
+    "refs": [],
+    "placeholder": false
+   },
+   {
+    "id": "s15",
+    "slot": "conclusion",
+    "t": "（結論段由承辦人判斷後填寫）",
+    "l": "r",
+    "why": "結論涉及法律判斷，系統不生成，僅提供交接問題清單。",
+    "origin": "human_required",
+    "basis": null,
+    "refs": [],
+    "placeholder": true
+   },
+   {
+    "id": null,
+    "slot": "caveat",
+    "t": "國定假日順延未納入（v0 僅處理週六日），期滿日落在國定假日者請對照行政機關辦公日曆。",
+    "l": "y",
+    "why": "期間引擎明列之人工判斷項",
+    "origin": "rule"
+   }
+  ]
+ },
+ "history": [
+  "CREATED -> EXTRACTING",
+  "EXTRACTING -> EXTRACTED",
+  "EXTRACTED -> CLASSIFIED",
+  "CLASSIFIED -> SCREENED",
+  "SCREENED -> RETRIEVED",
+  "RETRIEVED -> DRAFTED",
+  "DRAFTED -> VERIFIED"
+ ],
+ "origin_violations": []
+}

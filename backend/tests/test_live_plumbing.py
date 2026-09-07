@@ -21,7 +21,7 @@ from backend.intake.uploads import (
     save_upload,
 )
 from backend.llm import client
-from backend.nodes import n1_extract, n4_retrieval, n5_draft, n6_gate
+from backend.nodes import n1_extract, n2_classify, n4_retrieval, n5_draft, n6_gate
 from backend.orchestrator import runstore
 from backend.orchestrator.graph import (
     digest_from_state,
@@ -127,6 +127,61 @@ def test_extract_intake_rejects_unknown_service_method():
                 raise AssertionError("未知送達方式必須 raise LLMError")
     finally:
         client._invoke_structured = orig
+
+
+def test_extract_intake_rejects_boolean_in_a_text_field():
+    """真模型第一次呼叫就踩到的洞（2026-09-08，OpenAI 的 mini 檔位，開發期調 prompt 用）：`type` 回 True，
+    一路流到 N2 的 `(intake.get("type") or "").strip()` 才炸 AttributeError。
+
+    根因在 schema：`FieldValue.value` 的 `str | int | bool | None` 聯集是為
+    transit_days（int）與 interested_party（bool）開的，卻套在全部十二欄上；
+    N1 又只驗 service_method 與 transit_days，於是文字欄收得下布林值。
+    布林值不可以 str() 成 "True" 混過去——那個字面值會進 N2 案型分類的 haystack。
+    """
+    bad = _fake_extraction()
+    bad["type"]["value"] = True
+    orig = client._invoke_structured
+    client._invoke_structured = lambda *a, **k: (bad, None)
+    try:
+        with env(BEDROCK_MODEL_ID_EXTRACT="m", AWS_REGION="r"):
+            try:
+                client.extract_intake("x")
+            except client.LLMError as e:
+                assert_in("type", str(e))
+                assert_in("布林", str(e))
+            else:
+                raise AssertionError("文字欄回布林值必須 raise LLMError")
+    finally:
+        client._invoke_structured = orig
+
+
+def test_extract_intake_accepts_int_in_a_text_field_as_string():
+    """案號寫成數字是**無損**轉換，不必炸——跟布林值不同，str() 之後語意沒有改變。"""
+    ok = _fake_extraction()
+    ok["no"]["value"] = 1130000001
+    orig = client._invoke_structured
+    client._invoke_structured = lambda *a, **k: (ok, None)
+    try:
+        with env(BEDROCK_MODEL_ID_EXTRACT="m", AWS_REGION="r"):
+            out = client.extract_intake("x")
+    finally:
+        client._invoke_structured = orig
+    assert_eq(out["intake"]["no"], "1130000001")
+
+
+def test_classify_by_rule_does_not_crash_on_non_string_type():
+    """縱深防禦：N1 已擋布林值，但 `confirmed_intake` 也餵得進 N2，型別不能只靠上游。
+
+    `(intake.get("type") or "").strip()` 的 `or ""` 是 **falsy 守衛不是型別守衛**：
+    `True or ""` → `True` → `.strip()` → AttributeError。同一個函式裡 note 與 org
+    都包了 `str()`，只有 type 沒有。
+    """
+    for bad in (True, 123, ["x"]):
+        case_type, why, hits = n2_classify.classify_by_rule(
+            {"type": bad, "note": "", "org": ""}, "違反空氣污染防制法"
+        )
+        assert_true(isinstance(case_type, str), f"type={bad!r} 時 case_type 仍須是字串")
+        assert_true(isinstance(why, str))
 
 
 def test_draft_sentences_filters_cite_ids_outside_context():

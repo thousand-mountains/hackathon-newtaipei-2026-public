@@ -42,6 +42,9 @@ INTAKE_FIELDS = (
     "service_method", "transit_days", "interested_party",
 )
 SERVICE_METHODS = ("personal", "deposit", "public")
+# 文字欄＝十二欄扣掉兩個有容錯轉換的（transit_days／interested_party）。
+# service_method 留在裡面：它的白名單檢查也擋得住非字串，但先擋型別的訊息更精確。
+TEXT_INTAKE_FIELDS = tuple(f for f in INTAKE_FIELDS if f not in ("transit_days", "interested_party"))
 MAX_SENTENCES_PER_SLOT = 12
 
 # Bedrock 的 document 內容區塊對 name 有字元限制（英數、空白、連字號、括號、方括號）。
@@ -180,6 +183,17 @@ def extract_intake(document_text: str, *, pdf_documents: list[tuple[str, bytes]]
     for f in INTAKE_FIELDS:
         fv = raw.get(f) or {}
         v = fv.get("value")
+        if f in TEXT_INTAKE_FIELDS and v is not None:
+            # 第二道（schema 已收窄，這裡擋供應商不理 schema 的情形）。
+            # bool 先判：Python 的 isinstance(True, int) 是 True。
+            if isinstance(v, bool):
+                # 不 str() 混過去：「True」當成案由會進 N2 案型分類的 haystack，
+                # 而且承辦人在畫面上看到的是一個沒有意義的字面值。
+                raise LLMError(
+                    f"抽取結果 {f}={v!r} 是布林值；文字欄位不可能是 true/false"
+                )
+            if isinstance(v, int):
+                v = str(v)  # 案號寫成數字是無損轉換，不必炸
         if f == "service_method" and v is not None and v not in SERVICE_METHODS:
             raise LLMError(f"抽取結果 service_method={v!r} 不在 {SERVICE_METHODS}")
         if f == "transit_days":

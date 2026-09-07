@@ -32,7 +32,10 @@ UNKNOWN_TYPE = "未能分類"
 
 def classify_by_rule(intake: dict[str, Any], digest: str) -> tuple[str, str, list[str]]:
     """回傳 (案型, 判準說明, 命中的法規名)。純字串比對，不做語意判斷。"""
-    declared = (intake.get("type") or "").strip()
+    # `str()` 不是多餘的：`or ""` 是 falsy 守衛，不是型別守衛（`True or ""` → `True`
+    # → `.strip()` → AttributeError）。N1 已擋掉布林值，但 `confirmed_intake` 也餵得
+    # 進來，而同一函式裡 note／org 本來就包了 str()——只有這行漏掉。
+    declared = str(intake.get("type") or "").strip()
     haystack = " ".join(
         [
             declared,

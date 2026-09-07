@@ -17,6 +17,30 @@ SERVICE_METHODS = ("personal", "deposit", "public")  # 對齊 backend/engine/dea
 
 
 class FieldValue(BaseModel):
+    """**文字欄位**（案號／案由／當事人／機關／日期／代理人／備註／送達方式）。
+
+    `value` 刻意只收 `str | None`。舊版是 `str | int | bool | None`——那個聯集是為了
+    `transit_days`（int）與 `interested_party`（bool）開的，卻套用在全部十二欄上，
+    於是模型可以在 `type` 這種文字欄回一個 `True`：schema 收得下、N1 不檢查，
+    一路流到 N2 的 `(intake.get("type") or "").strip()` 才炸 AttributeError
+    （2026-09-08 第一次真模型呼叫實測到的）。
+
+    schema 是**約束不是請求**：把型別收窄，模型看到的欄位定義本身就不再允許布林值。
+    """
+
+    value: str | None = Field(description="欄位值（字串）；卷證未載明時為 null")
+    conf: float = Field(ge=0.0, le=1.0, description="0–1 信心值；抓不到就給低值，不要猜")
+    quote: str | None = Field(default=None, description="卷證中支撐此值的原文片段（原文照抄）")
+
+
+class LooseFieldValue(BaseModel):
+    """`transit_days` 與 `interested_party` 專用：型別保持寬鬆。
+
+    `client.extract_intake` 對這兩欄有**容錯轉換**（`"3"` → 3、任何值 → bool），
+    收窄成 `int` / `bool` 反而會讓「模型把 3 寫成字串」這種無損情形變成驗證失敗、
+    白白重試三次。寬鬆在這裡是刻意的，而且下游有明確的轉換規則接著。
+    """
+
     value: str | int | bool | None = Field(description="欄位值；卷證未載明時為 null")
     conf: float = Field(ge=0.0, le=1.0, description="0–1 信心值；抓不到就給低值，不要猜")
     quote: str | None = Field(default=None, description="卷證中支撐此值的原文片段（原文照抄）")
@@ -39,8 +63,8 @@ class ExtractionResult(BaseModel):
     agent: FieldValue
     note: FieldValue
     service_method: FieldValue
-    transit_days: FieldValue
-    interested_party: FieldValue
+    transit_days: LooseFieldValue
+    interested_party: LooseFieldValue
     facts_excerpt: list[FactsExcerpt] = Field(default_factory=list)
 
 
