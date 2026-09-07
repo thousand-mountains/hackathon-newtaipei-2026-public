@@ -5,7 +5,7 @@
 - N2：分類失敗要誠實回未能分類；不得輸出 expected_outcome_prior 數字
 - N3：期間計算薄殼正確；77-2 只在逾期時命中；fact_issues applies_to 濾網有效
 - N4：相似案通道必須回空；條文原文必須留白
-- N5：非 fixture 模式必須 raise；封鎖時 conclusion 不進 slots
+- N5：未實作模式必須 raise、bedrock 走真模型；封鎖時 conclusion 不進 slots
 - N6：四態判定、missing 阻擋、C 型事後覆核
 """
 from __future__ import annotations
@@ -22,6 +22,7 @@ from backend.gate.citations import (
 )
 from backend.engine.deadline import compute
 from backend.gate.lamps import detect_conclusion_like, lamp_for_states, requires_human_conclusion
+from backend.llm import client as llm_client
 from backend.nodes import n1_extract, n2_classify, n3_procedure, n4_retrieval, n5_draft, n6_gate
 from backend.orchestrator.state import CaseState, NodeCtx
 from backend.retrieval.base import UnavailableRetriever
@@ -271,13 +272,34 @@ def test_lawtable_reports_missing_article_honestly():
 
 # ── N5 主筆 ────────────────────────────────────────────────────────
 def test_n5_raises_when_not_fixture_mode():
+    """未實作的模式必須 raise；已實作的 bedrock 分支則要走真模型、且說清楚自己是真模型。
+
+    `bedrock` 自 2026-09-07 起是真分支（走 backend.llm.client.draft_sentences），
+    所以不再列在 NotImplementedError 的清單裡。它守的還是同一條紅線：不准靜默
+    回一份 fixture 模板句子，所以這裡順手釘住 `generation_mode`——bedrock 分支
+    若哪天偷偷退回模板重播，這個斷言會先炸。工具接線、槽位封鎖與 LLMError 傳遞
+    由 test_live_plumbing 覆蓋。
+    """
     state = CaseState(case_id="synthetic-unit-01")
     state.screen = {"requires_human_conclusion": False, "deadline": {"steps": []}}
+    for mode in ("local",):
+        try:
+            n5_draft.run(state, _ctx(mode), case_fixture=_minimal_fixture())
+        except NotImplementedError as e:
+            assert_in("Bedrock", str(e), "raise 訊息要說明需要 Bedrock 憑證")
+        else:
+            raise AssertionError(f"RUN_MODE={mode} 時 N5 必須 raise，不得靜默回 fixture 資料")
+
+    def fake_draft(context, slots, retrieve_fn=None, **kw):
+        return {"slots": {s: [] for s in slots}, "tool_calls": [], "usage": None, "model_id": "m"}
+
+    orig = llm_client.draft_sentences
+    llm_client.draft_sentences = fake_draft
     try:
         n5_draft.run(state, _ctx("bedrock"), case_fixture=_minimal_fixture())
-    except NotImplementedError:
-        return
-    raise AssertionError("RUN_MODE=bedrock 時 N5 必須 raise")
+    finally:
+        llm_client.draft_sentences = orig
+    assert_eq(state.draft["generation_mode"], "bedrock_live", "bedrock 分支不得退回模板重播")
 
 
 def test_n5_drops_conclusion_slot_when_blocked():

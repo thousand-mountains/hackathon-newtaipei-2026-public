@@ -204,7 +204,8 @@ def draft_sentences(context: dict, slots: list[str], retrieve_fn: Callable[[str]
     """context 由 N5 組好；retrieve_fn(query) -> [{"id": "R1", "src": ..., "text": ...}]。
 
     模型只能引用 context.laws[].id ∪ context.cases[].id ∪ 工具命中的 id；其他 cite_ids 一律清空並標 unsupported。"""
-    allowed = {law["id"] for law in context.get("laws", [])} | {c["id"] for c in context.get("cases", [])}
+    base_allowed = {law["id"] for law in context.get("laws", [])} | {c["id"] for c in context.get("cases", [])}
+    allowed = set(base_allowed)
     tool_calls: list[dict] = []
     tools: list = []
     if retrieve_fn is not None:
@@ -233,8 +234,18 @@ def draft_sentences(context: dict, slots: list[str], retrieve_fn: Callable[[str]
         f"slots：{json.dumps(slots, ensure_ascii=False)}\n\n"
         f"【輸入】\n{json.dumps(payload, ensure_ascii=False, indent=1)}"
     )
-    raw, usage = _with_retries(lambda: _invoke_structured(system, user, "DraftResult", tools, "draft"),
-                               retries, backoff_s)
+
+    def attempt() -> tuple[dict, dict | None]:
+        """一次嘗試。**每次都從乾淨的工具狀態開始**：`tool_calls` 與 `allowed` 是
+        本函式的閉包狀態，由工具就地累加；不重設的話重試回來的 `tool_calls` 會混進
+        上一次失敗嘗試的紀錄（報告虛報查了幾次），白名單也會留著上一輪命中的 id——
+        等於放行一批「這次沒查到」的引用，違反引用必可驗（CONSTITUTION §2）。"""
+        tool_calls.clear()
+        allowed.clear()
+        allowed.update(base_allowed)
+        return _invoke_structured(system, user, "DraftResult", tools, "draft")
+
+    raw, usage = _with_retries(attempt, retries, backoff_s)
     out_slots: dict[str, list[dict]] = {}
     for slot in slots:
         sentences = []

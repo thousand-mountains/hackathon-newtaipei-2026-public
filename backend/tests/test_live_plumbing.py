@@ -1,6 +1,7 @@
 """Task 1–7 的單元測試：全部 stdlib，live 分支一律用 monkeypatch 假物件。"""
 from __future__ import annotations
 
+import datetime as dt
 import os
 import pathlib
 import tempfile
@@ -8,6 +9,7 @@ from contextlib import contextmanager
 
 import backend.intake.uploads as up
 from backend.config import settings
+from backend.engine import deadline as deadline_engine
 from backend.intake.documents import CJK_RATIO_THRESHOLD, cjk_ratio, route_documents
 from backend.intake.uploads import (
     MAX_BYTES,
@@ -16,7 +18,7 @@ from backend.intake.uploads import (
     save_upload,
 )
 from backend.llm import client
-from backend.nodes import n1_extract
+from backend.nodes import n1_extract, n5_draft
 from backend.orchestrator.graph import (
     digest_from_state,
     list_synthetic_cases,
@@ -24,6 +26,7 @@ from backend.orchestrator.graph import (
     run_case,
 )
 from backend.orchestrator.state import CaseState, NodeCtx
+from backend.retrieval.base import Hit
 from backend.tests.harness import assert_eq, assert_in, assert_true
 
 
@@ -491,3 +494,141 @@ def test_n1_bedrock_refuses_pdf_visual_without_bytes():
     finally:
         client.extract_intake = orig
     assert_eq(calls["n"], 0, "不該呼叫到模型")
+
+
+# ── Task 4：N5 bedrock 分支（含 retrieve 工具介面）─────────────────
+# 一律 monkeypatch `client.draft_sentences`（節點端唯一接縫），所以不裝 strands、
+# 沒有憑證也能跑；跑的是分流、槽位封鎖、工具接線與 refs 落地。
+
+
+def _screened_state(requires_human: bool) -> CaseState:
+    # deadline 直接用期間引擎的真實輸出：`steps` 的形狀（rule／value／basis）是
+    # build_doc_skeleton 的硬需求，手寫一份簡化版會讓測試在假的形狀上通過。
+    computed = deadline_engine.compute(
+        service_method="deposit", service_date=dt.date(2024, 6, 13),
+        filing_date=dt.date(2024, 7, 20), transit_days=0, interested_party=False,
+    ).as_dict()
+    st = CaseState(case_id="synthetic-ordinary-01", run_mode="bedrock")
+    st.intake = {"no": "synthetic-1130000001", "type": "違反空氣污染防制法事件", "d2": "2024-06-13", "d3": "2024-07-20"}
+    st.facts_excerpt = [{"text": "事實段。", "page": 1}]
+    st.screen = {"requires_human_conclusion": requires_human,
+                 "deadline": computed,
+                 "art77": {"clause": "77-2"}}
+    st.retrieval = {"laws": [{"id": "L1", "t": "訴願法第14條"}, {"id": "L4", "t": "訴願法第77條"}],
+                    "cases": [{"id": "C1", "t": "113年-…-駁回", "outcome": "駁回"}], "retrieval_meta": {}}
+    return st
+
+
+def test_n5_bedrock_branch_requests_only_allowed_slots_and_keeps_shape():
+    seen = {}
+
+    def fake_draft(context, slots, retrieve_fn=None, **kw):
+        seen["slots"] = list(slots)
+        seen["ctx_ids"] = [law["id"] for law in context["laws"]] + [c["id"] for c in context["cases"]]
+        seen["retrieve_fn"] = retrieve_fn
+        return {"slots": {s: [{"t": f"{s} 句", "cite_ids": ["L1"], "basis": "訴願法第14條", "source_kind": "law"}] for s in slots},
+                "tool_calls": [], "usage": None, "model_id": "model-d"}
+
+    orig = client.draft_sentences
+    client.draft_sentences = fake_draft
+    try:
+        st = _screened_state(requires_human=True)
+        r = n5_draft.run(st, NodeCtx(run_mode="bedrock"), case_fixture=_ordinary_fixture())
+    finally:
+        client.draft_sentences = orig
+    assert_eq(seen["slots"], ["reasoning"], "封鎖時 conclusion 不得進 slots")
+    assert_eq(seen["ctx_ids"], ["L1", "L4", "C1"])
+    assert_true(seen["retrieve_fn"] is None, "ctx.retriever 為 None 時不給工具")
+    assert_eq(st.draft["generation_mode"], "bedrock_live")
+    assert_eq(st.draft["model_id"], "model-d")
+    assert_eq(list(st.draft["slots"].keys()), ["reasoning"])
+    assert_true("l" not in st.draft["slots"]["reasoning"][0] and "why" not in st.draft["slots"]["reasoning"][0])
+    assert_true(r.degraded is False, "真模型生成不是降級")
+
+
+def test_n5_bedrock_branch_strips_conclusion_even_if_model_returns_it():
+    def fake_draft(context, slots, retrieve_fn=None, **kw):
+        return {"slots": {"reasoning": [{"t": "理由", "cite_ids": [], "basis": None, "source_kind": "law"}],
+                          "conclusion": [{"t": "訴願不受理。", "cite_ids": [], "basis": None, "source_kind": "law"}]},
+                "tool_calls": [], "usage": None, "model_id": "m"}
+
+    orig = client.draft_sentences
+    client.draft_sentences = fake_draft
+    try:
+        st = _screened_state(requires_human=True)
+        n5_draft.run(st, NodeCtx(run_mode="bedrock"), case_fixture=_ordinary_fixture())
+    finally:
+        client.draft_sentences = orig
+    assert_true("conclusion" not in st.draft["slots"], "程式端第二道：模型多回的 conclusion 必須刪掉")
+    assert_true(st.draft["conclusion_dropped"] is True)
+
+
+def test_n5_bedrock_branch_wires_retriever_into_tool():
+    class FakeRetriever:
+        name = "fake_kb"
+
+        def __init__(self):
+            self.queries = []
+
+        def search(self, query, filters=None, top_k=5):
+            self.queries.append((query, filters))
+            return [Hit(id="R1", title="法務部 93 函釋", score=0.9, source="行政函釋/法務部93.txt",
+                        payload={"text": "寄存之日視為收受送達之日"})]
+
+    def fake_draft(context, slots, retrieve_fn=None, **kw):
+        hits = retrieve_fn("寄存送達 生效")
+        assert_eq(hits[0]["id"], "R1")
+        return {"slots": {"reasoning": [{"t": "依函釋……", "cite_ids": ["R1"], "basis": None, "source_kind": "ref"}]},
+                "tool_calls": [{"query": "寄存送達 生效", "hit_ids": ["R1"]}], "usage": None, "model_id": "m"}
+
+    fr = FakeRetriever()
+    orig = client.draft_sentences
+    client.draft_sentences = fake_draft
+    try:
+        st = _screened_state(requires_human=True)
+        n5_draft.run(st, NodeCtx(run_mode="bedrock", retriever=fr), case_fixture=_ordinary_fixture())
+    finally:
+        client.draft_sentences = orig
+    assert_eq(fr.queries[0][1]["prefix"], ["行政函釋/", "司法院釋字及行政判解/"], "N5 的工具只准查函釋與判解前綴")
+    assert_eq(st.draft["refs"][0]["id"], "R1")
+    assert_eq(st.draft["refs"][0]["src"], "行政函釋/法務部93.txt")
+
+
+def test_draft_sentences_resets_tool_state_between_retries():
+    """重試是「重新來過」，不是「接著上一次」。
+
+    `tool_calls` 與 `allowed` 是 draft_sentences 的閉包狀態，被工具就地累加。
+    若不在每次嘗試前重設，重試回來的 `tool_calls` 會混進上一次失敗嘗試的紀錄
+    （報告上會虛報查了幾次），白名單也會留著上一輪命中的 id——那等於讓模型引用
+    一批「這次沒查到」的來源，違反引用必可驗（CONSTITUTION §2）。
+
+    strands 未安裝時 `client.tool` 是 None，這裡用 identity decorator 頂上，
+    讓 `tools[0]` 就是未包裝的 retrieve_refs，測試才拿得到工具本體來呼叫。
+    """
+    attempts = {"n": 0}
+
+    def fake_invoke(system, user, schema_name, tools=None, model_kind="draft", **kw):
+        attempts["n"] += 1
+        tools[0](f"第{attempts['n']}次查詢")
+        if attempts["n"] == 1:
+            raise RuntimeError("simulated throttling")
+        return {"reasoning": [{"t": "依函釋……", "cite_ids": ["R1", "R9"], "basis": None, "source_kind": "ref"}]}, None
+
+    def retrieve_fn(query):
+        rid = "R9" if "第1次" in query else "R1"
+        return [{"id": rid, "src": "行政函釋/x.txt", "text": "……"}]
+
+    ctx = {"intake": {}, "facts_excerpt": [], "screen": {}, "laws": [{"id": "L1"}], "cases": []}
+    orig_invoke, orig_tool = client._invoke_structured, client.tool
+    client._invoke_structured = fake_invoke
+    client.tool = lambda f: f
+    try:
+        with env(BEDROCK_MODEL_ID_DRAFT="m", AWS_REGION="r"):
+            out = client.draft_sentences(ctx, ["reasoning"], retrieve_fn, retries=3, backoff_s=0.0)
+    finally:
+        client._invoke_structured = orig_invoke
+        client.tool = orig_tool
+    assert_eq(attempts["n"], 2)
+    assert_eq(out["tool_calls"], [{"query": "第2次查詢", "hit_ids": ["R1"]}], "第一次嘗試的工具紀錄不得殘留")
+    assert_eq(out["slots"]["reasoning"][0]["cite_ids"], ["R1"], "R9 是上一次失敗嘗試命中的，白名單必須已重設")
+    assert_true(out["slots"]["reasoning"][0].get("unsupported") is True)
