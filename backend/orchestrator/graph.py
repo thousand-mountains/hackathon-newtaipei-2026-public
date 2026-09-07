@@ -250,10 +250,37 @@ def run_case(
     node_timings: dict[str, int] = {}
     degraded: list[dict[str, Any]] = []
     agents: dict[str, Any] = {}
+    rerun_nodes = set(NODE_ORDER[start_idx:])
+    if base_state is not None:
+        # 續跑的 agents[] 與 degraded[] 要含**沒有重跑的那幾個節點**的內容。
+        # 不帶過來的話，前端的 agent 卡片會只剩重跑的那兩張，看起來像
+        # 「N1～N4 沒跑過」——那是對已經發生過的事說謊（CONSTITUTION §1）。
+        # 屬於重跑節點的 agent key 先刪掉再讓迴圈填回：留著會是上一次的舊敘事。
+        rerun_agent_keys = {a for n in rerun_nodes for a in NODE_TO_AGENTS.get(n, [])}
+        agents = {
+            k: v
+            for k, v in copy.deepcopy(base_state.agents_narrative or {}).items()
+            if k not in rerun_agent_keys
+        }
+        degraded = [
+            copy.deepcopy(d)
+            for d in (base_state.run_meta or {}).get("degraded", [])
+            if d.get("node") not in rerun_nodes
+        ]
 
     def emit(kind: str, data: dict[str, Any]) -> None:
-        if on_event is not None:
+        """事件是旁路，**不准影響流水線**：callback 自己炸掉就吞掉。
+
+        SSE 端（`api/`）自己記錯；讓它的例外往上冒會有兩個後果——
+        一個壞掉的訂閱者能讓整次分析失敗，而且 `except` 分支會再呼叫同一個壞
+        callback，第二次的例外還會把真正的錯誤蓋掉。
+        """
+        if on_event is None:
+            return
+        try:
             on_event(kind, {"run_id": state.run_id, **data})
+        except Exception:  # noqa: BLE001 — 見上：訂閱者的錯不該變成分析的錯
+            pass
 
     # N4 的查詢句由 N1／N2／N3 的結果決定（`n4_retrieval.build_query()`）。
     # 這裡**刻意不再蒐集草稿引用**：舊版把 fixture 草稿即將引用的法條餵給 N4，
@@ -308,13 +335,21 @@ def run_case(
         "degraded": degraded,
         # 沒有實際呼叫任何模型，就不給 model id（不腦補）
         "model_ids": _model_ids_if_live(mode),
-        "model_ids_note": None if mode == "bedrock" else "fixture 檔位未呼叫任何基礎模型，故無 model id。",
+        "model_ids_note": (
+            None if mode == "bedrock" else f"本次執行模式 {mode} 未呼叫任何基礎模型，故無 model id。"
+        ),
         "kb_snapshot_date": snapshot.get("generated"),
         "final_state": state.state,
     }
     state.run_meta["summary"] = summary_line(state.run_meta)
     if persist:
-        save_run(state)
+        # 一次執行**一定**以 run_done 或 run_failed 結束。存檔失敗（磁碟滿、
+        # 或呼叫端給的 run_id 不合 RUN_ID_RE）也是失敗，訂閱端不能只是等不到下一個事件。
+        try:
+            save_run(state)
+        except Exception as e:  # noqa: BLE001 — 事件要發得出去，例外照原樣往上拋
+            emit("run_failed", {"node": None, "error": f"{type(e).__name__}: {e}"})
+            raise
     emit("run_done", {"final_state": state.state})
     return state
 

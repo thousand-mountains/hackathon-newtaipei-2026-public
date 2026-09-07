@@ -966,3 +966,69 @@ def test_on_event_emits_start_done_per_node_and_run_done():
     assert_eq(kinds.count("node_done"), 6)
     assert_eq(kinds[-1], "run_done")
     assert_eq([d["node"] for k, d in events if k == "node_done"], ["n1", "n2", "n3", "n4", "n5", "n6"])
+
+
+def test_save_run_failure_still_emits_run_failed():
+    """存檔失敗也是失敗：一次執行一定以 run_done 或 run_failed 結束。
+
+    用不合 `RUN_ID_RE` 的 run_id 觸發 `save_run` 的 ValueError——這是呼叫端真的做得到的事
+    （run_id 之後會從 HTTP body 進來），不是硬造一個永遠不會發生的錯。
+    """
+    events: list[tuple[str, dict]] = []
+    try:
+        run_case(
+            "synthetic-ordinary-01",
+            mode="fixture",
+            run_id="bad id with spaces",
+            persist=True,
+            on_event=lambda k, d: events.append((k, d)),
+        )
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("run_id 不合格式仍存檔成功？save_run 的白名單失效了")
+    assert_eq(events[-1][0], "run_failed", f"最後一個事件必須是 run_failed，實得 {[k for k, _ in events]}")
+    assert_true(events[-1][1]["node"] is None, "存檔失敗不屬於任何節點，node 必須是 None")
+    assert_eq([k for k, _ in events].count("run_done"), 0, "失敗的執行不得同時報 run_done")
+
+
+def test_on_event_exception_does_not_break_the_pipeline():
+    """訂閱者壞掉不該讓分析失敗——事件是旁路，不是流水線的一環。"""
+    seen: list[str] = []
+
+    def hostile(kind, data):
+        seen.append(kind)
+        if kind == "node_done":
+            raise RuntimeError("SSE 端爆了")
+
+    st = run_case("synthetic-ordinary-01", mode="fixture", persist=False, on_event=hostile)
+    assert_eq(st.state, "VERIFIED", "callback 丟例外時流水線仍須跑完")
+    assert_eq(seen[-1], "run_done", "run_done 仍要發出去")
+
+
+def test_resume_keeps_upstream_agents_and_degraded():
+    """續跑的 agents[]／degraded[] 要含沒重跑的節點——否則畫面像是 N1～N4 沒跑過。"""
+    base = run_case("synthetic-ordinary-01", mode="fixture", persist=False)
+    base_n4 = [d for d in base.run_meta["degraded"] if d["node"] == "n4"]
+    assert_eq(len(base_n4), 1, "前提不成立：fixture 模式的 N4 本來會降級（通道 B 不可用）")
+
+    again = run_case(
+        "synthetic-ordinary-01", mode="fixture", base_state=base, from_node="n5", persist=False
+    )
+    for k in ("clerk", "clf", "proc", "law", "case"):
+        assert_in(k, again.agents_narrative, f"沒重跑的節點 agent {k} 不見了")
+    for k in ("draft", "qc"):
+        assert_in(k, again.agents_narrative, f"這次重跑的節點 agent {k} 不見了")
+    assert_eq(again.agents_narrative["law"], base.agents_narrative["law"], "上游敘事必須原樣沿用")
+    assert_true(
+        again.agents_narrative["law"] is not base.agents_narrative["law"],
+        "沿用要深拷貝，不能與 base_state 共用同一份物件",
+    )
+
+    nodes = [d["node"] for d in again.run_meta["degraded"]]
+    assert_eq(sorted(nodes), ["n4", "n5"], f"degraded 應含沿用的 n4 與本次重跑的 n5，實得 {nodes}")
+    assert_eq(
+        [d for d in again.run_meta["degraded"] if d["node"] == "n4"][0]["reason"],
+        base_n4[0]["reason"],
+        "沿用的降級理由不得被改寫",
+    )
