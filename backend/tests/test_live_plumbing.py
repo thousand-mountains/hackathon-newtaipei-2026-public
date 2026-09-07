@@ -632,3 +632,61 @@ def test_draft_sentences_resets_tool_state_between_retries():
     assert_eq(out["tool_calls"], [{"query": "第2次查詢", "hit_ids": ["R1"]}], "第一次嘗試的工具紀錄不得殘留")
     assert_eq(out["slots"]["reasoning"][0]["cite_ids"], ["R1"], "R9 是上一次失敗嘗試命中的，白名單必須已重設")
     assert_true(out["slots"]["reasoning"][0].get("unsupported") is True)
+
+
+def test_n5_renumbers_ref_ids_so_two_tool_calls_cannot_collide():
+    """ref id 一律由 N5 重編：檢索器兩次都回 id="R1" 時，兩筆必須是 R1／R2。
+
+    沿用檢索器的 id 會讓 `refs` 兩筆不同來源共用一個號碼，模型引 R1 時對不出是哪一筆
+    ——引用必可驗（CONSTITUTION §2）的直接破口。原始 id 留在 `src_id`，仍能追回檢索器那端。
+    """
+    class CollidingRetriever:
+        name = "fake_kb"
+
+        def __init__(self):
+            self.n = 0
+
+        def search(self, query, filters=None, top_k=5):
+            self.n += 1
+            return [Hit(id="R1", title=f"來源 {self.n}", score=0.9,
+                        source=f"行政函釋/第{self.n}份.txt", payload={"text": f"段落 {self.n}"})]
+
+    def fake_draft(context, slots, retrieve_fn=None, **kw):
+        first = retrieve_fn("寄存送達 生效")
+        second = retrieve_fn("回復原狀 不可歸責")
+        assert_eq([h["id"] for h in first], ["R1"])
+        assert_eq([h["id"] for h in second], ["R2"], "第二次工具呼叫要接著編號，不得從頭來過")
+        assert_eq(second[0]["src_id"], "R1", "回給模型的 dict 也要帶得回原始 id")
+        return {"slots": {"reasoning": [{"t": "依函釋……", "cite_ids": ["R2"], "basis": None, "source_kind": "ref"}]},
+                "tool_calls": [], "usage": None, "model_id": "m"}
+
+    orig = client.draft_sentences
+    client.draft_sentences = fake_draft
+    try:
+        st = _screened_state(requires_human=True)
+        n5_draft.run(st, NodeCtx(run_mode="bedrock", retriever=CollidingRetriever()),
+                     case_fixture=_ordinary_fixture())
+    finally:
+        client.draft_sentences = orig
+    refs = st.draft["refs"]
+    assert_eq([r["id"] for r in refs], ["R1", "R2"], "兩筆不同來源不得共用一個 ref id")
+    assert_eq([r["src_id"] for r in refs], ["R1", "R1"], "原始 id 要留著，才追得回檢索器那端")
+    assert_eq([r["src"] for r in refs], ["行政函釋/第1份.txt", "行政函釋/第2份.txt"])
+
+
+def test_n5_logs_when_upstream_retrieval_is_empty():
+    """N4 什麼都沒查到時，模型的引用一定全被清空——畫面上要看得出原因出在上游。"""
+    def fake_draft(context, slots, retrieve_fn=None, **kw):
+        return {"slots": {"reasoning": [{"t": "理由", "cite_ids": [], "basis": None, "source_kind": "law"}]},
+                "tool_calls": [], "usage": None, "model_id": "m"}
+
+    orig = client.draft_sentences
+    client.draft_sentences = fake_draft
+    try:
+        st = _screened_state(requires_human=True)
+        st.retrieval = {"laws": [], "cases": [], "retrieval_meta": {}}
+        r = n5_draft.run(st, NodeCtx(run_mode="bedrock"), case_fixture=_ordinary_fixture())
+    finally:
+        client.draft_sentences = orig
+    logs = [row[0] for row in r.narrative["draft"]["logs"]]
+    assert_true(any("上游檢索結果為空" in text for text in logs), f"缺空檢索的說明 log：{logs}")

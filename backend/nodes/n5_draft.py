@@ -76,6 +76,7 @@ def run(state: CaseState, ctx: NodeCtx, case_fixture: dict[str, Any] | None = No
         }
         degraded, degrade_reason = True, "fixture 檔位：草稿為模板重播，非模型即時生成"
         mode_log = ["離線重播（fixture）：句子來自合成案例模板，非模型生成", "y"]
+        extra_logs: list[list[str]] = []
     elif ctx.run_mode == "bedrock":
         refs: list[dict[str, Any]] = []
         retrieve_fn = None
@@ -85,10 +86,13 @@ def run(state: CaseState, ctx: NodeCtx, case_fixture: dict[str, Any] | None = No
                 hits = ctx.retriever.search(query, filters={"prefix": list(REF_PREFIXES)}, top_k=5)
                 out: list[dict[str, Any]] = []
                 for h in hits:
-                    # 檢索器已給 R 開頭 id 就沿用（引用要對得回同一筆）；沒有才補號。
-                    rid = h.id if h.id.startswith("R") else f"R{len(refs) + len(out) + 1}"
+                    # id **一律由 N5 重新編號**，跨多次工具呼叫連續遞增。沿用檢索器的 id 會撞：
+                    # 第一次補號成 R1 的命中，跟第二次檢索器自帶的 R1 會共用同一個 id，
+                    # refs 兩筆不同來源對到一個號碼，模型引 R1 時對不出是哪一筆
+                    # （引用必可驗，CONSTITUTION §2）。原始 id 留在 src_id 供追回檢索器那端。
                     out.append({
-                        "id": rid, "t": h.title, "src": h.source,
+                        "id": f"R{len(refs) + len(out) + 1}", "src_id": h.id,
+                        "t": h.title, "src": h.source,
                         "text": (h.payload or {}).get("text", ""),
                         "score": h.score, "origin": "retrieval",
                     })
@@ -116,6 +120,11 @@ def run(state: CaseState, ctx: NodeCtx, case_fixture: dict[str, Any] | None = No
         }
         degraded, degrade_reason = False, None
         mode_log = [f"模型即時生成（{out['model_id']}），工具呼叫 {len(out['tool_calls'])} 次", ""]
+        # 上游檢索全空時，白名單是空集合，模型引什麼都會被 client 清掉並標 unsupported。
+        # 那個結果本身是誠實的，但畫面上看不出原因出在上游，所以這裡把原因寫出來。
+        extra_logs = [] if (context["laws"] or context["cases"]) else [
+            ["上游檢索結果為空：模型的所有引用都會被清空並標 unsupported", "y"]
+        ]
     else:
         ctx.require_fixture("N5 主筆節點")
         raise AssertionError("unreachable")
@@ -150,6 +159,7 @@ def run(state: CaseState, ctx: NodeCtx, case_fixture: dict[str, Any] | None = No
                 "out": f"組出 {sentence_n} 句草稿（槽位：{'、'.join(slots)}）。",
                 "logs": [
                     mode_log,
+                    *extra_logs,
                     [
                         "結論段已自 slots 陣列移除（結構性封鎖，非 prompt 請求）" if needs_human
                         else "結論段由模型／模板組出，待守門驗證",
