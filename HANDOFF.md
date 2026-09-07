@@ -516,6 +516,16 @@ uv run --with fastapi --with "uvicorn[standard]" --with pydantic --with python-m
 | 9：資料 manifest／ingest／逾期回放 | 完成。`build_manifest.py` 產出 **manifest 2,477 筆**；`replay_overdue_public.py` 產出回放集 **217 件**，對規則引擎重放**一致率 99.5%（216/217）**。`ingest_kb.py` 寫好但**未實跑**（無 AWS 憑證）。**附註：回放集 217 件全為 `expected_overdue=True` 正例，沒有反例（非逾期案）混入，一致率只驗到「引擎判正例判得準不準」，不能當成日期計算邏輯（含邊界、非逾期分支）的完整驗證** | `0d9d10d` |
 | 16：掃描件視覺讀取實測 | **部分完成**（本 commit）。無 Bedrock 憑證，Step 2（模型真的讀不讀得懂圖片）驗不了，標 ⏸ 未驗；Step 1 造樣本、fixture 服務上傳與路由三件事已驗過，見 `docs/evidence/2026-09-07-bedrock-live/ac16.md` | 本 commit |
 
+### 5.8 收尾修正（2026-09-07 續）
+
+| 項目 | 現況 |
+|---|---|
+| `n6_gate` C 型案下 unsupported 句的 `why` 被封鎖文案蓋掉 | **已修**。`elif origin == "llm" and not usable_cites` 加 `and not unsupported`——`unsupported` 的 `why` 已寫成「模型引了 X、已清除」，那是更具體的同一件事，用「本案已封鎖」蓋掉會把可查證性的破口藏起來。燈號 `r` 與 tier「請人工判斷」在主路徑已定，此分支不接手也不放寬。新增 `test_unsupported_why_survives_c_type_blocking`（先紅後綠） |
+| spec §5.5 表格被插入段落切開 | **不需修，已關閉**。掃過 `docs/**` 與根目錄 md 的所有表格，無「表格列與非表格行相鄰」的畸形；§5.5 現行順序連貫 |
+| `backlog.md` Phase S 狀態過時 | **已修**。S-5／S-6 標完成，S-7／S-9 標**部分完成**（程式寫完但沒真跑過，缺 Bedrock 憑證），S-8 標完成但註明回放集全為正例；新增 S-15（回放集補反例）、S-16（`validate_run_args` 提前驗，取代背景 raise → 502） |
+
+測試：**223/223**（`python3 backend/tests/run_all.py`，exit 0）；`node prototype/tests/parity.mjs` 16/16；`pytest prototype/tests` 4 passed。
+
 ---
 
 ## 6. 檔案地圖

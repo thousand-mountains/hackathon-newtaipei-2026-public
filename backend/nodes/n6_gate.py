@@ -239,8 +239,13 @@ def run(state: CaseState, ctx: NodeCtx) -> NodeResult:
                             "severity": "P0",
                         }
                     )
-                elif origin == "llm" and not usable_cites:
+                elif origin == "llm" and not usable_cites and not unsupported:
                     # 沒命中片語層、又指不出可查證的出處：不宣稱它是主文，但也不能說它有出處。
+                    #
+                    # `unsupported` 的句子排除在外：它的 why 已由上面寫成「模型引了 X、
+                    # 已清除」，那是更具體的同一件事。用封鎖文案蓋掉會讓承辦人看不出
+                    # 可查證性的破口在哪。燈號（r）與層級（請人工判斷）在主路徑已經定了，
+                    # 這裡不接手也不會放寬。
                     s["tier"] = tier_of("human_required")
                     s["why"] = WHY_UNSOURCED_WHILE_BLOCKED
 

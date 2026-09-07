@@ -1331,6 +1331,57 @@ def test_unsupported_citation_reaches_n6_and_blocks_submit():
     assert_true(st.gate["submit_allowed"] is False, "帶不可驗引用的草稿不得標為可送出")
 
 
+def test_unsupported_why_survives_c_type_blocking():
+    """C 型案下，unsupported 句的 why 不得被「已封鎖且無出處」文案蓋掉。
+
+    兩件事同時成立時（結論段封鎖 ＋ 模型引了檢索結果外的來源），承辦人看到的紅燈
+    必須說得出「模型引了 L9、已清除」，而不是只說「本案已封鎖」——後者把可查證性
+    的破口藏起來了（CONSTITUTION §2）。
+    """
+    def fake_draft(context, slots, retrieve_fn=None, **kw):
+        return {
+            "slots": {
+                s: [{
+                    "t": f"{s}：本件卷內資料經核閱後彙整如下。",
+                    "cite_ids": [],
+                    "basis": None,
+                    "source_kind": "law",
+                    "unsupported": True,
+                    "dropped_cite_ids": ["L9"],
+                }]
+                for s in slots
+            },
+            "tool_calls": [], "usage": None, "model_id": "m",
+        }
+
+    orig = client.draft_sentences
+    client.draft_sentences = fake_draft
+    try:
+        st = _n6_ready_state(requires_human=True)
+        n5_draft.run(st, NodeCtx(run_mode="bedrock"), case_fixture=_ordinary_fixture())
+        n6_gate.run(st, NodeCtx(run_mode="bedrock", snapshot=load_snapshot()))
+    finally:
+        client.draft_sentences = orig
+
+    flagged = [
+        s
+        for block in st.gate["doc"]
+        for s in block.get("ss", [])
+        if s.get("unsupported")
+    ]
+    assert_true(flagged, "前提不成立：C 型案下沒有 unsupported 句")
+    for s in flagged:
+        assert_eq(s["l"], "r", "引用被清掉的句子必須紅燈")
+        assert_in("L9", s["why"] or "", "why 要指名被清掉的 id，不得被封鎖文案蓋掉")
+        assert_in("檢索結果之外", s["why"] or "")
+        assert_eq(s["tier"], "請人工判斷", "仍須落在請人工判斷層")
+        assert_eq(s["l_origin"], "rule", "燈號仍由規則產出")
+
+    hits = [b for b in st.gate["blockers"] if b["reason"] == "cite_id_unsupported"]
+    assert_eq(len(hits), 1, "C 型案下 unsupported 仍要匯總成一條 blocker")
+    assert_true(st.gate["submit_allowed"] is False)
+
+
 def test_fixture_doc_sentences_have_no_unsupported_key():
     """AC1：fixture 模式的 doc[] 句子形狀零變化（不得多出 unsupported／dropped_cite_ids）。"""
     st = run_case("synthetic-ordinary-01", mode="fixture", persist=False)

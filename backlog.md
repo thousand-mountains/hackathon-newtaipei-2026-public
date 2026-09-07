@@ -50,19 +50,25 @@
 ### Phase S 追加（2026-09-07 bedrock-live-nodes 分支未做的事）
 
 > 來源：`docs/spec/2026-09-07-bedrock-live-nodes-design.md` §2「不做」＋ plan 加值層四個 task（7b／8b／9／16）＋ review 過程延後的項目。
-> 這些**全部沒做**，列在這裡是為了不讓它們消失，不是排程承諾。
+> 列在這裡是為了不讓它們消失，不是排程承諾。
+>
+> **2026-09-07 更新**：加值層四個 task 已在 `mission/hack-bedrock-agents-20260906` 分支做完，
+> 對應的 S-5／S-6／S-7／S-8／S-9 狀態已改；**其餘各條仍是沒做**。狀態寫「部分完成」的
+> 是**程式寫完但沒有真跑過**（缺 Bedrock 憑證），不要讀成可以交付。詳見 HANDOFF §5.7。
 
 | ID | Story | 負責 | 優先 | 狀態 |
 |---|---|---|---|---|
 | HACK-S-3 | 我可以對一份已跑完的案子追問細節，系統用同一份卷證回答（ask 追問 agent：Strands 單 agent + 六工具，SSE 串流） | backend | P2 | 未開始 |
 | HACK-S-4 | 系統跑在 Bedrock AgentCore Runtime 上（承載 ask 那種有記憶的 agent；沒有 ask 就沒有理由做） | backend | P3 | 未開始 |
-| HACK-S-5 | 我按下開始分析後，看得到六個節點逐一亮起（SSE 節點事件流 `GET /runs/{id}/events`；plan Task 7b） | backend＋frontend | P2 | 未開始 |
-| HACK-S-6 | 我可以在任一張幕僚卡上按「從這裡重新產生」，只重跑該節點以下（前端每卡重新產生列；plan Task 8b，後端續跑 API 已具備） | frontend | P2 | 未開始 |
-| HACK-S-7 | 我一條指令就能把資料集重新入庫到新帳號的 KB（`scripts/build_manifest.py`＋`ingest_kb.py` 冪等入庫；plan Task 9） | backend | P1 | 未開始 |
-| HACK-S-8 | 爬蟲抓到的 251 件逾期案變成期間引擎的回放測試集（plan Task 9 逾期回放） | backend＋qa | P2 | 未開始 |
-| HACK-S-9 | 掃描件（無文字層 PDF）的視覺讀取實測，並用真實 PDF 校準 `pdf_text` 0.60 門檻（plan Task 16；目前門檻是拍腦袋的值） | backend＋qa | P1 | 未開始 |
+| HACK-S-5 | 我按下開始分析後，看得到六個節點逐一亮起（SSE 節點事件流 `GET /runs/{id}/events`；plan Task 7b） | backend＋frontend | P2 | **完成** `1b0db05`（無 heartbeat，上雲要加 keep-alive） |
+| HACK-S-6 | 我可以在任一張幕僚卡上按「從這裡重新產生」，只重跑該節點以下（前端每卡重新產生列；plan Task 8b，後端續跑 API 已具備） | frontend | P2 | **完成** `bc0d025`（實作為收文頁一列，非草稿頁就地按鈕） |
+| HACK-S-7 | 我一條指令就能把資料集重新入庫到新帳號的 KB（`scripts/build_manifest.py`＋`ingest_kb.py` 冪等入庫；plan Task 9） | backend | P1 | **部分完成** `0d9d10d`：manifest 2,477 筆已實跑；**`ingest_kb.py` 寫好但沒跑過**（無憑證） |
+| HACK-S-8 | 爬蟲抓到的 251 件逾期案變成期間引擎的回放測試集（plan Task 9 逾期回放） | backend＋qa | P2 | **完成** `0d9d10d`：217 件、一致率 99.5%。**但全為正例**，反例（非逾期案）待補，見 S-15 |
+| HACK-S-9 | 掃描件（無文字層 PDF）的視覺讀取實測，並用真實 PDF 校準 `pdf_text` 0.60 門檻（plan Task 16；目前門檻是拍腦袋的值） | backend＋qa | P1 | **部分完成** `46f52a3`：造樣本與上傳路由已驗；**模型視覺讀取與門檻校準仍未驗**（待 Bedrock） |
 | HACK-S-10 | 法規快照擴充到 18 部（爬蟲，含修正日期），不再只有 11 部 | backend | P2 | 未開始 |
 | HACK-S-11 | 洗錢防制法案件補爬（現有爬蟲只有廢清法、空污法，主 demo 案型反而沒有真實案源） | backend | P2 | 未開始 |
 | HACK-S-12 | `backend/output/runs/` 有清理機制（現在每跑一次 `run_all.py` 就寫上百個 json，gitignored 但無上限） | backend | P3 | 未開始 |
 | HACK-S-13 | `POST /api/cases` 有上傳總量與檔數上限（現在沒有；單檔 4.5MB vs 20MB 的落差也該在上傳時就講） | backend | P2 | 未開始 |
 | HACK-S-14 | `RunIn` 改 `extra="forbid"`，未知欄位回 400 而不是靜默忽略 | backend | P3 | 未開始 |
+| HACK-S-15 | 逾期回放集補反例（非逾期案），讓一致率能驗到日期邏輯的邊界與非逾期分支，而不只是「正例判得準」 | backend＋qa | P1 | 未開始 |
+| HACK-S-16 | bedrock 檔位的 `from_node`／`overrides` 抽 `validate_run_args` 提前驗（現在跨模式續跑在背景 raise，API 以 502 回報，不是 400） | backend | P2 | 未開始 |
