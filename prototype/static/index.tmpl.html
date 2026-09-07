@@ -158,6 +158,13 @@ textarea{resize:vertical;line-height:1.7}
 .btn.seal:hover{background:#B23334;border-color:#B23334}
 .btn.sm{padding:5px 12px;font-size:12.5px}
 .actions{display:flex;gap:10px;align-items:center;margin-top:18px;flex-wrap:wrap}
+/* 每卡重新產生列（live 模式才顯示）。字級跟著 .hint 的 12.5px，投影幕上與旁邊的說明同一階。 */
+.regenbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:14px;font-size:12.5px}
+/* 作者樣式的 display:flex 會壓過瀏覽器內建的 [hidden]{display:none}，
+   所以 hidden 要自己再擋一次——否則離線模式那一列會照樣顯示，按了也沒有後端。 */
+.regenbar[hidden]{display:none}
+.regenbar-label{color:var(--ink-3)}
+.regenbar input[type=text]{flex:1;min-width:14rem;padding:5px 9px;font-size:12.5px}
 .actions .gap{flex:1}
 
 /* ---------- 幕僚團 ---------- */
@@ -485,6 +492,18 @@ footer b{color:#C9DCEE;font-weight:500}
           <label id="casepick" style="display:none;align-items:center;gap:7px;font-size:12.5px;color:var(--ink-3)">
             後端案例<select id="caseselect" style="width:auto;padding:4px 8px;font-size:12.5px"></select>
           </label>
+        </div>
+        <!-- live 模式才顯示（wireRegenBar()）：從指定節點往下重跑到守門員，
+             走 POST /runs 的 from_node ＋ base_run_id。查詢詞只有 n4 吃得到
+             （後端 overrides 白名單只有 n4_query）。放在 .actions 之後而不是塞進
+             .actions 裡面：那是一列 flex，多一個 flex 子項會把案例下拉擠掉。 -->
+        <div id="regenbar" class="regenbar" hidden>
+          <span class="regenbar-label">重新產生（從該節點往下重跑到守門員）</span>
+          <button type="button" class="btn ghost sm" data-from="n1">重新抽取</button>
+          <button type="button" class="btn ghost sm" data-from="n4">重新檢索</button>
+          <button type="button" class="btn ghost sm" data-from="n5">重新產生草稿</button>
+          <input type="text" id="regen-query" aria-label="重新檢索時附加的查詢詞"
+                 placeholder="重新檢索時附加的查詢詞（選填，只影響「重新檢索」）">
         </div>
         <p class="hint" id="sourcenote" style="margin:10px 0 0"></p>
       </div>

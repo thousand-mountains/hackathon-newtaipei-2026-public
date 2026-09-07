@@ -96,8 +96,9 @@ async function errText(res){
 
 /* 全站唯一一個「叫後端跑六節點」的地方。兩個檔位的回應形狀不同，差異吸收在這裡：
    - fixture：200 ＋ 完整 payload（同步跑完）。
-   - bedrock：202 ＋ {run_id,result_url}，之後每 2 秒 GET 一次；409 表示還在跑、
-     200 是結果、其他一律當失敗。
+   - bedrock：202 ＋ {run_id,result_url,events_url}。先接 events_url 的 SSE 看逐節點進度
+     （加值層，斷了就退回輪詢），拿結果一律走 result_url：每 2 秒 GET 一次，
+     409 表示還在跑、200 是結果、其他一律當失敗。
    失敗一定往外拋：呼叫端的責任是把錯誤顯示出來，不是拿舊 payload 續跑（CONSTITUTION §1）。 */
 async function postRun(body,onProgress){
   const res=await fetch('api/cases/'+encodeURIComponent(L.chosen)+'/runs',{
@@ -107,8 +108,49 @@ async function postRun(body,onProgress){
   if(res.status!==202)throw new Error('runs HTTP '+res.status+'：'+(await errText(res)).slice(0,200));
   /* 進行中的 run 先放 pendingRunId：**L.runId 只在跑完拿到 payload 時才更新**。
      失敗的 run 沒有可讀的終態，讓它變成下一次的 base_run_id 只會換來一個 404。
-     （pendingRunId 目前沒有人讀，保留給 Task 8b 的 SSE 顯示進行中的 run。） */
+     pendingRunId 只用來把「進行中的 run」講出來（SSE 進度訊息）。 */
   const ticket=await res.json(); L.pendingRunId=ticket.run_id;
+
+  /* 加值層：有事件流就先接 SSE，逐節點把進度說出來。bedrock 檔位一次執行要幾十秒，
+     只寫「執行中…」看起來跟卡死沒兩樣，說得出「現在跑到哪一個節點」才是進度。
+     **SSE 不是取結果的路徑**：收到 run_done 之後仍然往下走輪詢迴圈 GET result_url
+     把 payload 拿回來（後端 §5.6 明寫事件不持久化、沒有回放）。
+     事件流斷線（process 重啟、proxy 把事件緩衝掉、404）一律 resolve 退回輪詢——
+     事件沒了不代表執行沒了，把它當失敗就是前端自己編出一個後端沒說的結論。 */
+  if(ticket.events_url&&window.EventSource){
+    const NAMES={n1:'卷證書記官 抽取中',n2:'分類調查官 判型中',n3:'程序審查官 算期間',
+                 n4:'法規／案例檢索中',n5:'決定書主筆 組稿中',n6:'品管守門員 驗證中'};
+    const label=n=>NAMES[n]||('節點 '+String(n||'?'));
+    const say=t=>onProgress&&onProgress('run '+ticket.run_id+' 進行中：'+t);
+    await new Promise((resolve,reject)=>{
+      const es=new EventSource(String(ticket.events_url).replace(/^\//,''));
+      /* 每條 SSE 在後端佔一個 threadpool thread，任何收尾都要先 close()，
+         不然離開這個 promise 之後連線還開著。 */
+      const end=fn=>{es.close();fn();};
+      const parse=e=>{try{return JSON.parse(e.data)||{}}catch(_){return {}}};
+      es.addEventListener('node_start',e=>say(label(parse(e).node)));
+      es.addEventListener('node_done',e=>{
+        const d=parse(e);
+        say(label(d.node)+' 完成（'+(d.elapsed_ms==null?'—':d.elapsed_ms+' ms')+'）');
+      });
+      es.addEventListener('run_done',()=>end(resolve));
+      es.addEventListener('run_failed',e=>{
+        const d=parse(e);
+        end(()=>reject(new Error(
+          (d.node?label(d.node)+'（'+d.node+'）失敗：':'執行失敗：')+
+          (d.error||'後端未附錯誤訊息'))));
+      });
+      /* 後端閒置 5 分鐘沒有新事件就發 timeout 並關流。措辭照輪詢逾時那一套：
+         這是「前端不再等下去」，不是「後端失敗了」——run_id 與 result_url 都講出來。 */
+      es.addEventListener('timeout',()=>end(()=>reject(new Error(
+        '事件流閒置逾時（5 分鐘沒有新的節點事件）：run '+ticket.run_id+
+        ' 可能仍在執行，稍後可用 GET '+ticket.result_url+' 取結果'))));
+      es.onerror=()=>end(resolve);   /* 斷線／404 → 不當失敗，退回輪詢 */
+    });
+  }
+
+  /* 輪詢的逾時預算從這裡起算，不含上面的 SSE 等待：有逐節點事件在進來就代表執行還活著，
+     上限要管的是「沒有事件可看、只能盲等」的那一段。 */
   const started=Date.now();
   for(;;){
     await new Promise(r=>setTimeout(r,2000));
@@ -207,7 +249,10 @@ function setSelectValue(sel,val){
     sel.appendChild(Object.assign(document.createElement('option'),{value:val,textContent:val}));
   sel.value=val;
 }
-function loadDemo(){
+/* after：欄位填完（含 updateGo1／renderConfirmNote）之後才跑的收尾。
+   填欄位排在 700ms 的 setTimeout 裡，呼叫端要在那之後才說得出「已換成本次抽取的結果」，
+   不然那句話會被 updateGo1() 重算的提示蓋掉。 */
+function loadDemo(after){
   $('#filelist').innerHTML='';
   DEMO_FILES.forEach(addFile);
   const K=CASE.intake||{};
@@ -232,9 +277,11 @@ function loadDemo(){
     if((K.auto_fields||[]).includes('service_method')){const e=$('#a_sm'); if(e)e.textContent='自動擷取';}
     renderConfirmNote();
     if(K.auto_toast)toast(K.auto_toast);
+    if(after)after();
   },700);
 }
-$('#demoload').onclick=loadDemo;
+/* 不寫 onclick=loadDemo：那樣會把 click 事件當成 after 傳進去（後面就 after is not a function）。 */
+$('#demoload').onclick=()=>loadDemo();
 
 /* live 模式：拖進來的檔案真的 POST /api/cases 建成 upload- 案件，接著跑六節點。
    fixture 檔位的後端會在 runs 回 400（上傳案沒有可重播的 fixture，只能在 RUN_MODE=bedrock 執行），
@@ -372,6 +419,17 @@ async function runConfirmed(){
   }
 }
 
+/* 「資料來源」那一行跟徽章一樣，講的是**畫面上這一份 payload** 是哪一次執行。
+   重跑換過 payload 就要重寫，否則徽章寫著新 run_id、來源說明還留著上一次的，
+   等於兩個 run_id 同時替同一頁背書。 */
+function renderSourceNote(){
+  const note=$('#sourcenote');
+  if(!note||!isLive)return;
+  note.innerHTML='資料來源：後端 <code>POST /api/cases/'+esc(L.chosen)+
+    '/runs</code>（run_id <code>'+esc((LIVE&&LIVE.run_id)||'—')+'</code>）。'+
+    '燈號與引用狀態由後端守門節點判定，本頁不重算。';
+}
+
 function applyLivePayload(payload){
   LIVE=payload; CASE=adaptPayload(payload);
   DOC=CASE.doc||[]; DEMO_FILES=CASE.files||[];
@@ -380,7 +438,73 @@ function applyLivePayload(payload){
   rebuildSents();
   renderConfirmNote();
   renderProv();
-  if(isLive)liveBadge(payload);
+  if(isLive){liveBadge(payload); renderSourceNote();}
+}
+
+/* ================= 每卡重新產生（加值層，spec §5.5） ================= */
+/* 三顆按鈕＝三個「從這裡往下重跑到守門員」的入口：
+   n1 連卷證都重抽、n4 只換檢索（可附加查詢詞）、n5 只重組稿。
+   n1 以外都要帶 base_run_id，而且只認 L.runId——那是**上一次成功執行**的 id；
+   進行中或失敗的 run 沒有可讀的終態，拿它當 base_run_id 只會換來一個 404（見 postRun）。
+   跟上傳建案、承辦人確認重跑共用同一個 BUSY 閘門：三條路都會打 /runs，
+   同時跑會對同一個案件送出兩次執行。 */
+const REGEN_LABEL={n1:'重新抽取',n4:'重新檢索',n5:'重新產生草稿'};
+function wireRegenBar(){
+  const bar=$('#regenbar'); if(!bar)return;
+  /* 離線 fixture 沒有後端可重跑，整列藏起來——按不動的按鈕比沒有按鈕更難解釋。 */
+  bar.hidden=!isLive;
+  if(!isLive)return;
+  const btns=[...bar.querySelectorAll('button[data-from]')];
+  btns.forEach(b=>b.onclick=async()=>{
+    const hint=$('#go1hint'), from=b.dataset.from;
+    if(BUSY){hint.textContent=BUSY_MSG;return;}
+    const body={from_node:from};
+    if(from!=='n1'){
+      if(!L.runId){
+        hint.textContent='沒有可接續的執行：'+REGEN_LABEL[from]+
+          '要接上一次成功執行的 run_id，請先讓六節點完整跑過一次。';
+        return;
+      }
+      body.base_run_id=L.runId;
+    }
+    /* 查詢詞只有 n4 送得出去（後端 overrides 白名單只有 n4_query）。
+       別的節點就算輸入框有字也不帶——不然畫面在暗示一個不存在的作用。 */
+    const q=(($('#regen-query')||{}).value||'').trim();
+    if(from==='n4'&&q)body.overrides={n4_query:q};
+    beginBusy();
+    btns.forEach(x=>x.disabled=true);
+    hint.textContent=REGEN_LABEL[from]+'：從 '+from+' 往下重跑到守門員…';
+    try{
+      applyLivePayload(await postRun(body,m=>{hint.textContent=m;}));
+      const rm=(LIVE&&LIVE.run_meta)||{};
+      /* 重跑會換掉期間算式、幕僚敘述與草稿。已經跑過幕僚團的話要整段重繪，
+         否則第 2 步留著上一次執行的卡片、第 3 步卻是新草稿——畫面自相矛盾。
+         沒跑過就不動：正常動線是按「啟動幕僚團分析」時才第一次渲染。 */
+      if(agentsRan){agentsRan=false; runAgents();}
+      /* 勾選框跟著後端的 intake_confirmed 走，不自己記狀態。從 n1 重抽會把欄位換成
+         新抽出來的一份、後端的確認也一併清空——勾勾還打著就是畫面替承辦人背書，
+         而旁邊的 renderConfirmNote() 已經寫著「尚未由承辦人確認」，兩句話會打架。 */
+      const confirmed=(((LIVE&&LIVE.intake_confirmed)||[]).length>0);
+      const cf=$('#f_confirm'); if(cf)cf.checked=confirmed;
+      const where='已從 '+(rm.from_node||from)+' 重跑（run '+((LIVE&&LIVE.run_id)||'—')+
+        (rm.base_run_id?'，接續 '+rm.base_run_id:'')+
+        (body.overrides?'，查詢詞「'+q+'」':'')+'）';
+      if(from==='n1'){
+        /* 重抽出來的欄位要真的顯示出來：畫面留著舊值、run_meta 卻說剛剛重抽過，
+           承辦人核對的就是一份不存在的抽取結果。 */
+        loadDemo(()=>{hint.textContent=where+'：欄位已換成本次抽取的結果'+
+          (confirmed?'。':'，承辦人確認已清空——請重新核對欄位並勾選「我已核對上列全部欄位」。')});
+      }else{
+        hint.textContent=where+'。燈號與引用狀態一律由後端守門節點重判。';
+      }
+    }catch(e){
+      hint.textContent=REGEN_LABEL[from]+'失敗（'+String(e&&e.message||e)+
+        '）——畫面仍是上一次的執行結果，沒有把新舊資料混拼成一份。';
+    }finally{
+      btns.forEach(x=>x.disabled=false);
+      endBusy();   /* endBusy() 會保留上面這句 hint，不被 updateGo1() 洗掉 */
+    }
+  });
 }
 
 $('#go1').onclick=async ()=>{
@@ -400,6 +524,9 @@ $('#go1').onclick=async ()=>{
 /* ---- live 模式：案例選單與資料來源說明 ---- */
 (function(){
   const note=$('#sourcenote');
+  /* 兩種模式都要跑一次：live 顯示重新產生列、離線把它藏起來。
+     按鈕的 handler 在點下去時才讀 L.runId，所以換過 payload 之後不需要重綁。 */
+  wireRegenBar();
   if(isLive){
     $('#demoload').textContent='載入案件（'+L.chosen+'）';
     const pick=$('#casepick'), sel=$('#caseselect');
@@ -412,9 +539,7 @@ $('#go1').onclick=async ()=>{
          避免半套狀態（已展開的草稿、已確認的紅燈）殘留造成畫面說謊。 */
       sel.onchange=()=>{location.search='?case='+encodeURIComponent(sel.value)};
     }
-    if(note)note.innerHTML='資料來源：後端 <code>POST /api/cases/'+esc(L.chosen)+
-      '/runs</code>（run_id <code>'+esc((LIVE&&LIVE.run_id)||'—')+'</code>）。'+
-      '燈號與引用狀態由後端守門節點判定，本頁不重算。';
+    renderSourceNote();
   }else if(note){
     note.textContent='資料來源：本頁內嵌的示範案件（data/case-demo.json）。未連上後端，'+
       '期間由頁內規則引擎實算、法條對照離線快照。';
