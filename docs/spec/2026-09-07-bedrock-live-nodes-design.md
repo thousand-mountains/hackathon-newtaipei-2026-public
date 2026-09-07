@@ -68,7 +68,7 @@
                                                                        │   N1 ──▶ llm.client.extract_intake()   ── Bedrock Converse
                                                                        │   N2/N3 純程式
                                                                        │   N4 ──▶ retrieval.kb.search()          ── Bedrock KB Retrieve
-                                                                       │   N5 ──▶ llm.client.structured_with_tools()  ── Converse（工具：retrieve 限函釋/判解）
+                                                                       │   N5 ──▶ llm.client.draft_sentences()      ── Converse（工具：retrieve 限函釋/判解）
                                                                        │   N6 純程式
                                                                        └ 每節點 start/done 各發一個 SSE 事件；終態存檔
 ```
@@ -132,7 +132,9 @@ narrative 的降級文案由「離線重播」改為實際情況，不得再出�
 - prompt 內塞入 N4 結果（法條、相似案含決定結果）。**相似案與法條不給模型自己查**。
 - 唯一工具 `retrieve_refs(query)`：呼叫 `retrieval.kb.search(query, filters={"prefix": ["行政函釋/", "司法院釋字及行政判解/"]})`，用途是替爭點對照補函釋或判解原文。`max_tool_calls=6`。
 - `requires_human_conclusion=True` 時：prompt 明講不寫結論，且程式端再刪除 `slot=conclusion` 的句子（雙保險，現有 `dropped_conclusion` 邏輯沿用）。
-- 每句 `cite_ids` 必須出現在「N4 結果 id ∪ 工具回傳 id」集合內，否則該句標 `unsupported`，交 N6 判紅。N6 邏輯不變。
+- 每句 `cite_ids` 必須出現在「N4 結果 id ∪ 工具回傳 id」集合內，否則白名單外的 id 一律清除，該句標 `unsupported` 並帶 `dropped_cite_ids`。
+- **N6 端要有對應的消費者（2026-09-07 本輪新增，取代原本「N6 邏輯不變」）**：`unsupported` 與 `dropped_cite_ids` 由 `narrative._sentence()` 帶進 `doc[]`（`build_doc_skeleton(carry_draft_cite_ids=True)`，bedrock 分支才開；fixture 維持 False 保 AC1），N6 對這種句子判 `l="r"`、`why` 用 `lamps.WHY_UNSUPPORTED_CITATION`，並匯總一條 `{"reason": "cite_id_unsupported", "sentence_ids": [...]}` 的 blocker（P0）→ `submit_allowed=False`。N6 仍不 import `backend.llm`，只讀 doc 上的旗標。
+- 原本這一節同時寫「交 N6 判紅」與「N6 邏輯不變」，兩句互相矛盾（覆核 I-3），以上為裁定後的定稿。
 
 ### 5.4 N4 通道 B：`backend/retrieval/kb.py`
 
@@ -180,6 +182,8 @@ class KBRetriever:
 | 重新抽取 | n1 | 全部 | N1、N5 |
 | 確認欄位後繼續 | n2 + confirmed_intake | N2–N6 | N5 |
 | 重新檢索（可帶 n4_query） | n4 | N4–N6 | N5 |
+
+`overrides.n4_query` **同時進兩條通道**（覆核 I-5）：以 `cited_laws` 進通道 A（法規查表的 `query_text`），並以 `extra_case_terms` 附加在通道 B（相似案）`case_query` 的尾端——附加而不取代，案情組出來的查詢句仍是主體。畫面上那個輸入框緊鄰相似案卡，只進通道 A 會讓功能名稱與實際行為不符。
 | 重新產生草稿 | n5 | N5、N6 | N5 |
 
 `run_meta.run_id_note` 改為如實描述：「支援 base_run_id 續跑；同 body 重送仍產生新 run」。
@@ -276,7 +280,7 @@ s3://{S3_KB_BUCKET}/
 | 情境 | 行為 | 使用者看到 |
 |---|---|---|
 | Bedrock 呼叫失敗（重試耗盡） | 節點 raise `LLMError` → `run_failed` 事件 → `GET /runs/{id}` 回 502 帶 `{node, error}` | 該節點卡紅字「模型呼叫失敗：{原因}」，其餘卡維持上次結果 |
-| KB 不可用 | `KBRetriever.search` raise → N4 `degraded=True, reason="KB 不可用"`，通道 A 照常 | 相似案卡紅色降級 log，法條卡正常（architecture §3.2 降級可見） |
+| KB 呼叫失敗（KB 不可用） | `similar.search` 的任何例外由 N4 接住 → `cases=[]`、`similar_available=False`、`degraded=True`、`degrade_reason="相似案檢索失敗（KB 不可用）：{型別}: {訊息}"`，通道 A 照常 | 相似案卡紅色降級 log，文案與「查無相似案」「無資料集」明確分開；法條卡正常（architecture §3.2 降級可見） |
 | 模型輸出不符 schema | strands structured_output 重試，仍失敗視同呼叫失敗 | 同第一列 |
 | N1 conf 不足 | 現有 `NEEDS_INPUT` 路徑 | 收文頁要求補欄位 |
 | `from_node` 給了但 `base_run_id` 找不到 | 400 | — |
@@ -294,7 +298,7 @@ s3://{S3_KB_BUCKET}/
 | AC2 | 零依賴測試路徑不變 | `run_all.py` 靜態掃描通過（第三方 import 只在豁免檔，且以頂層 try/except 守衛）；`scan_top_level_imports` 綠 |
 | AC3 | N2/N3/N4/N6 無 LLM 依賴 | `run_all.py` 的 `scan_llm_import_graph`（ast 遞迴）綠 |
 | AC4 | N1 live 抽取 | `RUN_MODE=bedrock` 對 `synthetic-ordinary-01` 的卷證 txt 跑 N1，12 個 intake 欄位全部有 `origin=llm` 與 0–1 的 `conf`；`run_meta.model_ids.extract` 非空 |
-| AC5 | N5 live 組稿且引用可驗 | 同案跑到 N6，`doc[]` 每句 `cite_ids` ⊆ N4 結果 ∪ 工具回傳；N6 無 `unsupported` 以外的新狀態 |
+| AC5 | N5 live 組稿且引用可驗 | 同案跑到 N6，`doc[]` 每句 `cite_ids` ⊆ N4 結果 ∪ 工具回傳；白名單外的引用被清除且該句在 N6 判紅並進 `cite_id_unsupported` blocker（§5.3） |
 | AC6 | C 型封鎖在 live 下仍成立 | `synthetic-blocked-01` live 跑完 `requires_human_conclusion=true` 且 `doc[]` 無 `slot=conclusion, origin=llm` |
 | AC7 | KB recall | 現有兩個合成案（`synthetic-ordinary-01` 空污、`synthetic-blocked-01` 建築法）各跑一次，top-5 至少 3 件同案型（`case_type` 相同）；相似案卡在 manifest 對檔前一律標「KB 命中，未對資料集實檔驗證」；記錄於 `docs/evidence/…/kb-recall.md` |
 | AC8 | 續跑正確 | `from_node=n5, base_run_id=R`：N1–N4 結果與 R 位元相同、N5/N6 重算、`run_meta.base_run_id==R`；`from_node=n5` 不帶 base 回 400 |
