@@ -20,7 +20,8 @@
 | GET  | `/api/health`               | 健康檢查：**實際**載入快照與合成案例       |
 | GET  | `/api/cases`                | 列出可用案例（合成 + 承辦人上傳）          |
 | POST | `/api/cases`                | 上傳卷證建案，回 `case_id`（只收 .pdf／.txt）|
-| POST | `/api/cases/{case_id}/runs` | 跑完六節點，回 `run_id` + 完整 CASE payload |
+| POST | `/api/cases/{case_id}/runs` | 跑六節點：fixture 同步 200；bedrock 202 + run_id |
+| GET  | `/api/runs/{run_id}`        | 輪詢執行結果：200／409 執行中／502 失敗／404 |
 | POST | `/api/cases/{case_id}/submit` | 送出審議：後端重算後 200／409（§6.1 #9）  |
 | POST | `/api/deadline`             | 期間計算（沿用 prototype/app.py 的契約）    |
 
@@ -37,13 +38,14 @@ import datetime as dt
 import json
 import pathlib
 import sys
+import uuid
 from typing import Any
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from fastapi import FastAPI, File, HTTPException, UploadFile  # noqa: E402
+from fastapi import BackgroundTasks, FastAPI, File, HTTPException, UploadFile  # noqa: E402
 from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
 from fastapi.responses import FileResponse, JSONResponse  # noqa: E402
 from fastapi.staticfiles import StaticFiles  # noqa: E402
@@ -55,17 +57,22 @@ try:  # spec D8：import 一律模組頂層。uvicorn 只有「直接執行本�
 except ImportError:
     uvicorn = None
 
+import backend.llm.client as llm_client  # noqa: E402  健康檢查用：只看 Agent 在不在，不呼叫任何模型
+import backend.retrieval.kb as retrieval_kb  # noqa: E402  健康檢查用：只看 boto3 在不在，不打任何 API
+from backend.api.events import BUS  # noqa: E402
 from backend.config import settings  # noqa: E402
 from backend.config.settings import PROVENANCE, load_snapshot, run_mode  # noqa: E402
 from backend.engine.deadline import compute  # noqa: E402
 from backend.intake.uploads import save_upload  # noqa: E402
 from backend.orchestrator.graph import (  # noqa: E402
+    CaseNotFound,
     build_payload,
     list_cases,
     list_synthetic_cases,
     load_case,
     run_case,
 )
+from backend.orchestrator.runstore import RunNotFound, load_run  # noqa: E402
 
 # 五步動線前端的建置產物。由 `python3 prototype/build.py` 產生（單檔全內嵌）。
 FRONTEND_DIST = ROOT / "prototype" / "dist"
@@ -88,14 +95,25 @@ app.add_middleware(
 
 
 class RunIn(BaseModel):
-    """`POST /runs` 的選填 body（判斷卡 7）。
+    """`POST /runs` 的選填 body。
 
-    `confirmed_intake` 裡的欄位代表**承辦人在收文頁看過**（可能改過、也可能原樣採用）。
-    這些欄位的 `intake_origin` 會記成 `human`，而且只有它們齊全時，
-    期間結果才可以用來解除結論封鎖。不給 body ＝ 沒有人確認過。
+    - `confirmed_intake`：承辦人在收文頁看過的欄位（判斷卡 7）。裡面的欄位代表
+      **承辦人看過**（可能改過、也可能原樣採用），`intake_origin` 會記成 `human`，
+      而且只有它們齊全時期間結果才可以用來解除結論封鎖。不給 body ＝ 沒有人確認過。
+      只能搭配 `from_node` 為 n1 或 n2。
+    - `base_run_id` + `from_node`：從某次執行的指定節點往下重跑到 N6（spec 2026-09-07 §5.5）。
+    - `overrides`：白名單只有 `n4_query`（重新檢索時附加查詢詞）。
+
+    **安全邊界：本模型永遠不得新增 `base_state` 欄位。** 續跑的上游狀態一律由後端拿
+    `base_run_id` 去 `load_run()` 讀回來；若允許 request body 直接夾帶 state，
+    呼叫端就能偽造一份「已人工確認、無 blocker」的狀態送進來，
+    把 C 型案的結論封鎖（判斷卡 7／CONSTITUTION §1）整個關掉。
     """
 
     confirmed_intake: dict[str, Any] | None = None
+    base_run_id: str | None = None
+    from_node: str = "n1"
+    overrides: dict[str, Any] | None = None
 
 
 class DeadlineIn(BaseModel):
@@ -150,6 +168,27 @@ def _health_checks() -> list[dict]:
             "ok": FRONTEND_INDEX.exists(),
             "detail": str(FRONTEND_INDEX.relative_to(ROOT)) if FRONTEND_INDEX.exists() else "未建置，請跑 python3 prototype/build.py",
             "blocking": False,
+        }
+    )
+
+    # 4. live 檔位真的跑得起來嗎：缺環境變數、或缺第三方套件，都要在這裡就說出來。
+    #    套件檢查不能省——`missing_live_settings()` 只看環境變數，設定齊全但沒裝
+    #    strands-agents／boto3 的機器一樣一打就炸，健康檢查卻回 ok，那就是說謊。
+    #    兩個模組都有頂層 try/except 守衛，沒裝套件也 import 得動，這裡只看名字在不在。
+    missing = settings.missing_live_settings()
+    if settings.retriever_kind() == "kb" and retrieval_kb.boto3 is None:
+        missing.append("boto3（pip install boto3）")
+    if run_mode() == "bedrock" and llm_client.Agent is None:
+        missing.append("strands-agents（pip install strands-agents）")
+    checks.append(
+        {
+            "name": "live_settings",
+            "ok": not missing,
+            "detail": (
+                "fixture 模式，無需雲端設定"
+                if run_mode() == "fixture" and settings.retriever_kind() != "kb"
+                else ("齊全" if not missing else f"缺：{', '.join(missing)}（見 .env.example）")
+            ),
         }
     )
     return checks
@@ -211,31 +250,122 @@ async def create_case(files: list[UploadFile] = File(...)) -> dict:
     }
 
 
-@app.post("/api/cases/{case_id}/runs")
-def create_run(case_id: str, body: RunIn | None = None) -> dict:
-    """啟動狀態機並同步跑完六節點，回 `run_id` + 完整 CASE payload。
+def _translate(e: Exception) -> HTTPException:
+    """把 pipeline 的例外翻成 HTTP 狀態碼。
 
-    architecture §6.1 的 2a 規定回 `{run_id}`；Phase 0 是同步執行
-    （fixture 檔位全程毫秒級，沒有阻塞疑慮），所以把完整 payload 一起回，
-    前端不必再打一次 `GET /api/cases/{id}`。`run_id` 在 payload 頂層與 `run_meta` 各有一份。
-    接上真實模型後要改成 202 + SSE 事件流（architecture §6.1 的 2b）。
+    **同一份對照表給所有端點用**，不讓 `/runs` 與 `/submit` 各寫一份而漸漸長歪。
+    落到最後一行的未知例外一律 502 並帶上原始類型與訊息——寧可把錯誤原樣端出來，
+    也不要包成一句「系統忙碌中」。
+    """
+    if isinstance(e, (CaseNotFound, RunNotFound, FileNotFoundError)):
+        return HTTPException(status_code=404, detail=str(e))
+    if isinstance(e, ValueError):
+        return HTTPException(status_code=400, detail=str(e))
+    if isinstance(e, NotImplementedError):
+        return HTTPException(status_code=501, detail=str(e))
+    if isinstance(e, AssertionError):
+        # 不變式違反是 P0，照實回 500 並帶原因，不吞掉
+        return HTTPException(status_code=500, detail=f"不變式違反（P0）：{e}")
+    if type(e).__name__ == "LLMError":
+        # 用類名比對而不 import backend.llm：api 層不該把模型客戶端拉進 import 圖
+        return HTTPException(status_code=502, detail=f"模型呼叫失敗：{e}")
+    return HTTPException(status_code=502, detail=f"{type(e).__name__}: {e}")
+
+
+def _run_kwargs(body: RunIn | None) -> dict[str, Any]:
+    """把 body 翻成 `run_case()` 的具名參數。
+
+    **續跑的上游狀態只能從這裡長出來**：body 只帶得動一個 `base_run_id`，
+    真正的 `base_state` 是後端拿它去 `load_run()` 讀回來的（見 `RunIn` 的安全邊界說明）。
+    """
+    body = body or RunIn()
+    kw: dict[str, Any] = {
+        "confirmed_intake": body.confirmed_intake,
+        "from_node": body.from_node,
+        "overrides": body.overrides,
+    }
+    if body.base_run_id:
+        kw["base_state"] = load_run(body.base_run_id)
+    return kw
+
+
+def _run_in_background(case_id: str, rid: str, kwargs: dict[str, Any]) -> None:
+    """202 之後在背景把六節點跑完，進度與結果分別走 BUS 與 runstore。"""
+    try:
+        run_case(case_id, on_event=lambda k, d: BUS.push(rid, k, d), run_id=rid, **kwargs)
+    except Exception as e:  # noqa: BLE001 — graph 已發 run_failed；這裡只確保狀態收斂
+        # 沒有這一段，`run_case` 進到節點之前就炸掉（例如案例不存在）時
+        # BUS 會永遠停在 running，前端就永遠輪詢下去。
+        st = BUS.status(rid)
+        if st and st["status"] == "running":
+            BUS.push(rid, "run_failed", {"node": None, "error": f"{type(e).__name__}: {e}"})
+
+
+@app.post("/api/cases/{case_id}/runs")
+def create_run(case_id: str, background: BackgroundTasks, body: RunIn | None = None):
+    """啟動狀態機跑六節點。兩個檔位的回應形狀不同：
+
+    - fixture：同步跑完，200 ＋ 完整 CASE payload（全程毫秒級，沒有阻塞疑慮）。
+      `run_id` 在 payload 頂層與 `run_meta` 各有一份。
+    - bedrock：202 ＋ `{run_id, status, result_url}`，實際執行在背景，
+      前端拿 `result_url` 輪詢 `GET /api/runs/{id}`（architecture §6.1 的 2b）。
     """
     try:
-        state = run_case(case_id, confirmed_intake=(body.confirmed_intake if body else None))
-    except FileNotFoundError as e:  # CaseNotFound 與上傳案的「找不到目錄」都在這裡
-        raise HTTPException(status_code=404, detail=str(e)) from e
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-    except NotImplementedError as e:
-        raise HTTPException(status_code=501, detail=str(e)) from e
-    except AssertionError as e:
-        # 不變式違反是 P0，照實回 500 並帶原因，不吞掉
-        raise HTTPException(status_code=500, detail=f"不變式違反（P0）：{e}") from e
+        kwargs = _run_kwargs(body)
+    except Exception as e:  # noqa: BLE001 — 交給 _translate 決定狀態碼
+        raise _translate(e) from e
 
-    payload = build_payload(state)
-    if payload["origin_violations"]:
-        raise HTTPException(status_code=500, detail={"origin_violations": payload["origin_violations"]})
-    return payload
+    if run_mode() != "bedrock":
+        try:
+            state = run_case(case_id, **kwargs)
+        except Exception as e:  # noqa: BLE001
+            raise _translate(e) from e
+        payload = build_payload(state)
+        if payload["origin_violations"]:
+            raise HTTPException(status_code=500, detail={"origin_violations": payload["origin_violations"]})
+        return payload
+
+    # 202 之前先把案例讀起來。理由有兩個，都不是為了效能：
+    # 一是「案例不存在」該回 404，不該先發一張 202 再讓前端輪詢半天換到 502；
+    # 二是 rid 會被 `save_run()` 拼成檔名，而 `load_case()` 已經把 case_id 限死在
+    # synthetic-／upload- 兩種前綴（graph.py:107-117），先過這一關才拼 id 比較安全。
+    try:
+        load_case(case_id)
+    except Exception as e:  # noqa: BLE001
+        raise _translate(e) from e
+
+    rid = f"run-{case_id}-{uuid.uuid4().hex[:12]}"
+    BUS.start(rid)
+    background.add_task(_run_in_background, case_id, rid, kwargs)
+    return JSONResponse(
+        {"run_id": rid, "status": "running", "result_url": f"/api/runs/{rid}"},
+        status_code=202,
+    )
+
+
+@app.get("/api/runs/{run_id}")
+def get_run(run_id: str):
+    """輪詢一次執行的結果（bedrock 檔位 202 之後用）。
+
+    - 還在跑 → **409** `{status:"running"}`。用 409 而不是 200＋狀態欄位，
+      是為了讓前端沒辦法把「還沒跑完」誤讀成一份空的分析結果。
+    - 失敗 → **502** ＋ 失敗的 `node` 與原始錯誤字串。**不回任何替代草稿**：
+      模型呼叫失敗時拿 fixture 頂上去，就是拿假的當真的（CONSTITUTION §1）。
+    - 完成 → 200 ＋ 完整 CASE payload（從 runstore 讀終態重建）。
+    """
+    st = BUS.status(run_id)
+    if st and st["status"] == "running":
+        return JSONResponse({"run_id": run_id, "status": "running"}, status_code=409)
+    if st and st["status"] == "failed":
+        return JSONResponse(
+            {"run_id": run_id, "status": "failed", "node": st.get("node"), "error": st.get("error")},
+            status_code=502,
+        )
+    try:
+        state = load_run(run_id)
+    except (RunNotFound, ValueError) as e:
+        raise _translate(e) from e
+    return build_payload(state)
 
 
 # 送出紀錄。**本機檔案，沒有任何外部整合**——沒有寄信、沒有排議程、沒有打任何外部系統。
@@ -257,15 +387,9 @@ def submit_case(case_id: str, body: RunIn | None = None) -> JSONResponse:
     - 允許 → 200 ＋ 本機收據。收據裡明寫 `external_effect: "none"`。
     """
     try:
-        state = run_case(case_id, confirmed_intake=(body.confirmed_intake if body else None))
-    except FileNotFoundError as e:  # CaseNotFound 與上傳案的「找不到目錄」都在這裡
-        raise HTTPException(status_code=404, detail=str(e)) from e
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-    except NotImplementedError as e:
-        raise HTTPException(status_code=501, detail=str(e)) from e
-    except AssertionError as e:
-        raise HTTPException(status_code=500, detail=f"不變式違反（P0）：{e}") from e
+        state = run_case(case_id, **_run_kwargs(body))
+    except Exception as e:  # noqa: BLE001 — 對照表在 _translate，跟 /runs 共用一份
+        raise _translate(e) from e
 
     payload = build_payload(state)
     common = {
