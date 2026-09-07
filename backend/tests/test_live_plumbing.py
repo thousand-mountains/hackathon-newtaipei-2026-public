@@ -21,6 +21,7 @@ from backend.intake.uploads import (
 )
 from backend.llm import client
 from backend.nodes import n1_extract, n4_retrieval, n5_draft
+from backend.orchestrator import runstore
 from backend.orchestrator.graph import (
     digest_from_state,
     list_synthetic_cases,
@@ -860,3 +861,108 @@ def test_run_case_passes_fixture_exclude_case_into_build_retriever():
     assert_eq(len(calls), 1, "run_case 必須向編排層要一次 retriever")
     assert_eq(calls[0][0], "lawtable_only", "kind 來自 settings.retriever_kind()")
     assert_eq(calls[0][1], "synthetic-src-0000000001", "fixture 的 exclude_case 沒有傳到檢索器")
+
+
+# ── Task 6：run 持久化與 from_node 續跑 ────────────────────────────
+def test_runstore_roundtrip():
+    d = pathlib.Path(tempfile.mkdtemp())
+    st = run_case("synthetic-ordinary-01", mode="fixture", persist=False)
+    p = runstore.save_run(st, runs_dir=d)
+    assert_true(p.exists() and p.name == f"{st.run_id}.json")
+    back = runstore.load_run(st.run_id, runs_dir=d)
+    assert_eq(back.retrieval, st.retrieval)
+    assert_eq(back.gate.get("doc"), st.gate.get("doc"))
+    try:
+        runstore.load_run("run-does-not-exist", runs_dir=d)
+    except runstore.RunNotFound:
+        pass
+    else:
+        raise AssertionError("找不到必須 raise RunNotFound")
+
+
+def test_from_node_reuses_upstream_and_reruns_downstream():
+    base = run_case("synthetic-ordinary-01", mode="fixture", persist=False)
+    again = run_case(
+        "synthetic-ordinary-01", mode="fixture", base_state=base, from_node="n5", persist=False
+    )
+    assert_true(again.run_id != base.run_id)
+    assert_eq(again.run_meta["base_run_id"], base.run_id)
+    assert_eq(again.run_meta["from_node"], "n5")
+    assert_eq(again.retrieval, base.retrieval, "N4 結果必須原樣沿用")
+    assert_eq(sorted(again.run_meta["node_timings"].keys()), ["n5", "n6"], "只重跑 N5、N6")
+    assert_eq(again.state, "VERIFIED")
+
+
+def test_from_node_requires_base_state_and_valid_node():
+    for kw in (
+        {"from_node": "n5"},
+        {"from_node": "n9", "base_state": run_case("synthetic-ordinary-01", mode="fixture", persist=False)},
+    ):
+        try:
+            run_case("synthetic-ordinary-01", mode="fixture", persist=False, **kw)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"{kw} 必須 raise ValueError")
+
+
+def test_confirm_then_continue_from_n2_does_not_rerun_n1():
+    base = run_case("synthetic-ordinary-01", mode="fixture", persist=False)
+    confirmed = {
+        k: base.intake[k]
+        for k in ("d2", "d3", "service_method", "transit_days", "interested_party", "note")
+    }
+    cont = run_case(
+        "synthetic-ordinary-01",
+        mode="fixture",
+        base_state=base,
+        from_node="n2",
+        confirmed_intake=confirmed,
+        persist=False,
+    )
+    assert_true("n1" not in cont.run_meta["node_timings"])
+    assert_eq(cont.intake_origin["d2"], "human")
+    assert_true(cont.screen.get("procedural_inputs_confirmed") is True)
+
+
+def test_n4_query_override_is_recorded_and_whitelisted():
+    base = run_case("synthetic-ordinary-01", mode="fixture", persist=False)
+    r = run_case(
+        "synthetic-ordinary-01",
+        mode="fixture",
+        base_state=base,
+        from_node="n4",
+        overrides={"n4_query": "建築法第25條"},
+        persist=False,
+    )
+    assert_eq(r.run_meta["overrides"], {"n4_query": "建築法第25條"})
+    assert_in("建築法第25條", r.retrieval["retrieval_meta"]["query_text"])
+    try:
+        run_case(
+            "synthetic-ordinary-01",
+            mode="fixture",
+            base_state=base,
+            from_node="n4",
+            overrides={"n5_prompt": "x"},
+            persist=False,
+        )
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("白名單外的 override 必須 raise")
+
+
+def test_on_event_emits_start_done_per_node_and_run_done():
+    events = []
+    run_case(
+        "synthetic-ordinary-01",
+        mode="fixture",
+        persist=False,
+        on_event=lambda k, d: events.append((k, d)),
+    )
+    kinds = [k for k, _ in events]
+    assert_eq(kinds[:2], ["node_start", "node_done"])
+    assert_eq(kinds.count("node_start"), 6)
+    assert_eq(kinds.count("node_done"), 6)
+    assert_eq(kinds[-1], "run_done")
+    assert_eq([d["node"] for k, d in events if k == "node_done"], ["n1", "n2", "n3", "n4", "n5", "n6"])

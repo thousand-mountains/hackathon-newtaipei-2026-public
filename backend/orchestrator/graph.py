@@ -7,11 +7,12 @@
 """
 from __future__ import annotations
 
+import copy
 import json
 import pathlib
 import time
 import uuid
-from typing import Any
+from typing import Any, Callable
 
 from backend.config.origin_registry import (
     TIER_HUMAN,
@@ -35,12 +36,17 @@ from backend.config.settings import (
     run_mode,
 )
 from backend.intake.uploads import list_upload_cases, load_upload_case
+# 編排層知道 model id 是誰（要寫進 run_meta），節點層不知道——
+# `backend.llm` 的禁令是給 N2/N3/N4/N6 的（CONSTITUTION §4），graph 不在禁單內。
+# client.py 對 strands 有模組頂層 try/except 守衛，沒裝也 import 得動。
+from backend.llm.client import model_ids
 from backend.nodes import n1_extract, n2_classify, n3_procedure, n4_retrieval, n5_draft, n6_gate
 from backend.orchestrator.narrative import (
     conclusion_block_criterion,
     merge_agent_narrative,
     summary_line,
 )
+from backend.orchestrator.runstore import save_run
 from backend.orchestrator.state import CaseState, NodeCtx, utc_now_iso
 from backend.retrieval.kb import build_retriever
 
@@ -53,6 +59,32 @@ STATE_AFTER = {
     "n5": "DRAFTED",
     "n6": "VERIFIED",
 }
+
+# 續跑時要從 base_state 搬過來的欄位，**按「即將要跑的節點」切**：
+# key 是節點名，value 是「進這個節點之前必須已經在 state 裡」的欄位
+# （也就是它的上一個節點寫出來的東西）。從 `from_node` 續跑時，
+# 把 NODE_ORDER[:index(from_node)+1] 的欄位全部深拷貝過來，就等於
+# 「上游原樣沿用、從 from_node 起重算」。
+# 深拷貝不是保險起見：base_state 可能還被呼叫端（或另一次續跑）拿著，
+# 共用同一份 dict 會讓這次執行的結果反寫回上一次的紀錄。
+UPSTREAM_FIELDS: dict[str, tuple[str, ...]] = {
+    "n1": (),
+    "n2": (
+        "intake",
+        "intake_conf",
+        "intake_origin",
+        "intake_confirmed",
+        "low_conf_fields",
+        "facts_excerpt",
+    ),
+    "n3": ("classification",),
+    "n4": ("screen",),
+    "n5": ("retrieval",),
+    "n6": ("draft",),
+}
+# 續跑可覆寫的參數白名單。**白名單制**：外面（HTTP body）能改的只有這一個，
+# 不讓呼叫端用 overrides 這條路徑把任意值塞進節點。
+OVERRIDE_WHITELIST = ("n4_query",)
 
 
 class CaseNotFound(FileNotFoundError):
@@ -149,12 +181,39 @@ def run_case(
     mode: str | None = None,
     data_dir: pathlib.Path | None = None,
     confirmed_intake: dict[str, Any] | None = None,
+    *,
+    base_state: CaseState | None = None,
+    from_node: str = "n1",
+    overrides: dict[str, Any] | None = None,
+    on_event: Callable[[str, dict[str, Any]], None] | None = None,
+    persist: bool = True,
+    run_id: str | None = None,
 ) -> CaseState:
     """把一個合成案例跑完六個節點，回傳終態 CaseState。
 
     `confirmed_intake`：承辦人在收文頁確認過的 intake 欄位。**不給就是沒人確認過**，
     此時期間結果不得用來解除結論封鎖（判斷卡 7，見 `gate/lamps.requires_human_conclusion`）。
+
+    續跑（spec 2026-09-07 §5.5）：`base_state` + `from_node` → 上游節點結果原樣複製，
+    從 `from_node` 依序跑到 N6。**不能停在中間**：N6 永遠最後重跑，所以續跑產生的
+    終態一定經過守門，不會出現「草稿改過但沒重驗引用」的狀態。
+    `from_node != "n1"` 而沒給 `base_state` 是錯誤（沒有上游可沿用）。
+    `overrides` 白名單只有 `n4_query`；`on_event(kind, data)` 供 SSE；`persist=False` 供測試。
     """
+    if from_node not in NODE_ORDER:
+        raise ValueError(f"from_node 必須是 {NODE_ORDER} 之一，實得 {from_node!r}")
+    if from_node != "n1" and base_state is None:
+        raise ValueError("from_node 不是 n1 時必須提供 base_state（base_run_id）")
+    overrides = dict(overrides or {})
+    bad = [k for k in overrides if k not in OVERRIDE_WHITELIST]
+    if bad:
+        raise ValueError(f"overrides 只接受 {OVERRIDE_WHITELIST}，實得 {bad}")
+    start_idx = NODE_ORDER.index(from_node)
+    if confirmed_intake and start_idx > 1:
+        # 從 N3 以後續跑代表 N3 已經拿舊的 intake 算過了，這時候才送確認欄位，
+        # 值不會進到任何計算裡——**寧可拒絕，也不要收下一個不生效的確認**。
+        raise ValueError("confirmed_intake 只能搭配 from_node 為 n1 或 n2")
+
     fixture = load_case(case_id, data_dir)
     mode = mode or run_mode()
     if case_id.startswith("upload-") and mode == "fixture":
@@ -165,14 +224,22 @@ def run_case(
     digest = fixture.get("case_digest", "")
 
     state = CaseState(case_id=case_id, run_mode=mode)
-    # architecture §6.1 2a：POST /runs 的回傳值是 run_id。Phase 0 是同步執行、
-    # 沒有「進行中的 run」可以復用，所以每次執行給一個新的 id，並在
-    # `run_meta.run_id_note` 誠實寫出「冪等復用尚未實作」，不假裝有做。
-    state.run_id = f"run-{case_id}-{uuid.uuid4().hex[:12]}"
+    # architecture §6.1 2a：POST /runs 的回傳值是 run_id。續跑會產生**新的** run_id
+    # （續跑是一次新的執行，不是覆寫舊紀錄），舊的那次靠 `run_meta.base_run_id` 指回去。
+    # `run_id` 參數是給 API 端用的：202 要先把 id 回出去，才有東西可以查進度。
+    state.run_id = run_id or f"run-{case_id}-{uuid.uuid4().hex[:12]}"
     state.files = list(fixture.get("files") or [])
     # 案件層的來源聲明（合成／上傳）。build_payload 會疊在服務層的 PROVENANCE 上，
     # 讓前端橫幅講的是**這一件**卷證從哪裡來，不是服務預設的那一句。
     state.provenance = dict(fixture.get("provenance") or {})
+    if base_state is not None:
+        if base_state.case_id != case_id:
+            raise ValueError(f"base_run 是 {base_state.case_id} 的執行結果，不能接到 {case_id}")
+        for node in NODE_ORDER[: start_idx + 1]:
+            for f in UPSTREAM_FIELDS[node]:
+                setattr(state, f, copy.deepcopy(getattr(base_state, f)))
+        # history 接續而不是重來：讀的人要看得出這一次是從哪一次的哪個節點接上去的
+        state.history = list(base_state.history) + [f"(resume from {from_node}, base {base_state.run_id})"]
     # 相似案檢索器由編排層注入（architecture §10：retrieval 是共用元件，不是 N4 的內部實作）。
     # `RETRIEVER=lawtable_only`（預設）回 None，N4 通道 B 維持誠實回空。
     # kb.py 是檢索元件、不 import backend.llm，所以 N4 拿到它仍符合「規則引擎零 LLM 依賴」。
@@ -184,48 +251,83 @@ def run_case(
     degraded: list[dict[str, Any]] = []
     agents: dict[str, Any] = {}
 
+    def emit(kind: str, data: dict[str, Any]) -> None:
+        if on_event is not None:
+            on_event(kind, {"run_id": state.run_id, **data})
+
     # N4 的查詢句由 N1／N2／N3 的結果決定（`n4_retrieval.build_query()`）。
     # 這裡**刻意不再蒐集草稿引用**：舊版把 fixture 草稿即將引用的法條餵給 N4，
     # 那讓「引用一定查得到」變成必然——查什麼是照著答案要引用什麼倒著填的，
     # 檢索佐證的是自己。2026-09-05 Ci 拍板改獨立檢索。
-    state.transition("EXTRACTING")
-    for node in NODE_ORDER:
-        result = _dispatch(node, state, ctx, fixture, digest)
-        if node == "n1":
-            # 人工確認緊接在抽取之後套用：N3 的程序判斷要看得到 origin 已翻成 human
-            _apply_confirmed_intake(state, confirmed_intake)
-        node_timings[node] = result.elapsed_ms
-        merge_agent_narrative(agents, node, result.narrative, result.degraded, result.degrade_reason)
-        if result.degraded:
-            degraded.append(
-                {"node": node, "reason": result.degrade_reason, "agents": NODE_TO_AGENTS.get(node, [])}
-            )
-        # N1 信心不足 → NEEDS_INPUT，狀態機停在這裡等人工補齊（architecture §4.2）
-        if node == "n1" and result.degraded:
-            state.transition("NEEDS_INPUT")
-            break
-        state.transition(STATE_AFTER[node])
+    # 續跑時起始狀態＝上一個節點跑完該有的狀態，不從 EXTRACTING 重來
+    state.transition("EXTRACTING" if start_idx == 0 else STATE_AFTER[NODE_ORDER[start_idx - 1]])
+    node = from_node  # 例外處理要報是哪一個節點炸的
+    try:
+        for node in NODE_ORDER[start_idx:]:
+            emit("node_start", {"node": node, "agents": NODE_TO_AGENTS.get(node, [])})
+            if node == "n2":
+                # 確認欄位在進 N2 之前一定套用過（不論這一次有沒有跑 N1）：
+                # N3 的程序判斷要看得到 origin 已翻成 human。從 n1 起跑時這是第二次呼叫，
+                # 冪等（同樣的值、同樣的 origin），沒有副作用。
+                _apply_confirmed_intake(state, confirmed_intake)
+            result = _dispatch(node, state, ctx, fixture, digest, overrides)
+            if node == "n1":
+                # 也在 N1 之後立刻套一次：N1 降級會 break 在下面，
+                # NEEDS_INPUT 的終態同樣要帶著承辦人確認過的欄位（維持既有行為）。
+                _apply_confirmed_intake(state, confirmed_intake)
+            node_timings[node] = result.elapsed_ms
+            merge_agent_narrative(agents, node, result.narrative, result.degraded, result.degrade_reason)
+            if result.degraded:
+                degraded.append(
+                    {"node": node, "reason": result.degrade_reason, "agents": NODE_TO_AGENTS.get(node, [])}
+                )
+            emit("node_done", {"node": node, "elapsed_ms": result.elapsed_ms, "degraded": result.degraded})
+            # N1 信心不足 → NEEDS_INPUT，狀態機停在這裡等人工補齊（architecture §4.2）
+            if node == "n1" and result.degraded:
+                state.transition("NEEDS_INPUT")
+                break
+            state.transition(STATE_AFTER[node])
+    except Exception as e:  # noqa: BLE001 — 事件要發得出去，例外照原樣往上拋
+        emit("run_failed", {"node": node, "error": f"{type(e).__name__}: {e}"})
+        raise
 
     state.agents_narrative = agents
     state.run_meta = {
         "run_id": state.run_id,
-        "run_id_note": "同步執行，每次 POST /runs 產生新 id；architecture §6.1 2a 的冪等復用尚未實作。",
+        "base_run_id": base_state.run_id if base_state is not None else None,
+        "from_node": from_node,
+        "overrides": overrides,
+        "run_id_note": (
+            "支援 base_run_id + from_node 續跑；同一份 body 重送仍會產生新的 run_id"
+            "（不做冪等去重）。"
+        ),
         "run_mode": mode,
         "started_at": utc_now_iso(),
         "elapsed_ms": int((time.perf_counter() - run_started) * 1000),
         "node_timings": node_timings,
         "degraded": degraded,
         # 沒有實際呼叫任何模型，就不給 model id（不腦補）
-        "model_ids": None,
-        "model_ids_note": "fixture 檔位未呼叫任何基礎模型，故無 model id。",
+        "model_ids": _model_ids_if_live(mode),
+        "model_ids_note": None if mode == "bedrock" else "fixture 檔位未呼叫任何基礎模型，故無 model id。",
         "kb_snapshot_date": snapshot.get("generated"),
         "final_state": state.state,
     }
     state.run_meta["summary"] = summary_line(state.run_meta)
+    if persist:
+        save_run(state)
+    emit("run_done", {"final_state": state.state})
     return state
 
 
-def _dispatch(node, state, ctx, fixture, digest):
+def _model_ids_if_live(mode: str) -> dict[str, Any] | None:
+    """live 檔位才報 model id。fixture 沒呼叫任何模型，報了就是謊報（CONSTITUTION §1）。"""
+    if mode != "bedrock":
+        return None
+    return model_ids()
+
+
+def _dispatch(node, state, ctx, fixture, digest, overrides=None):
+    overrides = overrides or {}
     if node == "n1":
         return n1_extract.run(state, ctx, case_fixture=fixture)
     if node == "n2":
@@ -234,7 +336,10 @@ def _dispatch(node, state, ctx, fixture, digest):
         return n3_procedure.run(state, ctx, digest=digest or digest_from_state(state))
     if node == "n4":
         # cited_laws 刻意不傳：N4 自己從 state（N1/N2/N3 的結果）組查詢句。
-        return n4_retrieval.run(state, ctx)
+        # 唯一的例外是承辦人在續跑時明講的查詢詞（`overrides.n4_query`）——
+        # 那是人指定的，不是從草稿引用倒著填回去的。
+        q = overrides.get("n4_query")
+        return n4_retrieval.run(state, ctx, cited_laws=[q] if q else None)
     if node == "n5":
         return n5_draft.run(state, ctx, case_fixture=fixture)
     if node == "n6":
