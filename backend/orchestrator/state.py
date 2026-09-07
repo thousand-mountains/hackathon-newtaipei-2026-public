@@ -18,8 +18,10 @@ from dataclasses import dataclass, field
 from typing import Any
 
 # ── 執行模式 ────────────────────────────────────────────────────────────
-# fixture：讀合成案例重播，唯一今晚支援的檔位
-# local / bedrock：需要 AWS 憑證與 Bedrock model access，本 Phase 明確不實作
+# fixture：讀合成案例重播，零 AWS 依賴
+# bedrock：N1／N5 呼叫 Bedrock、N4 通道 B 查 Managed KB
+#          （RUN_MODE=bedrock 且憑證與 BEDROCK_* 設定齊全時才走得通）
+# local：未實作，節點 raise NotImplementedError
 RUN_MODES = ("fixture", "local", "bedrock")
 
 # ── 狀態機狀態（architecture §4.2）────────────────────────────────────

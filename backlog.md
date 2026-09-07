@@ -46,3 +46,23 @@
 |---|---|---|---|---|
 | HACK-S-1 | 第二案型（廢清 79I 煙蒂級）走完主流程 | backend | P2 | 未開始 |
 | HACK-S-2 | C 型訊號涵蓋保留語氣型 | backend | P2 | 未開始 |
+
+### Phase S 追加（2026-09-07 bedrock-live-nodes 分支未做的事）
+
+> 來源：`docs/spec/2026-09-07-bedrock-live-nodes-design.md` §2「不做」＋ plan 加值層四個 task（7b／8b／9／16）＋ review 過程延後的項目。
+> 這些**全部沒做**，列在這裡是為了不讓它們消失，不是排程承諾。
+
+| ID | Story | 負責 | 優先 | 狀態 |
+|---|---|---|---|---|
+| HACK-S-3 | 我可以對一份已跑完的案子追問細節，系統用同一份卷證回答（ask 追問 agent：Strands 單 agent + 六工具，SSE 串流） | backend | P2 | 未開始 |
+| HACK-S-4 | 系統跑在 Bedrock AgentCore Runtime 上（承載 ask 那種有記憶的 agent；沒有 ask 就沒有理由做） | backend | P3 | 未開始 |
+| HACK-S-5 | 我按下開始分析後，看得到六個節點逐一亮起（SSE 節點事件流 `GET /runs/{id}/events`；plan Task 7b） | backend＋frontend | P2 | 未開始 |
+| HACK-S-6 | 我可以在任一張幕僚卡上按「從這裡重新產生」，只重跑該節點以下（前端每卡重新產生列；plan Task 8b，後端續跑 API 已具備） | frontend | P2 | 未開始 |
+| HACK-S-7 | 我一條指令就能把資料集重新入庫到新帳號的 KB（`scripts/build_manifest.py`＋`ingest_kb.py` 冪等入庫；plan Task 9） | backend | P1 | 未開始 |
+| HACK-S-8 | 爬蟲抓到的 251 件逾期案變成期間引擎的回放測試集（plan Task 9 逾期回放） | backend＋qa | P2 | 未開始 |
+| HACK-S-9 | 掃描件（無文字層 PDF）的視覺讀取實測，並用真實 PDF 校準 `pdf_text` 0.60 門檻（plan Task 16；目前門檻是拍腦袋的值） | backend＋qa | P1 | 未開始 |
+| HACK-S-10 | 法規快照擴充到 18 部（爬蟲，含修正日期），不再只有 11 部 | backend | P2 | 未開始 |
+| HACK-S-11 | 洗錢防制法案件補爬（現有爬蟲只有廢清法、空污法，主 demo 案型反而沒有真實案源） | backend | P2 | 未開始 |
+| HACK-S-12 | `backend/output/runs/` 有清理機制（現在每跑一次 `run_all.py` 就寫上百個 json，gitignored 但無上限） | backend | P3 | 未開始 |
+| HACK-S-13 | `POST /api/cases` 有上傳總量與檔數上限（現在沒有；單檔 4.5MB vs 20MB 的落差也該在上傳時就講） | backend | P2 | 未開始 |
+| HACK-S-14 | `RunIn` 改 `extra="forbid"`，未知欄位回 400 而不是靜默忽略 | backend | P3 | 未開始 |

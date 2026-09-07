@@ -180,8 +180,10 @@ $ echo $?
 | 燈號 origin 標成 `llm` | `test_lamp_and_why_and_citation_state_are_never_llm` |
 | 事實爭點燈號改成黃 | `test_issues_carry_lamp_tag_and_human_only_disclaimer` |
 
-掃描器也做了突變測試：把 `AKIAIOSFODNN7EXAMPLE` 貼進 `prototype/static/app.js`
-→ `prototype/static/app.js:753：偵測到AWS access key id`，抓到。
+掃描器也做了突變測試：把 AWS 官方文件的示範 access key（`AKIA` 開頭那組 `…EXAMPLE`）
+貼進 `prototype/static/app.js` → `prototype/static/app.js:753：偵測到AWS access key id`，抓到。
+（2026-09-07：原文逐字寫出那組示範字串，本身會被 secret 掃描與
+`git grep -nE "AKIA[0-9A-Z]{16}"` 命中；示範字串不是憑證，但留著會讓紅字變雜訊，故改述。）
 
 ### AC6 — ✅ parity 16/16、build 成功、prototype pytest 通過
 

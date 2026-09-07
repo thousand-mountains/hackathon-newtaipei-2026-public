@@ -1,8 +1,13 @@
 # 部署：AWS ECS Fargate（ap-northeast-1 東京）
 
 > Phase 0 的部署目標是「**把 fixture 檔位的服務推上去，證明整條管線在雲上跑得起來**」。
-> 真實 Bedrock 呼叫不在這個階段——沒有憑證與 model access 之前，推上去也只是 fixture 重播。
 >
+> **2026-09-07 更新**：`RUN_MODE=bedrock` 的程式路徑已實作（N1／N5 呼叫 Bedrock、N4 通道 B 查
+> Managed KB、202＋輪詢）。但**真實 Bedrock 至今一次都沒打過**——帳號的 Bedrock 尚未開通
+> （`Operation not allowed`），需要 AWS Support Case。在那之前推上去的仍然只是 fixture 重播，
+> 文件裡任何 bedrock 檔位的描述都是**程式行為，不是實測結果**。
+>
+
 > **本文不含任何真實憑證、帳號 id、ARN 或端點**，只寫變數名稱與取得方式。
 > 憑證一律走 AWS Secrets Manager／SSM Parameter Store，不進 git、不進映像檔、不進環境變數明文。
 
@@ -26,8 +31,20 @@ uv run --with fastapi --with "uvicorn[standard]" --with pydantic -- \
 | <http://127.0.0.1:8080/api/health> | 真的去載 laws-snapshot 與每個合成案例，載不動回 503 |
 | <http://127.0.0.1:8080/api/docs> | OpenAPI |
 
-**這是唯一的官方啟動指令**。以前 `uv run … backend/api/app.py`（port 8788）
+**這是 fixture 檔位唯一的官方啟動指令**。以前 `uv run … backend/api/app.py`（port 8788）
 與 `prototype/app.py`（port 8787）是兩支各跑各的，整合後統一成上面這一行。
+
+**bedrock 檔位**多兩個套件與一份 `.env`（`.env` 不進 git，內容見 §1.2）：
+
+```bash
+set -a; . ./.env; set +a          # RUN_MODE=bedrock 與 AWS 設定都在裡面
+uv run --with fastapi --with "uvicorn[standard]" --with pydantic --with python-multipart \
+       --with strands-agents --with boto3 -- \
+    python -m uvicorn backend.api.app:app --host 127.0.0.1 --port 8080
+```
+
+`GET /api/health` 的 `live_settings` 檢查會告訴你缺哪個變數或哪個套件（`boto3`／`strands`）。
+**這條指令至今沒有在真的能打 Bedrock 的帳號上跑過**（見上方 2026-09-07 更新）。
 
 前端在打不到 `/api/health` 時（例如直接 `file://` 開 `prototype/dist/index.html`）
 會自動退回**離線 fixture 模式**，頁首徽章會改成「離線 fixture（未接後端）」——
@@ -39,8 +56,10 @@ uv run --with fastapi --with "uvicorn[standard]" --with pydantic -- \
 
 | 事項 | 誰 | 狀態 |
 |---|---|---|
-| AWS 帳號與 IAM 使用者／角色 | Ci | **待辦**，本機目前無 `~/.aws/` |
-| Amazon Bedrock model access 申請（東京 region） | Ci | **待辦**，申請到核准有時間差，建議最早送出 |
+| AWS 帳號與 IAM 使用者／角色 | Ci | 開發期用開發用帳號的 profile（CLAUDE.md 規矩段、architecture §13 #19）；**賽方帳號待辦** |
+| Amazon Bedrock 服務開通 | Ci | **未開通**（2026-09-07 實測回 `Operation not allowed`，帳號本身 PAID／ACTIVE）。需要開 AWS Support Case |
+| Amazon Bedrock model access 申請（東京 region） | Ci | **待辦**，卡在上一列；申請到核准有時間差，建議一開通就送出 |
+| Managed Knowledge Base 建置 ＋ 資料入庫 | Ci | **待辦**。`scripts/ingest_kb.py` **尚未實作**（加值層 Task 9），目前得在 console 手動建 |
 | ECR repository | Ci | 待辦 |
 | VPC／子網路／安全群組 | Ci | 待辦，可用預設 VPC 起步 |
 
@@ -52,22 +71,29 @@ uv run --with fastapi --with "uvicorn[standard]" --with pydantic -- \
 
 執行期只認這些變數。**值不寫在這裡**，由 ECS task definition 注入。
 
-### 1.1 Phase 0 就要設的（無憑證需求）
+### 1.1 一定要設的（無憑證需求）
 
 | 變數 | 值域 | 預設 | 說明 |
 |---|---|---|---|
-| `RUN_MODE` | `fixture` / `local` / `bedrock` | `fixture` | 目前**只有 `fixture` 可用**。設成其他值時，N1／N5 會回 HTTP 501 並說明缺什麼——這是刻意的，不讓服務假裝正常。 |
+| `RUN_MODE` | `fixture` / `local` / `bedrock` | `fixture` | **`fixture`／`bedrock` 可用；`local` 未實作，N1／N5 會 raise、API 回 HTTP 501 並說明缺什麼**——這是刻意的，不讓服務假裝正常。`bedrock` 另需 §1.2 的變數與憑證齊全，缺項一樣回 501／502 帶原因，**不會偷偷退回 fixture**（spec D5）。 |
 | `PORT` | 整數 | `8080` | 容器監聽埠，需與 ECS target group 一致。 |
 
-### 1.2 接上 Bedrock 後才需要的（**目前全部不要設**）
+### 1.2 `RUN_MODE=bedrock` 才需要的
+
+變數名稱以 `.env.example` 與 `backend/config/settings.py` 為準，本表與它們對齊。
+**值一律不寫在這裡**（帳號 ID、KB id、model id、bucket 名都不進文件）。
 
 | 變數 | 說明 | 怎麼供給 |
 |---|---|---|
-| `AWS_REGION` | 固定 `ap-northeast-1` | task definition 環境變數即可（非機密） |
-| `BEDROCK_MODEL_ID_EXTRACT` | N1 抽取用的基礎模型 id | task definition 環境變數（非機密） |
-| `BEDROCK_MODEL_ID_DRAFT` | N5 主筆用的基礎模型 id | 同上 |
-| `BEDROCK_KB_ID` | Knowledge Base id（N4 檢索通道 B） | 同上 |
-| `KB_DATA_BUCKET` | 資料集所在的 S3 bucket 名稱 | 同上；bucket **必須非公開**（CONSTITUTION §6） |
+| `MODEL_PROVIDER` | `bedrock`（預設）／`openai`。**賽制僅限 AWS 服務提供之基礎模型**，`openai` 只供開發期調 prompt，其輸出不得當驗收證據 | task definition 環境變數（非機密） |
+| `AWS_REGION` | 固定 `ap-northeast-1` | 同上 |
+| `AWS_PROFILE` | **只在本機開發用**的 profile 名。ECS 上**不要設**——那裡走 task role | 本機 `.env`／`~/.aws`，不進 git |
+| `BEDROCK_MODEL_ID_EXTRACT` | N1 抽取用的基礎模型 id 或 inference profile id | task definition 環境變數（非機密） |
+| `BEDROCK_MODEL_ID_DRAFT` | N5 主筆用 | 同上 |
+| `RETRIEVER` | `lawtable_only`（預設，相似案通道回空）／`kb`（走 Managed Knowledge Base） | 同上 |
+| `BEDROCK_KB_ID` | Managed Knowledge Base id（N4 檢索通道 B）。`RETRIEVER=kb` 時必填 | 同上 |
+| `KB_MIN_SCORE` | 檢索命中分數下限，預設 `0.25`；低於此值的命中丟棄 | 同上 |
+| `S3_KB_BUCKET` | 資料集所在的 S3 bucket 名稱，**入庫腳本用**（執行期服務不讀 S3） | 同上；bucket **必須非公開**（CONSTITUTION §6）。**2026-09-07 更名**：舊表寫作 `KB_DATA_BUCKET`，程式實際讀的是 `S3_KB_BUCKET` |
 
 **憑證怎麼給**：不設 `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` 這類變數。
 ECS task 用 **task role**（`taskRoleArn`）取得臨時憑證，boto3 會自動從 container credentials
@@ -77,6 +103,24 @@ Task role 需要的最小權限（等真的要接 Bedrock 時再開）：
 - `bedrock:InvokeModel`、`bedrock:InvokeModelWithResponseStream`（限定到指定 model ARN）
 - `bedrock:Retrieve`（限定到指定 Knowledge Base ARN）
 - `s3:GetObject`（限定到資料集 bucket 的指定 prefix，唯讀）
+- `s3:PutObject`（**只給跑 ingest 腳本的角色**，限定到資料集 bucket 的指定 prefix。
+  執行期的 task role **不需要**寫入權限——服務不上傳任何東西）
+
+### 1.3 續跑與輪詢（2026-09-07）
+
+`POST /api/cases/{id}/runs` 的回應**依檔位不同**，前端 `postRun()` 已把差異吸收在一處：
+
+| 檔位 | 回應 | 後續 |
+|---|---|---|
+| `fixture` | **200** ＋ 完整 payload | 沒有後續，同步跑完 |
+| `bedrock` | **202** ＋ `{run_id, result_url}` | 前端每 2 秒輪詢 `GET /api/runs/{id}`：**409** = 還在跑（繼續等）、**200** = 結果、**502** = 節點失敗帶原因、**404** = 沒這個 run |
+
+- 結果檔寫在 **`backend/output/runs/`**（gitignored）。`GET /api/runs/{id}` 讀的就是它。
+- **process 重啟後，進行中的 run 狀態不保留**：事件匯流排在記憶體裡，重啟後那個 run_id
+  會變成 404 或停在 409。demo 期間不要重開服務；真的重開就重新 `POST /runs`。
+- **沒有 SSE 端點**。逐節點事件流（`GET /runs/{id}/events`）是加值層，本輪未做。
+- `POST /runs` 可帶 `base_run_id` + `from_node`，從指定節點往下重跑到 N6（N6 永遠最後跑）。
+  `from_node` 沒帶 `base_run_id` 回 **400**。
 
 ---
 

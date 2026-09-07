@@ -5,6 +5,10 @@
 > 裡面的測試計數、行號、「還沒做」清單都已過時，**引用它們之前先看這裡**。
 >
 > branch `mission/hack-integration-20260905`。**沒有 push、沒有開 PR、沒有動任何 remote。**
+>
+> **2026-09-07 追加**：`mission/hack-bedrock-agents-20260906` 分支（自上者切出）把六節點接上
+> Bedrock 的程式路徑做完了，紀錄在**本檔 §5**。§0–§4 是 2026-09-05 的狀態，**§1「沒做」那張表
+> 有幾列已被 §5 更新**，該處已就地標註；兩處說法不同時以 §5 為準。
 
 ---
 
@@ -53,11 +57,11 @@ $ python3 prototype/build.py           → dist/index.html 139 KB
 
 | 項目 | 為什麼 |
 |---|---|
-| 真實 Bedrock 呼叫（N1／N5 live 分支） | 無 AWS 憑證與 model access。非 fixture 模式一律 raise／501，沒有假裝能跑 |
-| 真實相似案檢索、kNN 分類 | 無賽方資料集。誠實回空 + 標「庫外，未驗證」 |
-| PDF 視覺抽取 | 所以**實體法條號抽不到**（見判斷卡 B），上傳的檔案完全不讀 |
-| SSE 事件流（§6.1 2b） | `POST /runs` 同步跑完就回。接上模型（25–45 秒）後必須改 |
-| §6.1 另外 4 支端點 | 已做 6 支：`/`、health、cases、runs、submit、deadline。intake 補正、citecheck、confirm、redraft 未做 |
+| 真實 Bedrock 呼叫（N1／N5 live 分支） | 無 AWS 憑證與 model access。非 fixture 模式一律 raise／501，沒有假裝能跑 ——**§5 更新：程式路徑已做完，但真 Bedrock 仍一次都沒打過（帳號未開通）** |
+| 真實相似案檢索、kNN 分類 | 無賽方資料集。誠實回空 + 標「庫外，未驗證」 ——**§5 更新：Managed KB 檢索器已實作，未接過真 KB** |
+| PDF 視覺抽取 | 所以**實體法條號抽不到**（見判斷卡 B），上傳的檔案完全不讀 ——**§5 更新：上傳與卷證文字路由已做，視覺讀取未實測** |
+| SSE 事件流（§6.1 2b） | `POST /runs` 同步跑完就回。接上模型（25–45 秒）後必須改 ——**§5 更新：改成 202＋輪詢，SSE 端點仍未做** |
+| §6.1 另外 4 支端點 | 已做 6 支：`/`、health、cases、runs、submit、deadline。intake 補正、citecheck、confirm、redraft 未做 ——**§5 更新：另加 `POST /api/cases`（上傳建案）與 `GET /api/runs/{id}`（輪詢）；那 4 支仍未做** |
 | 逐句「已確認」寫回後端 | 步驟 3 的紅燈確認只存在瀏覽器記憶體，重整就沒了 |
 | 冪等 `run_id` | 每次 `POST /runs` 都真的重跑。接 Bedrock 後**每次重整都會燒模型費用** |
 | 容器映像檔帶前端 | `Dockerfile` 只 `COPY backend/`，容器裡 `GET /` 回 503（見 `backend/DEPLOY.md` §4.5） |
@@ -343,7 +347,165 @@ Demo 被問「你們的檢索到底檢索到什麼」，答案是「程序面查
 
 ---
 
-## 5. 檔案地圖
+## 5. 2026-09-07 bedrock-live-nodes 分支
+
+> branch `mission/hack-bedrock-agents-20260906`（自 `mission/hack-integration-20260905` 切出）。
+> **沒有 push、沒有開 PR、沒有動任何 remote。** 22 個 commit。
+> 規格：`docs/spec/2026-09-07-bedrock-live-nodes-design.md`（D1–D8）；
+> 計畫：`plans/2026-09-07-bedrock-live-nodes.md`。
+>
+> **一句話**：`RUN_MODE=bedrock` 的程式路徑（N1／N5 呼叫模型、N4 查 Managed KB、上傳建案、
+> 續跑、202＋輪詢）全部寫完並有測試；**但真的 Bedrock 一次都沒打過**——帳號的 Bedrock
+> 尚未開通。所有「bedrock 檔位會怎樣」的敘述都是**程式行為，不是實測結果**。
+
+### 5.1 做了什麼（依 task，附 commit）
+
+| Task | 做了什麼 | commit |
+|---|---|---|
+| 1 | `backend/config/settings.py` 加 live 模式環境變數讀取器與缺漏檢查（`model_provider()`／`aws_*`／`bedrock_model_id()`／`retriever_kind()`／`kb_min_score()`／`RUNS_DIR`）；`run_all.py` 具名豁免 `backend/llm/` 與 `retrieval/kb.py`，新增 **LLM import graph 檢查**（N2/N3/N4/N6 不得 import strands 或 `backend.llm`，ast 遞迴） | `bff8aef` |
+| 2 | `backend/llm/`：`client.py`（Strands `Agent` + `BedrockModel`，structured output、重試、值域驗證、`cite_ids` 白名單）、`schemas.py`（Pydantic，`DraftSentence` **刻意沒有** lamp／why／verified 欄位）、`prompts/n1_extract.md`／`n5_draft.md`。`requirements.txt` 補 `boto3`＋`strands-agents` | `78f5297`、`a4d4791`、`3e3740b` |
+| — | **D8 重構**：所有 import 上移模組頂層，豁免檔第三方套件以 `try/except ImportError` 守衛；`run_all.py` 新增 `scan_top_level_imports`（ast 強制） | `1842b7e`（plan+spec）、`24bab5c` |
+| 3 | 兩個合成案例補 `documents[]` 卷證全文（依既有 `case_digest`／`intake`／`quotes` 反推撰寫，全標「（合成測資）」，無真實案號人名）；N1 bedrock 分支呼叫 `client.extract_intake` | `67b2199` |
+| 3b | `backend/intake/`＋`POST /api/cases` 上傳建案（`upload-` 前綴，存 `backend/output/uploads/`，gitignored）；卷證文字三層路由（txt／pdftotext／PDF 視覺讀）；N2／N3 改吃 N1 輸出；上傳撞名與空 `pdf_visual` 兩個誠實性守衛 | `364b6b7`（WIP）、`7ab4f6a` |
+| 4 | N5 三向分流：`fixture` 行為逐字不變、`bedrock` 呼叫 `client.draft_sentences`（`retrieve_refs` 工具限函釋／判解前綴）、`local` 照舊 raise。結論段在程式端**二次剔除**（不信模型自律）；引用 ref 一律由 N5 重新編號並保留 `src_id` | `009203f`、`4aa0a4c` |
+| 5 | `backend/retrieval/kb.py`：Managed KB 檢索器（boto3 `Retrieve` ＋ 後過濾、前綴過濾、`KB_MIN_SCORE`）；N4 通道 B 用**注入的** retriever 產 `cases[]`；**決定結果照檔名讀，不由模型推測** | `07a031b`、`bc26a73`（測試） |
+| — | plan 補「KB recall 不足時的兩級備援」（先 rerank，再退自管 KB），見 architecture §13 #18 | `b3726ae` |
+| 6 | 編排層 run 持久化（`backend/output/runs/`）＋ `base_state` + `from_node` 續跑（N6 永遠最後跑）；`on_event` 逐節點事件且**例外不回拋**；`save_run` 失敗必發 `run_failed`；`n4_query` override 走白名單 | `048dfb3`、`7febe38` |
+| 7a | API：bedrock 模式 `POST /runs` 回 **202**、新增 `GET /api/runs/{id}`（409 進行中／200 結果／502 失敗帶原因／404）；`RunIn` 支援 `base_run_id`／`from_node`／`overrides`（**只收 `base_run_id` 經 runstore 讀回，body 不得直接帶 state**）；`/api/health` 加 `live_settings` 檢查（含 boto3／strands 是否裝得起來） | `5902593` |
+| 8a | 前端：拖曳區真上傳建案；`postRun()` 統一入口（fixture 200 同步／bedrock 202 輪詢）；確認後**從 n2 續跑不重抽**；上傳與啟動分析互斥；輪詢十分鐘軟上限 | `be2ecbc`、`cb819e4` |
+| 10 | `scripts/live_acceptance.py`：AC4–AC15 驗收腳本，讀 `run_meta.run_mode` 決定該 AC 是真判還是標 **⏸ 未驗**；證據包 `docs/evidence/2026-09-07-bedrock-live/` | `0500cd3`、`c4f9a38` |
+| 11 | 本節與 `docs/architecture.md` §4.1／§7.1／§13、`docs/spec/prototype-spec.md` §4.6、`backend/DEPLOY.md`、`backlog.md` Phase S 同步；`run_all.py` secret 掃描納入 12 碼帳號 ID | 本 commit |
+| — | plan-guardian 退回的六項修正（移除文件內實際帳號／KB id、命名對齊、驗收表自足、`openai` 不當證據、回放只報告、KB 命中標示） | `eec11d8` |
+
+測試：分支起點 **162/162** → 現在 **210/210**（`python3 backend/tests/run_all.py`，exit 0）。
+五道紅線靜態掃描全綠：secret／禁用雲端字樣、`prototype/dist` 可重現、核心路徑零外部依賴
+（三道是既有的，具名例外擴充到 `backend/llm/`、`backend/retrieval/kb.py`），
+**N2/N3/N4/N6 無 LLM 依賴**、**所有 import 在模組頂層**（這兩道是本分支新增）。
+secret 掃描本輪再加一條「12 碼數字＝疑似 AWS 帳號 ID」，跑過確認不誤中合成案號（10 碼）。
+
+### 5.2 驗收證據
+
+`docs/evidence/2026-09-07-bedrock-live/`（`README.md` 說明產生條件、`acceptance.md` 是腳本輸出、
+`ac11.md` 是手動驗證摘錄）。
+
+**結果：6 ✅ ／ 5 ⏸ ／ 0 ❌**（exit 0）。⏸ 不是通過，是**沒驗**。
+
+| 驗到了 | 沒驗到（⏸，待 Bedrock 開通） |
+|---|---|
+| health 200、`live_settings` 四項全過 | AC4 N1 抽取 12 欄 `origin=llm`／conf／model_id |
+| 六節點端到端跑得完 | AC5 N5 每句 `cite_ids` 不越界 |
+| AC6 C 型封鎖（無非佔位結論、`submit_allowed=false`） | AC7 KB recall（`cases` ≥ 3、同案型 ≥ 3） |
+| AC8 從 n5 續跑（`node_timings` 只有 n5/n6） | AC15 上傳 txt → 抽取與 fixture 一致 |
+| AC8b `from_node` 無 base → 400 | AC11 真 model id 情境（現有證據的失敗原因是 `NoCredentialsError`） |
+| AC9 確認後從 n2 續跑（沒有 n1、`intake_origin.d2 == "human"`） | AC10 SSE 六對事件（端點沒做） |
+
+> **這批證據是 fixture 模式產生的，不是 live。** 產出當下本機沒有 AWS 憑證、沒裝
+> strands-agents／boto3。任何「已接 Bedrock 驗過」的說法都不成立——demo 講稿請用
+> 「程式路徑已完成、真實呼叫待帳號開通」。
+
+### 5.3 沒做什麼（不要以為做完了）
+
+| 項目 | 說明 |
+|---|---|
+| **真的打過 Bedrock** | **一次都沒有。** 所有 bedrock 檔位的行為都只有單元測試與 mock，沒有真實模型或真實 KB 的回應 |
+| 加值層 Task 7b：SSE 節點事件流 | `GET /runs/{id}/events` **端點不存在**。`backend/api/events.py` 的 `stream()` 寫好了但沒有人叫它。前端走輪詢 |
+| 加值層 Task 8b：每卡「從這裡重新產生」 | 後端續跑 API 已具備，**前端按鈕沒做**。目前只有「確認後從 n2 續跑」這一條路徑 |
+| 加值層 Task 9：資料 manifest／ingest／逾期回放 | `scripts/build_manifest.py`、`scripts/ingest_kb.py`、`scripts/replay_overdue_public.py` **都不存在**。KB 目前只能在 console 手動建。CLAUDE.md 與 architecture 提到的「以 `ingest_kb.py` 重建」是**計畫，不是現況** |
+| 加值層 Task 16：掃描件視覺讀取實測 | 沒跑過。連帶：**`pdf_text` 0.60 門檻沒有用任何真實 PDF 校準過**，那是拍腦袋的值 |
+| ask 追問 agent | spec §2 明確不做（沒有 story 或 AC 要求對話） |
+| AgentCore Runtime 部署 | 維持 Stretch（D3）。唯一價值是承載 ask，沒有 ask 就沒有理由 |
+| 冪等 `run_id` | 仍未做。每次 `POST /runs` 都真的重跑，接上模型後**每次重整都會燒模型費用** |
+| 爬蟲補洗錢防制法案件 | 沒做。現有爬蟲只有廢清法、空污法——**主 demo 案型反而沒有真實案源** |
+| 法規快照擴充到 18 部 | 沒做，仍是 11 部 |
+
+### 5.4 憑證狀態與下一步
+
+**現況：Bedrock 未開通。** 用開發期帳號（開發用 AWS，profile 名／帳號 ID 只在 `~/.aws`／`.env`）
+呼叫 Bedrock 回 `Operation not allowed`；帳號本身是 **PAID／ACTIVE**，所以不是欠費或停用，
+研判是這個帳號的 Bedrock 服務沒開。**要開 AWS Support Case 才能解**（本輪沒有 case 編號可填——
+還沒開）。
+
+接下來照順序：
+
+1. **開 AWS Support Case** 請求開通 Bedrock（東京 `ap-northeast-1`）。這是唯一的阻塞點。
+2. 開通後在 console 申請 **model access**（抽取與主筆各一個 model id 或 inference profile）。
+3. 建 **Managed Knowledge Base**：私有 S3 bucket（Block Public Access 四項全開）→ 資料分
+   `kb/official/`、`kb/public/` 前綴上傳 → console 建 KB 指到該 prefix → 取得 KB id 填 `.env`
+   的 `BEDROCK_KB_ID`，`RETRIEVER=kb`。（`scripts/ingest_kb.py` 還沒寫，這步是手動的。）
+4. **重跑 live 驗收**，把 §5.2 的 5 個 ⏸ 換成真結果：
+
+   ```bash
+   set -a; . ./.env; set +a          # 內含憑證與 model id，不進 git
+   uv run --with fastapi --with "uvicorn[standard]" --with pydantic --with python-multipart \
+          --with strands-agents --with boto3 -- \
+     python -m uvicorn backend.api.app:app --port 8123 &
+   sleep 3
+   python3 scripts/live_acceptance.py --base http://127.0.0.1:8123 --timeout 600 \
+     > docs/evidence/2026-09-07-bedrock-live/acceptance.md; echo "exit $?"
+   kill %1
+   ```
+
+   `--timeout` 是**等一次執行跑完**的上限（秒）。bedrock 檔位六節點要跑多久沒有人保證，
+   跑不完就把它調大再跑——不要把「腳本等不及」寫成系統失敗。
+5. AC7（KB recall）若不足，**先加 rerank 再談換架構**，兩級備援見 `docs/architecture.md` §13 #18。
+   注意 `RERANK=llm` 會讓 N4 import `backend.llm`，與 AC3 衝突，需要拍板才能開。
+6. 完整 live 驗收約 **5 次模型呼叫**的成本；`wait_run` 的上限在真跑起來後要盯。
+
+### 5.5 啟動指令
+
+**fixture 檔位**（零 AWS 依賴，斷網可跑；demo 備援走這條）：
+
+```bash
+python3 prototype/build.py     # static/ 或 data/ 改過才需要重跑
+uv run --with fastapi --with "uvicorn[standard]" --with pydantic --with python-multipart -- \
+    python -m uvicorn backend.api.app:app --host 127.0.0.1 --port 8080
+```
+
+**bedrock 檔位**（多兩個套件與一份 `.env`；變數清單見 `backend/DEPLOY.md` §1.2）：
+
+```bash
+set -a; . ./.env; set +a          # RUN_MODE=bedrock 與 AWS 設定都在裡面
+uv run --with fastapi --with "uvicorn[standard]" --with pydantic --with python-multipart \
+       --with strands-agents --with boto3 -- \
+    python -m uvicorn backend.api.app:app --host 127.0.0.1 --port 8080
+```
+
+兩者都開 <http://127.0.0.1:8080/>。`GET /api/health` 的 `live_settings` 會列出缺哪個變數或套件。
+**bedrock 這條至今沒有在真的能打 Bedrock 的帳號上跑過。**
+
+### 5.6 延後處理清單（review 過程明確延後的項目）
+
+分支 review 逐 commit 做過，下列是**當時判定為 minor 或跨 task、決定延後**的項目，
+一條都沒有偷偷消失。「賽前清單」標記的是接上真資源後**一定要回頭看**的。
+
+| # | 項目 | 落點 |
+|---|---|---|
+| 1 | `kb_min_score()` 非數字時 raise `ValueError` 沒有測試 | `backend/config/settings.py` |
+| 2 | `bedrock_model_id()` 傳無效 kind、`RUNS_DIR`、`kb_bucket()` 都沒有測試 | 同上 |
+| 3 | import graph 掃描看不到相對 import（`from . import x`）；本專案目前全用絕對 import，所以現在擋得住 | `backend/tests/run_all.py` |
+| 4 | `client.py` 的 `result.structured_output`／`metrics.accumulated_usage` **屬性名未經真呼叫驗證**——這是最可能在第一次 live 呼叫就炸的地方 | **賽前清單** |
+| 5 | `_safe_doc_name()` 把中文檔名壓成底線，多份中文 PDF 會撞名（已加序號守衛，但命名本身仍不可讀） | `backend/llm/client.py` |
+| 6 | 「無文字也無附件」的佔位字串沒有測試 | 同上 |
+| 7 | `documents[]` 直接索引 `d['n']`／`d['text']`，壞資料出 `KeyError`（上傳路徑已加守衛，合成案例路徑沒有） | `backend/nodes/n1_intake.py` |
+| 8 | `POST /api/cases` 沒有總量／檔數上限；單檔 4.5MB vs 20MB 的落差沒有在上傳時提前告知 | backlog HACK-S-13 |
+| 9 | **`pdf_text` 0.60 門檻沒有用真實 PDF 校準** | **賽前清單**、backlog HACK-S-9 |
+| 10 | `draft.refs` 的語意是「**查到的**」不是「引用到的」——前端對接文件要寫清楚，別讓人讀成「這些都被引用了」 | 對接注意事項 |
+| 11 | 同一份文件跨兩次工具呼叫會拿到兩個 R 號（不去重），等真檢索器定案再處理 | `backend/nodes/n5_draft.py` |
+| 12 | **N6 目前不處理 `cases[]` 的燈號，`cases[].lamp` 恆為 `None`**——這是設計歸屬未定，不是既有行為壞掉 | 判斷卡候選 |
+| 13 | `exclude_case` 在 fixture 檔位沒有值可供 | `backend/nodes/n4_retrieve.py` |
+| 14 | 檢索命中的 `text` 截斷到 600 字**沒有截斷標示**，讀的人看不出被切過 | 同上 |
+| 15 | `kb/(official|public)/` 佈局首次接真 KB 時要盯 `case_query_text` 與命中數 | **賽前清單** |
+| 16 | `persist` 預設 `true`，`run_all.py` 每次跑會寫上百個 json 到 `backend/output/runs/`（gitignored，**無清理**） | backlog HACK-S-12 |
+| 17 | bedrock 檔位的 `from_node`／`overrides` 驗證延後到背景執行才發生（可抽 `validate_run_args` 提前） | `backend/api/app.py` |
+| 18 | `RunIn` 未知欄位靜默忽略（應 `extra="forbid"`） | backlog HACK-S-14 |
+| 19 | 事件匯流排 `BUS` 永不淘汰舊 run（單 process、記憶體） | `backend/api/events.py` |
+| 20 | fixture 檔位的拖曳區要不要預先標示「不接受上傳」——**文案待決** | 判斷卡候選 |
+| 21 | AC5 的 `cite_ids` 白名單邏輯在 fixture 也可驗，但依裁定標 ⏸；AC10 的 pending 文案與 legend 不完全對應 | `scripts/live_acceptance.py` |
+| 22 | `app.py` 的 `__main__` 在缺 uvicorn 時改吐 `SystemExit` 訊息（行為微變，D8 重構時已裁定可接受） | `backend/api/app.py` |
+
+---
+
+## 6. 檔案地圖
 
 | 路徑 | 是什麼 |
 |---|---|
@@ -353,4 +515,8 @@ Demo 被問「你們的檢索到底檢索到什麼」，答案是「程序面查
 | `backend/DEPLOY.md` | 啟動指令、ECS 部署、備援路徑 |
 | `prototype/README.md` | 前端兩種模式的差異表、檔案地圖、測試指令 |
 | `docs/evidence/2026-09-05-integration/` | 可重跑的驗證腳本 + DOM 節錄 + 截圖 |
+| `docs/spec/2026-09-07-bedrock-live-nodes-design.md` | 接 Bedrock 的設計規格（D1–D8 決策，含推翻的既有拍板） |
+| `plans/2026-09-07-bedrock-live-nodes.md` | 對應的可執行計畫（必要層／加值層兩段） |
+| `docs/evidence/2026-09-07-bedrock-live/` | live 驗收證據（**fixture 模式產生**，6 ✅／5 ⏸／0 ❌；含重跑指令） |
+| `scripts/live_acceptance.py` | AC4–AC15 驗收腳本，Bedrock 開通後對 bedrock 服務重跑 |
 | `HANDOFF-PHASE0.md` / `HANDOFF-GATE.md` / `HANDOFF-INTEGRATION.md` | 三條分支的過程紀錄（已被本檔取代） |

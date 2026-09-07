@@ -36,6 +36,9 @@ SECRET_PATTERNS = [
     (r"aws_secret_access_key\s*=\s*\S", "AWS secret access key 賦值"),
     (r"BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY", "私鑰"),
     (r"ASIA[0-9A-Z]{16}", "AWS 臨時憑證"),
+    # 帳號 ID 不是 secret，但它是「哪個帳號」的識別資訊，一律不進 repo
+    # （CLAUDE.md 規矩段、architecture §13 #19）。合成案號是 10 碼，不會誤中。
+    (r"\b[0-9]{12}\b", "疑似 AWS 帳號 ID（12 碼數字）"),
 ]
 # 本專案只碰 AWS，不得出現任何 GCP／Google Cloud 內容（團隊核心規則）
 FORBIDDEN_CLOUD_PATTERNS = [

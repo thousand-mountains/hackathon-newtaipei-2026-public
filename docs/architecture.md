@@ -365,6 +365,14 @@ flowchart TB
    兩個 LLM 節點內部把 Bedrock client 藏在 `llm/client.py` 後面。
    **要換 Strands 只需要改那兩個節點的內部，編排層與前端契約都不動**——這是一個約 1.5 小時的可選加值（§13 待拍板 6）。
 
+**2026-09-07 補充（spec D1）**：上面第 3 條的「可選加值」已經拍板並實作。Strands 限
+`backend/llm/client.py` 內部使用，供 N1／N5 structured output；編排層仍為自寫 state machine，
+本節的結論不變。`run_all.py` 的 `scan_llm_import_graph` 強制 N2/N3/N4/N6 不得 import
+`strands` 或 `backend.llm`——這條紅線由靜態掃描擋，不靠自律。
+另依 spec D8，**所有 import 一律放模組頂層**；具名豁免檔（`backend/llm/`、
+`backend/retrieval/kb.py` 等）的第三方套件以 `try/except ImportError` 守衛、缺套件時在呼叫點
+raise，`run_all.py` 的 `scan_top_level_imports` 以 ast 強制。
+
 ### 4.2 狀態機
 
 ```mermaid
@@ -727,7 +735,7 @@ ORIGIN = {
 | 不用 OpenSearch Serverless | — | OCU 有分鐘計費底價，101 份文件的量級不划算（03 §3） |
 | 不用一般 RDS PostgreSQL | — | KB 只支援 Aurora PostgreSQL，一般 RDS + pgvector 不是支援選項（[KB setup 文件](https://docs.aws.amazon.com/bedrock/latest/userguide/knowledge-base-setup.html)） |
 | Embedding model | **Cohere Embed Multilingual v3**（主案）／**Titan Text Embeddings V2**（備援） | Cohere v3 官方標榜多語含中文；**兩者在東京／新加坡的逐區可用性未查到官方清單，未驗證**，需在 console model access 頁確認可勾選（03 §3） |
-| Chunking | **不用 KB 自動切**：入庫前自己切好，每個 chunk 一筆送進去 | Claire POC 前提 1：法規一條一 chunk、決定書理由一項一 chunk。讓 KB 自動切會破壞「一條一段」的檢索結構。**「不切」對應的實際 API 參數名稱與值 03 未查證，標未驗證**，建 KB 前於 console／API 文件確認（併入賽前清單 2）|
+| Chunking | **改用 Managed Knowledge Base（2026-09-07 D2）**：chunking 由服務決定；每檔即一份決定書／函釋／判解，法規不入庫 | 原設計是「入庫前自己切好、每 chunk 一筆」（Claire POC 前提 1：法規一條一 chunk、決定書理由一項一 chunk）。D2 改為不自管 vector store 也不控制 chunking，換取 30 小時內建得起來；代價是「一條一段」的檢索結構不再由我們保證，所以 recall 要實測——門檻與備援見 §13 第 18 項。法規仍走 `laws-snapshot.json` 精確查表，**不入庫**（下方「法條精確查表」列不變）|
 | Metadata | `case_type`／`art77_clause`／`outcome`／`year`／`doc_kind`（`law`｜`decision`） | 檔名即標籤，regex 可拿到，101 筆免費標註（Claire POC） |
 | Metadata filter | 檢索時先用 `case_type` ＋ `art77_clause` 過濾再算相似度 | Claire 量測：加 77 條款過濾後 recall@5 從 41% 升到 68% |
 | Hybrid search | 用預設（關鍵字＋語意） | Retrieve 預設走 hybrid（03 §3） |
@@ -1221,8 +1229,8 @@ Claire 那條線（1-3 → 1-9 → 1-5 → 1-4 → 2-4）從 H4 跑到 H12.5，�
 | 2 | §3.4 受理判斷：訊號規則＋傾向呈現，不做二元分類 | 按建議案，不輸出「受理／不受理」 | 01 §B：**完全未討論** |
 | 3 | §3.5 抽取降級：手動表單 baseline、引導式問答 stretch | 按建議案 | 01 §B：**完全未討論** |
 | 4 | 「事實」段落最終方案 | 本文設計為**卷證直錄不生成**（`source_kind=record`） | 01 §C：只有「先不做」的共識，方案未定；101 份中僅 31 份有事實段 |
-| 5 | AgentCore 要不要上 | **不上，只列 Stretch ③**（約 2h） | ⚠ **這實質推翻既有拍板**：`docs/spec/prototype-spec.md:87` 是 2026-08-22 Ci 拍板，原文寫「實作：**僅**抽取與草稿兩節點用 Bedrock AgentCore 包」。本文把它降為 Stretch，理由是 ARM64 ＋ 自訂 HTTP contract 的 30 小時成本。**若拍板維持本文立場，須同步修訂 spec §4.6 的「實作」欄**，不要讓兩份文件各說各話 |
-| 6 | Strands Agents Graph 要不要用 | **不用，自寫 state machine**；預留 1.5h 可選加值 | §4.1 有完整比較；若評審重視「用了 AWS agentic 生態」則值得投 |
+| 5 | AgentCore 要不要上 | **不上，只列 Stretch ③**（約 2h）。**2026-09-07 現況：維持 Stretch**（spec `2026-09-07-bedrock-live-nodes-design.md` §2「不做」、D3），本輪未實作，spec §4.6 已同步修訂 | ⚠ **這實質推翻既有拍板**：`docs/spec/prototype-spec.md:87` 是 2026-08-22 Ci 拍板，原文寫「實作：**僅**抽取與草稿兩節點用 Bedrock AgentCore 包」。本文把它降為 Stretch，理由是 ARM64 ＋ 自訂 HTTP contract 的 30 小時成本。**若拍板維持本文立場，須同步修訂 spec §4.6 的「實作」欄**，不要讓兩份文件各說各話 |
+| 6 | Strands Agents Graph 要不要用 | **已拍板**：Strands 限 N1/N5 內部（2026-09-07 spec D1）。編排層仍是自寫 state machine，Graph／multi-agent 不用；Strands 只出現在 `backend/llm/client.py` | §4.1 有完整比較與 2026-09-07 補充。本項不再是待拍板，保留供追溯 |
 | 7 | Google Fonts 外部依賴 | 本文**未定**，列賽前清單 12 | 02 §H.6：五步版引入 Google Fonts，斷網 demo 的視覺會退化；v0 的「零外部資源」特性不再成立 |
 | 8 | 洗防法修法日期（113/7/31 vs 112/6/14） | **不判定**，由 `consistency_check.py` 擋住直到人工定案 | 02 §H.5 已在程式碼裡證實矛盾；需翻原始 PDF |
 | 9 | 相似案「同/異」說明用模板還是 LLM | **模板**（保住只有 2 個 LLM 節點） | 影響 LLM 節點數這條紅線 |
@@ -1234,6 +1242,9 @@ Claire 那條線（1-3 → 1-9 → 1-5 → 1-4 → 2-4）從 H4 跑到 H12.5，�
 | 15 | **`case-demo.json` 進 git 算不算違反 CONSTITUTION §6** | **不判定**。現況：repo 內確有這份檔，`provenance.kind=de-identified`（非 synthetic），含真實案號 `1147061268`、處分文號 `11403210490-01`、條文原文，`src` 指向賽方資料集檔名 | CONSTITUTION §6 前半句「資料集不進 git」與後半句「demo 案件可用已去識別化的決定書原文」本身有張力。§6.3 還要求它變成「一次真實執行的輸出快照」，等於賽方 PDF 跑出來的內容入 git。**這是紅線解釋，不該由架構文件用白名單默默放行。** 若拍板為可留，建議附三個條件：(a) `provenance.kind` 必須是 `de-identified` 且 banner 常駐、(b) 條文原文引用長度設上限、(c) 匯出腳本強制遮罩人名與地址 |
 | 16 | **ADR-001 前端選型變更**：Vue 3 + Vite + shadcn-vue → 原生 JS（沿用五步動線分支） | 沿用分支的原生 JS | 理由是 30 小時內重寫一套已給法律實務界人士看過的 UI 不划算。但 ADR-001 那一列狀態是「已定（Ci 拍板）」，**推翻它就要說出口**——這與 AgentCore（#5）同性質，套用同一個標準：拍板後須同步修訂 ADR-001，不要讓兩份文件各說各話 |
 | 17 | **US-12 AC-12.2 是否作廢** | 本文假設作廢，改寫為五步動線的 deep-link | US-12 已標記 ✅ 已驗收，AC-12.2 是「hash 頁序一鍵直達三情境」。實查基準分支 `app.js` **零 hash 命中**——選這個分支就等於作廢一條已驗收的 AC，同時讓已 commit 的三分鐘 demo 腳本指向一個不存在的 UI。§11.5 已補 3-6 工作包（1.5h）移植腳本，但**「已驗收的 AC 可以被後續選型作廢嗎」需要拍板** |
+| 18 | **Managed KB recall 不足時怎麼辦**（2026-09-07 D2 帶出） | 門檻：三個 demo 案 top-5 同案型 ≥ 3（spec AC7）。不足時**先加 rerank**——第一級 `RERANK=bedrock`（KB `Retrieve` 的 `rerankingConfiguration`）；備選 `RERANK=llm`（LLM 只在已撈回的 15 件**真實候選**中挑 id，輸出必須 ⊆ 候選、結果照檔名不推測，CONSTITUTION §2）。rerank 後仍不足才改自管 KB + S3 Vectors。rerank 留在 N4 通道 B 內，**不是第三個 LLM 節點** | 兩級備援寫在 plan 裡，**本輪未實作**（AC7 待 Bedrock 開通後實測才知道要不要動用）。`RERANK=llm` 會讓 N4 import `backend.llm`，與 spec AC3／`scan_llm_import_graph` 直接衝突，故第一級**預設走 `bedrock`**；`llm` 只有在拍板同意豁免 `retrieval/` 時才開——這是拍板事項，不是實作者可以自己決定的 |
+| 19 | **開發期用哪個 AWS 帳號** | **開發用 AWS 帳號**（D4，Claire 2026-09-06 拍板）。profile 名、帳號 ID、KB id、bucket 名一律只在 `.env`／`~/.aws`，不進程式與文件 | 賽方帳號到手即以 `scripts/ingest_kb.py`（**尚未實作**，plan Task 9 加值層）重建並切換，之後刪除開發用帳號上的 bucket 與 KB。CLAUDE.md 規矩段已同步 |
+| 20 | **import 位置** | **一律放模組頂層**（D8，Claire 2026-09-07 拍板）。具名豁免檔的第三方套件以 `try/except ImportError` 守衛，缺套件時在呼叫點 raise | 原本兩個 LLM 節點用函式內 import 迴避「fixture 檔位不該載 boto3」，那讓相依關係看不出來。改頂層後由 `run_all.py` 的 `scan_top_level_imports`（ast）與 `scan_llm_import_graph` 一起把相依圖釘死 |
 
 ---
 

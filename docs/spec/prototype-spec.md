@@ -84,9 +84,9 @@
 | 層 | 做法 | 為什麼 |
 |---|---|---|
 | 敘事 | 節點以 agent 稱呼（抽取代理／涵攝代理／守門代理），各有輸出契約、過不了守門不放行 | 對齊工作坊教學（Bedrock AgentCore）與評審期待，成本為零 |
-| 實作 | **僅**抽取與草稿兩節點用 Bedrock AgentCore 包；**編排層是普通程式碼**，不做 agent 呼叫 agent | AgentCore 是加分不是地基；30h 內 agent 間編排＝除錯地獄 |
+| 實作 | **僅**抽取與草稿兩節點呼叫 Bedrock（Strands Agent，於 `backend/llm/`）；**編排層是普通程式碼**，不做 agent 呼叫 agent。AgentCore 為 Stretch（`docs/architecture.md` §13 #5）。**2026-09-07 修訂**（原文為「用 Bedrock AgentCore 包」） | AgentCore 是加分不是地基；30h 內 agent 間編排＝除錯地獄 |
 | 不變 | 規則引擎與引用守門維持零 LLM；C 型結論永遠人寫 | 可追溯是產品主張，自主代理鏈與它自相矛盾 |
-| 備援 | AgentCore 異常 → 退回裸 Bedrock invoke，介面不變 | demo 不賭在框架上 |
+| 備援 | **2026-09-07 修訂**：Strands／Bedrock 呼叫失敗**不自動退回 fixture**（spec `2026-09-07-bedrock-live-nodes-design.md` D5），節點拋錯、API 回 502 帶原因；整場 demo 的離線備援是**整條線 `RUN_MODE=fixture` 重播**，畫面明示。（原文為「AgentCore 異常 → 退回裸 Bedrock invoke」） | demo 不賭在框架上；但也不能讓失敗的 live 執行假裝成成功（CONSTITUTION §1） |
 
 **明確不是**：不做「multi-agent platform」產品定位（兩輪對抗審查已判死：做太大＋信任敘事矛盾）。
 
