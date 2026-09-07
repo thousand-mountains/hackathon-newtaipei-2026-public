@@ -373,8 +373,13 @@ def _dispatch(node, state, ctx, fixture, digest, overrides=None):
         # cited_laws 刻意不傳：N4 自己從 state（N1/N2/N3 的結果）組查詢句。
         # 唯一的例外是承辦人在續跑時明講的查詢詞（`overrides.n4_query`）——
         # 那是人指定的，不是從草稿引用倒著填回去的。
+        # **兩條通道都要收到**（spec §5.5）：`cited_laws` 進通道 A（法規查表）、
+        # `extra_case_terms` 進通道 B（相似案）。只傳前者的話，畫面上緊鄰相似案的
+        # 那個輸入框其實只會影響法條清單（2026-09-07 覆核 I-5）。
         q = overrides.get("n4_query")
-        return n4_retrieval.run(state, ctx, cited_laws=[q] if q else None)
+        return n4_retrieval.run(
+            state, ctx, cited_laws=[q] if q else None, extra_case_terms=[q] if q else None
+        )
     if node == "n5":
         return n5_draft.run(state, ctx, case_fixture=fixture)
     if node == "n6":

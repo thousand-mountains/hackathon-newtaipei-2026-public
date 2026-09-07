@@ -1093,3 +1093,97 @@ def test_llm_import_graph_still_passes_a_clean_relative_import():
             "backend.nodes.probe",
         )
         assert_eq(problems, [], "解析成 backend.nodes.n2_classify／backend.gate 的相對 import 不該被誤判")
+
+
+# ── I-2：KB 呼叫失敗要降級，不得打死整次執行（spec §7 第 2 列）──────────
+
+
+def test_n4_degrades_when_kb_call_raises():
+    """KB throttle／權限／網路例外只該讓通道 B 降級，通道 A 照常。
+
+    修之前 `similar.search(...)` 沒有 try/except，boto3 例外會一路冒到
+    `run_case` → `run_failed` → 502：demo 時 KB 抖一下就全紅。
+    降級理由必須寫出「是 KB 炸了」，不能吞成「查無相似案」或「無資料集」。
+    """
+    class ExplodingKB:
+        name = "bedrock_kb"
+
+        def search(self, query, filters=None, top_k=5):
+            raise RuntimeError("ThrottlingException: rate exceeded")
+
+        def meta(self):
+            return {"backend": "bedrock_kb", "available": True, "label": "KB 命中"}
+
+    st = CaseState(case_id="synthetic-ordinary-01", run_mode="bedrock")
+    st.facts_excerpt = [{"text": "訴願人擅自變更建物使用。", "page": 1}]
+    st.classification = {"class": {"case_type": "違反建築法事件", "law_hits": ["建築法"]}}
+    st.screen = {"art77": {"clause": "77-2"}, "deadline": {"steps": []}}
+    r = n4_retrieval.run(
+        st, NodeCtx(run_mode="bedrock", snapshot=load_snapshot(), retriever=ExplodingKB())
+    )
+
+    assert_true(r.ok is True, "KB 失敗屬降級，不是節點失敗")
+    assert_true(r.degraded is True, "KB 失敗必須外顯為降級")
+    assert_in("KB 不可用", r.degrade_reason or "")
+    assert_in("ThrottlingException", r.degrade_reason or "")
+    assert_eq(st.retrieval["cases"], [], "查不了就回空，不編造相似案")
+    assert_true(len(st.retrieval["laws"]) > 0, "通道 A（法條查表）必須照常有結果")
+
+    meta = st.retrieval["retrieval_meta"]["similar_case_channel"]
+    assert_eq(meta["available"], False)
+    assert_in("ThrottlingException", str(meta.get("error")), "similar_case_channel 要帶出錯誤本文")
+    assert_in("未驗證", meta.get("label", ""), "不可用的通道一律標「庫外／未驗證」")
+    assert_true(bool(meta.get("reason")), "不可用卻沒說原因")
+
+    case_logs = [l for l in r.narrative["case"]["logs"] if l[1] == "r"]
+    assert_true(case_logs, "KB 失敗必須有一條紅色 log")
+    red = " ".join(l[0] for l in case_logs)
+    assert_in("檢索失敗", red)
+    assert_true("查無相似案" not in r.narrative["case"]["out"], "不得說成查無")
+    assert_true("庫外，未驗證）。" not in r.narrative["case"]["out"], "不得說成無資料集")
+
+
+# ── I-5：overrides.n4_query 必須同時進兩條通道 ──────────────────────────
+
+
+def test_n4_query_override_reaches_the_similar_case_channel():
+    """「重新檢索」卡輸入的查詢詞，畫面上就在相似案旁邊——它必須真的打到 KB。
+
+    修之前 override 只被當 `cited_laws` 併進通道 A 的 `query_text`，而通道 B 的
+    `case_query` 由事實段＋note＋案型組成，只有在三者全空時才會退回 `query_text`。
+    承辦人補撈相似案的動作因此完全沒有效果（舊測試只驗到「有記錄在 query_text」）。
+    """
+    class RecordingKB:
+        name = "bedrock_kb"
+
+        def __init__(self):
+            self.queries: list[tuple] = []
+
+        def search(self, query, filters=None, top_k=5):
+            self.queries.append((query, filters, top_k))
+            return []
+
+        def meta(self):
+            return {"backend": "bedrock_kb", "available": True, "label": "KB 命中"}
+
+    kb = RecordingKB()
+    orig = graph_mod.build_retriever
+    graph_mod.build_retriever = lambda kind, *, exclude_case=None: kb
+    try:
+        base = run_case("synthetic-ordinary-01", mode="fixture", persist=False)
+        r = run_case(
+            "synthetic-ordinary-01",
+            mode="fixture",
+            base_state=base,
+            from_node="n4",
+            overrides={"n4_query": "建築法第25條"},
+            persist=False,
+        )
+    finally:
+        graph_mod.build_retriever = orig
+
+    assert_true(kb.queries, "通道 B 完全沒有被呼叫？")
+    assert_in("建築法第25條", kb.queries[-1][0], "承辦人指定的查詢詞沒有進到相似案通道")
+    meta = r.retrieval["retrieval_meta"]
+    assert_in("建築法第25條", meta["case_query_text"], "case_query_text 要看得出含指定詞")
+    assert_in("建築法第25條", meta["query_text"], "通道 A 原有行為不得退化")

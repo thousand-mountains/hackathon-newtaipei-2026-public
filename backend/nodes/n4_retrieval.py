@@ -30,6 +30,18 @@ SIMILAR_CASE_UNAVAILABLE_REASON = (
     "而是本系統目前無法檢索——標「庫外，未驗證」。"
 )
 
+# KB 呼叫本身炸掉（throttle／權限／網路）。**三種說法必須分得出來**（spec §7 第 2 列）：
+#   「無資料集」  = 本機沒有可檢索的庫，根本沒查（SIMILAR_CASE_UNAVAILABLE_REASON）
+#   「查無相似案」= 查了、KB 回 0 筆
+#   「檢索失敗」  = 查了、呼叫炸了，本次執行不知道有沒有相似案
+# 吞成前兩種任何一種都是對「發生過什麼」說謊（CONSTITUTION §1）。
+SIMILAR_CASE_KB_FAILED_REASON = (
+    "相似案檢索失敗（KB 不可用）：{error}。"
+    "這不是「查無相似案」（那代表查過、KB 回 0 筆），也不是「無資料集」"
+    "（那代表本機沒有可檢索的庫）——是檢索呼叫本身失敗，本次執行無從得知有無相似案。"
+    "法條查表通道（通道 A）不受影響，照常有結果。"
+)
+
 ARTICLE_TEXT_UNAVAILABLE = "條文原文不在快照內（快照只索引條號），本系統不代為補寫條文文字，請對照全國法規資料庫。"
 
 
@@ -142,7 +154,12 @@ def build_query(state: CaseState, law_names: list[str] | None = None) -> str:
     return "；".join(parts)
 
 
-def run(state: CaseState, ctx: NodeCtx, cited_laws: list[str] | None = None) -> NodeResult:
+def run(
+    state: CaseState,
+    ctx: NodeCtx,
+    cited_laws: list[str] | None = None,
+    extra_case_terms: list[str] | None = None,
+) -> NodeResult:
     """`cited_laws`：**正式管線已不再使用**（2026-09-05 Ci 拍板改獨立檢索）。
 
     以前編排層會把 fixture 草稿即將引用的法條蒐集起來當查詢句，那等於
@@ -152,6 +169,11 @@ def run(state: CaseState, ctx: NodeCtx, cited_laws: list[str] | None = None) -> 
 
     參數保留的唯一理由是單元測試與未來的「人工補正查詢句」（承辦人手動加一條法規再查一次）。
     **不要把它接回草稿。**
+
+    `extra_case_terms`：承辦人在「重新檢索」卡指定的查詢詞，**附加**在通道 B 的
+    `case_query` 尾端（spec §5.5）。畫面上那個輸入框就在相似案旁邊，只讓它進通道 A
+    等於功能名稱與實際行為不符（2026-09-07 覆核 I-5）。附加而不取代：案情組出來的
+    查詢句仍然是主體，人指定的詞是補撈，不是換一個查法。
     """
     started = time.perf_counter()
     snapshot = ctx.snapshot or {}
@@ -209,12 +231,21 @@ def run(state: CaseState, ctx: NodeCtx, cited_laws: list[str] | None = None) -> 
     case_query = "；".join(
         [t for t in record_terms if t]
         + ([(state.classification.get("class") or {}).get("case_type") or ""] if state.classification else [])
+        # 承辦人指定的查詢詞附在尾端，標明它是人加的（logs 會寫出來）
+        + [t for t in (extra_case_terms or []) if t]
     )
-    case_hits = (
-        similar.search(case_query or query_text, filters={"prefix": ["歷史訴願決定書/"]}, top_k=5)
-        if case_query or query_text
-        else []
-    )
+    # KB 呼叫失敗只降級通道 B，通道 A 照常（spec §7 第 2 列）。
+    # 不包 try/except 的話 boto3 的 throttle／權限例外會一路冒到 run_case → run_failed → 502，
+    # 「KB 抖一下」就等於整份分析失敗——而通道 A 明明已經算完了。
+    case_hits: list[Any] = []
+    kb_error: str | None = None
+    if case_query or query_text:
+        try:
+            case_hits = similar.search(
+                case_query or query_text, filters={"prefix": ["歷史訴願決定書/"]}, top_k=5
+            )
+        except Exception as e:  # noqa: BLE001 — 檢索器可能是 boto3，例外型別由 SDK 決定
+            kb_error = f"{type(e).__name__}: {e}"
     cases: list[dict[str, Any]] = []
     for i, h in enumerate(case_hits, start=1):
         p = h.payload or {}
@@ -235,17 +266,38 @@ def run(state: CaseState, ctx: NodeCtx, cited_laws: list[str] | None = None) -> 
                 "lamp": None,
             }
         )
-    similar_available = ctx.retriever is not None
+    # 有注入檢索器但呼叫炸了，就不是「可用」——available 必須說的是這一次的實情
+    similar_available = ctx.retriever is not None and kb_error is None
+    similar_meta: dict[str, Any] = dict(similar.meta())
+    if kb_error is not None:
+        similar_meta.update(
+            {
+                "available": False,
+                "label": "檢索失敗，未驗證",
+                "reason": SIMILAR_CASE_KB_FAILED_REASON.format(error=kb_error),
+                "error": kb_error,
+                "hits": 0,
+                "verified": False,
+            }
+        )
 
     retrieval_meta = {
-        "backend": "lawtable+bedrock_kb" if similar_available else "lawtable_only",
+        "backend": (
+            "lawtable+bedrock_kb"
+            if similar_available
+            else "lawtable_only（相似案通道呼叫失敗）"
+            if kb_error is not None
+            else "lawtable_only"
+        ),
         "law_channel": lawtable.meta(),
-        "similar_case_channel": similar.meta(),
+        "similar_case_channel": similar_meta,
         "recall_at5_last_eval": None,
         "recall_note": "檢索評測需要 leave-one-out 的歷史決定書資料集，本機無資料，未量測。",
         "kb_snapshot_date": snapshot.get("generated"),
         "query_text": query_text,
         "case_query_text": case_query,
+        # 人指定的查詢詞要跟案情組出來的部分分得開（誰加的，看得見）
+        "case_query_extra_terms": [t for t in (extra_case_terms or []) if t],
         # 查詢句由哪些案情訊號組成，逐項可查（回歸測試 test_e2e 會驗這裡沒有草稿來源）
         "query_sources": query_sources,
         "query_independence": (
@@ -258,12 +310,21 @@ def run(state: CaseState, ctx: NodeCtx, cited_laws: list[str] | None = None) -> 
 
     elapsed = int((time.perf_counter() - started) * 1000)
     verified_n = sum(1 for l in laws if l["verified"])
+    operator_term_logs = (
+        [[f"含承辦人指定查詢詞：{'、'.join(t for t in extra_case_terms if t)}（附加於案情查詢句尾端）", ""]]
+        if [t for t in (extra_case_terms or []) if t]
+        else []
+    )
     return NodeResult(
         ok=True,
         # 相似案通道不可用屬已知限制，不算節點失敗；但一定要 degraded 外顯
         degraded=not similar_available,
         degrade_reason=(
-            None if similar_available else "相似歷史案通道不可用（無資料集），僅法規查表通道有結果"
+            None
+            if similar_available
+            else SIMILAR_CASE_KB_FAILED_REASON.format(error=kb_error)
+            if kb_error is not None
+            else "相似歷史案通道不可用（無資料集），僅法規查表通道有結果"
         ),
         data=state.retrieval,
         elapsed_ms=elapsed,
@@ -285,11 +346,14 @@ def run(state: CaseState, ctx: NodeCtx, cited_laws: list[str] | None = None) -> 
                 "out": (
                     f"相似歷史案：{len(cases)} 筆（{', '.join(sorted({c['provenance'] or '?' for c in cases})) or '無'}）。"
                     if similar_available
+                    else "相似歷史案：檢索失敗，本次執行無結果（KB 不可用，非查無）。"
+                    if kb_error is not None
                     else "相似歷史案：0 筆（庫外，未驗證）。"
                 ),
                 "logs": (
                     [
                         [f"查詢句：{case_query[:80]}…", ""],
+                        *operator_term_logs,
                         [
                             # outcome 可能是 None（檔名讀不出主文），跟字串混在一起 sorted() 會炸，
                             # 所以在這裡補一個明講「讀不出來」的標籤，不假裝它是某個結果。
@@ -300,6 +364,13 @@ def run(state: CaseState, ctx: NodeCtx, cited_laws: list[str] | None = None) -> 
                         ["相似案為 KB 命中，尚未對資料集實檔逐筆驗證；燈號歸 N6", "y"],
                     ]
                     if similar_available
+                    else [
+                        [SIMILAR_CASE_KB_FAILED_REASON.format(error=kb_error), "r"],
+                        [f"查詢句：{case_query[:80]}…（已送出，呼叫失敗）", ""],
+                        *operator_term_logs,
+                        ["本節點不編造任何案號或相似度分數（CONSTITUTION §2）", ""],
+                    ]
+                    if kb_error is not None
                     else [
                         [SIMILAR_CASE_UNAVAILABLE_REASON, "r"],
                         ["本節點不編造任何案號或相似度分數（CONSTITUTION §2）", ""],
