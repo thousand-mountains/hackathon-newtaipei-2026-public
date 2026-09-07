@@ -311,6 +311,38 @@ def run(state: CaseState, ctx: NodeCtx) -> NodeResult:
             }
         )
 
+    # ── 有內容但沒有主文，一樣不得標成可送出（HACK-S-21）──────────────
+    # 上面那條 `empty_draft` 擋的是「整份全空」。真模型給的是另一種形狀：
+    # 理由段寫滿了、**主文一句都沒有**（`DraftResult.conclusion` 回空 list）。
+    # 2026-09-08 上傳案實測命中：模型把不受理的理由寫完了（其中一句已寫出
+    # 「訴願法第77條第2款，應為不受理之決定」），卻沒寫主文，而 blockers 是空的、
+    # `submit_allowed` 是 true。fixture 檔位驗不到——它的草稿資料一定有主文。
+    #
+    # **C 型案不在此列**：那些案子本來就沒有主文（那是設計，佔位句就是主文的位置），
+    # 已經由下面的 `conclusion_requires_human` 擋住；同一件事報兩條會讓清單失去訊號。
+    # 整份全空的也不在此列：那由 `empty_draft` 報，這裡不重複。
+    conclusion_sentences = [
+        s
+        for block in doc
+        for s in block.get("ss", [])
+        if s.get("slot") == "conclusion"
+        and not s.get("placeholder")
+        and (s.get("t") or "").strip()
+    ]
+    if not needs_human and content_sentences and not conclusion_sentences:
+        blockers.append(
+            {
+                "sentence_id": None,
+                "reason": "conclusion_missing",
+                "detail": (
+                    "草稿有理由段但**沒有結論段**：模型沒有寫出主文。"
+                    "一份沒有主文的決定書不是可送出的決定書——"
+                    "請承辦人補寫，或從「決定書主筆」卡重新產生。"
+                ),
+                "severity": "P0",
+            }
+        )
+
     # ── case 層封鎖：C 型案件一律不得送出 ────────────────────────────
     # **這是這份守門層唯一真正扛得住的判準，因為它不看句子寫了什麼。**
     #

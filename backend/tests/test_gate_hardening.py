@@ -744,10 +744,21 @@ def test_fabricated_citation_cannot_buy_sourced_tier():
 
 
 def test_backstop_does_not_fire_when_conclusion_not_blocked():
-    """兜底層只在 C 型封鎖下生效——一般案件的無引用涵攝句仍可送出（只是黃燈交人工）。"""
-    state = _blocked_state_with([_sentence("s1", "本件事證明確，堪予認定。", "reasoning")])
+    """兜底層只在 C 型封鎖下生效——一般案件的無引用涵攝句仍可送出（只是黃燈交人工）。
+
+    **stub 要帶一句主文**：本測試的斷言是 `submit_allowed`，而 2026-09-08 起
+    「有理由段但沒有結論段」本身就是一條 blocker（`conclusion_missing`，HACK-S-21）。
+    原本的 stub 只有一句 reasoning，那不是一份完整的決定書——用它當「應可送出」的
+    對照組會讓斷言測到兩件事，而我們要測的只有兜底層。
+    """
+    state = _blocked_state_with([
+        _sentence("s1", "本件事證明確，堪予認定。", "reasoning"),
+        _sentence("s2", "訴願駁回。", "conclusion"),
+    ])
     state.screen["requires_human_conclusion"] = False
     n6_gate.run(state, _ctx())
+    reasons = [b["reason"] for b in state.gate["blockers"]]
+    assert_eq(reasons, [], f"非 C 型且文件完整時不該有任何 blocker，實得 {reasons}")
     assert_eq(state.gate["submit_allowed"], True, "非 C 型案件不得被兜底層鎖死")
 
 

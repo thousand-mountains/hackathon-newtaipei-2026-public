@@ -35,6 +35,7 @@ from backend.retrieval.base import Hit
 from backend.retrieval.kb import KBRetriever, build_retriever
 from backend.tests import run_all
 from backend.tests.harness import assert_eq, assert_in, assert_true
+from backend.tests.test_gate_hardening import _confirmed_of
 
 
 @contextmanager
@@ -1464,6 +1465,60 @@ def test_unconfirmed_deadline_inputs_appear_in_the_human_tier():
     assert_eq(len(hits), 1, "請人工判斷層要有且只有一條輸入未確認的提醒")
     assert_eq(hits[0]["origin"], "rule", "這是規則層算出來的，不是模型講的")
     assert_in("d2", hits[0]["t"])
+
+
+def test_missing_conclusion_blocks_submit_on_a_non_blocked_case():
+    """HACK-S-21：模型把 `conclusion` 回空 list → 一份沒有主文的決定書被判可送出。
+
+    2026-09-08 上傳案實測命中：模型把不受理的**理由**寫完了（reasoning 5 句，其中
+    一句已寫出「訴願法第77條第2款，應為不受理之決定」），卻沒寫**主文**，
+    而 N6 只有「整份草稿全空」（`empty_draft`）這道檢查，擋不住「有內容但沒有結論段」。
+
+    fixture 檔位驗不到：它的草稿資料一定有主文（未封鎖時是「訴願不受理。」，
+    封鎖時是佔位句），空 list 只有真模型給得出來。
+    """
+    def fake_draft(context, slots, retrieve_fn=None, **kw):
+        out = {s: [{"t": f"{s}：本件依訴願法第14條所定期間審認。", "cite_ids": [],
+                    "basis": "訴願法第14條", "source_kind": "law"}] for s in slots}
+        out["conclusion"] = []          # ← 模型沒寫主文
+        return {"slots": out, "tool_calls": [], "usage": None, "model_id": "m"}
+
+    orig = client.draft_sentences
+    client.draft_sentences = fake_draft
+    try:
+        st = _n6_ready_state(requires_human=False)
+        n5_draft.run(st, NodeCtx(run_mode="bedrock"), case_fixture=_ordinary_fixture())
+        n6_gate.run(st, NodeCtx(run_mode="bedrock", snapshot=load_snapshot()))
+    finally:
+        client.draft_sentences = orig
+
+    concl = [s for b in st.gate["doc"] for s in b.get("ss", []) if s.get("slot") == "conclusion"]
+    assert_eq(concl, [], "前提不成立：這個 fake 應該產不出結論句")
+    hits = [b for b in st.gate["blockers"] if b["reason"] == "conclusion_missing"]
+    assert_eq(len(hits), 1, "沒有主文的決定書必須有一條 conclusion_missing blocker")
+    assert_eq(hits[0].get("severity"), "P0")
+    assert_true(st.gate["submit_allowed"] is False, "沒有主文不得標為可送出")
+
+
+def test_present_conclusion_does_not_trigger_the_missing_blocker():
+    """有主文就不該吵——誤報會讓這條 blocker 變成永遠亮著的雜訊。"""
+    st = run_case(
+        "synthetic-ordinary-01", mode="fixture", persist=False,
+        confirmed_intake=_confirmed_of(load_case("synthetic-ordinary-01")),
+    )
+    concl = [s for b in st.gate["doc"] for s in b.get("ss", []) if s.get("slot") == "conclusion"]
+    assert_true(concl, "前提不成立：確認後的 ordinary 應該有主文")
+    assert_eq([b for b in st.gate["blockers"] if b["reason"] == "conclusion_missing"], [])
+    assert_true(st.gate["submit_allowed"], "有主文且無其他 blocker 時應可送出")
+
+
+def test_blocked_case_reports_only_the_c_type_blocker_not_missing_conclusion():
+    """C 型案本來就沒有主文（那是設計），不得再多報一條 conclusion_missing——
+    同一件事兩條 blocker 會讓清單失去訊號（第三輪覆核的教訓）。"""
+    st = run_case("synthetic-blocked-01", mode="fixture", persist=False)
+    reasons = [b["reason"] for b in st.gate["blockers"]]
+    assert_in("conclusion_requires_human", reasons)
+    assert_true("conclusion_missing" not in reasons, f"C 型案不該多報，實得 {reasons}")
 
 
 def test_unsupported_citation_reaches_n6_and_blocks_submit():
