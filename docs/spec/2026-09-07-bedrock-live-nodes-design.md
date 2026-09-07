@@ -182,9 +182,9 @@ class KBRetriever:
 | 重新抽取 | n1 | 全部 | N1、N5 |
 | 確認欄位後繼續 | n2 + confirmed_intake | N2–N6 | N5 |
 | 重新檢索（可帶 n4_query） | n4 | N4–N6 | N5 |
+| 重新產生草稿 | n5 | N5、N6 | N5 |
 
 `overrides.n4_query` **同時進兩條通道**（覆核 I-5）：以 `cited_laws` 進通道 A（法規查表的 `query_text`），並以 `extra_case_terms` 附加在通道 B（相似案）`case_query` 的尾端——附加而不取代，案情組出來的查詢句仍是主體。畫面上那個輸入框緊鄰相似案卡，只進通道 A 會讓功能名稱與實際行為不符。
-| 重新產生草稿 | n5 | N5、N6 | N5 |
 
 `run_meta.run_id_note` 改為如實描述：「支援 base_run_id 續跑；同 body 重送仍產生新 run」。
 

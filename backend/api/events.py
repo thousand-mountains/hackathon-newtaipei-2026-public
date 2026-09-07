@@ -12,6 +12,10 @@ from typing import Any
 
 
 class RunEvents:
+    # 記憶體上限：這個 bus 不持久化也沒有 TTL，長跑的 process 會一路累積事件。
+    # demo 量級遠低於 200，設上限只是為了「跑久了不會無上限長大」。
+    MAX_RUNS = 200
+
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._events: dict[str, list[dict[str, Any]]] = {}
@@ -21,6 +25,24 @@ class RunEvents:
         with self._lock:
             self._events.setdefault(run_id, [])
             self._status[run_id] = {"status": "running"}
+            self._evict_locked()
+
+    def _evict_locked(self) -> None:
+        """超過 MAX_RUNS 就依插入順序淘汰最舊的**已結束** run（呼叫方須持有 lock）。
+
+        只淘汰 done／failed：running 的 run 淘汰掉會讓 `GET /api/runs/{id}` 從
+        409 直接掉成 404，前端會誤讀成「這次執行不存在」。真的全部都在 running
+        （超過 200 個並行）就不淘汰，讓它超標——寧可記憶體多佔一點，
+        也不要在還沒跑完時把狀態弄丟。
+        """
+        if len(self._status) <= self.MAX_RUNS:
+            return
+        for rid in list(self._status):  # dict 的插入順序即最舊在前
+            if len(self._status) <= self.MAX_RUNS:
+                return
+            if self._status[rid]["status"] != "running":
+                del self._status[rid]
+                self._events.pop(rid, None)
 
     def push(self, run_id: str, kind: str, data: dict[str, Any]) -> None:
         with self._lock:

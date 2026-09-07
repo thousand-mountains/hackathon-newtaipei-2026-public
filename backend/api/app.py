@@ -22,6 +22,7 @@
 | POST | `/api/cases`                | 上傳卷證建案，回 `case_id`（只收 .pdf／.txt）|
 | POST | `/api/cases/{case_id}/runs` | 跑六節點：fixture 同步 200；bedrock 202 + run_id |
 | GET  | `/api/runs/{run_id}`        | 輪詢執行結果：200／409 執行中／502 失敗／404 |
+| GET  | `/api/runs/{run_id}/events` | SSE 節點事件流（bedrock 檔位的加值層）      |
 | POST | `/api/cases/{case_id}/submit` | 送出審議：後端重算後 200／409（§6.1 #9）  |
 | POST | `/api/deadline`             | 期間計算（沿用 prototype/app.py 的契約）    |
 
@@ -47,7 +48,7 @@ if str(ROOT) not in sys.path:
 
 from fastapi import BackgroundTasks, FastAPI, File, HTTPException, UploadFile  # noqa: E402
 from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
-from fastapi.responses import FileResponse, JSONResponse  # noqa: E402
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse  # noqa: E402
 from fastapi.staticfiles import StaticFiles  # noqa: E402
 from pydantic import BaseModel, ConfigDict  # noqa: E402
 
@@ -313,8 +314,9 @@ def create_run(case_id: str, background: BackgroundTasks, body: RunIn | None = N
 
     - fixture：同步跑完，200 ＋ 完整 CASE payload（全程毫秒級，沒有阻塞疑慮）。
       `run_id` 在 payload 頂層與 `run_meta` 各有一份。
-    - bedrock：202 ＋ `{run_id, status, result_url}`，實際執行在背景，
-      前端拿 `result_url` 輪詢 `GET /api/runs/{id}`（architecture §6.1 的 2b）。
+    - bedrock：202 ＋ `{run_id, status, result_url, events_url}`，實際執行在背景，
+      前端拿 `result_url` 輪詢 `GET /api/runs/{id}`（architecture §6.1 的 2b），
+      或接 `events_url` 的 SSE 逐節點更新（加值層，斷了就退回輪詢）。
     """
     try:
         kwargs = _run_kwargs(body)
@@ -344,7 +346,12 @@ def create_run(case_id: str, background: BackgroundTasks, body: RunIn | None = N
     BUS.start(rid)
     background.add_task(_run_in_background, case_id, rid, kwargs)
     return JSONResponse(
-        {"run_id": rid, "status": "running", "result_url": f"/api/runs/{rid}"},
+        {
+            "run_id": rid,
+            "status": "running",
+            "result_url": f"/api/runs/{rid}",
+            "events_url": f"/api/runs/{rid}/events",
+        },
         status_code=202,
     )
 
@@ -372,6 +379,38 @@ def get_run(run_id: str):
     except (RunNotFound, ValueError) as e:
         raise _translate(e) from e
     return build_payload(state)
+
+
+@app.get("/api/runs/{run_id}/events")
+def run_events(run_id: str) -> StreamingResponse:
+    """SSE 節點事件流（spec 2026-09-07 §5.6）。**加值層，不是唯一取得結果的路徑。**
+
+    事件序是 `node_start`／`node_done` 成對出現（六節點全跑完才會有六對；
+    中途失敗就停在該節點），收尾 `run_done` 或 `run_failed`，閒置過久發
+    `timeout` 後關流。`data` 一律是一個 JSON 物件。
+
+    本端點是同步 `def`：starlette 會把同步 generator 丟到 threadpool 迭代，
+    所以 `stream()` 裡的 `time.sleep` 不會卡住 event loop——代價是每條開著的
+    SSE 佔一個 threadpool thread（預設 40），demo 量級夠用，不是通用方案。
+
+    事件只活在這個 process 的記憶體裡（`RunEvents`），沒有持久化也沒有回放：
+    process 重啟後事件就沒了，但結果還在 runstore，所以 404 的說明要指回
+    `GET /api/runs/{run_id}`——前端不該因為事件流斷了就以為執行結果不見了。
+    """
+    if BUS.status(run_id) is None:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"沒有這個 run 的事件流：{run_id}"
+                f"（process 重啟後事件不保留，結果請打 GET /api/runs/{run_id}）"
+            ),
+        )
+    return StreamingResponse(
+        BUS.stream(run_id),
+        media_type="text/event-stream",
+        # no-store 擋瀏覽器與中間層快取；X-Accel-Buffering 擋 nginx 把事件緩衝成一坨。
+        headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
+    )
 
 
 # 送出紀錄。**本機檔案，沒有任何外部整合**——沒有寄信、沒有排議程、沒有打任何外部系統。
