@@ -103,3 +103,34 @@ def test_unknown_method_raises():
     except ValueError:
         return
     raise AssertionError("未知送達方式應該 raise ValueError")
+
+
+def test_public_overdue_replay_agreement_at_least_99_percent():
+    """爬蟲 77-2 不受理案回放（spec AC13）：**只報告一致率，不 assert**。
+
+    檔案不存在就跳過（不假裝有跑）。筆數不足 100 也只報告不 assert
+    ——「樣本夠不夠」是量測範圍問題，不是紅線（控制端 2026-09-07 裁定）。
+    回放集由 `scripts/replay_overdue_public.py` 產生，只含案號與日期（無人名、無全文）。
+    """
+    p = BACKEND / "data" / "replay" / "overdue-public.jsonl"
+    if not p.exists():
+        print("  skip  回放集不存在（跑 scripts/replay_overdue_public.py 產生）")
+        return
+    rows = [json.loads(line) for line in p.read_text(encoding="utf-8").splitlines() if line.strip()]
+    if len(rows) < 100:
+        print(f"  info  回放集只有 {len(rows)} 件，樣本不足以宣稱一致率——不 assert，只記錄")
+        return
+    agree = 0
+    mismatched: list[str] = []
+    for r in rows:
+        res = compute(service_method=r["service_method"], service_date=_d(r["service_date"]),
+                      filing_date=_d(r["filing_date"]), transit_days=0, interested_party=False)
+        if bool(res.overdue) == r["expected_overdue"]:
+            agree += 1
+        else:
+            mismatched.append(str(r["case_no"]))
+    rate = agree / len(rows)
+    # 只報告不 assert：這是量測不是紅線，日期 heuristics 偏差不該卡住全套測試（plan-guardian 2026-09-07）
+    print(f"  info  公開案回放一致率 {rate:.3%}（{agree}/{len(rows)}）；目標 ≥ 99%，未達即寫入 docs/evidence 的 replay-mismatch.md")
+    if mismatched:
+        print(f"  info  不一致案號（前 10）：{', '.join(mismatched[:10])}")

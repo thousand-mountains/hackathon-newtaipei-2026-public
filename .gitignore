@@ -21,3 +21,6 @@ prototype/data/dataset/
 
 # 執行輸出（backend pipeline）
 backend/output/
+
+# 本機 KB 暫存與賽方資料（CONSTITUTION §6）
+data/local/

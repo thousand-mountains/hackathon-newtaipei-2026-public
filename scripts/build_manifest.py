@@ -1,0 +1,111 @@
+#!/usr/bin/env python3
+"""把兩批來源整理成 KB 入庫用的 txt 與 manifest（spec 2026-09-07 §6.2–6.3）。
+
+    python3 scripts/build_manifest.py --official "/path/資料集" --crawl "/path/cases.jsonl" \
+        --out data/manifest.json --stage data/local/kb
+
+manifest 只記路徑、來源、sha256、案號、結果；**不含內容、不含人名**，可進 git。
+stage 目錄與賽方資料不進 git（CONSTITUTION §6，`.gitignore` 的 `data/local/`）。
+
+隱私（CONSTITUTION §6）：爬蟲那批的 `appellant`／`title`／`summary` 一律不寫進 manifest。
+manifest 是會進 git 的檔，只放「哪個檔、哪來的、內容 hash 是多少」這種可公開的中介資訊。
+
+需要 poppler 的 pdftotext（brew install poppler）。
+"""
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import pathlib
+import re
+import subprocess
+import sys
+
+OFFICIAL_DIRS = {"歷史訴願決定書": True, "行政函釋": True, "司法院釋字及行政判解": True, "相關法規": False}  # False = 不入 KB（走查表）
+CJK = re.compile(r"[一-鿿]")
+OUTCOME = re.compile(r"(駁回|撤銷|不受理)")
+
+
+def sha256(p: pathlib.Path) -> str:
+    return hashlib.sha256(p.read_bytes()).hexdigest()
+
+
+def pdf_to_txt(pdf: pathlib.Path, out: pathlib.Path) -> tuple[bool, float]:
+    out.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(["pdftotext", "-layout", str(pdf), str(out)], check=True)
+    text = out.read_text(encoding="utf-8", errors="ignore")
+    letters = [c for c in text if not c.isspace()]
+    ratio = (sum(1 for c in letters if CJK.match(c)) / len(letters)) if letters else 0.0
+    return ratio >= 0.6, round(ratio, 3)
+
+
+def normalize_name(name: str) -> str:
+    return name.replace(" 的副本", "").replace(".pdf", "").strip() + ".txt"
+
+
+def roc_year_of(case_no: str) -> str | None:
+    """爬蟲資料**沒有** `year` 欄位（2026-09-07 實測）。案號前三碼是民國年（例 `109`）。
+
+    抓不到就給 None——manifest 寧可缺欄位，也不要放一個猜出來的年度。
+    """
+    head = case_no[:3]
+    return head if len(head) == 3 and head.isdigit() else None
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--official", required=True)
+    ap.add_argument("--crawl", default=None, help="爬蟲 cases.jsonl（選填）")
+    ap.add_argument("--out", default="data/manifest.json")
+    ap.add_argument("--stage", default="data/local/kb")
+    a = ap.parse_args()
+    stage = pathlib.Path(a.stage)
+    entries: list[dict] = []
+    report: list[str] = []
+
+    for sub, into_kb in OFFICIAL_DIRS.items():
+        for pdf in sorted((pathlib.Path(a.official) / sub).rglob("*.pdf")):
+            if not into_kb:
+                report.append(f"SKIP（走查表）{sub}/{pdf.name}")
+                continue
+            rel = pathlib.Path(sub) / pdf.relative_to(pathlib.Path(a.official) / sub).parent / normalize_name(pdf.name)
+            out = stage / "official" / rel
+            # pdftotext 單檔失敗不該讓整批重跑：記進報告、跳過該筆（entries 少一筆比 manifest 不存在好）
+            try:
+                ok, ratio = pdf_to_txt(pdf, out)
+            except (OSError, subprocess.SubprocessError) as e:
+                report.append(f"FAIL（pdftotext）{rel}：{e}")
+                continue
+            if not ok:
+                report.append(f"LOW-CJK {ratio} {rel}")
+            m = OUTCOME.search(pdf.name)
+            entries.append({"path": f"kb/official/{rel.as_posix()}", "provenance": "official", "sha256": sha256(out),
+                            "source_pdf": pdf.name, "outcome": m.group(1) if m else None, "cjk_ratio": ratio})
+
+    if a.crawl:
+        with open(a.crawl, encoding="utf-8") as fh_in:
+            for line in fh_in:
+                r = json.loads(line)
+                case_no = str(r.get("case_no") or r.get("eano") or "").strip()
+                outcome = (r.get("outcome") or "").strip()
+                if not case_no or not r.get("full_text"):
+                    continue
+                rel = pathlib.Path("新北訴願決定書_全量") / f"{case_no}_{outcome or '未知'}.txt"
+                out = stage / "public" / rel
+                out.parent.mkdir(parents=True, exist_ok=True)
+                out.write_text(r["full_text"], encoding="utf-8")
+                entries.append({"path": f"kb/public/{rel.as_posix()}", "provenance": "public_crawl", "sha256": sha256(out),
+                                "case_no": case_no, "outcome": outcome or None, "year": roc_year_of(case_no),
+                                "category": r.get("category")})
+
+    pathlib.Path(a.out).parent.mkdir(parents=True, exist_ok=True)
+    pathlib.Path(a.out).write_text(json.dumps({"generated_by": "scripts/build_manifest.py", "entries": entries},
+                                              ensure_ascii=False, indent=1), encoding="utf-8")
+    (stage / "ingest_report.md").write_text("\n".join(report) or "（無需人工處理）", encoding="utf-8")
+    print(f"manifest：{len(entries)} 筆 → {a.out}；報告 → {stage / 'ingest_report.md'}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
