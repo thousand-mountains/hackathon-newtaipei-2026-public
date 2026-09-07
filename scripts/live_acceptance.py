@@ -1,0 +1,358 @@
+#!/usr/bin/env python3
+"""live 驗收：對跑起來的服務逐條打 AC4–AC15，輸出 markdown 到 stdout。
+
+    RUN_MODE=bedrock RETRIEVER=kb ... uvicorn backend.api.app:app --port 8123 &
+    python3 scripts/live_acceptance.py --base http://127.0.0.1:8123 \
+        > docs/evidence/2026-09-07-bedrock-live/acceptance.md
+
+只用 stdlib。每條 AC 印 ✅／❌／⏸ 與證據；任何 ❌ 以 exit 1 結束。
+
+**⏸ 的意思**：腳本每次拿到 payload 都讀 `run_meta.run_mode`。需要真模型／真 KB 的
+AC（AC4、AC5、AC7、AC15）在服務不是 bedrock 模式時標「未驗」而**不是**失敗——
+fixture 模式下這些 AC 根本沒有可驗的對象，判 ❌ 是說謊，判 ✅ 更是。
+不需要模型的 AC（AC6 封鎖、AC8／AC8b／AC9 續跑、health）在任何模式都照常真驗。
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import pathlib
+import sys
+import time
+import urllib.error
+import urllib.request
+import uuid
+from collections.abc import Callable
+
+OUT: list[str] = []
+FAILS = 0
+
+FIXTURE_PATH = "backend/data/synthetic/synthetic-ordinary-01.json"
+
+# AC 名稱集中放，⏸ 與 ✅／❌ 兩條路徑印出來的列名才不會漂掉
+AC4 = "AC4 N1 live：12 欄 origin=llm、conf 0–1、model_id 非空"
+AC5 = "AC5 N5 live：每句 cite_ids ⊆ N4 ∪ 工具命中"
+AC6 = "AC6 C 型封鎖成立（requires_human_conclusion／無 llm 結論／submit_allowed=false）"
+AC7 = "AC7 KB recall：cases ≥ 3 且同案型 ≥ 3"
+AC8 = "AC8 續跑 n5：N1–N4 相同、只跑 n5/n6"
+AC8B = "AC8b from_node 無 base → 400"
+AC9 = "AC9 確認後從 n2 續跑不重抽"
+AC10 = "AC10 SSE 6 對 start/done + run_done（加值層）"
+AC15 = "AC15 上傳 txt → N1 抽取與 fixture 一致、N2 案型一致"
+
+
+def say(s: str) -> None:
+    OUT.append(s)
+
+
+def _cell(s: str) -> str:
+    """表格欄位：吃掉會把 markdown 表格弄壞的字元。"""
+    return s.replace("|", "\\|").replace("\n", " ").strip()
+
+
+def check(name: str, ok: bool, evidence: str) -> None:
+    global FAILS
+    FAILS += 0 if ok else 1
+    say(f"| {name} | {'✅' if ok else '❌'} | {_cell(evidence)} |")
+
+
+def pending(name: str, evidence: str) -> None:
+    """未驗：不計入 FAILS，也絕不能寫成通過。"""
+    say(f"| {name} | ⏸ | {_cell(evidence)} |")
+
+
+def guarded(fn: Callable[[], tuple[bool, str]]) -> tuple[bool, str]:
+    """檢查式自己炸掉時，照實記成失敗並帶原始例外，不讓腳本整支中斷。"""
+    try:
+        return fn()
+    except Exception as e:  # noqa: BLE001 — 驗收腳本要把任何例外原樣端出來
+        return False, f"檢查時例外：{type(e).__name__}: {e}"
+
+
+def live_ac(name: str, mode: str, fn: Callable[[], tuple[bool, str]]) -> None:
+    """需要真模型／真 KB 的 AC：只有 bedrock 模式才真驗，其餘一律 ⏸。"""
+    if mode != "bedrock":
+        pending(name, f"未驗（服務為 {mode} 模式，需 Bedrock 開通）")
+        return
+    ok, evidence = guarded(fn)
+    check(name, ok, evidence)
+
+
+def local_ac(name: str, fn: Callable[[], tuple[bool, str]]) -> None:
+    """不需要模型就能驗的 AC：任何模式都真判 ✅／❌。"""
+    ok, evidence = guarded(fn)
+    check(name, ok, evidence)
+
+
+def http(base: str, method: str, path: str, body: dict | None = None) -> tuple[int, dict | str]:
+    req = urllib.request.Request(
+        base + path,
+        method=method,
+        data=json.dumps(body).encode() if body is not None else None,
+        headers={"Content-Type": "application/json", "Accept": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=180) as r:
+            raw = r.read().decode()
+            return r.status, (json.loads(raw) if raw else {})
+    except urllib.error.HTTPError as e:
+        raw = e.read().decode()
+        try:
+            return e.code, json.loads(raw)
+        except json.JSONDecodeError:
+            return e.code, raw
+    except urllib.error.URLError as e:
+        # 服務根本沒起來時不要噴 traceback，回一個假狀態碼讓該列記成 ❌
+        return 0, f"連不上服務：{e.reason}"
+
+
+def wait_run(base: str, rid: str) -> tuple[int, dict | str]:
+    for _ in range(90):
+        code, body = http(base, "GET", f"/api/runs/{rid}")
+        if code != 409:
+            return code, body
+        time.sleep(2)
+    return 408, "timeout"
+
+
+def run(base: str, case: str, body: dict | None = None) -> tuple[int, dict | str, list[str]]:
+    """啟動一次分析並拿回終態 payload。
+
+    兩個檔位的回應形狀不同（app.py:304-345）：bedrock 回 202 ＋ ticket，之後輪詢；
+    fixture 同步跑完直接回 200 ＋ payload。其他狀態碼原樣回傳，由呼叫端判成 ❌。
+    """
+    code, ticket = http(base, "POST", f"/api/cases/{case}/runs", body or {})
+    if code == 200:
+        return code, ticket, []
+    if code != 202 or not isinstance(ticket, dict):
+        return code, ticket, []
+    rid = ticket["run_id"]
+    events: list[str] = []
+    if ticket.get("events_url"):  # Task 7b 做了才有；沒有就純輪詢
+        with urllib.request.urlopen(base + ticket["events_url"], timeout=300) as r:
+            for raw_line in r:
+                line = raw_line.decode().strip()
+                if line.startswith("event:"):
+                    events.append(line.split(":", 1)[1].strip())
+                if events and events[-1] in ("run_done", "run_failed", "timeout"):
+                    break
+    code, payload = wait_run(base, rid)
+    return code, payload, events
+
+
+def post_multipart(base: str, path: str, files: list[tuple[str, str]]) -> tuple[int, dict | str]:
+    """把 (filename, text) 們組成 multipart/form-data 打上去（AC15 的上傳建案）。"""
+    boundary = "----ac15" + uuid.uuid4().hex
+    body = b""
+    for name, text in files:
+        body += (
+            f'--{boundary}\r\nContent-Disposition: form-data; name="files"; filename="{name}"\r\n'
+            f"Content-Type: text/plain\r\n\r\n"
+        ).encode() + text.encode() + b"\r\n"
+    body += f"--{boundary}--\r\n".encode()
+    req = urllib.request.Request(
+        base + path,
+        data=body,
+        method="POST",
+        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=60) as r:
+            raw = r.read().decode()
+            return r.status, (json.loads(raw) if raw else {})
+    except urllib.error.HTTPError as e:
+        raw = e.read().decode()
+        try:
+            return e.code, json.loads(raw)
+        except json.JSONDecodeError:
+            return e.code, raw
+
+
+def detail_of(body: dict | str) -> str:
+    """把錯誤回應擠成一行人看得懂的字串。"""
+    if isinstance(body, dict):
+        return json.dumps(body.get("detail", body), ensure_ascii=False)
+    return str(body)[:300]
+
+
+def check_ac4(p: dict) -> tuple[bool, str]:
+    fields = [k for k in p["intake"] if k not in ("auto_fields", "auto_toast")]
+    all_llm = all(p["intake_origin"].get(k) == "llm" for k in fields)
+    conf_ok = bool(p["intake_conf"]) and all(0 <= v <= 1 for v in p["intake_conf"].values())
+    model_ok = bool((p["run_meta"].get("model_ids") or {}).get("extract"))
+    ok = all_llm and conf_ok and model_ok and len(fields) == 12
+    return ok, f"欄位數={len(fields)}、全 llm={all_llm}、conf 皆 0–1={conf_ok}、extract model_id 非空={model_ok}"
+
+
+def check_ac5(p: dict) -> tuple[bool, str]:
+    allowed = (
+        {law["id"] for law in p["laws"]}
+        | {c["id"] for c in p["cases"]}
+        | {r["id"] for r in ((p.get("draft") or {}).get("refs") or [])}
+    )
+    bad = [
+        c
+        for b in p["doc"]
+        for s in b["ss"]
+        if s.get("origin") == "llm"
+        for c in (s.get("cite_ids") or [])
+        if c not in allowed
+    ]
+    return not bad, f"越界引用：{bad or '無'}"
+
+
+def check_ac7(p: dict) -> tuple[bool, str]:
+    def norm(s: str) -> str:
+        return (s or "").replace("汙", "污")
+
+    same_type = sum(1 for c in p["cases"] if norm(p["intake"]["type"]) in norm(c.get("t", "")))
+    ok = len(p["cases"]) >= 3 and same_type >= 3
+    return ok, f"cases={len(p['cases'])}、同案型={same_type}、明細={[(c.get('t'), c.get('outcome')) for c in p['cases']]}"
+
+
+def check_ac6(code: int, pb: dict | str) -> tuple[bool, str]:
+    if code != 200 or not isinstance(pb, dict):
+        return False, f"取不到 payload：HTTP {code} {detail_of(pb)}"
+    requires_human = pb["screen"].get("requires_human_conclusion") is True
+    llm_conclusion = [
+        s["id"]
+        for b in pb["doc"]
+        for s in b["ss"]
+        if s.get("slot") == "conclusion" and s.get("origin") == "llm" and not s.get("placeholder")
+    ]
+    submit_blocked = pb["submit_allowed"] is False
+    ok = requires_human and not llm_conclusion and submit_blocked
+    reasons = [b.get("reason") for b in pb.get("blockers", [])]
+    return ok, (
+        f"requires_human_conclusion={requires_human}、非佔位 llm 結論={llm_conclusion or '無'}、"
+        f"submit_allowed={pb['submit_allowed']}、blockers={reasons}"
+    )
+
+
+def check_ac8(base: str, p: dict) -> tuple[bool, str]:
+    base_rid = p["run_id"]
+    code, p2, _ = run(base, p["case_id"], {"base_run_id": base_rid, "from_node": "n5"})
+    if code != 200 or not isinstance(p2, dict):
+        return False, f"續跑失敗：HTTP {code} {detail_of(p2)}"
+    same_retrieval = p2["retrieval"] == p["retrieval"]
+    timings = sorted(p2["run_meta"]["node_timings"])
+    ok = same_retrieval and timings == ["n5", "n6"] and p2["run_meta"]["base_run_id"] == base_rid
+    return ok, f"retrieval 相同={same_retrieval}、node_timings={timings}、base_run_id 正確={p2['run_meta']['base_run_id'] == base_rid}"
+
+
+def check_ac9(base: str, p: dict) -> tuple[bool, str]:
+    confirmed = {
+        k: p["intake"][k]
+        for k in ("d2", "d3", "service_method", "transit_days", "interested_party", "note")
+    }
+    code, p3, _ = run(
+        base,
+        p["case_id"],
+        {"base_run_id": p["run_id"], "from_node": "n2", "confirmed_intake": confirmed},
+    )
+    if code != 200 or not isinstance(p3, dict):
+        return False, f"續跑失敗：HTTP {code} {detail_of(p3)}"
+    timings = sorted(p3["run_meta"]["node_timings"])
+    ok = "n1" not in timings and p3["intake_origin"]["d2"] == "human"
+    return ok, f"node_timings={timings}、intake_origin.d2={p3['intake_origin']['d2']}"
+
+
+def check_ac8b(base: str, case: str) -> tuple[bool, str]:
+    code, body = http(base, "POST", f"/api/cases/{case}/runs", {"from_node": "n5"})
+    return code == 400, f"HTTP {code}：{detail_of(body)}"
+
+
+def check_ac15(pu: dict, want: dict) -> tuple[bool, str]:
+    keys = ("no", "d2", "d3", "service_method")
+    got = {k: pu["intake"].get(k) for k in keys}
+    expect = {k: want[k] for k in keys}
+    same = all(str(got[k]) == str(expect[k]) for k in keys)
+    type_ok = pu["classification"]["class"]["case_type"] == want["type"]
+    return same and type_ok, f"got={got}、want={expect}、案型一致={type_ok}"
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--base", default="http://127.0.0.1:8123")
+    a = ap.parse_args()
+    base = a.base.rstrip("/")
+
+    say("✅ 通過　❌ 失敗　⏸ 未驗（需 Bedrock）\n")
+    say("| AC | 結果 | 證據 |")
+    say("|---|---|---|")
+
+    code, health = http(base, "GET", "/api/health")
+    local_ac(
+        "health 200 且 live_settings ok",
+        lambda: (
+            code == 200 and isinstance(health, dict) and health.get("ok") is True,
+            f"HTTP {code}、run_mode={health.get('run_mode') if isinstance(health, dict) else '?'}、"
+            f"checks={[(c['name'], c['ok']) for c in health.get('checks', [])] if isinstance(health, dict) else health}",
+        ),
+    )
+
+    code, p, ev = run(base, "synthetic-ordinary-01")
+    ok_main = code == 200 and isinstance(p, dict)
+    mode = p["run_meta"]["run_mode"] if ok_main else "unknown"
+    local_ac(
+        "synthetic-ordinary-01 跑完六節點",
+        lambda: (ok_main, f"HTTP {code}、run_mode={mode}" if ok_main else f"HTTP {code}：{detail_of(p)}"),
+    )
+
+    if ev:
+        local_ac(
+            AC10,
+            lambda: (
+                ev.count("node_start") == 6 and ev.count("node_done") == 6 and ev[-1] == "run_done",
+                " → ".join(ev),
+            ),
+        )
+    else:
+        pending(AC10, "加值層未做：ticket 沒有 events_url（Task 7b 未實作），無 SSE 可驗")
+
+    if not ok_main:
+        say("\n主案例跑不起來，其餘 AC 無法驗。")
+        print("\n".join(OUT))
+        return 1
+
+    live_ac(AC4, mode, lambda: check_ac4(p))
+    live_ac(AC5, mode, lambda: check_ac5(p))
+    live_ac(AC7, mode, lambda: check_ac7(p))
+    local_ac(AC8, lambda: check_ac8(base, p))
+    local_ac(AC9, lambda: check_ac9(base, p))
+    local_ac(AC8B, lambda: check_ac8b(base, "synthetic-ordinary-01"))
+
+    code_b, pb, _ = run(base, "synthetic-blocked-01")
+    local_ac(AC6, lambda: check_ac6(code_b, pb))
+
+    # AC15：上傳合成訴願書 txt → 抽取結果與該案 fixture 一致
+    fx = json.loads(pathlib.Path(FIXTURE_PATH).read_text(encoding="utf-8"))
+    files = [(d["n"].replace(".pdf", ".txt"), d["text"]) for d in fx["documents"]]
+    code_c, created = post_multipart(base, "/api/cases", files)
+    if code_c != 201 or not isinstance(created, dict):
+        check(AC15, False, f"上傳建案失敗：HTTP {code_c} {detail_of(created)}")
+    else:
+        cid = created["case_id"]
+        code_u, pu, _ = run(base, cid)
+        if mode != "bedrock":
+            # 上傳案沒有可重播的 fixture，fixture 檔位會擋下來（graph.py:221）。
+            # 這代表「機制正確、live 未驗」，不是失敗。
+            pending(
+                AC15,
+                f"上傳建案 201（case_id 前綴 upload-）；POST runs → HTTP {code_u}：{detail_of(pu)}"
+                "。機制正確、live 未驗（需 Bedrock 開通）",
+            )
+        elif code_u != 200 or not isinstance(pu, dict):
+            check(AC15, False, f"上傳案分析失敗：HTTP {code_u} {detail_of(pu)}")
+        else:
+            local_ac(AC15, lambda: check_ac15(pu, fx["extraction"]["intake"]))
+
+    say("")
+    say(f"服務模式：`{mode}`。⏸ 的項目要等 Bedrock 開通後，對 `RUN_MODE=bedrock` 的服務重跑同一支腳本。")
+    say("AC11（模型 id 設成不存在值 → 502 且 payload 無 fixture 內容）需另起一個服務實例驗證，證據見 `ac11.md`。")
+    print("\n".join(OUT))
+    return 1 if FAILS else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
