@@ -43,6 +43,15 @@ def bedrock_model_id(kind: str) -> str | None:
     return os.environ.get(f"BEDROCK_MODEL_ID_{kind.upper()}") or None
 
 
+def openai_model_id() -> str | None:
+    """`MODEL_PROVIDER=openai` 時真正被呼叫的 model id。本檔不預設任何值。
+
+    有這個讀取器是為了讓 `llm.client.model_ids()` 報得出**真的被呼叫的那個模型**——
+    provider 是 openai 時報 `BEDROCK_MODEL_ID_*` 等於謊報（CONSTITUTION §1）。
+    """
+    return os.environ.get("OPENAI_MODEL_ID") or None
+
+
 def aws_region() -> str | None:
     return os.environ.get("AWS_REGION") or None
 

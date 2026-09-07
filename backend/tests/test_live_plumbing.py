@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import json
 import os
 import pathlib
 import tempfile
@@ -204,6 +205,35 @@ def test_safe_doc_name_keeps_only_bedrock_allowed_characters():
     assert_eq(client._safe_doc_name("原"), "_")
     assert_eq(client._safe_doc_name(""), "doc")
     assert_eq(len(client._safe_doc_name("a" * 200)), 60)
+
+
+def test_model_ids_report_the_model_actually_called_when_provider_is_not_bedrock():
+    """MODEL_PROVIDER=openai 時 `model_ids` 不得報 Bedrock 的 id——那個 id 一次都沒被呼叫過。
+
+    graph.py 的 `_model_ids_if_live` 已經擋掉「fixture 卻報 model id」那種謊報，
+    但同一件事從 provider 這個入口還進得來：openai 分支讀的是 `OPENAI_MODEL_ID`，
+    而 `model_ids()` 回報的是 `BEDROCK_MODEL_ID_*`，兩者毫無關係（CONSTITUTION §1）。
+    """
+    with env(MODEL_PROVIDER="openai", OPENAI_MODEL_ID="gpt-4.1-mini",
+             BEDROCK_MODEL_ID_EXTRACT="bedrock-id-never-called",
+             BEDROCK_MODEL_ID_DRAFT="bedrock-id-never-called-2"):
+        ids = client.model_ids()
+    assert_eq(ids["provider"], "openai")
+    assert_eq(ids["extract"], "gpt-4.1-mini", "extract 要報真的被呼叫的 model")
+    assert_eq(ids["draft"], "gpt-4.1-mini", "draft 要報真的被呼叫的 model")
+    assert_true(
+        "bedrock-id-never-called" not in json.dumps(ids, ensure_ascii=False),
+        "沒被呼叫的 Bedrock model id 不得出現在 model_ids 裡",
+    )
+
+
+def test_model_ids_note_says_the_output_is_not_from_aws_when_provider_is_not_bedrock():
+    """非 AWS provider 必須在 payload 上明說，否則畫面與證據看起來就是 Bedrock 跑的。"""
+    with env(MODEL_PROVIDER="openai", OPENAI_MODEL_ID="gpt-4.1-mini"):
+        note = graph_mod._model_ids_note("bedrock", {"n1", "n5"})
+    assert_true(note, "provider 非 bedrock 時 model_ids_note 不得為 None")
+    assert_in("openai", note.lower(), "要指名 provider")
+    assert_in("不得", note, "要明說輸出不得當驗收證據")
 
 
 def test_load_model_openai_requires_explicit_model_id():

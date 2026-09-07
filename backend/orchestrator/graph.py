@@ -382,16 +382,29 @@ def _model_ids_if_live(mode: str, rerun_nodes: set[str]) -> dict[str, Any] | Non
     return out
 
 
+_NOT_AWS_NOTE = (
+    "MODEL_PROVIDER={provider}：本次執行呼叫的**不是** AWS 服務提供之基礎模型，"
+    "輸出僅供開發期調 prompt，**不得**作為驗收證據或 demo 內容（賽制限 AWS 基礎模型）。"
+)
+
+
 def _model_ids_note(mode: str, rerun_nodes: set[str]) -> str | None:
-    """把 `model_ids` 裡的 None 講清楚是「沒跑」還是「沒有模式」。"""
+    """把 `model_ids` 裡的 None 講清楚是「沒跑」還是「沒有模式」。
+
+    另外：provider 不是 bedrock 時要在這裡大聲說出來。`run_mode` 仍然是 `bedrock`
+    （程式路徑確實走 live 那條），光看 `run_mode` 分不出模型是誰家的。
+    """
     if mode != "bedrock":
         return f"本次執行模式 {mode} 未呼叫任何基礎模型，故無 model id。"
+    provider = model_ids().get("provider")
+    prefix = "" if provider == "bedrock" else _NOT_AWS_NOTE.format(provider=provider) + " "
     skipped = [
         f"續跑未重跑 {node.upper()}，{label}沿用 base_run"
         for node, _key, label in LLM_NODE_MODEL_KEYS
         if node not in rerun_nodes
     ]
-    return "；".join(skipped) + "，故該節點不填 model id。" if skipped else None
+    tail = "；".join(skipped) + "，故該節點不填 model id。" if skipped else ""
+    return (prefix + tail) or None
 
 
 def _dispatch(node, state, ctx, fixture, digest, overrides=None):

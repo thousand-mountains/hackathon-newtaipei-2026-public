@@ -8,9 +8,12 @@
 只用 stdlib。每條 AC 印 ✅／❌／⏸ 與證據；任何 ❌ 以 exit 1 結束。
 `--timeout` 是「等一次執行跑完」的上限（秒，預設 600）；逾時的證據欄會寫明是腳本等不及。
 
-**⏸ 的意思**：腳本每次拿到 payload 都讀 `run_meta.run_mode`。需要真模型／真 KB 的
-AC（AC4、AC5、AC7、AC15）在服務不是 bedrock 模式時標「未驗」而**不是**失敗——
-fixture 模式下這些 AC 根本沒有可驗的對象，判 ❌ 是說謊，判 ✅ 更是。
+**⏸ 的意思**：腳本每次拿到 payload 都讀 `run_meta.run_mode` **與 `run_meta.model_ids.provider`**。
+需要真模型／真 KB 的 AC（AC4、AC5、AC7、AC15）只有「`run_mode=bedrock` **而且**
+provider 是 bedrock」才真驗，其餘一律標「未驗」而**不是**失敗——fixture 模式下這些 AC
+根本沒有可驗的對象，判 ❌ 是說謊，判 ✅ 更是。
+`MODEL_PROVIDER=openai` 時 `run_mode` 仍然是 `bedrock`（程式路徑確實走 live 那條），
+但呼叫的不是 AWS 服務提供之基礎模型，**它的輸出不得充當賽制驗收證據**，所以照樣 ⏸。
 不需要模型的 AC（AC6 封鎖、AC8／AC8b／AC9 續跑、health）在任何模式都照常真驗。
 """
 from __future__ import annotations
@@ -72,10 +75,21 @@ def guarded(fn: Callable[[], tuple[bool, str]]) -> tuple[bool, str]:
         return False, f"檢查時例外：{type(e).__name__}: {e}"
 
 
-def live_ac(name: str, mode: str, fn: Callable[[], tuple[bool, str]]) -> None:
-    """需要真模型／真 KB 的 AC：只有 bedrock 模式才真驗，其餘一律 ⏸。"""
-    if mode != "bedrock":
-        pending(name, f"未驗（服務為 {mode} 模式，需 Bedrock 開通）")
+def why_not_live(live_mode: str) -> str:
+    """把「為什麼這條沒真驗」講清楚：是模式不對，還是模型不是 AWS 的。"""
+    if live_mode.startswith("provider="):
+        pv = live_mode.removeprefix("provider=")
+        return (
+            f"服務 run_mode=bedrock，但 MODEL_PROVIDER={pv}——呼叫的不是 AWS 服務提供之"
+            "基礎模型，其輸出不得作為驗收證據（賽制限 AWS 基礎模型）"
+        )
+    return f"服務為 {live_mode} 模式，需 Bedrock 開通"
+
+
+def live_ac(name: str, live_mode: str, fn: Callable[[], tuple[bool, str]]) -> None:
+    """需要真模型／真 KB 的 AC：只有 bedrock 模式＋AWS provider 才真驗，其餘一律 ⏸。"""
+    if live_mode != "bedrock":
+        pending(name, f"未驗（{why_not_live(live_mode)}）")
         return
     ok, evidence = guarded(fn)
     check(name, ok, evidence)
@@ -327,6 +341,11 @@ def main() -> int:
     code, p, ev = safe_run(base, "synthetic-ordinary-01", timeout=a.timeout)
     ok_main = code == 200 and isinstance(p, dict)
     mode = p["run_meta"]["run_mode"] if ok_main else "unknown"
+    # 需要真模型的 AC 得同時看 provider：`run_mode=bedrock` 只說明走了 live 程式路徑，
+    # 說不出模型是誰家的。`MODEL_PROVIDER=openai` 下把 AC4／AC5／AC7／AC15 蓋成 ✅，
+    # 等於拿非 AWS 模型充當賽制證據（spec R1 明文禁止）。
+    provider = (p["run_meta"].get("model_ids") or {}).get("provider") if ok_main else None
+    live_mode = mode if provider in (None, "bedrock") else f"provider={provider}"
     local_ac(
         "synthetic-ordinary-01 跑完六節點",
         lambda: (ok_main, f"HTTP {code}、run_mode={mode}" if ok_main else f"HTTP {code}：{detail_of(p)}"),
@@ -353,9 +372,9 @@ def main() -> int:
         print("\n".join(OUT))
         return 1
 
-    live_ac(AC4, mode, lambda: check_ac4(p))
-    live_ac(AC5, mode, lambda: check_ac5(p))
-    live_ac(AC7, mode, lambda: check_ac7(p))
+    live_ac(AC4, live_mode, lambda: check_ac4(p))
+    live_ac(AC5, live_mode, lambda: check_ac5(p))
+    live_ac(AC7, live_mode, lambda: check_ac7(p))
     local_ac(AC8, lambda: check_ac8(base, p, a.timeout))
     local_ac(AC9, lambda: check_ac9(base, p, a.timeout))
     local_ac(AC8B, lambda: check_ac8b(base, "synthetic-ordinary-01"))
@@ -372,7 +391,7 @@ def main() -> int:
     else:
         cid = created["case_id"]
         code_u, pu, _ = safe_run(base, cid, timeout=a.timeout)
-        if mode != "bedrock":
+        if mode != "bedrock":  # fixture／local：上傳案根本跑不起來
             # 上傳案沒有可重播的 fixture，fixture 檔位會擋下來（graph.py:221）。
             # 這代表「機制正確、live 未驗」，不是失敗。
             pending(
@@ -382,11 +401,21 @@ def main() -> int:
             )
         elif code_u != 200 or not isinstance(pu, dict):
             check(AC15, False, f"上傳案分析失敗：HTTP {code_u} {detail_of(pu)}")
+        elif live_mode != "bedrock":
+            # 跟 fixture 那支不同：這裡上傳案**真的跑起來了**（HTTP 200），
+            # 抽取結果一致與否也真的可比。不判的理由只有一個——模型不是 AWS 的。
+            ok_shape, ev = guarded(lambda: check_ac15(pu, fx["extraction"]["intake"]))
+            pending(AC15, f"{why_not_live(live_mode)}。僅供參考的比對結果：{ok_shape} — {ev}")
         else:
             local_ac(AC15, lambda: check_ac15(pu, fx["extraction"]["intake"]))
 
     say("")
-    say(f"服務模式：`{mode}`。⏸ 的項目要等 Bedrock 開通後，對 `RUN_MODE=bedrock` 的服務重跑同一支腳本。")
+    say(
+        f"服務模式：`{mode}`"
+        + (f"、model provider：`{provider}`" if provider else "")
+        + "。⏸ 的項目要等 Bedrock 開通後，對 `RUN_MODE=bedrock`"
+        + "（且 `MODEL_PROVIDER=bedrock`）的服務重跑同一支腳本。"
+    )
     say("AC11（模型 id 設成不存在值 → 502 且 payload 無 fixture 內容）需另起一個服務實例驗證，證據見 `ac11.md`。")
     print("\n".join(OUT))
     return 1 if FAILS else 0

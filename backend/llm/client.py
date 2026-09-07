@@ -56,8 +56,18 @@ class LLMError(RuntimeError):
 
 
 def model_ids() -> dict[str, str | None]:
+    """回報**真的被呼叫的那個模型**，不是設定檔裡剛好有值的那個。
+
+    provider 是 openai 時 `_load_model` 讀的是 `OPENAI_MODEL_ID`，`BEDROCK_MODEL_ID_*`
+    一次都沒被用到；照報等於在 payload 上掛一個從未呼叫過的 AWS model id
+    （CONSTITUTION §1 分層誠實）。openai 只有一個 model id，抽取與主筆共用。
+    """
+    provider = settings.model_provider()
+    if provider != "bedrock":
+        mid = settings.openai_model_id()
+        return {"provider": provider, "extract": mid, "draft": mid}
     return {
-        "provider": settings.model_provider(),
+        "provider": provider,
         "extract": settings.bedrock_model_id("extract"),
         "draft": settings.bedrock_model_id("draft"),
     }
@@ -80,7 +90,7 @@ def _load_model(model_kind: str):
     """
     provider = settings.model_provider()
     if provider == "openai":
-        model_id = os.environ.get("OPENAI_MODEL_ID")
+        model_id = settings.openai_model_id()
         if not model_id:
             # 刻意不給預設 model id：程式不得出現任何 model id 的實際值，
             # 而且 openai 只供開發期調 prompt，寫死一個預設等於幫它偷偷上路。

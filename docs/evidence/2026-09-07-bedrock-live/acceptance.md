@@ -14,5 +14,5 @@
 | AC6 C 型封鎖成立（requires_human_conclusion／無 llm 結論／submit_allowed=false） | ✅ | requires_human_conclusion=True、非佔位 llm 結論=無、submit_allowed=False、blockers=['citation_missing', 'conclusion_requires_human'] |
 | AC15 上傳 txt → N1 抽取與 fixture 一致、N2 案型一致 | ⏸ | 上傳建案 201（case_id 前綴 upload-）；POST runs → HTTP 400："上傳案件沒有可重播的 fixture，只能在 RUN_MODE=bedrock 執行；fixture 模式請選 synthetic- 案例。"。機制正確、live 未驗（需 Bedrock 開通） |
 
-服務模式：`fixture`。⏸ 的項目要等 Bedrock 開通後，對 `RUN_MODE=bedrock` 的服務重跑同一支腳本。
+服務模式：`fixture`。⏸ 的項目要等 Bedrock 開通後，對 `RUN_MODE=bedrock`（且 `MODEL_PROVIDER=bedrock`）的服務重跑同一支腳本。
 AC11（模型 id 設成不存在值 → 502 且 payload 無 fixture 內容）需另起一個服務實例驗證，證據見 `ac11.md`。
