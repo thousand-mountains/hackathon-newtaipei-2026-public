@@ -28,6 +28,7 @@ from backend.tests import (  # noqa: E402
 
 BACKEND = ROOT / "backend"
 PROTOTYPE = ROOT / "prototype"
+SCRIPTS = ROOT / "scripts"
 
 # ── 紅線靜態掃描 ──────────────────────────────────────────────────
 # 這些字串一旦出現在 backend/ 就是事故，不分分支（CONSTITUTION §7）
@@ -48,6 +49,26 @@ FORBIDDEN_CLOUD_PATTERNS = [
     (r"GOOGLE_APPLICATION_CREDENTIALS", "GCP 憑證環境變數"),
     (r"\bGCP\b", "GCP 字樣"),
 ]
+# ── model id 的實際值不得進 repo ───────────────────────────────────
+# `llm/client.py` 的規矩：「程式不得出現任何 model id 的實際值」，值一律由環境變數
+# 注入（`.env`／task definition）。理由有兩個：換帳號換模型不必改程式；沒有人能把
+# 某個 model id 寫成預設值讓它偷偷上路（`client.py` 缺 `OPENAI_MODEL_ID` 就 raise，
+# 就是為了這件事）。
+#
+# 這條規矩到 2026-09-07 之前**只是註解，沒有東西在守**——同一天有個測試把真的
+# model id 寫進斷言，是靠人眼抓到的，不是靠測試。所以補這道掃描。
+#
+# 掃 `scripts/` 是因為部署與驗收腳本跟程式一樣會被跑，model id 寫死在那裡的後果一樣。
+MODEL_ID_PATTERNS = [
+    (r"\b(?:us|eu|apac|jp|global)\.(?:anthropic|amazon|meta|cohere|mistral|ai21|stability)\.[\w.:-]+",
+     "Bedrock 區域推論設定檔 id"),
+    (r"\b(?:anthropic|amazon|meta|cohere|mistral|ai21|stability)\.[a-z0-9-]+-v\d[\w:.]*",
+     "Bedrock model id"),
+    (r"\banthropic\.claude[\w.:-]*", "Bedrock Anthropic model id"),
+    (r"\bgpt-[0-9][\w.-]*", "OpenAI model id"),
+    (r"\bo[1-9]-(?:mini|preview|pro)\b", "OpenAI o 系列 model id"),
+]
+
 SCAN_SUFFIXES = {".py", ".json", ".md", ".txt", ".toml", ".cfg", ".yaml", ".yml", ".js", ".html", ""}
 SKIP_DIRS = {"__pycache__", "output"}
 
@@ -98,6 +119,39 @@ def scan_redlines() -> list[str]:
                     continue
                 line = text[: m.start()].count("\n") + 1
                 problems.append(f"{p.relative_to(ROOT)}:{line}：偵測到{label}（{m.group(0)[:24]}）")
+    return problems
+
+
+def _model_id_hits(text: str) -> list[tuple[int, str, str]]:
+    """回傳 (行號, 標籤, 命中字串)。抽成獨立函式是為了能拿假內容測掃描器本身——
+    一個會誤中的掃描器等於沒有掃描器，那件事必須有測試釘住。"""
+    out: list[tuple[int, str, str]] = []
+    for pattern, label in MODEL_ID_PATTERNS:
+        for m in re.finditer(pattern, text):
+            out.append((text[: m.start()].count("\n") + 1, label, m.group(0)))
+    return out
+
+
+def scan_model_id_literals() -> list[str]:
+    """model id 的實際值不得出現在 `backend/`、`prototype/`、`scripts/`。
+
+    **本檔自己除外**——`MODEL_ID_PATTERNS` 就是規則定義，不排除會永遠自己抓自己
+    （跟 `scan_redlines` 同樣的道理）。
+
+    `docs/` 與 `plans/` 不在範圍內：`docs/architecture.md` 記錄 POC 量測是在哪個模型上
+    做的，那是數字的出處，抹掉反而讓「六節點 19.9 秒」失去可追溯性。文件目錄靠人工覆核。
+    """
+    self_path = pathlib.Path(__file__).resolve()
+    problems: list[str] = []
+    for p in _scan_files((BACKEND, PROTOTYPE, SCRIPTS)):
+        if p.resolve() == self_path:
+            continue
+        try:
+            text = p.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            continue  # 非 UTF-8 已由 scan_redlines 報過，不重複
+        for line, label, hit in _model_id_hits(text):
+            problems.append(f"{p.relative_to(ROOT)}:{line}：偵測到{label}（{hit[:40]}）")
     return problems
 
 
@@ -397,6 +451,7 @@ def main() -> int:
         ("核心與測試路徑零外部依賴（具名例外：backend/api/、backend/llm/、backend/retrieval/kb.py）", scan_core_path_dependencies),
         ("N2/N3/N4/N6 無 LLM 依賴（ast 遞迴，含 strands）", scan_llm_import_graph),
         ("所有 import 在模組頂層（spec D8）", scan_top_level_imports),
+        ("model id 的實際值不進 backend/ prototype/ scripts/（值只由環境變數注入）", scan_model_id_literals),
     ]
     for label, fn in checks:
         problems = fn()

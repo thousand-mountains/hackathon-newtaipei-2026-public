@@ -694,7 +694,12 @@ def _load_model(model_kind: str):
 
         return OpenAIModel(
             client_args={"api_key": os.environ["OPENAI_API_KEY"]},
-            model_id=os.environ.get("OPENAI_MODEL_ID", "gpt-4.1-mini"),
+            # ⚠ 實作推翻了本行的草稿寫法：原本是 `os.environ.get("OPENAI_MODEL_ID", <某個
+            # model id>)`，寫死一個預設值等於幫非 AWS 模型偷偷上路，而且違反「程式不得
+            # 出現任何 model id 的實際值」。定案為缺變數即 raise LLMError，見
+            # `backend/llm/client.py:_load_model`。2026-09-07 起 `run_all.py` 有一道
+            # 紅線掃描在守這件事（scan_model_id_literals）。
+            model_id=settings.openai_model_id(),   # 缺值 → LLMError，無預設
             params={"max_tokens": 8000, "temperature": 0},
         )
     from strands.models.bedrock import BedrockModel

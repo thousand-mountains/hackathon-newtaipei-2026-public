@@ -1082,6 +1082,49 @@ def _probe(tmpdir: str, source: str) -> pathlib.Path:
     return p
 
 
+def _mid(provider: str, rest: str, region: str = "") -> str:
+    """組出一個 model id，而**不在原始碼裡留下完整字串**。
+
+    `scan_model_id_literals` 掃的就是包含本檔的目錄樹，把完整 id 寫死在這裡會讓
+    這個測試自己觸發那道掃描。把本檔加進掃描例外是更糟的解——那等於讓守門對
+    「最容易犯這個錯的地方」失明（2026-09-07 真的就是在這個檔案裡犯的）。
+    """
+    return f"{region}{provider}.{rest}"
+
+
+def test_model_id_scan_catches_bedrock_and_openai_literals():
+    """model id 的實際值寫進 repo 必須被抓到（`llm/client.py` 的規矩，過去只有註解在守）。"""
+    cases = [
+        (_mid("anthropic", "claude-sonnet-5"), "無區域前綴的 Bedrock model id"),
+        (_mid("anthropic", "claude-haiku-4-5-20251001-v1:0", region="jp."), "區域推論設定檔 id"),
+        (_mid("amazon", "nova-micro-v1:0", region="apac."), "非 Anthropic 的 Bedrock id"),
+        (_mid("amazon", "titan-embed-text-v2:0"), "嵌入模型 id"),
+        ("gpt" + "-4.1-mini", "OpenAI model id"),
+    ]
+    for mid, why in cases:
+        probe = f'MODEL = "{mid}"'
+        assert_true(run_all._model_id_hits(probe), f"沒抓到{why}：{probe}")
+
+    # 最貼近真實犯錯形狀的一個：拿 model id 當環境變數的預設值
+    default_arg = f'os.environ.get("OPENAI_MODEL_ID", "{"gpt" + "-4.1-mini"}")'
+    assert_true(run_all._model_id_hits(default_arg), f"沒抓到當預設值的 model id：{default_arg}")
+
+
+def test_model_id_scan_does_not_flag_variable_names_or_fake_ids():
+    """會誤中的掃描器等於沒有掃描器：變數名、讀取器、假 id、agent 別名都不是 model id。"""
+    for probe in [
+        "BEDROCK_MODEL_ID_EXTRACT=",
+        "OPENAI_MODEL_ID=",
+        '_FAKE_OPENAI_MODEL = "fake-openai-model-for-tests"',
+        'settings.bedrock_model_id("extract")',
+        '"model_id": "m"',
+        "重要決策 → fable；開發 → opus；其他 → sonnet",
+        "anthropic",  # 光是廠商名不是 id
+        "claude-sonnet-5",  # 光是後半段也不是（沒有廠商前綴就對不回任何服務）
+    ]:
+        assert_eq(run_all._model_id_hits(probe), [], f"誤中：{probe}")
+
+
 def test_llm_import_graph_catches_relative_import():
     """`from ..llm import client` 寫在 backend/nodes/ 底下＝直接 import backend.llm。
 
