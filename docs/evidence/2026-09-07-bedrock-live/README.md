@@ -48,10 +48,15 @@ uv run --with fastapi --with "uvicorn[standard]" --with pydantic --with python-m
        --with strands-agents --with boto3 -- \
   python -m uvicorn backend.api.app:app --port 8123 &
 sleep 3
-python3 scripts/live_acceptance.py --base http://127.0.0.1:8123 \
+python3 scripts/live_acceptance.py --base http://127.0.0.1:8123 --timeout 600 \
   > docs/evidence/2026-09-07-bedrock-live/acceptance.md; echo "exit $?"
 kill %1
 ```
+
+`--timeout` 是**等一次執行跑完**的上限（秒，預設 600）。bedrock 檔位六個節點要跑多久
+沒有人保證，所以它可調：真跑起來若比 600 秒久，把它調大再跑，不要把「腳本等不及」
+當成系統失敗。逾時的那列會記 ❌，但證據欄會寫成
+`等待逾時 {N}s：run 仍在執行，可稍後 GET /api/runs/{id}`——看得出是誰的問題。
 
 `run_mode` 一旦是 `bedrock`，上表的 ⏸ 會自動變成真判的 ✅／❌，不必改腳本。
 **期望值：全部 ✅、exit 0**；只要有一條 ❌ 就 exit 1。

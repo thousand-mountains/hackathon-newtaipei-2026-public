@@ -2,10 +2,11 @@
 """live 驗收：對跑起來的服務逐條打 AC4–AC15，輸出 markdown 到 stdout。
 
     RUN_MODE=bedrock RETRIEVER=kb ... uvicorn backend.api.app:app --port 8123 &
-    python3 scripts/live_acceptance.py --base http://127.0.0.1:8123 \
+    python3 scripts/live_acceptance.py --base http://127.0.0.1:8123 --timeout 600 \
         > docs/evidence/2026-09-07-bedrock-live/acceptance.md
 
 只用 stdlib。每條 AC 印 ✅／❌／⏸ 與證據；任何 ❌ 以 exit 1 結束。
+`--timeout` 是「等一次執行跑完」的上限（秒，預設 600）；逾時的證據欄會寫明是腳本等不及。
 
 **⏸ 的意思**：腳本每次拿到 payload 都讀 `run_meta.run_mode`。需要真模型／真 KB 的
 AC（AC4、AC5、AC7、AC15）在服務不是 bedrock 模式時標「未驗」而**不是**失敗——
@@ -28,6 +29,8 @@ OUT: list[str] = []
 FAILS = 0
 
 FIXTURE_PATH = "backend/data/synthetic/synthetic-ordinary-01.json"
+# 等一次執行跑完的上限（秒）。bedrock 檔位六個節點要跑多久沒有人保證，所以可調（--timeout）。
+DEFAULT_TIMEOUT = 600.0
 
 # AC 名稱集中放，⏸ 與 ✅／❌ 兩條路徑印出來的列名才不會漂掉
 AC4 = "AC4 N1 live：12 欄 origin=llm、conf 0–1、model_id 非空"
@@ -106,16 +109,25 @@ def http(base: str, method: str, path: str, body: dict | None = None) -> tuple[i
         return 0, f"連不上服務：{e.reason}"
 
 
-def wait_run(base: str, rid: str) -> tuple[int, dict | str]:
-    for _ in range(90):
+def wait_run(base: str, rid: str, timeout: float, result_url: str) -> tuple[int, dict | str]:
+    """輪詢到終態或逾時。
+
+    逾時回的訊息要讓人看得出是**腳本等不及**、不是系統壞了——bedrock 檔位六個節點
+    要跑多久沒有人保證，寫死一個上限然後把逾時記成失敗，就是拿腳本的耐性當系統的品質。
+    """
+    deadline = time.monotonic() + timeout
+    while True:
         code, body = http(base, "GET", f"/api/runs/{rid}")
         if code != 409:
             return code, body
+        if time.monotonic() >= deadline:
+            return 408, {"error": f"等待逾時 {timeout}s：run 仍在執行，可稍後 GET {result_url}"}
         time.sleep(2)
-    return 408, "timeout"
 
 
-def run(base: str, case: str, body: dict | None = None) -> tuple[int, dict | str, list[str]]:
+def run(
+    base: str, case: str, body: dict | None = None, timeout: float = DEFAULT_TIMEOUT
+) -> tuple[int, dict | str, list[str]]:
     """啟動一次分析並拿回終態 payload。
 
     兩個檔位的回應形狀不同（app.py:304-345）：bedrock 回 202 ＋ ticket，之後輪詢；
@@ -126,7 +138,11 @@ def run(base: str, case: str, body: dict | None = None) -> tuple[int, dict | str
         return code, ticket, []
     if code != 202 or not isinstance(ticket, dict):
         return code, ticket, []
-    rid = ticket["run_id"]
+    rid = ticket.get("run_id")
+    if not rid:
+        # 202 卻沒給 run_id：這是服務端的契約破了，該記成該條 AC 的 ❌，
+        # 不是讓 KeyError 把整張表一起帶走。
+        return 502, {"error": "202 回應缺 run_id", "body": ticket}, []
     events: list[str] = []
     if ticket.get("events_url"):  # Task 7b 做了才有；沒有就純輪詢
         with urllib.request.urlopen(base + ticket["events_url"], timeout=300) as r:
@@ -136,8 +152,18 @@ def run(base: str, case: str, body: dict | None = None) -> tuple[int, dict | str
                     events.append(line.split(":", 1)[1].strip())
                 if events and events[-1] in ("run_done", "run_failed", "timeout"):
                     break
-    code, payload = wait_run(base, rid)
+    code, payload = wait_run(base, rid, timeout, ticket.get("result_url") or f"/api/runs/{rid}")
     return code, payload, events
+
+
+def safe_run(
+    base: str, case: str, body: dict | None = None, timeout: float = DEFAULT_TIMEOUT
+) -> tuple[int, dict | str, list[str]]:
+    """`run()` 的例外版本：任何例外變成該條 AC 的 ❌，不中斷整張表。"""
+    try:
+        return run(base, case, body, timeout)
+    except Exception as e:  # noqa: BLE001 — 驗收腳本要把任何例外原樣端出來
+        return 0, f"執行時例外：{type(e).__name__}: {e}", []
 
 
 def post_multipart(base: str, path: str, files: list[tuple[str, str]]) -> tuple[int, dict | str]:
@@ -229,9 +255,9 @@ def check_ac6(code: int, pb: dict | str) -> tuple[bool, str]:
     )
 
 
-def check_ac8(base: str, p: dict) -> tuple[bool, str]:
+def check_ac8(base: str, p: dict, timeout: float) -> tuple[bool, str]:
     base_rid = p["run_id"]
-    code, p2, _ = run(base, p["case_id"], {"base_run_id": base_rid, "from_node": "n5"})
+    code, p2, _ = safe_run(base, p["case_id"], {"base_run_id": base_rid, "from_node": "n5"}, timeout)
     if code != 200 or not isinstance(p2, dict):
         return False, f"續跑失敗：HTTP {code} {detail_of(p2)}"
     same_retrieval = p2["retrieval"] == p["retrieval"]
@@ -240,15 +266,16 @@ def check_ac8(base: str, p: dict) -> tuple[bool, str]:
     return ok, f"retrieval 相同={same_retrieval}、node_timings={timings}、base_run_id 正確={p2['run_meta']['base_run_id'] == base_rid}"
 
 
-def check_ac9(base: str, p: dict) -> tuple[bool, str]:
+def check_ac9(base: str, p: dict, timeout: float) -> tuple[bool, str]:
     confirmed = {
         k: p["intake"][k]
         for k in ("d2", "d3", "service_method", "transit_days", "interested_party", "note")
     }
-    code, p3, _ = run(
+    code, p3, _ = safe_run(
         base,
         p["case_id"],
         {"base_run_id": p["run_id"], "from_node": "n2", "confirmed_intake": confirmed},
+        timeout,
     )
     if code != 200 or not isinstance(p3, dict):
         return False, f"續跑失敗：HTTP {code} {detail_of(p3)}"
@@ -274,6 +301,12 @@ def check_ac15(pu: dict, want: dict) -> tuple[bool, str]:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--base", default="http://127.0.0.1:8123")
+    ap.add_argument(
+        "--timeout",
+        type=float,
+        default=DEFAULT_TIMEOUT,
+        help=f"等一次執行跑完的上限（秒），預設 {DEFAULT_TIMEOUT:.0f}。bedrock 檔位跑得慢就調大。",
+    )
     a = ap.parse_args()
     base = a.base.rstrip("/")
 
@@ -291,7 +324,7 @@ def main() -> int:
         ),
     )
 
-    code, p, ev = run(base, "synthetic-ordinary-01")
+    code, p, ev = safe_run(base, "synthetic-ordinary-01", timeout=a.timeout)
     ok_main = code == 200 and isinstance(p, dict)
     mode = p["run_meta"]["run_mode"] if ok_main else "unknown"
     local_ac(
@@ -318,11 +351,11 @@ def main() -> int:
     live_ac(AC4, mode, lambda: check_ac4(p))
     live_ac(AC5, mode, lambda: check_ac5(p))
     live_ac(AC7, mode, lambda: check_ac7(p))
-    local_ac(AC8, lambda: check_ac8(base, p))
-    local_ac(AC9, lambda: check_ac9(base, p))
+    local_ac(AC8, lambda: check_ac8(base, p, a.timeout))
+    local_ac(AC9, lambda: check_ac9(base, p, a.timeout))
     local_ac(AC8B, lambda: check_ac8b(base, "synthetic-ordinary-01"))
 
-    code_b, pb, _ = run(base, "synthetic-blocked-01")
+    code_b, pb, _ = safe_run(base, "synthetic-blocked-01", timeout=a.timeout)
     local_ac(AC6, lambda: check_ac6(code_b, pb))
 
     # AC15：上傳合成訴願書 txt → 抽取結果與該案 fixture 一致
@@ -333,7 +366,7 @@ def main() -> int:
         check(AC15, False, f"上傳建案失敗：HTTP {code_c} {detail_of(created)}")
     else:
         cid = created["case_id"]
-        code_u, pu, _ = run(base, cid)
+        code_u, pu, _ = safe_run(base, cid, timeout=a.timeout)
         if mode != "bedrock":
             # 上傳案沒有可重播的 fixture，fixture 檔位會擋下來（graph.py:221）。
             # 這代表「機制正確、live 未驗」，不是失敗。
