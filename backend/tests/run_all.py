@@ -186,23 +186,141 @@ def scan_core_path_dependencies() -> list[str]:
 LLM_FORBIDDEN_NODES = ("n2_classify", "n3_procedure", "n4_retrieval", "n6_gate")
 
 
-def _imports_of(path: pathlib.Path) -> set[str]:
-    """用 ast 抓一個檔案 import 的頂層模組名（含函式內的 import）。"""
-    tree = ast.parse(path.read_text(encoding="utf-8"))
+def _resolve_relative(module_name: str, level: int, module: str | None) -> str:
+    """把相對 import 依「檔案所在 package」解析成絕對模組名。
+
+    `module_name` 是這個檔案本身的絕對模組名（例：`backend.nodes.n4_retrieval`）。
+    level 1 = 本檔所在 package（`backend.nodes`），level 2 = 再往上一層（`backend`）。
+    所以 `backend/nodes/x.py` 裡的 `from ..llm import client` 解析成 `backend.llm`。
+    """
+    pkg = module_name.rsplit(".", 1)[0] if "." in module_name else ""
+    parts = pkg.split(".") if pkg else []
+    up = level - 1
+    if up:
+        parts = parts[: max(0, len(parts) - up)]
+    if module:
+        parts = [*parts, module]
+    return ".".join(p for p in parts if p)
+
+
+def _imports_of(path: pathlib.Path, module_name: str = "", tree: ast.AST | None = None) -> set[str]:
+    """抓一個檔案 import 到的模組名（含函式內的 import），**相對 import 一律解析成絕對名**。
+
+    舊版只收 `node.module`：`from ..llm import client` 的 `module` 是 `"llm"`、`level=2`，
+    不以 `backend` 開頭就被丟掉，於是禁單節點只要改寫成相對 import 就能靜默繞過紅線
+    （2026-09-07 覆核實測）。`module_name` 是本檔的絕對模組名，用來解析 level。
+
+    `from X import Y` 也會一併登記 `X.Y`：`from backend.retrieval import base` 這種寫法
+    真正碰到的是 `backend.retrieval.base`，只記 `backend.retrieval` 會漏掉整條邊
+    （不存在的模組名在遞迴時查不到檔案，自然被跳過，不會誤報）。
+    """
+    if tree is None:
+        tree = ast.parse(path.read_text(encoding="utf-8"))
     out: set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             out.update(a.name for a in node.names)
-        elif isinstance(node, ast.ImportFrom) and node.module:
-            out.add(node.module)
+        elif isinstance(node, ast.ImportFrom):
+            base = (
+                _resolve_relative(module_name, node.level, node.module)
+                if node.level
+                else (node.module or "")
+            )
+            if not base:
+                continue
+            out.add(base)
+            out.update(f"{base}.{a.name}" for a in node.names)
     return out
+
+
+# 動態 import：ast 的 import 邊看不到它，所以在禁單圖裡它等於「守門無從守起」。
+_DYNAMIC_IMPORT_CALLS = ("import_module", "__import__")
+
+
+def _dynamic_import_violations(path: pathlib.Path, module_name: str, tree: ast.AST) -> list[str]:
+    """禁單節點及其遞迴到的 backend 檔不得使用動態 import。
+
+    `importlib.import_module("backend.llm.client")` 與 `__import__("backend.llm.client")`
+    在靜態 import 圖上完全不存在（2026-09-07 覆核實測可繞過）。這裡禁的不是動態 import
+    本身有罪，而是**它讓「這個檔案依賴什麼」無法靜態判定**——CONSTITUTION §4 的自動守門
+    唯一的立足點就是靜態可判定。要寫動態 import，請先把該檔移出禁單圖。
+    """
+    where = path.name if not path.is_relative_to(ROOT) else str(path.relative_to(ROOT))
+    problems: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for a in node.names:
+                if a.name == "importlib" or a.name.startswith("importlib."):
+                    problems.append(
+                        f"{where}:{node.lineno}：禁單圖內出現 importlib（動態 import 讓紅線靜態守門失效）"
+                    )
+        elif isinstance(node, ast.ImportFrom) and node.module and not node.level:
+            if node.module == "importlib" or node.module.startswith("importlib."):
+                problems.append(
+                    f"{where}:{node.lineno}：禁單圖內出現 importlib（動態 import 讓紅線靜態守門失效）"
+                )
+        elif isinstance(node, ast.Call):
+            fn = node.func
+            name = (
+                fn.id if isinstance(fn, ast.Name)
+                else fn.attr if isinstance(fn, ast.Attribute)
+                else None
+            )
+            if name in _DYNAMIC_IMPORT_CALLS:
+                problems.append(
+                    f"{where}:{node.lineno}：禁單圖內呼叫 {name}()（動態 import 讓紅線靜態守門失效）"
+                )
+    return problems
+
+
+def _module_path(mod: str) -> pathlib.Path | None:
+    cand = ROOT.joinpath(*mod.split(".")).with_suffix(".py")
+    if cand.exists():
+        return cand
+    cand = ROOT.joinpath(*mod.split(".")) / "__init__.py"
+    return cand if cand.exists() else None
+
+
+def _check_forbidden_node(start_path: pathlib.Path, module_name: str) -> list[str]:
+    """從一個禁單節點檔出發，遞迴走 backend.* 的 import 邊找 LLM 依賴。
+
+    抽成獨立函式是為了**讓守門本身可被測試**：測試可以丟一個臨時 .py 進來
+    （相對 import／importlib 兩種繞法），不必在 repo 裡放一個會壞掉的檔案。
+    `module_name` 是 `start_path` 對應的絕對模組名，用來解析相對 import。
+    """
+    label = (
+        str(start_path.relative_to(ROOT)) if start_path.is_relative_to(ROOT) else start_path.name
+    )
+    problems: list[str] = []
+    seen: set[str] = set()
+    stack: list[tuple[str, pathlib.Path | None]] = [(module_name, start_path)]
+    while stack:
+        mod, path = stack.pop()
+        if mod in seen:
+            continue
+        seen.add(mod)
+        if mod == "backend.llm" or mod.startswith("backend.llm."):
+            problems.append(f"{label} 間接 import 了 {mod}（規則引擎零 LLM 依賴）")
+            break
+        if path is None or not path.exists():
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        problems.extend(_dynamic_import_violations(path, mod, tree))
+        for imp in _imports_of(path, mod, tree):
+            if imp == "backend" or imp.startswith("backend."):
+                stack.append((imp, _module_path(imp)))
+            elif imp.split(".")[0] in ("strands", "strands_agents"):
+                where = path.name if not path.is_relative_to(ROOT) else str(path.relative_to(ROOT))
+                problems.append(f"{where} import 了 {imp}（只有 backend/llm/ 可以）")
+    return problems
 
 
 def scan_llm_import_graph() -> list[str]:
     """N2/N3/N4/N6 不得直接或間接 import backend.llm（CONSTITUTION §4）。
 
     遞迴走 backend.* 的 import 邊；碰到 backend.llm 即違規。boto3 本身不在禁單裡
-    （retrieval/kb.py 合法使用），禁的是 LLM 模組。"""
+    （retrieval/kb.py 合法使用），禁的是 LLM 模組。相對 import 會被解析成絕對模組名，
+    動態 import（importlib／`__import__`）在圖內一律違規——理由見 `_dynamic_import_violations`。"""
     problems: list[str] = []
     for node in LLM_FORBIDDEN_NODES:
         # 節點檔不見了就要出聲：否則遞迴從一個不存在的模組起步，永遠掃不到東西、
@@ -211,26 +329,7 @@ def scan_llm_import_graph() -> list[str]:
         if not start.exists():
             problems.append(f"找不到 {start.relative_to(ROOT)}，LLM 依賴檢查無從進行（清單與檔名已漂移）")
             continue
-        seen: set[str] = set()
-        stack = [f"backend.nodes.{node}"]
-        while stack:
-            mod = stack.pop()
-            if mod in seen:
-                continue
-            seen.add(mod)
-            if mod == "backend.llm" or mod.startswith("backend.llm."):
-                problems.append(f"backend/nodes/{node}.py 間接 import 了 {mod}（規則引擎零 LLM 依賴）")
-                break
-            cand = ROOT.joinpath(*mod.split(".")).with_suffix(".py")
-            if not cand.exists():
-                cand = ROOT.joinpath(*mod.split(".")) / "__init__.py"
-            if not cand.exists():
-                continue
-            for imp in _imports_of(cand):
-                if imp.startswith("backend"):
-                    stack.append(imp)
-                elif imp.split(".")[0] in ("strands", "strands_agents"):
-                    problems.append(f"{cand.relative_to(ROOT)} import 了 {imp}（只有 backend/llm/ 可以）")
+        problems.extend(_check_forbidden_node(start, f"backend.nodes.{node}"))
     return problems
 
 

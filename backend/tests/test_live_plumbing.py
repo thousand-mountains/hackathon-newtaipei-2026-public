@@ -31,6 +31,7 @@ from backend.orchestrator.graph import (
 from backend.orchestrator.state import CaseState, NodeCtx
 from backend.retrieval.base import Hit
 from backend.retrieval.kb import KBRetriever, build_retriever
+from backend.tests import run_all
 from backend.tests.harness import assert_eq, assert_in, assert_true
 
 
@@ -1032,3 +1033,63 @@ def test_resume_keeps_upstream_agents_and_degraded():
         base_n4[0]["reason"],
         "沿用的降級理由不得被改寫",
     )
+
+
+# ── I-1：紅線守門本身要被守（scan_llm_import_graph 的繞過面）────────────
+# 覆核實測：絕對 import 抓得到，相對 import 與 importlib 兩條路都靜默通過。
+# 這兩條測試把那兩個洞釘住——用臨時檔注入，不動 repo 內任何檔案。
+
+
+def _probe(tmpdir: str, source: str) -> pathlib.Path:
+    p = pathlib.Path(tmpdir) / "probe.py"
+    p.write_text(source, encoding="utf-8")
+    return p
+
+
+def test_llm_import_graph_catches_relative_import():
+    """`from ..llm import client` 寫在 backend/nodes/ 底下＝直接 import backend.llm。
+
+    舊版 `_imports_of` 只看 `node.module`（"llm"），不以 "backend" 開頭就被丟掉，
+    於是一行手滑的相對 import 就能讓 CONSTITUTION §4 的唯一自動守門靜默失守。
+    """
+    with tempfile.TemporaryDirectory() as d:
+        problems = run_all._check_forbidden_node(
+            _probe(d, "from ..llm import client\n"), "backend.nodes.probe"
+        )
+        assert_true(problems, "相對 import `from ..llm import client` 必須被抓到")
+        assert_in("backend.llm", " ".join(problems))
+
+
+def test_llm_import_graph_catches_importlib_backdoor():
+    """`importlib.import_module("backend.llm.client")` 在 ast 的 import 邊上完全看不見。
+
+    禁單節點（及其遞迴到的 backend 檔）出現動態 import 一律視為違規——
+    不是因為動態 import 本身有罪，而是它讓「這個檔案依賴什麼」無法靜態判定，
+    守門就沒有東西可以守。
+    """
+    with tempfile.TemporaryDirectory() as d:
+        problems = run_all._check_forbidden_node(
+            _probe(d, 'import importlib\n\nc = importlib.import_module("backend.llm.client")\n'),
+            "backend.nodes.probe",
+        )
+        assert_true(problems, "importlib 動態 import 必須被抓到")
+        assert_in("importlib", " ".join(problems))
+
+
+def test_llm_import_graph_catches_dunder_import_backdoor():
+    """`__import__("backend.llm.client")` 是同一個洞的另一種寫法。"""
+    with tempfile.TemporaryDirectory() as d:
+        problems = run_all._check_forbidden_node(
+            _probe(d, 'c = __import__("backend.llm.client")\n'), "backend.nodes.probe"
+        )
+        assert_true(problems, "__import__ 動態 import 必須被抓到")
+
+
+def test_llm_import_graph_still_passes_a_clean_relative_import():
+    """相對 import 本身不違規——解析後不是 backend.llm 就該放行，否則守門會變噪音。"""
+    with tempfile.TemporaryDirectory() as d:
+        problems = run_all._check_forbidden_node(
+            _probe(d, "from .n2_classify import run\nfrom ..gate import lamps\n"),
+            "backend.nodes.probe",
+        )
+        assert_eq(problems, [], "解析成 backend.nodes.n2_classify／backend.gate 的相對 import 不該被誤判")
