@@ -1,0 +1,24 @@
+{
+ "requests": [
+  "http://127.0.0.1:8123/api/cases/synthetic-ordinary-01/runs",
+  "http://127.0.0.1:8123/api/runs/run-synthetic-ordinary-01-052e3b3cd778/events"
+ ],
+ "errors": [],
+ "sse": [
+  [
+   "open",
+   "api/runs/run-synthetic-ordinary-01-052e3b3cd778/events"
+  ],
+  [
+   "node_start",
+   "{\"run_id\": \"run-synthetic-ordinary-01-052e3b3cd778\", \"node\": \"n1\", \"agents\": [\"clerk\"]}"
+  ],
+  [
+   "run_failed",
+   "{\"run_id\": \"run-synthetic-ordinary-01-052e3b3cd778\", \"node\": \"n1\", \"error\": \"LLMError: 模型呼叫失敗（重試 3 次）：NoCredentialsError: Unable to locate credentials\"}"
+  ]
+ ],
+ "badge_text": "離線 fixture（未接後端）",
+ "badge_tip": "本頁未連上後端 API（卷證書記官 抽取中（n1）失敗：LLMError: 模型呼叫失敗（重試 3 次）：NoCredentialsError: Unable to locate credentials）。畫面資料來自建置時內嵌的 data/case-demo.json，期間由頁內 engine.js 實算、法條對照離線快照。這不是後端六節點的執行結果。",
+ "regenbar_hidden": true
+}

@@ -1,0 +1,30 @@
+{
+ "errors": [],
+ "result": {
+  "out": {
+   "ok": true,
+   "p": {
+    "run_id": "run-stub-1",
+    "run_meta": {
+     "from_node": "n5",
+     "node_timings": {
+      "n5": 11,
+      "n6": 22
+     }
+    }
+   }
+  },
+  "prog": [
+   "run run-stub-1 進行中：決定書主筆 組稿中",
+   "run run-stub-1 進行中：決定書主筆 組稿中 完成（1234 ms）"
+  ],
+  "calls": [
+   "POST api/cases/synthetic-ordinary-01/runs",
+   "SSE api/runs/run-stub-1/events",
+   "SSE closed",
+   "GET api/runs/run-stub-1"
+  ],
+  "runId": "run-stub-1",
+  "pending": "run-stub-1"
+ }
+}
