@@ -124,3 +124,25 @@ curl http://127.0.0.1:8123/api/runs/<run_id>          # 202 → 輪詢
 | `backend/api/app.py:218` | `/api/health` 寫死 `model_ids: None` ＋「fixture 檔位未呼叫任何基礎模型。」，bedrock 檔位下也一樣 |
 | `backend/nodes/n2_classify.py` `agreement.note` | 寫死「離線重播檔位：kNN 通道不可用」；kNN 不可用是真的，「離線重播檔位」不是 |
 | `backend/orchestrator/graph.py:325-327` | 節點拋例外時只 `emit("run_failed")` 然後 `raise`，`save_run(state)` 在 353 行、只有成功路徑走得到——**失敗的 run 不會落地**，事後查不到崩在哪一節點的完整 state（本次那個 AttributeError 就是這樣沒留下 run json） |
+
+## 追加：HACK-S-21（沒有主文卻可送出）已修
+
+上傳案那次執行（`run-upload-confirmed-overdue.json`）暴露的問題：模型把不受理的
+**理由**寫完了（reasoning 5 句，其中一句已寫出「訴願法第77條第2款，應為不受理之
+決定」），卻**沒寫主文**，`doc[]` 的 conclusion 槽位一句都沒有，而 `blockers` 是空的、
+`submit_allowed` 是 `true`。
+
+N6 原本只有 `empty_draft`（整份全空）這道檢查，擋不住「有內容但沒有結論段」。
+已加 `conclusion_missing`（P0 blocker）。C 型案不在此列（本來就沒有主文，由
+`conclusion_requires_human` 擋）；整份全空也不在此列（由 `empty_draft` 報）。
+
+驗證方式是拿**當時那次真模型輸出**離線重跑 N6（零模型呼叫）：
+
+```
+真模型當時寫出的結論句數: 0
+submit_allowed: False
+  [P0] conclusion_missing
+```
+
+> ⚠ `run-upload-confirmed-overdue.json` 是**修正前**的 payload，裡面 `submit_allowed`
+> 仍是 `true`——那份留著當問題的證據，不要當成現行行為。
