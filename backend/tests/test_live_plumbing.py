@@ -24,6 +24,7 @@ from backend.llm import client
 from backend.nodes import n1_extract, n2_classify, n4_retrieval, n5_draft, n6_gate
 from backend.orchestrator import runstore
 from backend.orchestrator.graph import (
+    build_payload,
     digest_from_state,
     list_synthetic_cases,
     load_case,
@@ -1416,6 +1417,53 @@ def _n6_ready_state(requires_human: bool = False) -> CaseState:
         "retrieval_meta": {},
     }
     return st
+
+
+def _screen_with_unconfirmed(st, fields=("d2", "transit_days")):
+    """把 state 的期間輸入標成「未經承辦人確認」（N1 抽的預設就是這樣）。"""
+    st.screen["unconfirmed_procedural_fields"] = list(fields)
+    st.screen["procedural_inputs_confirmed"] = False
+    return st
+
+
+def test_engine_sentences_say_their_inputs_are_unconfirmed():
+    """HACK-S-17：期間計算那幾句是全畫面最像「已經驗證過」的東西——綠燈、標「可驗算」。
+
+    2026-09-08 真模型實測把 `d2`（送達日）抽成提起日的值、conf 給 1.0，使逾期判定
+    由「逾期」翻成「未逾期」。引擎沒有錯（同輸入必同輸出），錯的是輸入；但畫面上
+    那六句看起來完全可信。算式可驗算 ≠ 輸入可信，這兩件事必須在**同一句話**裡講清楚。
+    """
+    st = _screen_with_unconfirmed(run_case("synthetic-ordinary-01", mode="fixture", persist=False))
+    n6_gate.run(st, NodeCtx(run_mode="fixture", snapshot=load_snapshot()))
+    engine = [s for b in st.gate["doc"] for s in b.get("ss", []) if s["origin"] == "engine"]
+    assert_true(engine, "前提不成立：doc[] 沒有 origin=engine 的句子")
+    for s in engine:
+        assert_in("未經承辦人確認", s["why"] or "", f"{s['id']} 的 why 沒講出輸入未確認")
+        assert_in("d2", s["why"] or "", f"{s['id']} 的 why 沒指名是哪些欄位")
+        assert_eq(s["l"], "g", "燈號不變——算式本身仍然可逐步覆核，改燈會把兩件事混為一談")
+
+
+def test_engine_sentences_drop_the_warning_once_inputs_are_confirmed():
+    """承辦人確認過就不該再吵——警告要能消失，否則它會變成背景雜訊。"""
+    st = run_case("synthetic-ordinary-01", mode="fixture", persist=False)
+    st.screen["unconfirmed_procedural_fields"] = []
+    st.screen["procedural_inputs_confirmed"] = True
+    n6_gate.run(st, NodeCtx(run_mode="fixture", snapshot=load_snapshot()))
+    engine = [s for b in st.gate["doc"] for s in b.get("ss", []) if s["origin"] == "engine"]
+    assert_true(engine)
+    for s in engine:
+        assert_true("未經承辦人確認" not in (s["why"] or ""), f"{s['id']} 確認後仍掛著警告")
+
+
+def test_unconfirmed_deadline_inputs_appear_in_the_human_tier():
+    """除了逐句的 why，三層誠實的「請人工判斷」層也要有一條，讓人掃一眼就看到。"""
+    st = _screen_with_unconfirmed(run_case("synthetic-ordinary-01", mode="fixture", persist=False))
+    payload = build_payload(st)
+    human = payload["tiers"]["請人工判斷"]
+    hits = [x for x in human if x.get("slot") == "caveat" and "未經承辦人確認" in x["t"]]
+    assert_eq(len(hits), 1, "請人工判斷層要有且只有一條輸入未確認的提醒")
+    assert_eq(hits[0]["origin"], "rule", "這是規則層算出來的，不是模型講的")
+    assert_in("d2", hits[0]["t"])
 
 
 def test_unsupported_citation_reaches_n6_and_blocks_submit():

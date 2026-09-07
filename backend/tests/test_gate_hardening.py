@@ -1284,7 +1284,10 @@ def test_official_cases_behaviour_unchanged():
     b = build_payload(run_case(BLOCKED, mode="fixture"))
     assert_eq(b["submit_allowed"], False)
     assert_eq(b["lamp_stats"], {"r": 2, "y": 0, "g": 10}, "blocked 的燈號分布不得改變")
-    assert_eq({k: len(v) for k, v in b["tiers"].items()}, {"可驗算": 6, "有出處": 4, "請人工判斷": 3})
+    # 請人工判斷層 3 → 4：HACK-S-17 在期間輸入未經確認時多掛一條 caveat。
+    # 對照組就在上面——`o` 是 confirmed_intake 跑出來的，那邊仍然是 3，
+    # 證明這條警告只在該出現的時候出現。燈號分布刻意不動（見 n6_gate 的說明）。
+    assert_eq({k: len(v) for k, v in b["tiers"].items()}, {"可驗算": 6, "有出處": 4, "請人工判斷": 4})
 
 
 # 允許在兩次執行之間變動的欄位。**這是白名單，不是遮罩**：

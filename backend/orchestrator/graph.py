@@ -26,11 +26,13 @@ from backend.config.settings import (
     ISSUE_LAMP,
     ISSUE_TAG_BY_SEVERITY,
     CONFIRMABLE_INTAKE_FIELDS,
+    DEADLINE_INPUT_FIELDS,
     NODE_TO_AGENTS,
     PROVENANCE,
     SUBSTANTIVE_TYPES,
     SYNTHETIC_DIR,
     TOKEN_NOTE,
+    UNCONFIRMED_DEADLINE_INPUT_CAVEAT,
     load_snapshot,
     retriever_kind,
     run_mode,
@@ -576,6 +578,25 @@ def build_payload(state: CaseState) -> dict[str, Any]:
     caveats = (state.screen.get("deadline") or {}).get("caveats", [])
     for c in caveats:
         tiers[TIER_HUMAN].append({"id": None, "slot": "caveat", "t": c, "l": "y", "why": "期間引擎明列之人工判斷項", "origin": "rule"})
+
+    # HACK-S-17：逐句的 why 之外，這一層也放一條，讓人掃一眼就看到。
+    # **與引擎 caveats 分開**：引擎那些是法規／曆法的極限，這條是資料來源的極限，
+    # `why` 不同，混在一起會讓「這是誰說的」變模糊。
+    unconfirmed_inputs = [
+        f for f in (state.screen.get("unconfirmed_procedural_fields") or [])
+        if f in DEADLINE_INPUT_FIELDS
+    ]
+    if unconfirmed_inputs:
+        tiers[TIER_HUMAN].append(
+            {
+                "id": None,
+                "slot": "caveat",
+                "t": UNCONFIRMED_DEADLINE_INPUT_CAVEAT.format(fields="、".join(unconfirmed_inputs)),
+                "l": "y",
+                "why": "輸入來源檢查：期間算式的輸入欄位 intake_origin 仍為 llm",
+                "origin": "rule",
+            }
+        )
 
     auto_fields = _auto_fields(state)
     # §6.2：`intake.auto_fields` / `intake.auto_toast` 是編排層算的（origin=rule），

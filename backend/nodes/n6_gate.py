@@ -37,6 +37,7 @@ import time
 from typing import Any
 
 from backend.config.origin_registry import tier_of
+from backend.config.settings import DEADLINE_INPUT_FIELDS, UNCONFIRMED_DEADLINE_INPUT_WHY
 from backend.gate.citations import (
     STATE_AMENDED,
     STATE_MISSING,
@@ -97,6 +98,14 @@ def run(state: CaseState, ctx: NodeCtx) -> NodeResult:
     # N6 **只讀 doc 上的旗標**，不 import backend.llm——旗標由 N5 帶進來，
     # 這個節點仍然零 LLM 依賴（CONSTITUTION §4）。
     unsupported_hits: list[tuple[str, list[str]]] = []
+    # 期間算式的輸入裡，哪幾欄還沒被承辦人確認（N3 已經算好放在 screen 上，
+    # 這裡只是讀）。`BLOCK_DECISION_INPUT_FIELDS` 比期間輸入多一個 `note`——
+    # note 影響的是事實爭點偵測，不進算式，所以要跟 `DEADLINE_INPUT_FIELDS` 取交集，
+    # 否則會在算式旁邊掛一個跟算式無關的欄位名。
+    unconfirmed_deadline_inputs = [
+        f for f in (state.screen.get("unconfirmed_procedural_fields") or [])
+        if f in DEADLINE_INPUT_FIELDS
+    ]
 
     for block in doc:
         for s in block.get("ss", []):
@@ -147,6 +156,14 @@ def run(state: CaseState, ctx: NodeCtx) -> NodeResult:
                 if unsupported
                 else why_for(lamp, origin, states, unresolved=bool(unresolved))
             )
+            # HACK-S-17：期間算式的輸入若未經承辦人確認，由算式自己講出來。
+            # 只掛在 origin=engine 的句子上——它們是畫面上最像「已驗證」的東西，
+            # 而且它們的值**完全**由那些未確認欄位決定。燈號與層級不動：
+            # 算式仍然可逐步覆核，改燈會把「算式有疑義」和「輸入沒確認」混為一談。
+            if origin == "engine" and unconfirmed_deadline_inputs:
+                s["why"] = (s["why"] or "") + " " + UNCONFIRMED_DEADLINE_INPUT_WHY.format(
+                    fields="、".join(unconfirmed_deadline_inputs)
+                )
             s["tier"] = (
                 tier_of("human_required")
                 if origin == "human_required"
