@@ -30,6 +30,13 @@ let LIVE=null;        /* live 模式下的後端 payload 原文，未經前端�
    所以放在模組層，而不是只活在 bootApp() 裡。 */
 const L={};
 
+/* 同一時間只允許一個後端動作（上傳建案／確認後重跑）。兩個一起跑會對同一個案件
+   送出兩次執行，後到的那次還可能拿一個根本還沒建立的 base_run_id。 */
+let BUSY=false;
+/* 輪詢的軟上限。不是「後端一定失敗了」，只是前端不再等下去——
+   逾時訊息會把 run_id 與 result_url 一起講出來，這次執行沒有丟。 */
+const POLL_TIMEOUT_MS=10*60*1000;
+
 function setBadge(mode,label,tip){
   const el=$('#modebadge'); if(!el)return;
   el.dataset.m=mode;
@@ -99,11 +106,15 @@ async function postRun(body,onProgress){
   if(res.status===200){const p=await res.json(); L.runId=p.run_id; return p;}
   if(res.status!==202)throw new Error('runs HTTP '+res.status+'：'+(await errText(res)).slice(0,200));
   /* 進行中的 run 先放 pendingRunId：**L.runId 只在跑完拿到 payload 時才更新**。
-     失敗的 run 沒有可讀的終態，讓它變成下一次的 base_run_id 只會換來一個 404。 */
+     失敗的 run 沒有可讀的終態，讓它變成下一次的 base_run_id 只會換來一個 404。
+     （pendingRunId 目前沒有人讀，保留給 Task 8b 的 SSE 顯示進行中的 run。） */
   const ticket=await res.json(); L.pendingRunId=ticket.run_id;
   const started=Date.now();
   for(;;){
     await new Promise(r=>setTimeout(r,2000));
+    if(Date.now()-started>POLL_TIMEOUT_MS)
+      throw new Error('等待結果逾時（'+Math.round(POLL_TIMEOUT_MS/60000)+' 分鐘）：run '+ticket.run_id+
+                      ' 仍在執行，稍後可用 GET '+ticket.result_url+' 取結果');
     const r=await fetch(String(ticket.result_url||'').replace(/^\//,''),{headers:{'Accept':'application/json'}});
     if(r.status===409){onProgress&&onProgress('六節點執行中…'+Math.round((Date.now()-started)/1000)+' 秒');continue;}
     if(r.status===200){const p=await r.json(); L.runId=p.run_id||ticket.run_id; return p;}
@@ -230,10 +241,30 @@ $('#demoload').onclick=loadDemo;
    那就把後端那句話原樣顯示出來——不拿合成案例的畫面假裝剛剛剖析了他的卷證。
    失敗時把 chosen／runId 退回原案例，也不把跑不動的選項留在下拉選單裡：
    「沒有切換過去」跟「切換成功」是兩件事，畫面不能讓人分不出來。 */
+/* 後端動作的互斥閘。上傳建案與「啟動幕僚團分析」都會打 /runs：
+   兩個同時跑會對同一個案件送出兩次執行，而且後按的那次會拿一個還沒建立的 base_run_id。
+   進行中就擋下來並說出來，不排隊、不靜默丟掉。 */
+function beginBusy(){
+  BUSY=true;
+  $('#go1').disabled=true;
+  drop.classList.add('busy');
+}
+function endBusy(){
+  BUSY=false;
+  drop.classList.remove('busy');
+  /* updateGo1() 會把 #go1 的 disabled 與提示都重算——失敗訊息不能被它洗掉，先留著再放回去。 */
+  const keep=$('#go1hint').textContent;
+  updateGo1();
+  if(keep)$('#go1hint').textContent=keep;
+}
+const BUSY_MSG='上一個動作還在進行中，請稍候';
+
 async function uploadFiles(fileList){
   const files=[...(fileList||[])];
   if(!files.length)return;
   const hint=$('#go1hint'), prevCase=L.chosen, prevRun=L.runId;
+  if(BUSY){hint.textContent=BUSY_MSG;return;}
+  beginBusy();
   hint.textContent='上傳卷證中…（'+files.length+' 個檔案）';
   try{
     const fd=new FormData();
@@ -250,10 +281,13 @@ async function uploadFiles(fileList){
         {value:meta.case_id,textContent:meta.case_id+'（上傳）'}));
     if(sel)sel.value=meta.case_id;
     $('#demoload').textContent='載入案件（'+meta.case_id+'）';
+    hint.textContent='';
     loadDemo();
   }catch(e){
     L.chosen=prevCase; L.runId=prevRun;
     hint.textContent='上傳或抽取失敗（'+String(e&&e.message||e)+'）——未以舊資料假裝成功，仍停留在案例 '+prevCase+'。';
+  }finally{
+    endBusy();
   }
 }
 
@@ -319,6 +353,8 @@ function renderConfirmNote(){
    那個判斷只有後端算得準——前端拿舊 payload 改幾個欄位就是在假裝。 */
 async function runConfirmed(){
   const hint=$('#go1hint');
+  if(BUSY){hint.textContent=BUSY_MSG;return false;}
+  beginBusy();
   hint.textContent='送出承辦人確認並重跑六節點…';
   try{
     const body={confirmed_intake:collectIntake()};
@@ -331,6 +367,8 @@ async function runConfirmed(){
   }catch(e){
     hint.textContent='後端重跑失敗（'+String(e&&e.message||e)+'）——停在本步，未以舊資料續跑。';
     return false;
+  }finally{
+    endBusy();
   }
 }
 
@@ -347,10 +385,12 @@ function applyLivePayload(payload){
 
 $('#go1').onclick=async ()=>{
   if($('#go1').disabled)return;
+  /* 上傳還在跑的時候按下來：擋掉。按鈕在 beginBusy() 就已經 disabled，
+     這一道是防拖曳中途的競態（例如鍵盤觸發），不是重複的保險。 */
+  if(BUSY){$('#go1hint').textContent=BUSY_MSG;return;}
   if(isLive){
-    $('#go1').disabled=true;
+    /* 按鈕停用與還原由 runConfirmed() 內的 beginBusy／endBusy 管，這裡不再各管一份 */
     const ok=await runConfirmed();
-    $('#go1').disabled=false;
     if(!ok)return;   /* 後端沒回來就停在第 1 步，不拿舊 payload 假裝跑過 */
   }
   S.startTime=Date.now();

@@ -123,6 +123,8 @@ main{max-width:1280px;margin:0 auto;padding:22px 20px 80px}
 .grid2{display:grid;grid-template-columns:1.05fr .95fr;gap:18px}
 .drop{border:2px dashed var(--line);border-radius:4px;background:var(--paper);padding:30px 20px;text-align:center;transition:.18s}
 .drop.hot{border-color:var(--navy-l);background:#F0F6FB}
+/* 有後端動作在跑時整個拖曳區停用：兩個 /runs 同時打同一個案件會互相蓋掉 */
+.drop.busy{opacity:.5;pointer-events:none}
 .drop svg{opacity:.5}
 .drop .big{font-size:15px;font-weight:500;margin:8px 0 3px}
 .drop .sm{font-size:12.5px;color:var(--ink-3)}
