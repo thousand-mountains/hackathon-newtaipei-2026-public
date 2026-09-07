@@ -1187,3 +1187,79 @@ def test_n4_query_override_reaches_the_similar_case_channel():
     meta = r.retrieval["retrieval_meta"]
     assert_in("建築法第25條", meta["case_query_text"], "case_query_text 要看得出含指定詞")
     assert_in("建築法第25條", meta["query_text"], "通道 A 原有行為不得退化")
+
+
+# ── I-4：跨模式續跑要擋；model_ids 不得虛報沒跑過的節點 ────────────────
+
+
+def test_resume_across_run_modes_is_refused():
+    """fixture 跑過的 base 不能接到 bedrock 續跑（反之亦然）。
+
+    伺服器先以 fixture 跑過、重啟成 bedrock 後 `from_node=n5` 續跑，會得到
+    「N1–N4 是重播、N5 是真模型」而 `run_meta.run_mode="bedrock"` 的混血結果——
+    那份 run_meta 對它自己的來源說謊（CONSTITUTION §1）。
+    """
+    base = run_case("synthetic-ordinary-01", mode="fixture", persist=False)
+    try:
+        run_case(
+            "synthetic-ordinary-01",
+            mode="bedrock",
+            base_state=base,
+            from_node="n5",
+            persist=False,
+        )
+    except ValueError as e:
+        assert_in("fixture", str(e))
+        assert_in("bedrock", str(e))
+    else:
+        raise AssertionError("跨模式續跑必須 raise ValueError")
+
+
+def test_model_ids_only_report_nodes_that_actually_ran():
+    """`from_node=n5` 續跑時 N1 根本沒跑，`model_ids.extract` 不得填環境變數的值。
+
+    spec §5.1：「run_meta.model_ids 在 bedrock 模式填實際值」——沒呼叫就不是實際值。
+    測試環境沒有 strands，所以 monkeypatch `graph_mod.model_ids`（唯一接縫）。
+    """
+    orig = graph_mod.model_ids
+    graph_mod.model_ids = lambda: {"provider": "bedrock", "extract": "m-extract", "draft": "m-draft"}
+    try:
+        full = graph_mod._model_ids_if_live("bedrock", set(graph_mod.NODE_ORDER))
+        assert_eq(full["extract"], "m-extract", "全跑時抽取模型 id 要填")
+        assert_eq(full["draft"], "m-draft")
+
+        resumed = graph_mod._model_ids_if_live("bedrock", {"n5", "n6"})
+        assert_true(resumed["extract"] is None, "沒重跑 N1 就不得報 extract 的 model id")
+        assert_eq(resumed["draft"], "m-draft", "本次真的重跑的 N5 要報")
+
+        note = graph_mod._model_ids_note("bedrock", {"n5", "n6"})
+        assert_in("N1", note or "")
+        assert_in("base_run", note or "")
+        assert_true(graph_mod._model_ids_note("bedrock", set(graph_mod.NODE_ORDER)) is None,
+                    "全跑沒有沿用，就沒有要說明的事")
+        assert_true(graph_mod._model_ids_if_live("fixture", set(graph_mod.NODE_ORDER)) is None,
+                    "fixture 沒呼叫任何模型")
+    finally:
+        graph_mod.model_ids = orig
+
+
+# ── I-6：base_state.case_id 守衛（覆核的 M3 突變唯一存活者）─────────────
+
+
+def test_resume_refuses_a_base_run_from_another_case():
+    """拿 A 案已確認的 base 接到 B 案：兩案的 intake／screen 完全不同，
+    沿用等於把另一案的人工確認結果搬過來用。訊息要指出兩個 case_id。"""
+    base = run_case("synthetic-ordinary-01", mode="fixture", persist=False)
+    try:
+        run_case(
+            "synthetic-blocked-01",
+            mode="fixture",
+            base_state=base,
+            from_node="n5",
+            persist=False,
+        )
+    except ValueError as e:
+        assert_in("synthetic-ordinary-01", str(e))
+        assert_in("synthetic-blocked-01", str(e))
+    else:
+        raise AssertionError("跨案件續跑必須 raise ValueError")

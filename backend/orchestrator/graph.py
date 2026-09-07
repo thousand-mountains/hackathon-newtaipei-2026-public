@@ -235,6 +235,14 @@ def run_case(
     if base_state is not None:
         if base_state.case_id != case_id:
             raise ValueError(f"base_run 是 {base_state.case_id} 的執行結果，不能接到 {case_id}")
+        # 跨模式續跑會產生混血結果：N1–N4 是 fixture 重播、N5 是真模型，
+        # 而 run_meta.run_mode 只寫得下一個值 → 那份 run_meta 對自己的來源說謊
+        # （CONSTITUTION §1）。伺服器改設定重啟後接舊 run 就會踩到，一律拒絕。
+        if base_state.run_mode != mode:
+            raise ValueError(
+                f"base_run 是 {base_state.run_mode} 模式的結果，不能接到 {mode} 模式續跑"
+                f"（run_meta 會變成半重播半即時，說不清楚哪一段是模型寫的）"
+            )
         for node in NODE_ORDER[: start_idx + 1]:
             for f in UPSTREAM_FIELDS[node]:
                 setattr(state, f, copy.deepcopy(getattr(base_state, f)))
@@ -333,11 +341,10 @@ def run_case(
         "elapsed_ms": int((time.perf_counter() - run_started) * 1000),
         "node_timings": node_timings,
         "degraded": degraded,
-        # 沒有實際呼叫任何模型，就不給 model id（不腦補）
-        "model_ids": _model_ids_if_live(mode),
-        "model_ids_note": (
-            None if mode == "bedrock" else f"本次執行模式 {mode} 未呼叫任何基礎模型，故無 model id。"
-        ),
+        # 沒有實際呼叫任何模型，就不給 model id（不腦補）。續跑時只報**這一次真的重跑過**
+        # 的 LLM 節點：`from_node=n5` 時 N1 根本沒跑，填了就是虛報（覆核 I-4）。
+        "model_ids": _model_ids_if_live(mode, rerun_nodes),
+        "model_ids_note": _model_ids_note(mode, rerun_nodes),
         "kb_snapshot_date": snapshot.get("generated"),
         "final_state": state.state,
     }
@@ -354,11 +361,37 @@ def run_case(
     return state
 
 
-def _model_ids_if_live(mode: str) -> dict[str, Any] | None:
-    """live 檔位才報 model id。fixture 沒呼叫任何模型，報了就是謊報（CONSTITUTION §1）。"""
+# 哪個 LLM 節點對應 model_ids 的哪一個 key（graph 是唯一知道這件事的地方）
+LLM_NODE_MODEL_KEYS = (("n1", "extract", "抽取結果"), ("n5", "draft", "草稿"))
+
+
+def _model_ids_if_live(mode: str, rerun_nodes: set[str]) -> dict[str, Any] | None:
+    """live 檔位才報 model id，而且**只報這一次真的重跑過的節點**。
+
+    fixture 沒呼叫任何模型，報了就是謊報（CONSTITUTION §1）；同理，續跑時沒有重跑的
+    LLM 節點也沒有呼叫任何模型——舊版只看 `mode`，`from_node=n5` 續跑照樣把
+    `BEDROCK_MODEL_ID_EXTRACT` 的值填進 `model_ids.extract`（覆核 I-4）。
+    沒跑過就是 None，理由寫在 `model_ids_note`。
+    """
     if mode != "bedrock":
         return None
-    return model_ids()
+    ids = model_ids()
+    out: dict[str, Any] = {"provider": ids.get("provider")}
+    for node, key, _label in LLM_NODE_MODEL_KEYS:
+        out[key] = ids.get(key) if node in rerun_nodes else None
+    return out
+
+
+def _model_ids_note(mode: str, rerun_nodes: set[str]) -> str | None:
+    """把 `model_ids` 裡的 None 講清楚是「沒跑」還是「沒有模式」。"""
+    if mode != "bedrock":
+        return f"本次執行模式 {mode} 未呼叫任何基礎模型，故無 model id。"
+    skipped = [
+        f"續跑未重跑 {node.upper()}，{label}沿用 base_run"
+        for node, _key, label in LLM_NODE_MODEL_KEYS
+        if node not in rerun_nodes
+    ]
+    return "；".join(skipped) + "，故該節點不填 model id。" if skipped else None
 
 
 def _dispatch(node, state, ctx, fixture, digest, overrides=None):
