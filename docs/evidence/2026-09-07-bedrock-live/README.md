@@ -16,6 +16,7 @@ Bedrock 帳號仍在驗證中，所以無法起 `RUN_MODE=bedrock` 的服務。�
 |---|---|
 | `acceptance.md` | `scripts/live_acceptance.py` 的輸出（fixture 模式，exit 0） |
 | `ac11.md` | AC11（假 model id → 502、body 不夾草稿）的手動驗證摘錄，來源 Task 7a 報告 |
+| `ac16.md` | AC16（掃描件視覺讀取）部分驗證：⏸ 未驗（需 Bedrock），已驗上傳／路由三件事，來源 Task 16 |
 
 ## 這次真的驗到了什麼
 
@@ -38,7 +39,8 @@ Bedrock 帳號仍在驗證中，所以無法起 `RUN_MODE=bedrock` 的服務。�
 | AC7 KB recall（cases ≥ 3、同案型 ≥ 3） | 相似歷史案通道在 fixture 檔位不可用，`cases` 為空 |
 | AC15 上傳 txt → 抽取與 fixture 一致 | 上傳建案回 201，但 `POST runs` 回 400「上傳案件沒有可重播的 fixture，只能在 RUN_MODE=bedrock 執行」。**機制正確、live 未驗** |
 | AC11（真 model id 情境） | 現有證據的失敗原因是 `NoCredentialsError`；開通後要改驗「憑證正常但 model id 不存在」 |
-| AC10 SSE 六對事件 | 加值層（Task 7b）未做，ticket 沒有 `events_url` |
+| AC10 SSE 六對事件 | 加值層 7b／8b（2026-09-07）已完成 `GET /api/runs/{id}/events` 與前端訂閱，但 SSE 事件本身要靠 bedrock 檔位背景執行才會逐節點觸發；fixture 檔位同步回 200，沒有機會發事件，開通後才驗得到六對 `*_started`／`*_done` |
+| AC16 掃描件視覺讀取 | 見 `ac16.md`：無文字層 PDF、上傳 201、`route_documents` 判 `pdf_visual` 三件事已在 fixture 檔位驗過；模型能不能讀懂圖片內容本身仍待開通 |
 
 ## 重跑指令（同一支腳本，對 bedrock 服務跑）
 

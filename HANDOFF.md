@@ -502,6 +502,19 @@ uv run --with fastapi --with "uvicorn[standard]" --with pydantic --with python-m
 | 20 | fixture 檔位的拖曳區要不要預先標示「不接受上傳」——**文案待決** | 判斷卡候選 |
 | 21 | AC5 的 `cite_ids` 白名單邏輯在 fixture 也可驗，但依裁定標 ⏸；AC10 的 pending 文案與 legend 不完全對應 | `scripts/live_acceptance.py` |
 | 22 | `app.py` 的 `__main__` 在缺 uvicorn 時改吐 `SystemExit` 訊息（行為微變，D8 重構時已裁定可接受） | `backend/api/app.py` |
+| 23 | 12 碼帳號 ID 掃描的 grep 修正：`-E "\b[0-9]{12}\b"` 的 `\b` 在 sha256 這類 64 碼 hex 字串裡會誤中內嵌的 12 碼子字串（`\b` 只看 `\w`／`\W` 邊界，hex 字元全屬 `\w`，遇到字串收尾或非 hex 分隔處仍可能誤判）。人工覆核／驗收前改用：`git grep -nP "(?<![0-9A-Za-z_])[0-9]{12}(?![0-9A-Za-z_])" -- backend docs plans scripts HANDOFF*.md CLAUDE.md`（來源 Task 9 報告） | 驗收檢查清單 |
+
+### 5.7 加值層進度（2026-09-07 續）
+
+§5.3 那張「沒做什麼」表是 2026-09-05 寫的快照，下列四個 task 之後陸續補上——**§5.3 的
+7b／8b／9／16 那四列已經過時，以本節為準**：
+
+| Task | 現況 | commit |
+|---|---|---|
+| 7b：SSE 節點事件流 | 完成。`GET /api/runs/{id}/events` 端點接上，逐節點推播 | `1b0db05` |
+| 8b：每卡「從這裡重新產生」 | 完成。前端 SSE 訂閱＋每卡重新產生列（`from_node` + `n4_query` 兩通道） | `bc0d025`（實作）、`9d5eafb`（驗證證據） |
+| 9：資料 manifest／ingest／逾期回放 | 完成。`build_manifest.py` 產出 **manifest 2,477 筆**；`replay_overdue_public.py` 產出回放集 **217 件**，對規則引擎重放**一致率 99.5%（216/217）**。`ingest_kb.py` 寫好但**未實跑**（無 AWS 憑證）。**附註：回放集 217 件全為 `expected_overdue=True` 正例，沒有反例（非逾期案）混入，一致率只驗到「引擎判正例判得準不準」，不能當成日期計算邏輯（含邊界、非逾期分支）的完整驗證** | `0d9d10d` |
+| 16：掃描件視覺讀取實測 | **部分完成**（本 commit）。無 Bedrock 憑證，Step 2（模型真的讀不讀得懂圖片）驗不了，標 ⏸ 未驗；Step 1 造樣本、fixture 服務上傳與路由三件事已驗過，見 `docs/evidence/2026-09-07-bedrock-live/ac16.md` | 本 commit |
 
 ---
 
