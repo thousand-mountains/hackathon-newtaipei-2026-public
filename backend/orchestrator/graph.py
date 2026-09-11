@@ -318,7 +318,24 @@ def run_case(
                 degraded.append(
                     {"node": node, "reason": result.degrade_reason, "agents": NODE_TO_AGENTS.get(node, [])}
                 )
-            emit("node_done", {"node": node, "elapsed_ms": result.elapsed_ms, "degraded": result.degraded})
+            # 契約 C1（plans/2026-09-11-integrate-staff-ux.md）：帶上這個節點餵的卡片，
+            # 前端才能在 run 進行中逐張填卡。narrative 取 merge 之後的版本（含降級紅 log），
+            # 只給 out／logs——卡片的其他欄位由 run_done 後的 payload 提供，不在事件裡重複。
+            node_agents = NODE_TO_AGENTS.get(node, [])
+            emit(
+                "node_done",
+                {
+                    "node": node,
+                    "elapsed_ms": result.elapsed_ms,
+                    "degraded": result.degraded,
+                    "agents": list(node_agents),
+                    "narrative": {
+                        k: {"out": agents[k]["out"], "logs": copy.deepcopy(agents[k]["logs"])}
+                        for k in node_agents
+                        if k in agents
+                    },
+                },
+            )
             # N1 信心不足 → NEEDS_INPUT，狀態機停在這裡等人工補齊（architecture §4.2）
             if node == "n1" and result.degraded:
                 state.transition("NEEDS_INPUT")
@@ -328,6 +345,8 @@ def run_case(
         emit("run_failed", {"node": node, "error": f"{type(e).__name__}: {e}"})
         raise
 
+    for entry in agents.values():
+        entry["prompt"], entry["prompt_note"] = _agent_prompt(entry.get("node"), mode)
     state.agents_narrative = agents
     state.run_meta = {
         "run_id": state.run_id,
@@ -382,6 +401,30 @@ def _model_ids_if_live(mode: str, rerun_nodes: set[str]) -> dict[str, Any] | Non
     for node, key, _label in LLM_NODE_MODEL_KEYS:
         out[key] = ids.get(key) if node in rerun_nodes else None
     return out
+
+
+# 幕僚彈窗「指示」欄的來源（契約 C2）。只有 LLM 節點有提示詞；
+# 直接讀檔而不 import `backend.llm` 的讀檔函式：跟 client.py `_prompt()` 讀同一份檔，
+# 但編排層對 llm 套件的依賴不因為一個顯示欄位再多一條。
+PROMPTS_DIR = pathlib.Path(__file__).resolve().parents[1] / "llm" / "prompts"
+LLM_NODE_PROMPTS = {"n1": "n1_extract", "n5": "n5_draft"}
+PROMPT_NOTE_LIVE = "模型即時生成所用的系統提示（唯讀；調整提示詞不在本次範圍）"
+PROMPT_NOTE_RULE = "規則／檢索節點，無提示詞（CONSTITUTION §4）"
+PROMPT_NOTE_FIXTURE = "離線重播未呼叫模型，無提示詞可示"
+
+
+def _agent_prompt(node: str | None, mode: str) -> tuple[str | None, str]:
+    """回 `(prompt, prompt_note)`。沒有呼叫模型就不給提示詞原文——
+
+    fixture 檔位的 N1／N5 是重播，給出 prompt 等於暗示「這段輸出是這份提示詞生成的」，
+    而它不是（CONSTITUTION §1）。規則／檢索節點本來就沒有提示詞，不補一段虛構的。
+    """
+    name = LLM_NODE_PROMPTS.get(node or "")
+    if name is None:
+        return None, PROMPT_NOTE_RULE
+    if mode != "bedrock":
+        return None, PROMPT_NOTE_FIXTURE
+    return (PROMPTS_DIR / f"{name}.md").read_text(encoding="utf-8"), PROMPT_NOTE_LIVE
 
 
 _NOT_AWS_NOTE = (

@@ -612,20 +612,24 @@ sequenceDiagram
 **SSE 事件 payload（0-3 與 0-4 的交界，不定死一定對不上）**：
 
 ```jsonc
-// event: node.done
-{ "event": "node.done", "id": 7,          // 遞增，供 Last-Event-ID 續播
-  "node": "n4",
-  "agents": ["law", "case"],               // 這個節點餵哪幾張幕僚卡片
-  "narrative": { "law":  {"out": "…", "logs": [["…",""],["…","y"]]},
-                 "case": {"out": "…", "logs": [["…",""]]} },
-  "elapsed_ms": 1234, "degraded": false, "degrade_reason": null }
+// event: node_done（實作：backend/orchestrator/graph.py，契約 C1 見 plans/2026-09-11-integrate-staff-ux.md）
+{ "run_id": "run-…", "node": "n4", "elapsed_ms": 1234, "degraded": false,
+  "agents": ["law", "case"],               // = NODE_TO_AGENTS[node]，這個節點餵哪幾張幕僚卡片
+  "narrative": { "law":  {"out": "…", "logs": [["…",""],["…","y"]]},   // merge 後的內容（含降級紅 log）
+                 "case": {"out": "…", "logs": [["…",""]]} } }
+// event: node_start → { "run_id", "node", "agents" }
+// event: run_done   → { "run_id", "final_state" }；完整 CASE payload 用 GET /api/runs/{rid} 取
+// event: run_failed → { "run_id", "node", "error" }
 ```
+
+續跑時沒重跑的節點**不發事件**；前端據此把上游卡標「沿用上一次執行（未重跑）」。
+payload `agents[]` 另帶 `prompt`（只有 bedrock 檔位的 n1／n5 有檔案原文，其餘 `null`）與 `prompt_note`。
 
 **節點與卡片的映射是契約的一部分，不是散文**：
 `n1→[clerk]`、`n2→[clf]`、`n3→[proc]`、**`n4→[law, case]`（發一個事件，陣列長度 2）**、
-`n5→[draft]`、`n6→[qc]`。六個 `node.done` 事件餵滿七張卡。
-`needs_input` 帶 `{fields:[…], reason}`；`run.done` 帶完整 `CASE` payload；
-`degraded` 是獨立事件，帶 `{node, reason, fallback_used}`。
+`n5→[draft]`、`n6→[qc]`。六個 `node_done` 事件餵滿七張卡。
+降級不另發事件，走 `node_done.degraded=true` ＋ narrative 裡的紅 log；
+N1 降級（NEEDS_INPUT）時 run 在 n1 後停止，`run_done.final_state` 為 `NEEDS_INPUT`。
 
 **為什麼把啟動與訂閱拆成兩支**：瀏覽器的 `EventSource` 在連線中斷時會自動重連。
 若啟動與訂閱是同一支 GET，一次網路抖動就會整條產線重跑一遍，

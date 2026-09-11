@@ -11,7 +11,7 @@ from contextlib import contextmanager
 import backend.intake.uploads as up
 import backend.orchestrator.graph as graph_mod
 from backend.config import settings
-from backend.config.settings import load_snapshot
+from backend.config.settings import NODE_TO_AGENTS, load_snapshot
 from backend.engine import deadline as deadline_engine
 from backend.intake.documents import CJK_RATIO_THRESHOLD, cjk_ratio, route_documents
 from backend.intake.uploads import (
@@ -1060,6 +1060,84 @@ def test_on_event_emits_start_done_per_node_and_run_done():
     assert_eq(kinds.count("node_done"), 6)
     assert_eq(kinds[-1], "run_done")
     assert_eq([d["node"] for k, d in events if k == "node_done"], ["n1", "n2", "n3", "n4", "n5", "n6"])
+
+
+def test_node_done_carries_agents_and_merged_narrative():
+    """契約 C1：node_done 帶該節點的卡片清單與 merge 後的 out／logs，前端靠它逐張填卡。"""
+    events: list[tuple[str, dict]] = []
+    st = run_case(
+        "synthetic-ordinary-01",
+        mode="fixture",
+        persist=False,
+        on_event=lambda k, d: events.append((k, d)),
+    )
+    done = {d["node"]: d for k, d in events if k == "node_done"}
+    for node, d in done.items():
+        assert_eq(d["agents"], NODE_TO_AGENTS[node], f"{node} 的 agents 必須等於 NODE_TO_AGENTS")
+        assert_eq(sorted(d["narrative"]), sorted(NODE_TO_AGENTS[node]), f"{node} 的 narrative 鍵不對")
+        json.dumps(d, ensure_ascii=False)  # SSE 要序列化得出去
+
+    n4 = done["n4"]
+    assert_eq(n4["agents"], ["law", "case"])
+    for k in ("law", "case"):
+        card = n4["narrative"][k]
+        assert_eq(sorted(card), ["logs", "out"], "narrative 只給 out／logs（契約 C1）")
+        assert_true(all(len(l) == 2 for l in card["logs"]), f"{k} 的 logs 元素必須是 [text, cls]")
+        assert_eq(card["out"], st.agents_narrative[k]["out"], "事件裡的 out 必須與終態 payload 一致")
+        assert_eq(card["logs"], st.agents_narrative[k]["logs"], "事件裡的 logs 必須與終態 payload 一致")
+    # fixture 的 N4 會降級（通道 B 不可用）：紅 log 是 merge 時才加的，
+    # 事件裡看得到它＝事件取的是 merge 後的版本，不是節點原始 narrative。
+    assert_true(n4["degraded"] is True, "前提不成立：fixture 模式的 N4 本來會降級")
+    red = [l for k in ("law", "case") for l in n4["narrative"][k]["logs"] if l[1] == "r"]
+    assert_true(any("已降級" in l[0] for l in red), f"降級紅 log 沒進事件，實得 {red}")
+
+
+def test_fixture_payload_agents_carry_prompt_keys_without_prompt_text():
+    """契約 C2：fixture 沒呼叫模型，任何卡都不給提示詞原文；n1／n5 與規則節點的說明要分得開。"""
+    p = build_payload(run_case("synthetic-ordinary-01", mode="fixture", persist=False))
+    assert_eq(len(p["agents"]), 7)
+    for a in p["agents"]:
+        assert_true("prompt" in a and a["prompt"] is None, f"{a['k']} 在 fixture 檔位不得有 prompt 原文")
+        want = graph_mod.PROMPT_NOTE_FIXTURE if a["node"] in ("n1", "n5") else graph_mod.PROMPT_NOTE_RULE
+        assert_eq(a["prompt_note"], want, f"{a['k']}（{a['node']}）的 prompt_note 不對")
+
+
+def test_agent_prompt_gives_file_text_only_for_live_llm_nodes():
+    """bedrock 檔位：n1／n5 給提示詞檔全文，其餘節點 None。直接測 helper，不真打模型。"""
+    prompts = pathlib.Path(client.__file__).parent / "prompts"
+    for node, name in (("n1", "n1_extract"), ("n5", "n5_draft")):
+        text, note = graph_mod._agent_prompt(node, "bedrock")
+        assert_eq(text, (prompts / f"{name}.md").read_text(encoding="utf-8"), f"{node} 的 prompt 不是檔案原文")
+        assert_eq(note, graph_mod.PROMPT_NOTE_LIVE)
+    for node in ("n2", "n3", "n4", "n6"):
+        assert_eq(graph_mod._agent_prompt(node, "bedrock"), (None, graph_mod.PROMPT_NOTE_RULE))
+
+
+def test_resume_from_n2_or_n3_without_confirmation_keeps_human_origin():
+    """B3：上一次已確認的欄位，續跑沒再送 confirmed_intake 時仍是 human，不得被打回 llm。
+
+    `_apply_confirmed_intake(state, None)` 在 n2 會被呼叫——這條測試釘住它是 no-op，
+    而且 n3 起跑（n2 不跑）時 origin 也是從 base_state 搬過來的。
+    """
+    fx = load_case("synthetic-ordinary-01")
+    unconfirmed = run_case("synthetic-ordinary-01", mode="fixture", persist=False)
+    assert_eq(unconfirmed.intake_origin["d2"], "llm", "前提不成立：沒確認時 d2 應為 llm")
+    base = run_case(
+        "synthetic-ordinary-01", mode="fixture", persist=False, confirmed_intake=_confirmed_of(fx)
+    )
+    assert_eq(base.intake_origin["d2"], "human", "前提不成立：確認後 d2 應為 human")
+    assert_true(base.intake_confirmed, "前提不成立：base 的 intake_confirmed 不應為空")
+
+    for from_node in ("n2", "n3"):
+        again = run_case(
+            "synthetic-ordinary-01", mode="fixture", base_state=base, from_node=from_node, persist=False
+        )
+        assert_eq(again.intake_origin, base.intake_origin, f"從 {from_node} 續跑 origin 被改了")
+        assert_eq(again.intake_confirmed, base.intake_confirmed, f"從 {from_node} 續跑確認清單被清掉了")
+        assert_true(
+            again.screen.get("procedural_inputs_confirmed") is True,
+            f"從 {from_node} 續跑後 N3 看不到已確認的 origin",
+        )
 
 
 def test_save_run_failure_still_emits_run_failed():
