@@ -183,6 +183,10 @@ textarea{resize:vertical;line-height:1.7}
 .agent[data-how=reused] .ico{background:var(--paper-2)}
 .agent[data-s=done][data-how=reused] .st{color:var(--ink-3)}
 .agent[data-deg="1"][data-s=done] .st{color:var(--amber)}
+/* 執行停在上游（NEEDS_INPUT）：這張卡沒跑，不是還在跑 */
+.agent[data-s=halt]{border-style:dashed;cursor:default}
+.agent[data-s=halt] .pill{background:var(--seal)}
+.agent[data-s=halt] .st{color:var(--seal)}
 .agent .st code{font-family:var(--mono);font-size:10.5px;overflow-wrap:anywhere}
 .agent[data-s=run]{border-color:var(--navy-l);box-shadow:0 0 0 3px rgba(30,91,147,.09)}
 .agent[data-s=run] .pill{background:var(--navy-l)}
@@ -637,7 +641,11 @@ footer b{color:#C9DCEE;font-weight:500}
         <span class="ttl">決定書草稿</span>
         <span class="tag n" id="wc">0 字</span>
         <span class="tag r" id="editcount" style="display:none">0 句已修改</span>
+        <!-- 草稿怎麼來的：fixture 模板重播／離線示範——非模型即時生成時一定要一眼看得到 -->
+        <span class="tag y gentag" hidden tabindex="0"></span>
         <span class="gap"></span>
+        <!-- 唯讀：版式不提供切換（Ci 拍板），由程序審查判定。只讀後端 screen 欄位，不自己推版式名。 -->
+        <span class="tag k tpltag" id="tpltag" tabindex="0">版式由程序審查判定</span>
         <button class="btn ghost sm" id="cleanview"><span class="mi" style="font-size:15px;vertical-align:-3px">visibility</span> 純文預覽</button>
         <span class="nav-r">句 <b id="sentpos" style="font-family:var(--mono)">—</b> / <span id="senttotal" style="font-family:var(--mono)">—</span></span>
       </div>
@@ -665,6 +673,7 @@ footer b{color:#C9DCEE;font-weight:500}
   <div class="review">
     <div>
       <div class="rvbar">
+        <span class="tag y gentag" hidden tabindex="0"></span>
         <span class="gap"></span>
         <button class="btn ghost sm" id="cleanview2"><span class="mi" style="font-size:15px;vertical-align:-3px">visibility</span> 純文預覽</button>
       </div>
@@ -1477,8 +1486,9 @@ function setAgError(m){
 }
 
 function paintCard(k){
-  const el=$('#ag-'+k), a=agentByK(k), b=BOARD[k];
-  if(!el||!a||!b)return;
+  /* a 可能不存在：執行停在 n1 時 payload 只帶跑過的節點的卡，其餘卡的名字留在 DOM 上 */
+  const el=$('#ag-'+k), a=agentByK(k)||{}, b=BOARD[k];
+  if(!el||!b)return;
   el.dataset.s=b.s; el.dataset.how=b.how||''; el.dataset.deg=b.degraded?'1':'0';
   el.tabIndex=b.s==='done'?0:-1;
   el.setAttribute('aria-disabled',b.s==='done'?'false':'true');
@@ -1487,6 +1497,9 @@ function paintCard(k){
     out.textContent='等待前置作業…'; st.innerHTML='<span class="dot">待命</span>'; bar.style.width='0';
   }else if(b.s==='run'){
     out.textContent='分析中…'; st.innerHTML='<span class="spin"></span>執行中'; bar.style.width='18%';
+  }else if(b.s==='halt'){
+    out.textContent='未執行：本次執行停在 '+(b.stopAt||'n1')+'，等人工補件後才會往下跑。';
+    st.innerHTML='■ 停止（NEEDS_INPUT）'; bar.style.width='0';
   }else{
     bar.style.width='100%';
     out.textContent=b.ev?fillTokens(b.ev.out)
@@ -1502,9 +1515,10 @@ function paintCard(k){
     }[b.how]||'✓ 完成';
   }
 }
+/* 分母是看板上的卡（startBoard 依當時的 AGENTS 建的七張），不是新 payload 的 agents 長度 */
 function updateAgProg(){
-  const done=AGENTS.filter(a=>(BOARD[a.k]||{}).s==='done').length;
-  $('#agprog').textContent=done+' / '+AGENTS.length;
+  const ks=Object.keys(BOARD);
+  $('#agprog').textContent=ks.filter(k=>BOARD[k].s==='done').length+' / '+ks.length;
 }
 
 /* 重畫整個看板，全部待命；from 之前的節點（續跑時後端不重跑、也不發事件）直接標沿用——
@@ -1556,22 +1570,36 @@ function boardEvent(kind,d){
 
 /* payload 回來（applyLivePayload 之後）才呼叫。
    有收到事件 → 事件驅動版收尾；一個事件都沒有（fixture 同步 200）→ 重播，並明寫「重播」。 */
+/* 執行停在 n1（final_state=NEEDS_INPUT）：後端只跑了 n1、只發一個 node_done 就 run_done，
+   payload 也只帶跑過的節點的卡。沒跑的卡標「停止」，不是輪詢、也不能停在「執行中」；
+   沒有草稿可編，第 3 步不解鎖。哪些節點跑過以 run_meta.node_timings 為準。 */
 function finishBoard(where){
   applyLiveDeadline();
   const rm=(LIVE&&LIVE.run_meta)||{}, from=rm.from_node||'n1', base=rm.base_run_id||null;
+  const ran=new Set(Object.keys(rm.node_timings||{}));
+  const halted=(rm.final_state||(LIVE&&LIVE.state))==='NEEDS_INPUT';
+  const stopAt=halted?([...ran].sort().pop()||from):null;
   const rerun=[];
-  AGENTS.forEach(a=>{
-    const b=BOARD[a.k]||{};
-    if(agentNode(a)<from){BOARD[a.k]={s:'done',how:'reused',base:base};}
-    else if(!boardSawEvent){rerun.push(a.k); return;}
+  Object.keys(BOARD).forEach(k=>{
+    const b=BOARD[k], node=INV_NODE_TO_AGENTS[k]||agentNode(agentByK(k));
+    if(node<from){BOARD[k]={s:'done',how:'reused',base:base};}
+    else if(halted&&!ran.has(node)){BOARD[k]={s:'halt',stopAt:stopAt};}
+    else if(!boardSawEvent){rerun.push(k); return;}
     else if(b.s==='done'&&b.how==='event'){b.pending=false; b.ev=null;}   /* payload 為準 */
-    else BOARD[a.k]={s:'done',how:'poll'};
-    paintCard(a.k);
+    else BOARD[k]={s:'done',how:'poll'};
+    paintCard(k);
   });
   updateAgProg();
-  if(boardSawEvent){setAgSource('event',where); boardComplete(where?'幕僚團已依新執行結果更新':'');return;}
+  const end=halted?()=>boardHalt(stopAt):()=>boardComplete(where?'幕僚團已依新執行結果更新':'');
+  if(boardSawEvent){setAgSource('event',where); end(); return;}
   setAgSource('replay',where);
-  replayAgents(rerun,'replay',()=>boardComplete(where?'幕僚團已依新執行結果更新':''));
+  replayAgents(rerun,'replay',end);
+}
+function boardHalt(stopAt){
+  $('#go2').disabled=true;
+  setAgError('本次執行停在 '+stopAt+'（final_state=NEEDS_INPUT）：卷證書記官抽取信心不足，需要人工補件；'+
+    '其後節點未執行，沒有草稿可編。請回第 1 步核對、補齊收文欄位後重新啟動。');
+  toast('需要人工補件：執行停在 '+stopAt);
 }
 
 /* 重播：沒有逐節點事件可接時才用（離線、fixture 同步 200）。節奏是固定排程，
@@ -1701,6 +1729,7 @@ function renderAgDetail(k){
 }
 function openAg(k){
   const b=BOARD[k];
+  if(b&&b.s==='halt'){toast('本節點未執行：執行停在 '+(b.stopAt||'n1')+'，需要人工補件');return;}
   if(!b||b.s!=='done'){toast('該幕僚尚在作業中');return;}
   openAgent=k; $('#ag-query').value='';
   renderAgDetail(k);
@@ -2022,6 +2051,34 @@ function buildDraft(){
   });
   $('#senttotal').textContent=SENTS.length;
   updateWC();
+  renderDraftTags();
+}
+/* 草稿區兩個唯讀標記，內容只讀後端欄位：
+   - 版式：Ci 拍板不提供切換。payload 沒有版式名稱欄位（decision_v1 只在後端 state.draft 裡），
+     所以只放固定文字，再照抄 N3 的 screen.art77 條款與依據——不從條款自己推出「版式 A／B」。
+   - 生成方式：run_meta.degraded 裡 n5 的原因（fixture 檔位＝模板重播）。非模型即時生成的草稿，
+     標記要跟著草稿走，不能只留在頁首徽章的 tooltip 裡。 */
+function renderDraftTags(){
+  const sc=(isLive&&LIVE&&LIVE.screen)||null, a77=(sc&&sc.art77)||null;
+  const tt=$('#tpltag');
+  if(tt){
+    let txt='版式由程序審查判定', tip='版式不提供切換：由程序審查（N3）的結果決定，承辦人不在此選版式。';
+    if(a77&&a77.clause)txt+='・77 條款 '+a77.clause;
+    else if(a77&&a77.requires_substantive_review)txt+='・須實體審查';
+    if(a77&&a77.basis)tip+='程序審查依據：'+a77.basis;
+    if(sc&&sc.requires_human_conclusion)tip+='（結論段由承辦人撰寫，系統不生成。）';
+    if(!isLive)tip+='離線 fixture 沒有後端程序審查結果，只顯示固定文字。';
+    tt.textContent=txt; tt.dataset.tip=tip;
+  }
+  const rm=(isLive&&LIVE&&LIVE.run_meta)||{};
+  const n5=(rm.degraded||[]).find(d=>d&&d.node==='n5');
+  const gen=!isLive?{t:'離線示範草稿・非模型生成',tip:'本頁未接後端，草稿為內嵌 data/case-demo.json 的示範內容。'}
+    :n5?{t:'草稿非模型即時生成（'+(rm.run_mode||'?')+'）',tip:n5.reason||''}
+    :null;
+  $$('.gentag').forEach(el=>{
+    el.hidden=!gen;
+    if(gen){el.textContent='⚠ '+gen.t; el.dataset.tip=gen.tip;}
+  });
 }
 function updateWC(){
   $('#wc').textContent=SENTS.reduce((n,s)=>n+s.t.replace(/\s/g,'').length,0)+' 字';

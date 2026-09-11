@@ -183,6 +183,10 @@ textarea{resize:vertical;line-height:1.7}
 .agent[data-how=reused] .ico{background:var(--paper-2)}
 .agent[data-s=done][data-how=reused] .st{color:var(--ink-3)}
 .agent[data-deg="1"][data-s=done] .st{color:var(--amber)}
+/* 執行停在上游（NEEDS_INPUT）：這張卡沒跑，不是還在跑 */
+.agent[data-s=halt]{border-style:dashed;cursor:default}
+.agent[data-s=halt] .pill{background:var(--seal)}
+.agent[data-s=halt] .st{color:var(--seal)}
 .agent .st code{font-family:var(--mono);font-size:10.5px;overflow-wrap:anywhere}
 .agent[data-s=run]{border-color:var(--navy-l);box-shadow:0 0 0 3px rgba(30,91,147,.09)}
 .agent[data-s=run] .pill{background:var(--navy-l)}
@@ -637,7 +641,11 @@ footer b{color:#C9DCEE;font-weight:500}
         <span class="ttl">決定書草稿</span>
         <span class="tag n" id="wc">0 字</span>
         <span class="tag r" id="editcount" style="display:none">0 句已修改</span>
+        <!-- 草稿怎麼來的：fixture 模板重播／離線示範——非模型即時生成時一定要一眼看得到 -->
+        <span class="tag y gentag" hidden tabindex="0"></span>
         <span class="gap"></span>
+        <!-- 唯讀：版式不提供切換（Ci 拍板），由程序審查判定。只讀後端 screen 欄位，不自己推版式名。 -->
+        <span class="tag k tpltag" id="tpltag" tabindex="0">版式由程序審查判定</span>
         <button class="btn ghost sm" id="cleanview"><span class="mi" style="font-size:15px;vertical-align:-3px">visibility</span> 純文預覽</button>
         <span class="nav-r">句 <b id="sentpos" style="font-family:var(--mono)">—</b> / <span id="senttotal" style="font-family:var(--mono)">—</span></span>
       </div>
@@ -665,6 +673,7 @@ footer b{color:#C9DCEE;font-weight:500}
   <div class="review">
     <div>
       <div class="rvbar">
+        <span class="tag y gentag" hidden tabindex="0"></span>
         <span class="gap"></span>
         <button class="btn ghost sm" id="cleanview2"><span class="mi" style="font-size:15px;vertical-align:-3px">visibility</span> 純文預覽</button>
       </div>
