@@ -169,8 +169,21 @@ textarea{resize:vertical;line-height:1.7}
 
 /* ---------- 幕僚團 ---------- */
 .agents{display:grid;grid-template-columns:repeat(auto-fill,minmax(232px,1fr));gap:12px}
-.agent{border:1px solid var(--line);border-radius:3px;background:var(--white);padding:13px;position:relative;overflow:hidden;transition:.25s}
+.agent{border:1px solid var(--line);border-radius:3px;background:var(--white);padding:13px;position:relative;overflow:hidden;transition:.25s;text-align:left}
+/* 完成的卡才能點開詳情（產出／作業紀錄／指示／耗時／從此節點重跑） */
+.agent[data-s=done]{cursor:pointer}
+.agent[data-s=done]:hover{border-color:var(--navy-l);box-shadow:var(--shadow);transform:translateY(-1px)}
+.agent[data-s=done]:focus-visible{outline:2px solid var(--navy-l);outline-offset:1px}
+.agent[data-s=run],.agent[data-s=idle]{cursor:default}
+.agent .more{position:absolute;right:10px;bottom:10px;font-size:16px;color:var(--line);transition:.2s}
+.agent[data-s=done] .more{color:var(--navy-l)}
 .agent .pill{position:absolute;top:0;left:0;width:3px;height:100%;background:var(--line)}
+/* 續跑時上游沒有重跑的卡：沿用上一次執行，視覺上跟「這次真的跑完」分開 */
+.agent[data-how=reused] .pill{background:#9FB5C9}
+.agent[data-how=reused] .ico{background:var(--paper-2)}
+.agent[data-s=done][data-how=reused] .st{color:var(--ink-3)}
+.agent[data-deg="1"][data-s=done] .st{color:var(--amber)}
+.agent .st code{font-family:var(--mono);font-size:10.5px;overflow-wrap:anywhere}
 .agent[data-s=run]{border-color:var(--navy-l);box-shadow:0 0 0 3px rgba(30,91,147,.09)}
 .agent[data-s=run] .pill{background:var(--navy-l)}
 .agent[data-s=done] .pill{background:var(--green)}
@@ -179,8 +192,8 @@ textarea{resize:vertical;line-height:1.7}
 .agent .ico{width:26px;height:26px;flex:none;border-radius:3px;background:var(--paper-2);display:grid;place-items:center}
 .agent[data-s=done] .ico{background:#E6F2EB}
 .agent h3{margin:0;font-size:13.5px;font-weight:700;letter-spacing:.02em}
-.agent p{margin:0;font-size:12.5px;color:var(--ink-2);line-height:1.6;min-height:38px}
-.agent .st{margin-top:8px;font-size:11.5px;font-weight:500;display:flex;align-items:center;gap:6px}
+.agent p{margin:0;font-size:12.5px;color:var(--ink-2);line-height:1.6;min-height:38px;padding-right:14px}
+.agent .st{margin-top:8px;font-size:11.5px;font-weight:500;display:flex;align-items:center;gap:6px;flex-wrap:wrap;padding-right:14px}
 .agent[data-s=idle] .st{color:var(--ink-3)}
 .agent[data-s=run] .st{color:var(--navy-l)}
 .agent[data-s=done] .st{color:var(--green)}
@@ -195,6 +208,12 @@ textarea{resize:vertical;line-height:1.7}
 .console .g{color:#6FD39B}
 .console .y{color:#E8B75A}
 .console .r{color:#E88B8B}
+/* 幕僚詳情彈窗：內容可能比投影幕高，捲的是內文不是整頁 */
+.agmodal .mb{max-height:calc(100vh - 190px);overflow:auto}
+.agmodal .lbl{font-size:12px;color:var(--ink-3);margin-bottom:4px}
+.agmodal .mf{align-items:center;flex-wrap:wrap}
+.agmodal .mf input[type=text]{flex:1;min-width:12rem;width:auto;padding:6px 9px;font-size:12.5px}
+.agmodal textarea[readonly]{background:var(--paper);color:var(--ink-2)}
 
 /* ---------- 編輯器（左參考 / 右草稿） ---------- */
 .split{display:grid;grid-template-columns:.92fr 6px 1.08fr;height:calc(100vh - 268px);min-height:560px}
@@ -580,12 +599,11 @@ footer b{color:#C9DCEE;font-weight:500}
 
   <div class="card" style="margin-bottom:16px">
     <h2><span class="bar"></span>分工看板<span class="mi tip" tabindex="0" data-tip="七名幕僚依序作業，每項產出皆回填來源供燈號查核。">info</span><span style="flex:1"></span><span id="agprog" style="font-family:var(--mono);font-size:12.5px;color:var(--ink-3);font-weight:400">0 / 7</span></h2>
-    <div class="body"><div class="agents" id="agents"></div></div>
-  </div>
-
-  <div class="card">
-    <h2><span class="bar"></span>作業紀錄</h2>
-    <div class="body" style="padding:12px"><div class="console" id="console"></div></div>
+    <div class="body"><div class="agents" id="agents"></div>
+      <!-- 原本的「作業紀錄」卡併進各幕僚的詳情彈窗。這一行必須留著：
+           它講的是「卡片上的東西是即時節點事件、重播、還是離線 fixture」——分層誠實的外顯。 -->
+      <p class="hint" id="agsource" style="margin:12px 0 0;line-height:1.75"></p>
+    </div>
   </div>
 
 </section>
@@ -726,6 +744,31 @@ footer b{color:#C9DCEE;font-weight:500}
   <br>本頁為 AI 黑客松競賽原型，所引資料僅供展示之用，非正式行政文書。
 </footer>
 
+<!-- 幕僚詳情：內容一律取自後端 payload／節點事件（agents[].out/logs/prompt/prompt_note、
+     run_meta.node_timings）。指示欄唯讀——後端 overrides 白名單只有 n4_query，
+     「改提示詞後重生成」接不到後端，不做成可編輯的樣子。 -->
+<div class="mask" id="agmask" role="dialog" aria-modal="true" aria-labelledby="agtitle">
+  <div class="modal agmodal" style="max-width:600px;border-top-color:var(--navy)">
+    <div class="mh"><span class="mi" id="agicon" style="color:var(--navy)">psychology</span><h3 id="agtitle">幕僚</h3>
+      <span style="flex:1"></span><span id="agtime" style="font-family:var(--mono);font-size:11.5px;color:var(--ink-3)"></span></div>
+    <div class="mb">
+      <p class="hint" id="agscope" style="margin:0 0 10px;line-height:1.7"></p>
+      <div class="lbl">產出</div>
+      <div id="agout" style="font-size:13.5px;line-height:1.8;background:var(--paper);border-left:3px solid var(--green);padding:10px 12px;border-radius:2px;margin-bottom:14px"></div>
+      <div class="lbl">作業紀錄</div>
+      <div id="aglog" class="console" style="height:150px;margin-bottom:14px"></div>
+      <div class="lbl">指示（唯讀）</div>
+      <textarea id="agprompt" rows="4" readonly style="font-size:12.5px;line-height:1.7"></textarea>
+    </div>
+    <div class="mf">
+      <input type="text" id="ag-query" hidden aria-label="重新檢索時附加的查詢詞"
+             placeholder="重新檢索時附加的查詢詞（選填）">
+      <button class="btn ghost" id="ag_close">關閉</button>
+      <button class="btn" id="ag_rerun"><span class="mi" style="font-size:15px;vertical-align:-3px">autorenew</span> 從此節點重跑</button>
+    </div>
+  </div>
+</div>
+
 <div class="mask" id="mask" role="dialog" aria-modal="true" aria-labelledby="mtitle">
   <div class="modal">
     <div class="mh"><span class="mi">warning</span><h3 id="mtitle">確認全部紅燈句</h3></div>
@@ -865,6 +908,13 @@ function liveBadge(payload){
    後端只給 k，這裡對回 Material Symbols 的 ligature 名。 */
 const AGENT_ICO={clerk:'find_in_page',clf:'category',proc:'gavel',law:'menu_book',
                  case:'manage_search',draft:'edit_note',qc:'traffic'};
+/* 節點 → 幕僚卡（照抄 backend/config/settings.py NODE_TO_AGENTS，前端只此一處）。
+   live payload 每張卡自帶 node，這張表只做兩件保底：離線 case-demo.json 的卡沒有 node、
+   以及 SSE 事件沒帶 agents 的舊版後端。 */
+const NODE_TO_AGENTS={n1:['clerk'],n2:['clf'],n3:['proc'],n4:['law','case'],n5:['draft'],n6:['qc']};
+const INV_NODE_TO_AGENTS=Object.fromEntries(
+  Object.entries(NODE_TO_AGENTS).flatMap(([n,ks])=>ks.map(k=>[k,n])));
+const agentNode=a=>(a&&(a.node||INV_NODE_TO_AGENTS[a.k]))||'';
 /* auto_fields 後端回的是欄位名（no/type/…），這裡才知道對應哪個表單徽章元素。 */
 const AUTO_FIELD_DOM={type:'a_type',person:'a_p',org:'a_org',d1:'a_d1',d2:'a_d2',d3:'a_d3'};
 
@@ -885,7 +935,7 @@ function adaptPayload(p){
     provenance:p.provenance||{},
     intake:p.intake||{},
     files:p.files||[],
-    agents:(p.agents||[]).map(a=>Object.assign({},a,{ico:AGENT_ICO[a.k]||'article'})),
+    agents:(p.agents||[]).map(a=>Object.assign({},a,{ico:AGENT_ICO[a.k]||'article',node:agentNode(a)})),
     laws:p.laws||[], cases:p.cases||[], issues:p.issues||[],
     doc:doc,
     token_note:p.token_note||''
@@ -906,8 +956,10 @@ async function errText(res){
    - bedrock：202 ＋ {run_id,result_url,events_url}。先接 events_url 的 SSE 看逐節點進度
      （加值層，斷了就退回輪詢），拿結果一律走 result_url：每 2 秒 GET 一次，
      409 表示還在跑、200 是結果、其他一律當失敗。
-   失敗一定往外拋：呼叫端的責任是把錯誤顯示出來，不是拿舊 payload 續跑（CONSTITUTION §1）。 */
-async function postRun(body,onProgress){
+   失敗一定往外拋：呼叫端的責任是把錯誤顯示出來，不是拿舊 payload 續跑（CONSTITUTION §1）。
+   onEvent(kind,data)：把 SSE 的 node_start／node_done 原樣轉給呼叫端（幕僚卡由它驅動）。
+   fixture 檔位同步 200，一個事件都不會有——呼叫端要自己分得出「沒有事件」這件事。 */
+async function postRun(body,onProgress,onEvent){
   const res=await fetch('api/cases/'+encodeURIComponent(L.chosen)+'/runs',{
     method:'POST',headers:{'Content-Type':'application/json','Accept':'application/json'},
     body:JSON.stringify(body||{})});
@@ -935,10 +987,13 @@ async function postRun(body,onProgress){
          不然離開這個 promise 之後連線還開著。 */
       const end=fn=>{es.close();fn();};
       const parse=e=>{try{return JSON.parse(e.data)||{}}catch(_){return {}}};
-      es.addEventListener('node_start',e=>say(label(parse(e).node)));
+      /* 卡片那一側出錯不能拖垮事件流：這條流還負責等 run_done 才去取結果 */
+      const emit=(kind,d)=>{try{onEvent&&onEvent(kind,d);}catch(err){console.warn('onEvent',kind,err);}};
+      es.addEventListener('node_start',e=>{const d=parse(e); say(label(d.node)); emit('node_start',d);});
       es.addEventListener('node_done',e=>{
         const d=parse(e);
         say(label(d.node)+' 完成（'+(d.elapsed_ms==null?'—':d.elapsed_ms+' ms')+'）');
+        emit('node_done',d);
       });
       es.addEventListener('run_done',()=>end(resolve));
       es.addEventListener('run_failed',e=>{
@@ -1205,17 +1260,19 @@ function renderConfirmNote(){
 /* 帶著確認過的欄位重跑一次後端，並把整個畫面換成新 payload。
    為什麼要重跑而不是改前端狀態：確認會改變後端的封鎖判斷，
    那個判斷只有後端算得準——前端拿舊 payload 改幾個欄位就是在假裝。 */
-async function runConfirmed(){
+/* 有上一次的 run_id 就從 n2 續跑：卷證書記官（n1）已經抽過了，
+   承辦人確認改的是欄位不是卷證，再抽一次只會多花一次模型呼叫、還可能抽出不一樣的東西。
+   抽成函式是因為看板也要知道「這次從哪個節點起跑」，才能先把上游標成沿用。 */
+const confirmFromNode=()=>L.runId?'n2':'n1';
+async function runConfirmed(onEvent){
   const hint=$('#go1hint');
   if(BUSY){hint.textContent=BUSY_MSG;return false;}
   beginBusy();
   hint.textContent='送出承辦人確認並重跑六節點…';
   try{
     const body={confirmed_intake:collectIntake()};
-    /* 有上一次的 run_id 就從 n2 續跑：卷證書記官（n1）已經抽過了，
-       承辦人確認改的是欄位不是卷證，再抽一次只會多花一次模型呼叫、還可能抽出不一樣的東西。 */
-    if(L.runId){body.base_run_id=L.runId; body.from_node='n2';}
-    applyLivePayload(await postRun(body,m=>{hint.textContent=m;}));
+    if(confirmFromNode()!=='n1'){body.base_run_id=L.runId; body.from_node=confirmFromNode();}
+    applyLivePayload(await postRun(body,m=>{hint.textContent=m; if(agentsRan)setAgSource('running',m);},onEvent));
     hint.textContent='';
     return true;
   }catch(e){
@@ -1255,77 +1312,105 @@ function applyLivePayload(payload){
    進行中或失敗的 run 沒有可讀的終態，拿它當 base_run_id 只會換來一個 404（見 postRun）。
    跟上傳建案、承辦人確認重跑共用同一個 BUSY 閘門：三條路都會打 /runs，
    同時跑會對同一個案件送出兩次執行。 */
-const REGEN_LABEL={n1:'重新抽取',n4:'重新檢索',n5:'重新產生草稿'};
+const REGEN_LABEL={n1:'重新抽取',n2:'重新判型',n3:'重新審查程序',n4:'重新檢索',n5:'重新產生草稿',n6:'重新守門查核'};
+const regenLabel=from=>REGEN_LABEL[from]||('從 '+from+' 重跑');
+const NO_BASE_MSG=from=>'沒有可接續的執行：'+regenLabel(from)+
+  '要接上一次成功執行的 run_id，請先讓六節點完整跑過一次。';
+
+/* 「從某節點往下重跑到守門員」的唯一實作。步驟 1 的三顆按鈕與幕僚詳情彈窗共用。
+   已經跑過幕僚團（看板在畫面上）的話，看板跟著這次執行走：上游標沿用、
+   下游由節點事件逐張完成；失敗就把看板還原成上一次的樣子，不留半套。 */
+async function regenFrom(from,opt){
+  opt=opt||{};
+  const hint=$('#go1hint'), q=String(opt.query||'').trim();
+  const say=m=>{hint.textContent=m; if(agentsRan)setAgSource('running',m);};
+  if(BUSY){hint.textContent=BUSY_MSG; if(agentsRan)toast(BUSY_MSG); return false;}
+  const body={from_node:from};
+  if(from!=='n1'){
+    if(!L.runId){hint.textContent=NO_BASE_MSG(from); if(agentsRan)toast(NO_BASE_MSG(from)); return false;}
+    body.base_run_id=L.runId;
+  }
+  /* 查詢詞只有 n4 送得出去（後端 overrides 白名單只有 n4_query）。
+     別的節點就算輸入框有字也不帶——不然畫面在暗示一個不存在的作用。 */
+  if(from==='n4'&&q)body.overrides={n4_query:q};
+  const btns=[...document.querySelectorAll('#regenbar button[data-from]')];
+  const snap=agentsRan?snapshotBoard():null;
+  beginBusy();
+  btns.forEach(x=>x.disabled=true);
+  say(regenLabel(from)+'：從 '+from+' 往下重跑到守門員…');
+  /* base 要在 postRun 之前記下來：成功後 L.runId 就換成新的那一次了 */
+  if(snap)startBoard(from,body.base_run_id||null);
+  try{
+    applyLivePayload(await postRun(body,say,snap?boardEvent:null));
+    const rm=(LIVE&&LIVE.run_meta)||{};
+    /* 勾選框跟著後端的 intake_confirmed 走，不自己記狀態。從 n1 重抽會把欄位換成
+       新抽出來的一份、後端的確認也一併清空——勾勾還打著就是畫面替承辦人背書，
+       而旁邊的 renderConfirmNote() 已經寫著「尚未由承辦人確認」，兩句話會打架。 */
+    const confirmed=(((LIVE&&LIVE.intake_confirmed)||[]).length>0);
+    const cf=$('#f_confirm'); if(cf)cf.checked=confirmed;
+    const where='已從 '+(rm.from_node||from)+' 重跑（run '+((LIVE&&LIVE.run_id)||'—')+
+      (rm.base_run_id?'，接續 '+rm.base_run_id:'')+
+      (body.overrides?'，查詢詞「'+q+'」':'')+'）';
+    /* 重跑會換掉期間算式、幕僚敘述與草稿。看板在畫面上就跟著收尾（含重建草稿），
+       否則第 2 步留著上一次執行的卡片、第 3 步卻是新草稿——畫面自相矛盾。 */
+    if(snap)finishBoard(where+'。');
+    if(from==='n1'){
+      /* 重抽出來的欄位要真的顯示出來：畫面留著舊值、run_meta 卻說剛剛重抽過，
+         承辦人核對的就是一份不存在的抽取結果。 */
+      loadDemo(()=>{hint.textContent=where+'：欄位已換成本次抽取的結果'+
+        (confirmed?'。':'，承辦人確認已清空——請重新核對欄位並勾選「我已核對上列全部欄位」。')});
+    }else{
+      hint.textContent=where+'。燈號與引用狀態一律由後端守門節點重判。';
+    }
+    return true;
+  }catch(e){
+    const m=regenLabel(from)+'失敗（'+String(e&&e.message||e)+
+      '）——畫面仍是上一次的執行結果，沒有把新舊資料混拼成一份。';
+    hint.textContent=m;
+    if(snap){restoreBoard(snap); setAgError(m); toast(regenLabel(from)+'失敗');}
+    return false;
+  }finally{
+    btns.forEach(x=>x.disabled=false);
+    endBusy();   /* endBusy() 會保留上面這句 hint，不被 updateGo1() 洗掉 */
+  }
+}
+
 function wireRegenBar(){
   const bar=$('#regenbar'); if(!bar)return;
   /* 離線 fixture 沒有後端可重跑，整列藏起來——按不動的按鈕比沒有按鈕更難解釋。 */
   bar.hidden=!isLive;
   if(!isLive)return;
-  const btns=[...bar.querySelectorAll('button[data-from]')];
-  btns.forEach(b=>b.onclick=async()=>{
-    const hint=$('#go1hint'), from=b.dataset.from;
-    if(BUSY){hint.textContent=BUSY_MSG;return;}
-    const body={from_node:from};
-    if(from!=='n1'){
-      if(!L.runId){
-        hint.textContent='沒有可接續的執行：'+REGEN_LABEL[from]+
-          '要接上一次成功執行的 run_id，請先讓六節點完整跑過一次。';
-        return;
-      }
-      body.base_run_id=L.runId;
-    }
-    /* 查詢詞只有 n4 送得出去（後端 overrides 白名單只有 n4_query）。
-       別的節點就算輸入框有字也不帶——不然畫面在暗示一個不存在的作用。 */
-    const q=(($('#regen-query')||{}).value||'').trim();
-    if(from==='n4'&&q)body.overrides={n4_query:q};
-    beginBusy();
-    btns.forEach(x=>x.disabled=true);
-    hint.textContent=REGEN_LABEL[from]+'：從 '+from+' 往下重跑到守門員…';
-    try{
-      applyLivePayload(await postRun(body,m=>{hint.textContent=m;}));
-      const rm=(LIVE&&LIVE.run_meta)||{};
-      /* 重跑會換掉期間算式、幕僚敘述與草稿。已經跑過幕僚團的話要整段重繪，
-         否則第 2 步留著上一次執行的卡片、第 3 步卻是新草稿——畫面自相矛盾。
-         沒跑過就不動：正常動線是按「啟動幕僚團分析」時才第一次渲染。 */
-      if(agentsRan){agentsRan=false; runAgents();}
-      /* 勾選框跟著後端的 intake_confirmed 走，不自己記狀態。從 n1 重抽會把欄位換成
-         新抽出來的一份、後端的確認也一併清空——勾勾還打著就是畫面替承辦人背書，
-         而旁邊的 renderConfirmNote() 已經寫著「尚未由承辦人確認」，兩句話會打架。 */
-      const confirmed=(((LIVE&&LIVE.intake_confirmed)||[]).length>0);
-      const cf=$('#f_confirm'); if(cf)cf.checked=confirmed;
-      const where='已從 '+(rm.from_node||from)+' 重跑（run '+((LIVE&&LIVE.run_id)||'—')+
-        (rm.base_run_id?'，接續 '+rm.base_run_id:'')+
-        (body.overrides?'，查詢詞「'+q+'」':'')+'）';
-      if(from==='n1'){
-        /* 重抽出來的欄位要真的顯示出來：畫面留著舊值、run_meta 卻說剛剛重抽過，
-           承辦人核對的就是一份不存在的抽取結果。 */
-        loadDemo(()=>{hint.textContent=where+'：欄位已換成本次抽取的結果'+
-          (confirmed?'。':'，承辦人確認已清空——請重新核對欄位並勾選「我已核對上列全部欄位」。')});
-      }else{
-        hint.textContent=where+'。燈號與引用狀態一律由後端守門節點重判。';
-      }
-    }catch(e){
-      hint.textContent=REGEN_LABEL[from]+'失敗（'+String(e&&e.message||e)+
-        '）——畫面仍是上一次的執行結果，沒有把新舊資料混拼成一份。';
-    }finally{
-      btns.forEach(x=>x.disabled=false);
-      endBusy();   /* endBusy() 會保留上面這句 hint，不被 updateGo1() 洗掉 */
-    }
-  });
+  bar.querySelectorAll('button[data-from]').forEach(b=>b.onclick=()=>
+    regenFrom(b.dataset.from,{query:(($('#regen-query')||{}).value||'')}));
 }
 
+/* 順序：先進第 2 步、看板全部待命，再叫後端跑——卡片狀態由節點事件推進，
+   不是跑完之後再用計時器演一遍（bedrock 檔位）。fixture 檔位同步 200、沒有事件，
+   finishBoard() 會退回重播並在 #agsource 明寫「重播」。 */
 $('#go1').onclick=async ()=>{
   if($('#go1').disabled)return;
   /* 上傳還在跑的時候按下來：擋掉。按鈕在 beginBusy() 就已經 disabled，
      這一道是防拖曳中途的競態（例如鍵盤觸發），不是重複的保險。 */
   if(BUSY){$('#go1hint').textContent=BUSY_MSG;return;}
-  if(isLive){
-    /* 按鈕停用與還原由 runConfirmed() 內的 beginBusy／endBusy 管，這裡不再各管一份 */
-    const ok=await runConfirmed();
-    if(!ok)return;   /* 後端沒回來就停在第 1 步，不拿舊 payload 假裝跑過 */
-  }
   S.startTime=Date.now();
-  goto(1); runAgents();
+  if(!isLive){
+    goto(1); startBoard();
+    setAgSource('offline');
+    replayAgents(AGENTS.map(a=>a.k),'offline',()=>boardComplete());
+    return;
+  }
+  goto(1);
+  startBoard(confirmFromNode(),L.runId||null);
+  /* 按鈕停用與還原由 runConfirmed() 內的 beginBusy／endBusy 管，這裡不再各管一份 */
+  const ok=await runConfirmed(boardEvent);
+  if(!ok){
+    /* 後端沒回來：退回第 1 步看錯誤訊息（#go1hint），不留一個跑到一半的看板，
+       也不拿舊 payload 假裝跑過。第 2 步重新鎖上。 */
+    clearReplay(); agentsRan=false; $('#agents').innerHTML=''; setAgSource('');
+    S.unlocked=0; goto(0);
+    return;
+  }
+  finishBoard();
 };
 
 /* ---- live 模式：案例選單與資料來源說明 ---- */
@@ -1356,71 +1441,290 @@ $('#go1').onclick=async ()=>{
 /* ================= 2 幕僚團 ================= */
 let AGENTS=CASE.agents||[];
 let agentsRan=false;
-function runAgents(){
-  if(agentsRan)return; agentsRan=true;
+const agentByK=k=>AGENTS.find(a=>a.k===k);
+const clock=()=>new Date().toLocaleTimeString('zh-TW',{hour12:false});
+
+/* 每張卡的狀態。s：idle／run／done。how：這張卡**為什麼**是這個狀態，畫面要講得出來：
+     event   後端 node_start／node_done 事件即時送達（bedrock 檔位）
+     replay  後端同步回應、沒有逐節點事件，依本次執行結果重播（fixture 檔位）
+     offline 離線 fixture 重播示意，沒有任何後端
+     reused  續跑時上游節點沒重跑，沿用 base_run_id 那一次（後端對這些節點不發事件）
+     poll    應該重跑、卻沒收到它的事件（事件流中斷），結果由輪詢取回
+   ev：node_done 事件帶來的 {out,logs}（契約 C1 narrative）；payload 回來後一律以 payload 為準。 */
+let BOARD={};
+let boardSawEvent=false, boardGen=0, replayTimers=[];
+const later=(fn,ms)=>{replayTimers.push(setTimeout(fn,ms));};
+function clearReplay(){replayTimers.forEach(clearTimeout); replayTimers=[];}
+
+function setAgSource(kind,extra){
+  const el=$('#agsource'); if(!el)return;
+  const rid=esc((LIVE&&LIVE.run_id)||'—'), rmode=esc(((LIVE&&LIVE.run_meta)||{}).run_mode||'?');
+  const head={
+    running:'執行中：',
+    event:`資料來源：後端六節點的<b>即時節點事件</b>（run_id <code>${rid}</code>，RUN_MODE=${rmode}）——`+
+          `每張卡在收到該節點的 <code>node_done</code> 時完成。`,
+    replay:`資料來源：後端執行結果（run_id <code>${rid}</code>，RUN_MODE=${rmode}）。這個檔位同步回傳、`+
+           `沒有逐節點事件，下列卡片是<b>重播</b>本次執行結果，非即時節點事件。`,
+    offline:'資料來源：<b>離線 fixture</b>（未接後端，內嵌 data/case-demo.json）。下列卡片為重播示意，'+
+            '不是任何一次後端執行。'
+  }[kind]||'';
+  const tail=(isLive&&(kind==='event'||kind==='replay'))?'燈號與引用狀態由後端守門節點判定，本頁不重算。':'';
+  el.innerHTML=head+(kind==='running'?esc(extra||''):tail+(extra?'<br>'+esc(extra):''));
+}
+function setAgError(m){
+  const el=$('#agsource'); if(!el)return;
+  el.insertAdjacentHTML('afterbegin',`<b style="color:var(--seal)">${esc(m)}</b><br>`);
+}
+
+function paintCard(k){
+  const el=$('#ag-'+k), a=agentByK(k), b=BOARD[k];
+  if(!el||!a||!b)return;
+  el.dataset.s=b.s; el.dataset.how=b.how||''; el.dataset.deg=b.degraded?'1':'0';
+  el.tabIndex=b.s==='done'?0:-1;
+  el.setAttribute('aria-disabled',b.s==='done'?'false':'true');
+  const out=el.querySelector('.out'), st=el.querySelector('.st'), bar=el.querySelector('.bar-in');
+  if(b.s==='idle'){
+    out.textContent='等待前置作業…'; st.innerHTML='<span class="dot">待命</span>'; bar.style.width='0';
+  }else if(b.s==='run'){
+    out.textContent='分析中…'; st.innerHTML='<span class="spin"></span>執行中'; bar.style.width='18%';
+  }else{
+    bar.style.width='100%';
+    out.textContent=b.ev?fillTokens(b.ev.out)
+      :b.pending?'節點已完成；事件未附卡片內容，執行結束後自後端取回。'
+      :fillTokens(a.out);
+    st.innerHTML={
+      event:(b.degraded?'⚠ 降級完成':'✓ 完成')+
+            (b.ms!=null?`　<span style="font-family:var(--mono)">${esc(b.ms)} ms</span>`:''),
+      replay:'✓ 完成（重播）',
+      offline:'✓ 完成（離線示意）',
+      reused:`↺ 沿用 ${b.base?`run <code>${esc(b.base)}</code>`:'上一次執行'}（未重跑）`,
+      poll:'✓ 完成（未收到節點事件，結果由輪詢取回）'
+    }[b.how]||'✓ 完成';
+  }
+}
+function updateAgProg(){
+  const done=AGENTS.filter(a=>(BOARD[a.k]||{}).s==='done').length;
+  $('#agprog').textContent=done+' / '+AGENTS.length;
+}
+
+/* 重畫整個看板，全部待命；from 之前的節點（續跑時後端不重跑、也不發事件）直接標沿用——
+   它們的內容就是畫面上這一份 payload，也就是 base_run_id 那一次。 */
+function startBoard(from,base){
+  clearReplay(); boardGen++; agentsRan=true; boardSawEvent=false;
   /* 先把期間結果掛上，幕僚敘述與燈號統計才有真數字可填。
      live 模式吃後端 N3 的算式；離線模式才由頁內引擎實算。 */
   isLive?applyLiveDeadline():applyDeadlineEngine();
-  const wrap=$('#agents'); wrap.innerHTML=''; $('#console').innerHTML='';
-  $('#agprog').textContent='0 / '+AGENTS.length;
+  $('#go2').disabled=true;
+  const wrap=$('#agents'); wrap.innerHTML=''; BOARD={};
   AGENTS.forEach(a=>{
     const d=document.createElement('div');
-    d.className='agent'; d.dataset.s='idle'; d.id='ag-'+a.k;
+    d.className='agent'; d.id='ag-'+a.k; d.dataset.k=a.k; d.setAttribute('role','button');
     d.innerHTML=`<span class="pill"></span>
       <div class="hd"><span class="ico"><span class="mi" style="font-size:17px;color:var(--navy)">${esc(a.ico)}</span></span><h3>${esc(a.name)}</h3></div>
-      <p class="out">等待前置作業…</p>
-      <div class="st"><span class="dot">待命</span></div>
-      <div class="bar-out"><i class="bar-in"></i></div>`;
+      <p class="out"></p>
+      <div class="st"></div>
+      <div class="bar-out"><i class="bar-in"></i></div>
+      <span class="mi more" aria-hidden="true">chevron_right</span>`;
     wrap.appendChild(d);
+    BOARD[a.k]=(from&&agentNode(a)<from)?{s:'done',how:'reused',base:base}:{s:'idle'};
+    paintCard(a.k);
   });
-  let done=0;
-  const clock=()=>new Date().toLocaleTimeString('zh-TW',{hour12:false});
-  const log=(txt,cls='')=>{
-    const c=$('#console');
-    c.insertAdjacentHTML('beforeend',`<div><span class="t">${clock()}</span> <span class="${cls}">${txt}</span></div>`);
-    c.scrollTop=c.scrollHeight;
-  };
-  log('幕僚團啟動 · 案號 '+($('#f_no').value||'—'),'g');
-  if(isLive)log('資料來源：後端六節點執行結果 run_id '+((LIVE&&LIVE.run_id)||'—')+'（前端不重算燈號）','g');
-  else log('資料來源：離線 fixture（未接後端）','y');
-
-  AGENTS.forEach((a,i)=>{
-    const t0=400+i*1400;
-    setTimeout(()=>{
-      const el=$('#ag-'+a.k);
-      el.dataset.s='run';
-      el.querySelector('.out').textContent='分析中…';
-      el.querySelector('.st').innerHTML='<span class="spin"></span>執行中';
-      el.querySelector('.bar-in').style.width='18%';
-      log(`▶ ${a.name} 開始作業`);
-      (a.logs||[]).forEach((l,j)=>setTimeout(()=>{
-        log('　　'+fillTokens(l[0]),l[1]);
-        el.querySelector('.bar-in').style.width=(30+j*22)+'%';
-      },260+j*300));
-      /* 先跑到 100%，等進度條動畫真的結束才切成「完成」 */
-      setTimeout(()=>{
-        const bar=el.querySelector('.bar-in');
-        bar.style.width='100%';
-        let fired=false;
-        const finish=()=>{
-          if(fired)return; fired=true;
-          el.dataset.s='done';
-          el.querySelector('.out').textContent=fillTokens(a.out);
-          el.querySelector('.st').innerHTML='✓ 完成';
-          done++; $('#agprog').textContent=done+' / '+AGENTS.length;
-          if(done===AGENTS.length){
-            log('全部幕僚作業完成，草稿與查核清單已產出','g');
-            $('#go2').disabled=false;
-            toast('幕僚團分析完成');
-            buildDraft(); buildRefs();
-          }
-        };
-        bar.addEventListener('transitionend',finish,{once:true});
-        setTimeout(finish,700);   /* reduced-motion 下不會有 transitionend，保底 */
-      },950);
-    },t0);
-  });
+  updateAgProg();
+  if(isLive)setAgSource('running','送出執行…');
 }
+
+/* SSE → 卡片。事件沒帶 agents（舊版後端）就用 NODE_TO_AGENTS 反查；
+   沒帶 narrative 就先標完成、內容等 payload（paintCard 會照實講）。 */
+function boardEvent(kind,d){
+  d=d||{};
+  const keys=(Array.isArray(d.agents)&&d.agents.length?d.agents:NODE_TO_AGENTS[d.node])||[];
+  boardSawEvent=true;
+  keys.forEach(k=>{
+    if(!BOARD[k])return;
+    if(kind==='node_start'){
+      BOARD[k]={s:'run',how:'event',startAt:clock()};
+    }else if(kind==='node_done'){
+      const nv=(d.narrative||{})[k];
+      BOARD[k]={s:'done',how:'event',node:d.node,ms:d.elapsed_ms,degraded:!!d.degraded,
+        startAt:(BOARD[k]||{}).startAt||null,at:clock(),
+        ev:nv?{out:nv.out,logs:nv.logs||[]}:null,pending:!nv};
+    }
+    paintCard(k);
+  });
+  updateAgProg();
+}
+
+/* payload 回來（applyLivePayload 之後）才呼叫。
+   有收到事件 → 事件驅動版收尾；一個事件都沒有（fixture 同步 200）→ 重播，並明寫「重播」。 */
+function finishBoard(where){
+  applyLiveDeadline();
+  const rm=(LIVE&&LIVE.run_meta)||{}, from=rm.from_node||'n1', base=rm.base_run_id||null;
+  const rerun=[];
+  AGENTS.forEach(a=>{
+    const b=BOARD[a.k]||{};
+    if(agentNode(a)<from){BOARD[a.k]={s:'done',how:'reused',base:base};}
+    else if(!boardSawEvent){rerun.push(a.k); return;}
+    else if(b.s==='done'&&b.how==='event'){b.pending=false; b.ev=null;}   /* payload 為準 */
+    else BOARD[a.k]={s:'done',how:'poll'};
+    paintCard(a.k);
+  });
+  updateAgProg();
+  if(boardSawEvent){setAgSource('event',where); boardComplete(where?'幕僚團已依新執行結果更新':'');return;}
+  setAgSource('replay',where);
+  replayAgents(rerun,'replay',()=>boardComplete(where?'幕僚團已依新執行結果更新':''));
+}
+
+/* 重播：沒有逐節點事件可接時才用（離線、fixture 同步 200）。節奏是固定排程，
+   **不是**後端的執行時間——所以 #agsource 一定寫「重播」，卡片也不顯示耗時。 */
+function replayAgents(keys,how,done){
+  const gen=boardGen;
+  if(!keys.length){done&&done();return;}
+  let left=keys.length;
+  keys.forEach((k,i)=>later(()=>{
+    if(gen!==boardGen)return;
+    BOARD[k]={s:'run',how:how}; paintCard(k);
+    const a=agentByK(k)||{}, bar=()=>document.querySelector('#ag-'+k+' .bar-in');
+    (a.logs||[]).forEach((l,j)=>later(()=>{const b=bar(); if(b&&gen===boardGen)b.style.width=(30+j*22)+'%';},260+j*300));
+    /* 先跑到 100%，等進度條動畫真的結束才切成「完成」 */
+    later(()=>{
+      if(gen!==boardGen)return;
+      const b=bar(); if(b)b.style.width='100%';
+      let fired=false;
+      const finish=()=>{
+        if(fired||gen!==boardGen)return; fired=true;
+        BOARD[k]={s:'done',how:how}; paintCard(k); updateAgProg();
+        if(--left===0&&done)done();
+      };
+      if(b)b.addEventListener('transitionend',finish,{once:true});
+      later(finish,700);   /* reduced-motion 下不會有 transitionend，保底 */
+    },950);
+  },400+i*1400));
+}
+
+function boardComplete(msg){
+  $('#go2').disabled=false;
+  toast(msg||'幕僚團分析完成');
+  buildDraft(); buildRefs();
+}
+
+/* 重跑失敗時把看板還原成上一次的樣子（AGENTS 沒被換掉，payload 也還是舊的）。
+   還在重播中途被打斷的卡直接標完成——它們的內容本來就在 payload 裡。 */
+function snapshotBoard(){
+  return {board:JSON.parse(JSON.stringify(BOARD)),src:($('#agsource')||{}).innerHTML||''};
+}
+function restoreBoard(snap){
+  clearReplay(); boardGen++;
+  BOARD=snap.board;
+  AGENTS.forEach(a=>{
+    const b=BOARD[a.k]||(BOARD[a.k]={});
+    if(b.s!=='done'){b.s='done'; b.how=b.how||(isLive?'replay':'offline');}
+    paintCard(a.k);
+  });
+  updateAgProg();
+  const el=$('#agsource'); if(el)el.innerHTML=snap.src;
+  $('#go2').disabled=false;
+}
+
+/* ---- 幕僚詳情彈窗 ---- */
+/* 內容全部取自 payload（agents[].out/logs/prompt/prompt_note、run_meta.node_timings）
+   或節點事件；設計稿那七段替每位幕僚寫的指示文案是虛構的，不搬。 */
+let openAgent=null;
+const agmask=$('#agmask');
+const NODE_NAMES=n=>AGENTS.filter(a=>agentNode(a)===n).map(a=>a.name);
+function rerunBlock(a){
+  if(!isLive)return '離線 fixture 沒有後端可重跑，按鈕停用。';
+  if(BUSY)return BUSY_MSG;
+  if(agentNode(a)!=='n1'&&!L.runId)return NO_BASE_MSG(agentNode(a));
+  return '';
+}
+function agTimeText(a,b){
+  if(b.how==='reused')return '耗時 —（本次未重跑）';
+  if(!isLive)return '耗時 —（離線，無計時）';
+  /* 事件驅動的卡用事件自己的 elapsed_ms：payload 還沒回來時 LIVE 是上一次的執行，
+     拿它的 node_timings 就是用上一次的數字替這一次背書。 */
+  const nt=((LIVE&&LIVE.run_meta)||{}).node_timings||{};
+  const v=b.how==='event'?b.ms:nt[agentNode(a)];
+  if(v==null)return '耗時 —';
+  return '耗時 '+(v>0?v+' ms':'<1 ms')+'（'+agentNode(a)+(b.how==='event'?'，node_done':'，run_meta')+'）';
+}
+function agPromptText(a){
+  if(a.prompt)return a.prompt;
+  if(a.prompt_note)return a.prompt_note;
+  /* 後端還沒帶 prompt／prompt_note（契約 C2）時照實講，不自己補一段指示 */
+  return isLive?'後端本次未提供此節點的提示詞欄位（prompt／prompt_note）。'
+               :'離線 fixture：未呼叫任何模型，沒有提示詞可示。';
+}
+function renderAgDetail(k){
+  const a=agentByK(k), b=BOARD[k]||{}; if(!a)return;
+  const node=agentNode(a);
+  $('#agicon').textContent=a.ico||'psychology';
+  $('#agtitle').textContent=a.name+(node?'（'+node+'）':'');
+  $('#agtime').textContent=agTimeText(a,b);
+  const outTxt=b.ev?b.ev.out:(b.pending?'':a.out);
+  $('#agout').textContent=outTxt?fillTokens(outTxt):'事件未附卡片內容，執行結束後自後端取回。';
+  $('#agout').style.borderLeftColor=b.how==='reused'?'#9FB5C9':b.degraded?'var(--amber)':'var(--green)';
+  /* 作業紀錄：時間戳只給真的量到的（收到節點事件的時刻）；重播不編時間 */
+  const rows=[];
+  if(b.how==='event'){
+    if(b.startAt)rows.push([b.startAt,'收到 node_start（'+node+'）','']);
+    rows.push([b.at,'收到 node_done（'+node+'，'+(b.ms==null?'—':b.ms+' ms')+(b.degraded?'，降級':'')+'）',b.degraded?'y':'g']);
+  }else if(b.how==='reused'){
+    rows.push(['','本次未重跑：以下為 run '+(b.base||'—')+' 的紀錄','y']);
+  }else if(b.how==='replay'){
+    rows.push(['','重播本次執行的紀錄（同步回應，無逐節點事件與時間戳）','y']);
+  }else if(b.how==='offline'){
+    rows.push(['','離線 fixture 示意紀錄，非後端執行','y']);
+  }else if(b.how==='poll'){
+    rows.push(['','未收到本節點事件，紀錄由輪詢取回的結果帶入','y']);
+  }
+  ((b.ev&&b.ev.logs)||a.logs||[]).forEach(l=>rows.push(['',fillTokens((l||[])[0]),(l||[])[1]||'']));
+  $('#aglog').innerHTML=rows.map(([t,m,c])=>
+    `<div>${t?`<span class="t">${esc(t)}</span> `:''}<span class="${esc(c)}">${esc(m)}</span></div>`).join('')
+    ||'<div class="t">尚無紀錄</div>';
+  $('#agprompt').value=agPromptText(a);
+  /* 重跑範圍：從這個節點到 n6，連帶重算誰、沿用誰，按之前就要說清楚 */
+  const block=rerunBlock(a);
+  const down=AGENTS.filter(x=>agentNode(x)>=node&&x.k!==a.k).map(x=>x.name);
+  const up=AGENTS.filter(x=>agentNode(x)<node).map(x=>x.name);
+  $('#agscope').innerHTML=block?`<b style="color:var(--seal)">無法從此節點重跑</b>：${esc(block)}`
+    :`從 <b>${esc(node)}</b> 重跑到 n6（守門員）：`+
+     (down.length?`連帶重算 ${esc(down.join('、'))}`:'只重跑本節點')+
+     `，草稿與燈號會換成新一次執行的結果`+
+     (up.length?`；${esc(up.join('、'))} 沿用本次結果（未重跑）`:'')+'。'+
+     (node==='n1'?'從 n1 重抽會換掉收文欄位，承辦人確認會清空。':'')+
+     (node==='n4'?'可附加查詢詞（只影響檢索）。':'');
+  const qi=$('#ag-query');
+  /* 重跑按不了（離線／沒有 base run）就連查詢詞框一起藏：填了也送不出去 */
+  qi.hidden=node!=='n4'||!!block; if(qi.hidden)qi.value='';
+  $('#ag_rerun').disabled=!!block;
+  $('#ag_rerun').title=block||('從 '+node+' 往下重跑到守門員');
+}
+function openAg(k){
+  const b=BOARD[k];
+  if(!b||b.s!=='done'){toast('該幕僚尚在作業中');return;}
+  openAgent=k; $('#ag-query').value='';
+  renderAgDetail(k);
+  agmask.classList.add('on');
+  setTimeout(()=>$('#ag_close').focus(),60);
+}
+function closeAg(){agmask.classList.remove('on'); openAgent=null;}
+$('#agents').addEventListener('click',e=>{const el=e.target.closest('.agent'); if(el)openAg(el.dataset.k);});
+$('#agents').addEventListener('keydown',e=>{
+  if(e.key!=='Enter'&&e.key!==' ')return;
+  const el=e.target.closest('.agent'); if(!el)return;
+  e.preventDefault(); openAg(el.dataset.k);
+});
+$('#ag_close').onclick=closeAg;
+agmask.addEventListener('click',e=>{if(e.target===agmask)closeAg();});
+document.addEventListener('keydown',e=>{if(e.key==='Escape'&&agmask.classList.contains('on'))closeAg();});
+$('#ag_rerun').onclick=()=>{
+  const a=agentByK(openAgent); if(!a)return;
+  if(rerunBlock(a)){renderAgDetail(a.k);return;}
+  const node=agentNode(a), q=node==='n4'?$('#ag-query').value:'';
+  closeAg();
+  toast(a.name+'：從 '+node+' 往下重跑到守門員');
+  regenFrom(node,{query:q});
+};
 $('#go2').onclick=()=>goto(2);
 
 /* 幕僚敘述裡的數字一律回填實際結果，避免看板說「紅燈 2」而審核頁顯示 4 這種自相矛盾。

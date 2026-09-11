@@ -169,8 +169,21 @@ textarea{resize:vertical;line-height:1.7}
 
 /* ---------- 幕僚團 ---------- */
 .agents{display:grid;grid-template-columns:repeat(auto-fill,minmax(232px,1fr));gap:12px}
-.agent{border:1px solid var(--line);border-radius:3px;background:var(--white);padding:13px;position:relative;overflow:hidden;transition:.25s}
+.agent{border:1px solid var(--line);border-radius:3px;background:var(--white);padding:13px;position:relative;overflow:hidden;transition:.25s;text-align:left}
+/* 完成的卡才能點開詳情（產出／作業紀錄／指示／耗時／從此節點重跑） */
+.agent[data-s=done]{cursor:pointer}
+.agent[data-s=done]:hover{border-color:var(--navy-l);box-shadow:var(--shadow);transform:translateY(-1px)}
+.agent[data-s=done]:focus-visible{outline:2px solid var(--navy-l);outline-offset:1px}
+.agent[data-s=run],.agent[data-s=idle]{cursor:default}
+.agent .more{position:absolute;right:10px;bottom:10px;font-size:16px;color:var(--line);transition:.2s}
+.agent[data-s=done] .more{color:var(--navy-l)}
 .agent .pill{position:absolute;top:0;left:0;width:3px;height:100%;background:var(--line)}
+/* 續跑時上游沒有重跑的卡：沿用上一次執行，視覺上跟「這次真的跑完」分開 */
+.agent[data-how=reused] .pill{background:#9FB5C9}
+.agent[data-how=reused] .ico{background:var(--paper-2)}
+.agent[data-s=done][data-how=reused] .st{color:var(--ink-3)}
+.agent[data-deg="1"][data-s=done] .st{color:var(--amber)}
+.agent .st code{font-family:var(--mono);font-size:10.5px;overflow-wrap:anywhere}
 .agent[data-s=run]{border-color:var(--navy-l);box-shadow:0 0 0 3px rgba(30,91,147,.09)}
 .agent[data-s=run] .pill{background:var(--navy-l)}
 .agent[data-s=done] .pill{background:var(--green)}
@@ -179,8 +192,8 @@ textarea{resize:vertical;line-height:1.7}
 .agent .ico{width:26px;height:26px;flex:none;border-radius:3px;background:var(--paper-2);display:grid;place-items:center}
 .agent[data-s=done] .ico{background:#E6F2EB}
 .agent h3{margin:0;font-size:13.5px;font-weight:700;letter-spacing:.02em}
-.agent p{margin:0;font-size:12.5px;color:var(--ink-2);line-height:1.6;min-height:38px}
-.agent .st{margin-top:8px;font-size:11.5px;font-weight:500;display:flex;align-items:center;gap:6px}
+.agent p{margin:0;font-size:12.5px;color:var(--ink-2);line-height:1.6;min-height:38px;padding-right:14px}
+.agent .st{margin-top:8px;font-size:11.5px;font-weight:500;display:flex;align-items:center;gap:6px;flex-wrap:wrap;padding-right:14px}
 .agent[data-s=idle] .st{color:var(--ink-3)}
 .agent[data-s=run] .st{color:var(--navy-l)}
 .agent[data-s=done] .st{color:var(--green)}
@@ -195,6 +208,12 @@ textarea{resize:vertical;line-height:1.7}
 .console .g{color:#6FD39B}
 .console .y{color:#E8B75A}
 .console .r{color:#E88B8B}
+/* 幕僚詳情彈窗：內容可能比投影幕高，捲的是內文不是整頁 */
+.agmodal .mb{max-height:calc(100vh - 190px);overflow:auto}
+.agmodal .lbl{font-size:12px;color:var(--ink-3);margin-bottom:4px}
+.agmodal .mf{align-items:center;flex-wrap:wrap}
+.agmodal .mf input[type=text]{flex:1;min-width:12rem;width:auto;padding:6px 9px;font-size:12.5px}
+.agmodal textarea[readonly]{background:var(--paper);color:var(--ink-2)}
 
 /* ---------- 編輯器（左參考 / 右草稿） ---------- */
 .split{display:grid;grid-template-columns:.92fr 6px 1.08fr;height:calc(100vh - 268px);min-height:560px}
@@ -580,12 +599,11 @@ footer b{color:#C9DCEE;font-weight:500}
 
   <div class="card" style="margin-bottom:16px">
     <h2><span class="bar"></span>分工看板<span class="mi tip" tabindex="0" data-tip="七名幕僚依序作業，每項產出皆回填來源供燈號查核。">info</span><span style="flex:1"></span><span id="agprog" style="font-family:var(--mono);font-size:12.5px;color:var(--ink-3);font-weight:400">0 / 7</span></h2>
-    <div class="body"><div class="agents" id="agents"></div></div>
-  </div>
-
-  <div class="card">
-    <h2><span class="bar"></span>作業紀錄</h2>
-    <div class="body" style="padding:12px"><div class="console" id="console"></div></div>
+    <div class="body"><div class="agents" id="agents"></div>
+      <!-- 原本的「作業紀錄」卡併進各幕僚的詳情彈窗。這一行必須留著：
+           它講的是「卡片上的東西是即時節點事件、重播、還是離線 fixture」——分層誠實的外顯。 -->
+      <p class="hint" id="agsource" style="margin:12px 0 0;line-height:1.75"></p>
+    </div>
   </div>
 
 </section>
@@ -725,6 +743,31 @@ footer b{color:#C9DCEE;font-weight:500}
   <b>新北市政府法制局</b>　22001 新北市板橋區中山路一段161號　·　訴願專線 (02)2960-3456
   <br>本頁為 AI 黑客松競賽原型，所引資料僅供展示之用，非正式行政文書。
 </footer>
+
+<!-- 幕僚詳情：內容一律取自後端 payload／節點事件（agents[].out/logs/prompt/prompt_note、
+     run_meta.node_timings）。指示欄唯讀——後端 overrides 白名單只有 n4_query，
+     「改提示詞後重生成」接不到後端，不做成可編輯的樣子。 -->
+<div class="mask" id="agmask" role="dialog" aria-modal="true" aria-labelledby="agtitle">
+  <div class="modal agmodal" style="max-width:600px;border-top-color:var(--navy)">
+    <div class="mh"><span class="mi" id="agicon" style="color:var(--navy)">psychology</span><h3 id="agtitle">幕僚</h3>
+      <span style="flex:1"></span><span id="agtime" style="font-family:var(--mono);font-size:11.5px;color:var(--ink-3)"></span></div>
+    <div class="mb">
+      <p class="hint" id="agscope" style="margin:0 0 10px;line-height:1.7"></p>
+      <div class="lbl">產出</div>
+      <div id="agout" style="font-size:13.5px;line-height:1.8;background:var(--paper);border-left:3px solid var(--green);padding:10px 12px;border-radius:2px;margin-bottom:14px"></div>
+      <div class="lbl">作業紀錄</div>
+      <div id="aglog" class="console" style="height:150px;margin-bottom:14px"></div>
+      <div class="lbl">指示（唯讀）</div>
+      <textarea id="agprompt" rows="4" readonly style="font-size:12.5px;line-height:1.7"></textarea>
+    </div>
+    <div class="mf">
+      <input type="text" id="ag-query" hidden aria-label="重新檢索時附加的查詢詞"
+             placeholder="重新檢索時附加的查詢詞（選填）">
+      <button class="btn ghost" id="ag_close">關閉</button>
+      <button class="btn" id="ag_rerun"><span class="mi" style="font-size:15px;vertical-align:-3px">autorenew</span> 從此節點重跑</button>
+    </div>
+  </div>
+</div>
 
 <div class="mask" id="mask" role="dialog" aria-modal="true" aria-labelledby="mtitle">
   <div class="modal">
