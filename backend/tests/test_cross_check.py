@@ -16,6 +16,7 @@ from __future__ import annotations
 import datetime as dt
 
 from backend.engine.deadline import compute
+from backend.engine.overdue_ref import _FIXED_MMDD, _is_rest_day
 from backend.nodes.n3_procedure import (
     cross_check_deadline,
     derive_procedure_conclusion,
@@ -100,7 +101,11 @@ def test_national_holiday_rollover_is_a_real_disagreement_favouring_second_opini
     assert_eq(cc["engines"]["second_opinion"]["deadline"], "2025-10-13", "第二意見順延至次一上班日")
     assert_eq(cc["agree"], False, "這是真分歧")
     assert_eq(cc["disagreement"][0]["field"], "deadline")
-    assert_in("第二意見較可能正確", cc["disagreement"][0]["why"])
+    assert_in("認定不同", cc["disagreement"][0]["why"])
+    assert_true(
+        "較可能正確" not in cc["disagreement"][0]["why"],
+        "不得單方面背書第二意見——它的假日表是概估，本身可能錯",
+    )
 
 
 def test_missing_delivery_date_runs_neither_engine_and_says_so():
@@ -156,3 +161,84 @@ def test_early_return_keeps_the_same_contract_shape():
     for field in ("disagreement", "not_comparable", "refusal_asymmetry"):
         assert early[field] == [], f"{field} 應為空 list 而非 None／缺漏"
     assert early["agree"] is None, "第二意見未執行時不得宣稱一致"
+
+
+# ── 稽核發現的回歸（2026-09-12 對抗式審查，三條全部實測復現）────────────────
+
+def test_neither_side_answered_is_not_agreement():
+    """**最常見的畫面**：案件剛進來、承辦人還沒填提起日，兩套都沒有 overdue 結論。
+    舊版 `agree = not diffs` 給 True，前端 ProcPanel 渲染成綠色「兩套引擎一致」——
+    而實際上一次比對都沒做過。
+    """
+    for method in ("personal", "public"):
+        cc = _run("2025-03-03", None, method)
+        assert_eq(
+            cc["engines"]["primary"]["overdue"], None, f"{method}：前提是本系統無結論"
+        )
+        assert_true(
+            cc["agree"] is not True,
+            f"{method}：兩邊都沒有 overdue 結論卻回報 agree=True",
+        )
+
+
+def test_agree_true_requires_having_actually_compared_something():
+    """`compared` 是空的就不可能是 True——沒比過不叫一致。"""
+    cc = _run("2025-03-03", None, "public")
+    assert_eq(cc["compared"], [], "前提：一次都沒比過")
+    assert_eq(cc["agree"], None)
+
+    # 屆滿日比對過、但逾期未比對 → 仍是 None，且 compared 要誠實列出比過的那一維
+    partial = _run("2025-03-03", None, "personal")
+    assert_eq(partial["compared"], ["deadline"], "屆滿日確實比過了，要列出來")
+    assert_eq(partial["agree"], None, "但逾期沒比過，不得宣稱兩套一致")
+
+    ok = _run("2025-03-03", "2025-03-20", "personal")
+    assert_in("overdue", ok["compared"])
+    assert_eq(ok["agree"], True, "真的比過且無分歧才是 True")
+
+
+def test_holiday_cause_is_not_swallowed_by_a_transit_mismatch():
+    """同一個國定假日漏順延，不該因為 transit 不同就換一個分類。
+
+    舊版 `if transit_mismatch: ... elif holiday: ...` 讓 transit>0 的案子一律歸
+    not_comparable 並附「不代表任一方算錯」——而那些案子本系統確實算錯。
+    2025-02-28 是週五且為和平紀念日，依行政程序法 §48 II 應順延。
+    """
+    seen = []
+    for d2, transit in (("2025-01-01", 0), ("2025-01-28", 1), ("2025-01-24", 5)):
+        cc = _run(d2, "2025-06-01", "personal", transit)
+        assert_true(
+            cc["disagreement"],
+            f"transit={transit}：假日漏順延必須進 disagreement，不得只歸 not_comparable",
+        )
+        seen.append(cc)
+
+    both = seen[1]
+    assert_true(both["not_comparable"], "在途不對等仍要記錄，兩個成因並存")
+    assert_in("兩個成因疊加", both["disagreement"][0]["why"])
+    assert_in("不得逕認無人算錯", both["not_comparable"][0]["why"])
+
+
+def test_labour_day_is_not_an_agency_rest_day():
+    """勞動節是勞動基準法給勞工的假，行政機關照常上班，非 §48 II 的休息日。
+
+    誤列會讓系統在自己其實算對時，反過來叫承辦人採信錯的一方。
+    2025-05-01 是星期四。
+    """
+    assert_true("05-01" not in _FIXED_MMDD, "勞動節不得列入行政機關休息日表")
+    assert_true(
+        not _is_rest_day(dt.date(2025, 5, 1)),
+        "2025-05-01 是星期四且行政機關上班，不是休息日",
+    )
+    cc = _run("2025-04-01", "2025-07-01", "personal")
+    assert_eq(cc["engines"]["primary"]["deadline"], "2025-05-01")
+    assert_eq(cc["agree"], True, "本系統算對，兩套應一致")
+
+
+def test_deadline_refusal_asymmetry_is_recorded_not_silently_dropped():
+    """本系統沒算出屆滿日、第二意見有值時，原本整段被跳過、靜默消失。"""
+    cc = _run("2025-03-03", "2025-05-10", "public")
+    assert_eq(cc["engines"]["primary"]["deadline"], None, "前提：本系統拒答屆滿日")
+    fields = [r["field"] for r in cc["refusal_asymmetry"]]
+    assert_in("deadline", fields)
+    assert_eq(cc["agree"], None)

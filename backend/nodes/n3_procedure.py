@@ -90,6 +90,7 @@ def cross_check_deadline(
         # 不是罕見的邊界。契約的形狀不該因為走哪條分支而變。
         return {
             "agree": None,
+            "compared": [],
             "engines": {},
             "disagreement": [],
             "not_comparable": [],
@@ -114,6 +115,10 @@ def cross_check_deadline(
     #: 分歧會讓承辦人警覺，而「拒答 vs 有答案」若被折算成 agree=True，
     #: 反而會讓那個唯一的答案看起來獲得背書。
     refusal_asymmetry: list[dict[str, Any]] = []
+    #: 實際完成比對的欄位。**空的代表一次都沒比過**——那不是「一致」。
+    #: 沒有這個清單的話，「兩邊都沒有答案」會落到 agree = not diffs = True，
+    #: 讓「案件剛進來、承辦人還沒填提起日」這個最常見的畫面顯示綠燈「兩套引擎一致」。
+    compared: list[str] = []
 
     if ours_overdue is None and ref_out.is_overdue is not None:
         refusal_asymmetry.append({
@@ -138,6 +143,7 @@ def cross_check_deadline(
             ),
         })
     elif ours_overdue is not None and ref_out.is_overdue is not None:
+        compared.append("overdue")
         if ours_overdue != ref_out.is_overdue:
             diffs.append({
                 "field": "overdue",
@@ -145,9 +151,32 @@ def cross_check_deadline(
                 "second_opinion": ref_out.is_overdue,
                 "why": "兩套引擎對是否逾期的結論不同，請承辦人以卷證認定。",
             })
+    if not ours_deadline and ref_out.deadline_date:
+        # 對稱於 overdue 那一側：本系統沒算出屆滿日（例：公示送達拒答），
+        # 第二意見卻有。原本被 `if ours_deadline and ...` 整段跳過，既不進
+        # refusal_asymmetry 也不進任何清單，等於靜默消失。
+        refusal_asymmetry.append({
+            "field": "deadline",
+            "ours": None,
+            "second_opinion": ref_out.deadline_date,
+            "why": (
+                "本系統未算出屆滿日（拒絕自動判定），第二意見有值。"
+                "**不得以第二意見的屆滿日填補本系統的留白**——兩者拒答與否的前提不同。"
+            ),
+        })
+    elif ours_deadline and ref_out.deadline_date:
+        compared.append("deadline")
     if ours_deadline and ref_out.deadline_date and ours_deadline != ref_out.deadline_date:
         transit_ours = int(intake.get("transit_days") or 0)
-        if ref_out.in_transit_days != transit_ours:
+        # **成因可以同時成立**，所以兩個判斷各自獨立做，不用 if/elif。
+        # 舊版用 elif 串起來：只要 transit_ours != 0 就一律歸「輸入不對等」，
+        # 真正的國定假日漏順延會被吞掉並附上「不代表任一方算錯」——而該案本系統
+        # 確實算錯。實測：同一個假日漏順延，transit=0 進 disagreement、
+        # transit=1/5 進 not_comparable，成因完全相同、分類卻不同。
+        transit_mismatch = ref_out.in_transit_days != transit_ours
+        holiday_cause = _is_rest_day(dt.date.fromisoformat(ours_deadline))
+
+        if transit_mismatch:
             # **輸入不對等，不是判斷分歧。** 第二意見引擎的 TimelinessInput 只收
             # 住居所縣市、沒有在途天數欄位，而本系統的卷證沒有擷取縣市——兩邊在這一維
             # 本來就餵不到同一個值。報成 disagreement 會讓真正的分歧（國定假日）被
@@ -160,21 +189,29 @@ def cross_check_deadline(
                     f"在途期間輸入不對等（本系統採承辦人確認的 {transit_ours} 日，"
                     f"第二意見引擎依住居所查表得 {ref_out.in_transit_days} 日）。"
                     "第二意見引擎不接受在途天數輸入、本系統未擷取住居所縣市，"
-                    "**這一維無法對等比較，不代表任一方算錯**。"
+                    "**在途這一維無法對等比較**。"
+                    + ("⚠️ 但本案屆滿日另落在第二意見認定的休息日，"
+                       "**尚有第二個成因（見 `disagreement`），不得逕認無人算錯**。"
+                       if holiday_cause else
+                       "就已知資訊無法歸責任一方算錯。")
                 ),
             })
-        elif _is_rest_day(dt.date.fromisoformat(ours_deadline)):
+        if holiday_cause:
             diffs.append({
                 "field": "deadline",
                 "ours": ours_deadline,
                 "second_opinion": ref_out.deadline_date,
                 "why": (
-                    "本系統的屆滿日落在國定假日而未順延（v0 僅處理週六日），"
-                    "第二意見引擎含國定假日表。**此時第二意見較可能正確**，"
-                    "請承辦人對照行政機關辦公日曆確認。"
+                    "本系統的屆滿日落在第二意見引擎認定的休息日而未順延"
+                    "（本系統 v0 僅處理週六日）。**兩套對『本日是否為行政機關休息日』"
+                    "認定不同，本系統不判斷孰是孰非**——第二意見的假日表是概估"
+                    "（春節依行事曆估算、且曾把勞動節誤列為行政機關休息日），"
+                    "請承辦人對照行政院人事行政總處辦公日曆表認定。"
+                    + ("　⚠️ 本案同時存在在途期間輸入不對等（見 `not_comparable`），"
+                       "兩個成因疊加。" if transit_mismatch else "")
                 ),
             })
-        else:
+        elif not transit_mismatch:
             diffs.append({
                 "field": "deadline",
                 "ours": ours_deadline,
@@ -185,7 +222,17 @@ def cross_check_deadline(
     return {
         # 一方拒答時 agree 必須是 None（未知），不能是 True。**True 代表「兩套都算過
         # 且結論相同」**，而拒答的那一方根本沒有結論可比。
-        "agree": None if refusal_asymmetry else not diffs,
+        # `agree` 只在**是否逾期**這一維真的比對過時才有意義。那是承辦人要據以行動
+        # 的結論，屆滿日只是中間值——兩套屆滿日相同但都還沒判逾期時回 True，
+        # 前端會渲染成綠燈「兩套引擎一致」，而那個承辦人最在意的問題根本沒被回答。
+        # （案件剛進來、還沒填提起日，就是這個狀態，也是最常見的畫面。）
+        # 屆滿日層級的相符仍然看得到——讀 `compared`。
+        "agree": (
+            None
+            if (refusal_asymmetry or "overdue" not in compared)
+            else not diffs
+        ),
+        "compared": compared,
         "not_comparable": not_comparable,
         "refusal_asymmetry": refusal_asymmetry,
         "engines": {
