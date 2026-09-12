@@ -22,6 +22,7 @@ import pathlib
 from backend.config import settings
 from backend.config.origin_registry import TIER_HUMAN, TIER_SOURCED, tier_of
 import backend.llm.chat as chat_mod
+from backend.orchestrator import chat_bridge
 from backend.llm.chat import (
     CASE_SECTIONS,
     NUMERIC_Q,
@@ -1076,6 +1077,16 @@ def test_run_id_is_optional_and_an_empty_one_is_not_a_400():
         "_validate 還在擋空 run_id——契約已改成選填"
 
 
+def test_payload_sections_match_the_chat_layer_case_sections():
+    """橋那一側的 `PAYLOAD_SECTIONS` 與聊天層的 `CASE_SECTIONS` 必須一致。
+
+    兩邊各存一份是刻意的（編排層不該依賴聊天層，方向會反），代價是可能漂。
+    漂掉的症狀：`read_case("laws")` 說「卷內的 laws 是空的」，但畫面上明明有法條。
+    """
+    assert tuple(chat_bridge.PAYLOAD_SECTIONS) == tuple(CASE_SECTIONS), \
+        "橋與聊天層的分區值域漂了，read_case 會讀不到東西"
+
+
 def test_the_pipeline_callable_injected_into_the_chat_layer_is_an_adapter_not_run_case():
     """層級禁令的真正守法：注入的必須是**回傳 plain dict 的 adapter**。
 
@@ -1085,15 +1096,19 @@ def test_the_pipeline_callable_injected_into_the_chat_layer_is_an_adapter_not_ru
     而且 `build_chat_agent` 收到的是它而不是 `run_case`。
     """
     tree = ast.parse(_api_chat_src())
-    assert any(isinstance(n, ast.FunctionDef) and n.name == "_pipeline_adapter"
-               for n in ast.walk(tree)), "找不到 _pipeline_adapter"
+    imported = _imports_of(_api_chat_src())
+    assert "backend.orchestrator.chat_bridge" in imported, \
+        "api/chat.py 沒有從橋那一側取 adapter"
     build = [n for n in ast.walk(tree) if isinstance(n, ast.Call)
              and getattr(n.func, "id", "") == "build_chat_agent"]
     assert build, "找不到 build_chat_agent 的呼叫"
     injected = [kw for kw in build[0].keywords if kw.arg == "run_pipeline"]
     assert injected, "build_chat_agent 沒有收到 run_pipeline"
     expr = ast.unparse(injected[0].value)
-    assert expr.startswith("_pipeline_adapter("), f"注入的不是 adapter，而是 {expr}"
+    assert expr.startswith("pipeline_adapter("), f"注入的不是 adapter，而是 {expr}"
+    # 反向：`run_case` 不得被直接注入，也不該再出現在這個檔裡
+    assert "run_case" not in _api_chat_src(), \
+        "api/chat.py 還碰得到 run_case——adapter 的意義就是讓聊天層只碰得到 dict"
 
 
 def test_load_case_payload_reports_whether_that_run_has_a_draft():

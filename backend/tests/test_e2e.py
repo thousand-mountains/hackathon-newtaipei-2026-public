@@ -17,6 +17,7 @@ from backend.config.settings import (
     CONFIRMABLE_INTAKE_FIELDS,
     SYNTHETIC_DIR,
 )
+from backend.orchestrator import chat_bridge
 from backend.orchestrator.graph import build_payload, list_synthetic_cases, load_case, run_case
 from backend.tests.harness import assert_eq, assert_in, assert_true
 
@@ -620,3 +621,78 @@ def test_node_done_events_report_degradation_from_the_node_not_from_a_guess():
     from_meta = {d["node"] for d in state.run_meta["degraded"]}
     assert_eq({n for n, v in reported.items() if v}, from_meta,
               "事件說降級的節點，要跟 run_meta.degraded 記的是同一批")
+
+
+# ── 聊天層與六節點的橋（`backend/orchestrator/chat_bridge.py`）────────
+#
+# 這一段跑的是**真的 adapter 配真的 run_case**（fixture 檔位）。
+# adapter 原本寫在 `backend/api/chat.py` 裡，那個檔頂層 import fastapi，
+# 於是這段 `CaseState` → dict 的轉換一行都跑不到——而它正是 Epic C 要接的東西。
+
+def test_the_bridge_hands_the_chat_layer_a_plain_dict_with_no_orchestrator_types():
+    """橋的存在理由：聊天層從頭到尾只碰得到 dict。
+
+    直接注入 `run_case` 的話，聊天層沒有 import 語句（AST 檢查會綠），
+    卻會拿到一個 `CaseState` 並讀它的屬性——**層級形式上守住、實質被穿**。
+    """
+    run_pipeline = chat_bridge.pipeline_adapter(ORDINARY, mode="fixture")
+    out = run_pipeline(to_node="n3")
+    assert_eq(sorted(out), ["artifact_id", "cite_count", "has_draft", "node_timings",
+                            "run_id", "sections", "state"], "橋的回傳形狀")
+    for v in out.values():
+        assert_true(v is None or isinstance(v, (str, int, bool, dict, list)),
+                    f"橋回了一個非 plain 型別：{type(v)}")
+    assert_eq(sorted(out["sections"]), sorted(chat_bridge.PAYLOAD_SECTIONS), "分區值域")
+
+
+def test_the_bridge_reproduces_the_two_chat_tools_end_to_end():
+    """解析卷證 → 生成草稿，兩支工具背後真正會發生的事。
+
+    釘的是**驗收條件本身**：解析跑完 `SCREENED` 且該 run 沒有草稿；
+    接著續跑之後 `VERIFIED`，而且沒有重跑 n1–n3。
+    """
+    run_pipeline = chat_bridge.pipeline_adapter(ORDINARY, mode="fixture")
+
+    extracted = run_pipeline(to_node="n3")
+    assert_eq(extracted["state"], "SCREENED", "解析卷證停在程序審查")
+    assert_true(not extracted["has_draft"], "這個 run 不該有草稿")
+    assert_eq(sorted(extracted["node_timings"]), ["n1", "n2", "n3"], "只跑 n1–n3")
+
+    drafted = run_pipeline(from_node="n4", base_run_id=extracted["run_id"],
+                           overrides={"n4_query": "廢棄物清理法第 2 條"})
+    assert_eq(drafted["state"], "VERIFIED", "生成草稿要跑到守門")
+    assert_true(drafted["has_draft"], "續跑之後要有草稿")
+    assert_eq(sorted(drafted["node_timings"]), ["n4", "n5", "n6"], "不得重跑 n1–n3")
+    assert_true(drafted["run_id"] != extracted["run_id"], "續跑是一次新的執行")
+    assert_true(drafted["cite_count"] > 0, "引用數是從 payload 數的真值")
+
+
+def test_the_bridge_refuses_to_stop_at_n5_just_like_run_case_does():
+    """紅線要在橋這一層也穿得過去，不是只有 `run_case` 自己擋。"""
+    run_pipeline = chat_bridge.pipeline_adapter(ORDINARY, mode="fixture")
+    try:
+        run_pipeline(to_node="n5")
+    except ValueError as e:
+        assert_true("n5" in str(e), str(e))
+        return
+    raise AssertionError("橋讓 to_node='n5' 過去了")
+
+
+def test_a_missing_or_broken_manifest_reads_as_an_empty_case_file_not_an_error():
+    """讀不到卷宗清單＝清單是空的，而 `generate_decision_draft` 會據此擋下前置條件 3。
+
+    壞掉的 JSON 也當成空：半份清單比沒有清單更難查。
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        assert_eq(chat_bridge.load_case_manifest("nope", root), {}, "沒有這個案子")
+        (root / "broken").mkdir()
+        (root / "broken" / "manifest.json").write_text("{ 壞掉的", encoding="utf-8")
+        assert_eq(chat_bridge.load_case_manifest("broken", root), {}, "壞掉的 JSON")
+        (root / "listy").mkdir()
+        (root / "listy" / "manifest.json").write_text("[1,2]", encoding="utf-8")
+        assert_eq(chat_bridge.load_case_manifest("listy", root), {}, "不是物件")
+        (root / "good").mkdir()
+        (root / "good" / "manifest.json").write_text(
+            '{"laws":[{"id":"L1","t":"x"}]}', encoding="utf-8")
+        assert_eq(chat_bridge.load_case_manifest("good", root)["laws"][0]["id"], "L1", "正常讀")

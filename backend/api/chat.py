@@ -29,12 +29,11 @@ runstore 與 orchestrator**（之後要能整份搬上託管服務，那個容�
 from __future__ import annotations
 
 import json
-import pathlib
 import queue
 import threading
 import time
 import uuid
-from typing import Any, Callable
+from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -44,14 +43,16 @@ from backend.api.events import BUS
 from backend.config import settings
 from backend.config.settings import load_snapshot, run_mode
 from backend.llm.chat import RefBook, build_chat_agent, classify_answer
-from backend.orchestrator.graph import build_payload, run_case
+from backend.orchestrator.chat_bridge import (
+    PAYLOAD_SECTIONS,
+    load_case_manifest,
+    pipeline_adapter,
+)
+from backend.orchestrator.graph import build_payload
 from backend.orchestrator.runstore import RunNotFound, load_run
 from backend.retrieval.kb import build_retriever
 
 router = APIRouter()
-
-#: 餵給 agent 的卷內分區（`read_case` 的值域，見 `backend/llm/chat.py` 的 CASE_SECTIONS）。
-PAYLOAD_SECTIONS = ("intake", "facts_excerpt", "screen", "laws", "cases")
 
 #: 進程內的對話記憶。**ECS 擴到多台就會失憶**（spec §8.2）——目前單台，不處理，
 #: 寫在這裡以免日後被當成新發現的 bug。
@@ -151,66 +152,6 @@ def _load_case_payload(case_id: str, run_id: str) -> tuple[dict[str, Any], dict[
     return {k: payload.get(k) for k in PAYLOAD_SECTIONS}, run_info
 
 
-#: 一案一份卷宗清單（契約 v2 §4.0）。**這一層只讀不寫**——寫入屬於案件資源層。
-CASES_DIR = settings.OUTPUT_DIR / "cases"
-
-
-def _load_case_manifest(case_id: str) -> dict[str, Any]:
-    """讀本案的 `manifest.json`。讀不到就回空 dict。
-
-    空 dict 的意思是「這個案子的卷宗清單是空的」，而 `generate_decision_draft` 會據此
-    擋下前置條件 3。**這個方向是刻意的**：寧可擋下來要使用者先查法規與案例，
-    也不要生一份通篇引用都被清空的草稿——那個失敗看起來很像成功（契約 v2 §3.5.1）。
-    """
-    f = CASES_DIR / case_id / "manifest.json"
-    try:
-        return json.loads(f.read_text(encoding="utf-8"))
-    except (FileNotFoundError, NotADirectoryError, json.JSONDecodeError, OSError):
-        return {}
-
-
-def _pipeline_adapter(case_id: str) -> Callable[..., dict[str, Any]]:
-    """把 `run_case()` 包成聊天層看得懂的 callable（契約 v2 §0.1 末段）。
-
-    **注入的必須是這個 adapter，不是 `run_case` 本身。** 直接注入 `run_case`，
-    `backend/llm/chat.py` 雖然沒有 import 語句，卻會拿到一個 `CaseState` 物件並讀它的
-    屬性——AST 的層級測試會綠，層級卻實質被穿了。adapter 在這一層（**允許** import
-    orchestrator）把 `CaseState` 轉成 plain dict，聊天層從頭到尾只碰得到 dict。
-
-    乙案（AgentCore Runtime）容器裡沒有 orchestrator，那邊就不注入這個東西，
-    兩支 pipeline 工具會回「此檔位不可用」。
-    """
-
-    def run_pipeline(*, to_node: str | None = None, from_node: str = "n1",
-                     base_run_id: str | None = None,
-                     overrides: dict[str, Any] | None = None,
-                     on_event: Any = None) -> dict[str, Any]:
-        base_state = load_run(base_run_id) if base_run_id else None
-        state = run_case(
-            case_id,
-            base_state=base_state,
-            from_node=from_node,
-            to_node=to_node or "n6",
-            overrides=overrides or None,
-            on_event=on_event,
-        )
-        payload = build_payload(state)
-        run_meta = payload.get("run_meta") or {}
-        return {
-            "run_id": payload.get("run_id"),
-            "state": run_meta.get("final_state") or payload.get("state"),
-            "node_timings": dict(run_meta.get("node_timings") or {}),
-            "cite_count": len(payload.get("citations") or []),
-            # 產出 id 由案件資源層配（契約 v2 §1.5）。這一層還不知道，如實回 None——
-            # 隨手編一個 `art-…` 會讓前端拿去打一支查不到的端點。
-            "artifact_id": None,
-            "has_draft": bool(payload.get("doc")),
-            "sections": {k: payload.get(k) for k in PAYLOAD_SECTIONS},
-        }
-
-    return run_pipeline
-
-
 def _load_run_context(case_id: str, run_id: str | None
                       ) -> tuple[dict[str, Any], dict[str, Any] | None]:
     """`run_id` 選填之後的統一入口。沒有 run 就是**卷內是空的**，不是錯誤。
@@ -279,9 +220,9 @@ def _run_turn(case_id: str, body: ChatIn, emit: Any,
 
     agent, tools = build_chat_agent(
         case_payload, refbook, retriever, snapshot, emit,
-        run_pipeline=_pipeline_adapter(case_id),
+        run_pipeline=pipeline_adapter(case_id),
         run_id=(run_info or {}).get("run_id"),
-        case_manifest=_load_case_manifest(case_id),
+        case_manifest=load_case_manifest(case_id),
     )
     answer = str(agent(_user_message(body, history)))
 

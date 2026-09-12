@@ -8,10 +8,10 @@
 
 ```
 $ /opt/homebrew/bin/python3 backend/tests/run_all.py
-已執行的全綠：502/502 通過　⚠️ 另有 2 項略過、未執行
+已執行的全綠：507/507 通過　⚠️ 另有 2 項略過、未執行
 ```
 
-基準（開工前）：479/479（含本 change 的 T1）／起點 474/474。
+基準：起點 474/474。
 
 略過的 2 項是既有狀態，與本 change 無關：
 `test_party_standing` 的兩條需要 `backend/data/local/party-facts-77-3.jsonl`（含未遮罩個資、不在 repo）。
@@ -97,4 +97,12 @@ SSE 事件序：        ['ack', 'tool_call', 'tool_step', 'tool_step', 'tool_ste
 |---|---|
 | 真 Bedrock 上的端到端聊天（含真模型決定呼叫哪支工具） | 這台機器沒有 fastapi／strands／boto3 的執行環境，也沒有跑過 live 檔位。**沒有拿 fixture 的結果冒充 live** |
 | 解析卷證實際耗時 10–11 秒、生成草稿 24–72 秒 | 同上，需要真模型 |
-| `generate_decision_draft` 走到底 | 需要 `manifest.json`（案件資源層要先寫入，見回報的相依） |
+| `generate_decision_draft` 走到底（含真 manifest） | 需要案件資源層先寫 `manifest.json`。**流水線那一段已用真的 `run_case` 驗過**（`test_the_bridge_reproduces_the_two_chat_tools_end_to_end`，fixture 檔位：SCREENED → 續跑 → VERIFIED、不重跑 n1–n3），沒驗到的只有「manifest 有內容時前置條件 3 會放行」那一步 |
+
+## 5. 補記：adapter 從 `api/chat.py` 搬到 `backend/orchestrator/chat_bridge.py`
+
+原本 adapter 寫在 `backend/api/chat.py` 裡，而那個檔頂層 import fastapi——
+於是 `CaseState` → dict 這段轉換**一行都跑不到**（測試路徑零外部依賴）。
+它正是 Epic C 要接的東西，搬到橋那一側之後由 `test_e2e.py` 用真的 `run_case`
+（fixture 檔位）跑過：解析卷證 → `SCREENED` 無草稿 → 續跑 → `VERIFIED`
+且 `node_timings` 只有 n4/n5/n6。
