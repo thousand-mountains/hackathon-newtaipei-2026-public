@@ -55,6 +55,20 @@ delta-spec 的 `REQ-EXPORT-*` 是它的機檢粒度拆解，對照表見 delta-s
 
 ---
 
+## Phase 7: US-C1／US-C2（Epic A 合併後）
+
+- [x] T16 確認 Epic A 已實作的範圍：`backend/llm/chat.py` 的 `generate_decision_draft`
+      已擋前置 2／3 並做了 `overrides.n4_query` join，`test_chat.py` 有假 pipeline 的測試
+- [x] T17 **補契約 §3.5.2 末段**：`unmatched_picks()` ＋ `tool_result.unmatched_laws`
+      —— 驗收：REQ-DRAFT-001
+- [x] T18 `backend/tests/test_draft_preconditions.py`：走**真** `load_case_manifest`
+      與**真**六節點流水線（fixture 檔位），15 條 ~300 lines
+- [x] T19 三條變異測試驗斷言不是恆真（永遠回空／模糊比對／塞進 laws[] 各自要紅）
+- [ ] T20 **C1.4 前端三個條件的 disable 與說明文字** —— 前端範圍，不在本工作包
+- [ ] T21 **未命中旗標放哪個欄位** —— 契約沒定義，待契約擁有者拍板（見 delta-spec）
+
+---
+
 ## Summary
 
 | Item | Count |
