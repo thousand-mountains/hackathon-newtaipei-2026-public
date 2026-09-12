@@ -75,15 +75,26 @@ _HAS_DIGIT = re.compile(r"[0-9０-９" + _CJK_DIGITS + r"]")
 
 #: 回答裡的引用標號。**帶括號的形式**才算「模型引用了它」（規則 3）。
 #: 容忍半形／全形方括號、黑括號、圓括號，以及一組括號內用逗號分隔多筆。
-_CITE_BRACKETED = re.compile(r"[\[\［【(（]\s*((?:c\d+\s*[,，、]?\s*)+)[\]\］】)）]")
-_CITE_ID = re.compile(r"c\d+")
+#:
+#: ⚠️ **三種前綴都要認，而且大小寫都要**（2026-09-12 真 Bedrock 實測踩到）：
+#:   `c1` RefBook 配給檢索命中的號
+#:   `C1` 卷內相似案的號（`retrieval.cases[].id`，N4 編的）
+#:   `L1` 卷內法條的號（`retrieval.laws[].id`，N4 編的）
+#: 原版只認小寫 `c\d+`，模型走 `read_case` 讀卷內之後照著引 `[C1]`…`[C5]`，
+#: **七個引用一個都沒被偵測到**，`dropped_refs` 是空的。那次剛好因為規則 4
+#: 已經判紅所以沒出事，但同一輪若又引了真的 `c1`，規則 3 會給 `y`——
+#: 綠燈配上未經檢查的引用，正是這條規則存在的理由。
+_CITE_PREFIX = r"[CcLl]"
+_CITE_BRACKETED = re.compile(
+    r"[\[\［【(（]\s*((?:" + _CITE_PREFIX + r"\d+\s*[,，、]?\s*)+)[\]\］】)）]")
+_CITE_ID = re.compile(_CITE_PREFIX + r"\d+")
 
 #: 偵測「引了白名單以外的編號」用的**寬鬆**樣式，連沒加括號的 `c9` 也算。
 #: 兩種樣式刻意不對稱，方向都朝安全：
 #:   - 規則 3（判 `y`）用嚴格樣式——漏認一個引用只會多紅一則，是安全方向。
 #:   - `dropped_refs`（強制紅）用寬鬆樣式——漏認一個捏造編號會讓假引用矇混過關，
 #:     那是不安全方向，所以寧可多抓。
-_CITE_LOOSE = re.compile(r"c\d+")
+_CITE_LOOSE = re.compile(_CITE_PREFIX + r"\d+")
 
 REDIRECT_DEADLINE = {
     "endpoint": "/api/deadline",
@@ -146,12 +157,48 @@ class RefBook:
             "verified": bool(raw.get("verified", False)),
             "note": raw.get("note", ""),
             "provenance": payload.get("provenance"),
+            # 每一筆 ref 自己帶 origin，前端才分得出「KB 命中」與「卷內既有」。
+            # `done.origin` 維持 spec §7 凍結的三個值域，不在那裡新增第四個。
+            "origin": "retrieval",
         }
         self._by_id[cid] = entry
         return entry
 
     def add_all(self, hits: list[Any]) -> list[dict[str, Any]]:
         return [self.add(h) for h in hits]
+
+    def add_case_refs(self, items: list[dict[str, Any]]) -> list[str]:
+        """把卷內分區（`laws`／`cases`）自帶的 id 註冊進白名單。
+
+        **為什麼卷內 id 要進白名單，而不是禁止模型引用它們**（tech lead 2026-09-12 裁定）：
+        卷內資料是**最強的出處**，不是最弱的。白名單要擋的是「回答引用了工具沒回傳過的
+        東西」，而 `read_case` 確實把那些 id 回傳給模型了。禁止引用卷證，會讓模型指不出
+        本案最可驗的來源——那是把規則的手段誤當成目的。
+
+        **不重新編號**：這些 id（`L1`、`C3`）已經印在承辦人畫面上的法條卡與相似案卡上，
+        改號會讓聊天講的號跟畫面上的對不起來。RefBook 自己配的 `c1` 系列是另一個命名空間，
+        兩者不會撞（前綴不同）。
+
+        `origin` 標 `record`（卷證直錄）而不是 `retrieval`——**卷內引用不該看起來像 KB 命中**。
+        `backend/config/origin_registry.py` 的 `ORIGIN_TO_TIER["record"]` 本來就是「有出處」。
+        """
+        added: list[str] = []
+        for item in items or []:
+            cid = str(item.get("id") or "").strip()
+            if not cid or cid in self._by_id:
+                continue
+            self._by_id[cid] = {
+                "id": cid,
+                "t": item.get("t", ""),
+                "src": item.get("src", ""),
+                "score": None,
+                "verified": bool(item.get("verified", False)),
+                "note": item.get("note", "") or "卷內既有資料，非本次聊天檢索所得。",
+                "provenance": None,
+                "origin": "record",
+            }
+            added.append(cid)
+        return added
 
     def whitelist(self) -> set[str]:
         """本回合配出去過的所有編號。回答裡出現、但不在這裡面的就是捏造的。"""
@@ -420,7 +467,18 @@ class ChatTools:
             note = f"卷內的「{section}」是空的。"
             self._result("read_case", [], note)
             return note
+        # 卷內的 laws/cases 自帶 id（N4 編的 `L1`、`C3`），模型讀了就會引用它們。
+        # 註冊進白名單，否則那些引用會被當成捏造的（或更糟：在原版的小寫樣式下
+        # 根本偵測不到，靜默放行）。
+        registered: list[str] = []
+        if isinstance(value, list):
+            registered = self.refbook.add_case_refs(
+                [v for v in value if isinstance(v, dict) and v.get("id")])
         note = f"已讀取卷內「{section}」。"
+        if registered:
+            note += f"可引用的卷內編號：{'、'.join(registered)}。"
+        # hits 仍為 []：spec §4.0／§4.2 明訂 read_case 不產生引用事件，前端照這個寫。
+        # 白名單是後端內部狀態，不走事件。
         self._result("read_case", [], note)
         return json.dumps(value, ensure_ascii=False, indent=1)
 

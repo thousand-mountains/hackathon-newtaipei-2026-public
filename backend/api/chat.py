@@ -278,16 +278,32 @@ def _frame(ev: dict[str, Any]) -> str:
 
 
 def _stage_of(e: Exception) -> str:
-    """spec §4.6 的四個 stage。**分錯會讓畫面把「網路斷了」說成「系統內部錯誤」。**
+    """spec §4.6 的四個 stage。**分錯會讓畫面把一種失敗說成另一種。**
 
-    用類名比對而不 import `backend.llm`——api 層不該把模型客戶端拉進 import 圖
+    用類名／模組名比對而不 import `backend.llm`——api 層不該把模型客戶端拉進 import 圖
     （比照 `backend/api/app.py` 的 `_translate()` 既有做法）。
+
+    **認不出來的例外歸 `internal`，不歸 `tool`。** 原版的預設值是 `tool`，2026-09-12
+    實測踩到：把 `BEDROCK_MODEL_ID_DRAFT` 指到不存在的 model id，botocore 拋
+    `ValidationException`（不是 `LLMError`、也不在下面任何一條），落到預設值變成 `tool`
+    ——依 spec §4.6 的表，前端會顯示「查詢來源失敗」，**但壞的是模型**。
+    猜一個具體的 stage 比誠實說「內部錯誤」更糟：前者把人帶去查檢索，後者至少讓人去看
+    原文。`internal` 的前端行為就是照實顯示 `error` 原文，那正是未知失敗該有的處置。
+
+    工具失敗其實大多到不了這裡——`ChatTools._search()` 自己攔下檢索例外並回一段說明給
+    模型（見 `backend/llm/chat.py`）。所以 `tool` 只留給明確判定得出來的情況。
     """
     name = type(e).__name__
+    module = type(e).__module__ or ""
     if name == "LLMError":
         return "model"
     if isinstance(e, (ConnectionError, TimeoutError)):
         return "transport"
+    # botocore／boto3 的例外從 agent 這條路上來就是模型呼叫失敗：檢索的例外在工具層
+    # 就被攔掉了，不會冒到這裡。ValidationException／ThrottlingException／
+    # AccessDeniedException 都屬於這一類。
+    if module.startswith("botocore") or module.startswith("boto3"):
+        return "model"
     if isinstance(e, (KeyError, ValueError, AttributeError, TypeError)):
         return "internal"
-    return "tool"
+    return "internal"

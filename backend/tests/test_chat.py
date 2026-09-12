@@ -590,3 +590,98 @@ def test_message_emptiness_is_not_left_to_pydantic():
     assert not bad, "ChatIn 用 pydantic 的 min_length 擋空字串會回 422，不是契約寫的 400"
     assert any(isinstance(n, ast.FunctionDef) and n.name == "_validate"
                for n in ast.walk(tree)), "找不到手動的空值檢查 _validate()"
+
+
+# ── 2026-09-12 真 Bedrock 實測抓到的兩個缺陷 ────────────────────────
+
+def test_a_bogus_id_alongside_a_real_one_still_forces_red():
+    """**這條釘的是那個僥倖情境**（tech lead 指名）。
+
+    原版只偵測小寫 `c\\d+`，模型走 `read_case` 讀卷內之後照著引大寫 `[C1]`…`[C5]`，
+    七個引用一個都沒進 `dropped_refs`。那次沒出事只是因為規則 4 已經判紅。
+
+    但同一輪若**既引了真的 `c1`（檢索來的）又引了一個不在任何白名單裡的號**，
+    規則 3 會給 `y`——綠燈配上一個未經檢查的引用，正是這條規則存在的理由。
+    """
+    rb = RefBook()
+    rb.add(_hit())                       # 發出 c1
+    v = classify_answer("有沒有類似的？", "參見 [c1] 與 [C7]。", rb)
+    assert "C7" in v.dropped_refs, f"未偵測到白名單外的引用：{v.dropped_refs}"
+    assert v.lamp == "r", "有未經檢查的引用卻給了 y——這正是僥倖那一格"
+
+
+def test_uppercase_and_law_prefixes_are_detected():
+    """卷內可引用的 id 有三種前綴，三種都要認（實測：`c1` 檢索、`C1` 相似案、`L1` 法條）。"""
+    for bogus in ("C9", "L9", "c9"):
+        v = classify_answer("問", f"參見 [{bogus}]。", RefBook())
+        assert v.dropped_refs == [bogus], f"{bogus} 沒被偵測到"
+        assert v.lamp == "r"
+
+
+def test_case_ids_read_from_the_file_are_whitelisted_not_fabricated():
+    """裁定：卷內資料是**最強的出處**，不是最弱的。
+
+    `read_case` 確實把那些 id 回傳給模型了，所以引用它們不是捏造。禁止模型引用卷證，
+    會讓它指不出本案最可驗的來源——那是把規則的手段誤當成目的。
+    """
+    calls: list = []
+    t = _tools(calls, payload={"laws": [{"id": "L1", "t": "訴願法第 14 條"},
+                                        {"id": "L2", "t": "行政程序法第 74 條"}]})
+    t.read_case("laws")
+    v = classify_answer("本案引了哪些法條？", "依 [L1] 與 [L2]。", t.refbook)
+    assert v.dropped_refs == [], "卷內 id 被誤判成捏造"
+    assert v.lamp == "y", "卷內引用應該算有出處"
+    assert [r["id"] for r in v.refs] == ["L1", "L2"]
+
+
+def test_case_refs_are_marked_as_record_not_retrieval():
+    """卷內引用**不該看起來像 KB 命中**。每筆 ref 自己帶 origin，前端才分得出來。"""
+    calls: list = []
+    t = _tools(calls, payload={"cases": [{"id": "C1", "t": "某決定"}]})
+    t.read_case("cases")
+    assert t.refbook.get("C1")["origin"] == "record"
+    rb2 = RefBook(); rb2.add(_hit())
+    assert rb2.get("c1")["origin"] == "retrieval"
+
+
+def test_read_case_still_emits_no_hits_even_though_it_registers_ids():
+    """spec §4.0／§4.2 凍結：`read_case` 的 `hits` 恆為 `[]`。
+
+    白名單是後端內部狀態，**不走事件**——所以註冊卷內 id 不改動 Pink 那邊的契約。
+    """
+    calls: list = []
+    events: list = []
+    t = _tools(calls, payload={"laws": [{"id": "L1", "t": "x"}]}, events=events)
+    t.read_case("laws")
+    assert [d["hits"] for n, d in events if n == "tool_result"] == [[]]
+    assert "L1" in t.refbook.whitelist(), "id 沒進白名單"
+
+
+def test_case_ids_keep_their_own_numbers():
+    """不重新編號：`L1`、`C3` 已經印在承辦人畫面的法條卡與相似案卡上，
+    改號會讓聊天講的號跟畫面上的對不起來。"""
+    calls: list = []
+    t = _tools(calls, payload={"laws": [{"id": "L6", "t": "x"}]})
+    t.read_case("laws")
+    assert "L6" in t.refbook.whitelist()
+    assert t.refbook.get("L6")["t"] == "x"
+
+
+def test_unknown_exceptions_are_internal_not_tool():
+    """spec §4.6：認不出來的例外歸 `internal`，**不歸 `tool`**。
+
+    原版預設 `tool`，2026-09-12 實測踩到：不存在的 model id 讓 botocore 拋
+    `ValidationException`，落到預設值變成 `tool` → 前端顯示「查詢來源失敗」，
+    但壞的是模型。猜一個具體的 stage 比誠實說「內部錯誤」更糟。
+
+    這裡用 AST 讀 `backend/api/chat.py`（那個檔要 fastapi 才 import 得動）。
+    """
+    src = (ROOT / "backend" / "api" / "chat.py").read_text(encoding="utf-8")
+    fn = next(n for n in ast.walk(ast.parse(src))
+              if isinstance(n, ast.FunctionDef) and n.name == "_stage_of")
+    body = fn.body
+    last = body[-1]
+    assert isinstance(last, ast.Return) and getattr(last.value, "value", None) == "internal", \
+        "_stage_of 的兜底值必須是 internal——未知失敗不得被說成查詢來源失敗"
+    # botocore 的例外要判成 model（檢索例外在工具層就被攔掉，到不了這裡）
+    assert "botocore" in src, "沒有把 botocore 的例外判成 model"
