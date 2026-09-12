@@ -48,6 +48,7 @@ from backend.tests import (  # noqa: E402
 BACKEND = ROOT / "backend"
 PROTOTYPE = ROOT / "prototype"
 SCRIPTS = ROOT / "scripts"
+INFRA = ROOT / "infra"
 
 # ── 紅線靜態掃描 ──────────────────────────────────────────────────
 # 這些字串一旦出現在 backend/ 就是事故，不分分支（CONSTITUTION §7）
@@ -68,6 +69,54 @@ FORBIDDEN_CLOUD_PATTERNS = [
     (r"GOOGLE_APPLICATION_CREDENTIALS", "GCP 憑證環境變數"),
     (r"\bGCP\b", "GCP 字樣"),
 ]
+# ── KB id 的實際值不得進 repo ──────────────────────────────────────
+# CONSTITUTION §7／CLAUDE.md：profile 名、帳號 ID、**KB id**、bucket 名一律只在
+# `.env`／`~/.aws`，不進程式與文件。
+#
+# **為什麼要獨立一條**（2026-09-12 實際外洩後補）：`scan_redlines` 只掃
+# `backend/` 與 `prototype/`，而 KB id 外洩的那一處在 `scripts/`
+# （`measure_similar_case.py` 的用法範例寫了兩個真 id，跟著 PR 進了 main）。
+# model id 那條掃描涵蓋 scripts/，KB id 這條先前不存在——守備範圍的洞，不是人的疏忽。
+#
+# 判準：10 碼 `[A-Z0-9]`，且**同時含字母與數字**。純字母的 10 碼常數
+# （`TERMINATORS` 之類本來就更長，且底線讓 `\b` 切不開）不會誤中；
+# 實測 backend/ prototype/ scripts/ infra/ 全樹 0 誤中。
+KB_ID_RE = re.compile(r"\b[A-Z0-9]{10}\b")
+
+
+def _kb_id_hits(text: str) -> list[tuple[int, str]]:
+    """回傳 (行號, 命中字串)。抽成獨立函式的理由同 `_model_id_hits`：
+    掃描器本身要能拿假內容測，一個會誤中的掃描器等於沒有掃描器。"""
+    out: list[tuple[int, str]] = []
+    for m in KB_ID_RE.finditer(text):
+        tok = m.group(0)
+        if any(c.isdigit() for c in tok) and any(c.isalpha() for c in tok):
+            out.append((text[: m.start()].count("\n") + 1, tok))
+    return out
+
+
+def scan_kb_id_literals() -> list[str]:
+    """KB id 的實際值不得出現在 `backend/`、`prototype/`、`scripts/`、`infra/`。
+
+    **本檔自己除外**（規則定義就在這裡）。`docs/` 與 `plans/` 不在範圍內，
+    理由同 `scan_model_id_literals`：文件要記錄量測出處，靠人工覆核。
+    """
+    self_path = pathlib.Path(__file__).resolve()
+    problems: list[str] = []
+    for p in _scan_files((BACKEND, PROTOTYPE, SCRIPTS, INFRA)):
+        if p.resolve() == self_path:
+            continue
+        try:
+            text = p.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            continue  # 非 UTF-8 已由 scan_redlines 報過，不重複
+        for line, hit in _kb_id_hits(text):
+            problems.append(
+                f"{p.relative_to(ROOT)}:{line}：疑似 KB id 的實際值（{hit}）"
+                "——值只能在 .env，範例請寫 <kb-id>")
+    return problems
+
+
 # ── model id 的實際值不得進 repo ───────────────────────────────────
 # `llm/client.py` 的規矩：「程式不得出現任何 model id 的實際值」，值一律由環境變數
 # 注入（`.env`／task definition）。理由有兩個：換帳號換模型不必改程式；沒有人能把
@@ -89,7 +138,10 @@ MODEL_ID_PATTERNS = [
 ]
 
 SCAN_SUFFIXES = {".py", ".json", ".md", ".txt", ".toml", ".cfg", ".yaml", ".yml", ".js", ".html", ""}
-SKIP_DIRS = {"__pycache__", "output"}
+# `node_modules` 與 `cdk.out` 都是 **gitignored 的依賴／建置產物**，而紅線講的是
+# 「不得**進 git**」——掃它們只會製造假紅字（cdk.out 的模板本來就該有真實 KB id，
+# 那是要送去 CloudFormation 的東西；node_modules 裡任何 10 碼字串都會誤中）。
+SKIP_DIRS = {"__pycache__", "output", "node_modules", "cdk.out"}
 
 # **具名例外**（不藏在 regex 裡）：Google Fonts 是字型 CDN，不是 GCP 服務、不涉及任何憑證。
 # 前端 `index.tmpl.html` 的 `<link>` 會命中 `googleapis\.com`，那不是違規。
@@ -517,6 +569,7 @@ def main() -> int:
         ("N2/N3/N4/N6 無 LLM 依賴（ast 遞迴，含 strands）", scan_llm_import_graph),
         ("所有 import 在模組頂層（spec D8）", scan_top_level_imports),
         ("model id 的實際值不進 backend/ prototype/ scripts/（值只由環境變數注入）", scan_model_id_literals),
+        ("KB id 的實際值不進 backend/ prototype/ scripts/ infra/（值只由環境變數注入）", scan_kb_id_literals),
         ("frontend/dist 無夾帶檔案（public/ 會靜默上線到公開網址）",
          scan_frontend_dist_has_no_stowaways),
     ]

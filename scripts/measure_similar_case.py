@@ -2,7 +2,7 @@
 """量相似案通道的品質，並讓多個 KB 並排比較。
 
     set -a; . ./.env; set +a
-    uv run --with boto3 -- python3 scripts/measure_similar_case.py --kb A=IAYQZH0W4J --kb M=ZFTUBWNG0O
+    uv run --with boto3 -- python3 scripts/measure_similar_case.py --kb A=<kb-id-A> --kb M=<kb-id-M>
 
 **走 `KBRetriever.search()` 的正式路徑**（配額 → 後過濾 → 去重 → rerank），
 不是自己另寫一套檢索——量的必須是生產行為，否則量出來的數字沒有用。
