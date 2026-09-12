@@ -52,8 +52,20 @@ def load_case_manifest(case_id: str, cases_dir: pathlib.Path | None = None
     很像成功。
 
     **用 `load` 不用 `ensure`**：`ensure` 讀不到會**建一份檔**，而這是讀路徑——
-    一次聊天追問不該在磁碟上長出東西。壞掉的 JSON、不合法的 case_id、頂層不是物件，
-    全部當成空：半份清單比沒有清單更難查。
+    一次聊天追問不該在磁碟上長出東西。
+
+    **靜默回空的四種原因，與「資料壞了」不同級**（2026-09-12 實測確認，逐一跑過）：
+    檔案不存在、JSON 壞掉（含帶 BOM 的檔——`json.loads` 會被 `\ufeff` 擋下）、
+    頂層不是物件（陣列或字串）、`case_id` 不合 `store.CASE_ID_RE` 白名單，
+    **四種在這裡都回 `{}`**。那個語意是「這個案子的卷宗清單是空的」，
+    下游 `generate_decision_draft` 會說「還沒有查過法規與相似案例」——
+    使用者去挑幾條就解決了，訊息對得上他該做的事。
+
+    **不同級的是「清單有東西但不是清單的形狀」**（例如 `laws` 是 dict）。
+    那不是使用者少做一步，叫他再挑一次沒有用，所以由
+    `backend/llm/chat.py` 的 `generate_decision_draft` 另外攔成「格式不對」。
+    這裡不攔它：`_normalise` 已經把四個群組壓成 list，走這條路根本到不了那裡；
+    會到的是**別人注入** `case_manifest` 的情況，該由用它的人擋。
     """
     try:
         return store.load(case_id, cases_dir)

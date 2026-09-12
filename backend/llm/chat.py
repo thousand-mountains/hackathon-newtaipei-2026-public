@@ -752,6 +752,32 @@ class ChatTools:
             self._result("generate_decision_draft", [], note, status="failed")
             return f"{note}請告訴使用者要先查法規與相似案例，不要生一份沒有依據的草稿。"
 
+        # 形狀不對就**乾淨地失敗**，不要讓它在下面炸掉。
+        #
+        # 為什麼需要這一條（2026-09-12 實測）：`laws` 若是 dict 而不是 list of dict，
+        # `list()` 會拿到 key 的字串，接著 `l.get("t")` 拋 `AttributeError`。
+        # 那個例外在兩個地方都在 `try` 之外——組 `n4_query` 的那行，以及
+        # `_adopt_run` 之後的 `unmatched_picks()`。後果不是一張寫著失敗的工具卡，
+        # 而是**整輪以 `error`／`stage:"internal"` 收掉，先前發出的 `tool_call`
+        # 永遠等不到配對的 `tool_result`，前端那張卡一直轉**。
+        #
+        # **這不是替寫端的假想錯誤寫特判**（那會是「如果是 dict 就轉成 list」）。
+        # 這是讀端自己的責任：同一份壞輸入，要壞成一張說得出原因的 `failed` 卡。
+        # 正常路徑其實到不了這裡——`load_case_manifest` 走 `store.load()`，
+        # `_normalise` 已經保證四個群組是 list。但 `case_manifest` 是**注入**的，
+        # 誰餵進來都算數，工具不該假設呼叫端一定守規矩。
+        #
+        # 與「靜默回空」的差別：檔案不存在、JSON 壞掉、頂層不是物件，那些在
+        # `load_case_manifest` 就變成 `{}`，語意是「這個案子的清單是空的」——
+        # 使用者去挑幾條法規就解決了。這裡攔的是「清單有東西但不是清單的形狀」，
+        # 那是資料壞了，不是使用者少做一步，**兩者不同級，所以訊息也不同**。
+        bad = [x for x in laws + refs if not isinstance(x, dict)]
+        if bad:
+            note = "卷宗清單的格式不對：法規或案例不是一筆一筆的資料。"
+            self._result("generate_decision_draft", [], note, status="failed")
+            return (f"{note}請告訴使用者這個案子的卷宗資料有問題，"
+                    f"不要猜它原本想放什麼，也不要生一份草稿代替。")
+
         # 手動挑的法規當**查詢詞**餵回 N4（契約 v2 §3.5.2，Ci 拍板 (b)）。
         # 這不違反 2026-09-05「N4 獨立檢索」的拍板：餵的是查詢詞不是答案，
         # N4 查得到才會進 laws[]，查不到就是查不到。

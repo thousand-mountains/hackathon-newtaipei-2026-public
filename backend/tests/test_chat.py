@@ -1123,3 +1123,73 @@ def test_load_case_payload_reports_whether_that_run_has_a_draft():
     src = ast.unparse(fn)
     assert "final_state" in src, "_load_case_payload 沒有看 final_state"
     assert "has_draft" in src, "_load_case_payload 沒有回報這個 run 有沒有草稿"
+
+
+# ── 壞掉的卷宗清單要壞得乾淨（假設清單第 6 條，2026-09-12）──────────────
+
+def test_a_malformed_manifest_fails_the_tool_cleanly_instead_of_blowing_up_the_turn():
+    """`laws` 不是 list of dict 時，要回 `tool_result{status:"failed"}`。
+
+    **不是**讓 `AttributeError` 冒出去。那樣的後果是整輪以 `error`／`stage:"internal"`
+    收掉，而且先前發出的 `tool_call` **永遠等不到配對的 `tool_result`**——
+    前端那張工具卡會一直轉，畫面上看不出發生了什麼事。
+
+    這條同時釘住「成對」：`call_id` 配得起來才是一張收得掉的卡。
+    """
+    for manifest in (
+        {"laws": {"L1": {"t": "x"}}, "references": [{"id": "C1"}]},   # dict 不是 list
+        {"laws": [{"id": "L1", "t": "x"}], "references": ["C1"]},     # 裡面是字串
+        {"laws": ["廢棄物清理法第 2 條"], "references": [{"id": "C1"}]},
+    ):
+        calls: list = []
+        events: list = []
+        fake = _FakePipeline(["n4", "n5", "n6"], state="VERIFIED")
+        t = _tools(calls, events=events, run_pipeline=fake, run_id="run-old",
+                   payload={"screen": {"x": 1}}, case_manifest=manifest)
+        out = t.generate_decision_draft()          # 不得拋例外
+
+        kinds = [(n, d["call_id"], d.get("status")) for n, d in events]
+        assert kinds == [("tool_call", "tc-1", None), ("tool_result", "tc-1", "failed")], kinds
+        note = [d["note"] for n, d in events if n == "tool_result"][0]
+        assert "格式不對" in note, note
+        assert "格式不對" in out
+        assert not fake.calls, "形狀壞掉就不該真的去跑流水線"
+
+
+def test_a_malformed_manifest_is_not_reported_as_the_user_forgetting_to_pick_things():
+    """壞掉的資料與「還沒挑」是**兩件事**，訊息不得混用。
+
+    「還沒有查過法規與相似案例」是使用者少做一步，他去挑幾條就解決了；
+    「格式不對」是資料壞了，叫他再挑一次沒有用。講錯會讓人一直重試同一個動作。
+    """
+    calls: list = []
+    ev_empty: list = []
+    _tools(calls, events=ev_empty, run_pipeline=_FakePipeline([]), run_id="run-old",
+           payload={"screen": {"x": 1}}, case_manifest={}).generate_decision_draft()
+    empty_note = [d["note"] for n, d in ev_empty if n == "tool_result"][0]
+
+    ev_bad: list = []
+    _tools(calls, events=ev_bad, run_pipeline=_FakePipeline([]), run_id="run-old",
+           payload={"screen": {"x": 1}},
+           case_manifest={"laws": ["x"], "references": ["y"]}).generate_decision_draft()
+    bad_note = [d["note"] for n, d in ev_bad if n == "tool_result"][0]
+
+    assert empty_note != bad_note, "兩種失敗講同一句話"
+    assert "還沒有查過" in empty_note and "還沒有查過" not in bad_note
+
+
+def test_an_empty_or_unreadable_manifest_still_means_the_list_is_empty_not_broken():
+    """對照組：**靜默回空是對的，不要一起改掉。**
+
+    檔案不存在、JSON 壞掉、頂層不是物件，在 `load_case_manifest` 就變成 `{}`，
+    語意是「這個案子的清單是空的」——使用者去挑幾條法規就解決了。
+    那跟「清單有東西但不是清單的形狀」不同級（`AttributeError` 那條）。
+    這條釘住前者仍然走「還沒有查過」，沒有被新的守衛順手改成「格式不對」。
+    """
+    calls: list = []
+    for manifest in ({}, {"laws": [], "references": []}, {"laws": None, "references": None}):
+        events: list = []
+        _tools(calls, events=events, run_pipeline=_FakePipeline([]), run_id="run-old",
+               payload={"screen": {"x": 1}}, case_manifest=manifest).generate_decision_draft()
+        note = [d["note"] for n, d in events if n == "tool_result"][0]
+        assert "還沒有查過法規與相似案例" in note, f"{manifest} → {note}"
