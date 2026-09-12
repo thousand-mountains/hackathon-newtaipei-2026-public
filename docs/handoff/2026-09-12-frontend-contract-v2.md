@@ -22,7 +22,7 @@
 | ⑤ | §3.2 §3.3 §4 | `hits[]` 對齊後端實際欄位；`id` = S3 相對路徑；全文從 S3 讀 | 原本的欄位多半是設計稿假資料；KB 回的是 chunk 不是全文 |
 | ⑥ | §1.3 §1.4 §4.2 §4.3 | 母庫查**兩支都保留**，改用 `doc_kind` server-side filter | 668 部法規全文已在 KB 且實測命中；不篩就撈不到 |
 | ⑦ | §4 | 新增 §4.0：持久化＝一案一份 `manifest.json`，**不加資料庫** | 四份清單原本無處可存 |
-| ⑧ | §1.5 §6 | 匯出降級成 `html`/`md` | PDF/DOCX 要把中文字型與排版引擎塞進容器，投報率最低 |
+| ⑧ | §1.5 §4.4 | 匯出**維持 `pdf`/`docx`**（Ci 拍板，2026-09-12 23:50 覆蓋前一版的降級） | 承辦人拿到的必須是能直接送簽／續編的格式，`.md` 交不出去 |
 | ⑨ | §3.7 | **關聯圖改成後端新功能**（原本列在「建議砍」） | 邊在 payload 裡已經是現成的（`citations[].sentence_id` → `resolved_id`），零 LLM 可組 |
 
 已拍板（2026-09-12 Ci）：
@@ -166,11 +166,22 @@ generate_decision_draft → run_case(from_node="n4", base_run_id=…)   約 24�
 | 20 | GET | `/api/cases/{id}/artifacts` | 右欄「答辯書與產出」群組載入 | 一次性 |
 | 21 | GET | `/api/cases/{id}/artifacts/{artifactId}` | 點產出看內容（草稿全文） | 一次性 |
 | 22 | DELETE | `/api/cases/{id}/artifacts/{artifactId}` | 移出 `removeDoc('out')` | 一次性 |
-| 23 | GET | `/api/cases/{id}/artifacts/{artifactId}/export?format=html\|md` | 匯出下載（`pdf`／`doc` chip） | 一次性（回檔案） |
+| 23 | GET | `/api/cases/{id}/artifacts/{artifactId}/export?format=pdf\|docx` | 匯出下載（`pdf`／`doc` chip） | 一次性（回檔案） |
 
-> **⑧ 匯出降級成 `html`／`md`（本期不做 PDF／DOCX）。** 產 PDF／DOCX 要把中文字型與排版引擎塞進容器，
-> 而 2026-09-12 才剛把 build context 從 905MB 壓到 4.8MB（commit `279169b`）。demo 時「下載一個檔案」
-> 幾乎看不見，投報率最低。PDF 交給瀏覽器列印。前端 `exportDownload()`（`App.vue:169-171`）現在只是 toast。
+> **⑧ 匯出維持 `pdf`／`docx`**（2026-09-12 23:50 Ci 拍板）。理由：承辦人拿到的必須是能直接
+> 送簽或續行編修的格式，`.md` 交不出去。
+>
+> **實作上有兩個真的會踩到的點，先寫在這裡：**
+> 1. **中文字型要進容器。** 沒有 CJK 字型的話 PDF 會整片豆腐字（□□□），而且**不會報錯**。
+>    只塞一個字型檔（例如思源黑體 Regular 單一 weight，約 8–16MB），不要整包字型家族。
+>    2026-09-12 才剛把 build context 從 905MB 壓到 4.8MB（commit `279169b`），
+>    **加完要重量一次 build context**，別讓它又漲回去。
+> 2. **`.docx` 要能續編，不是把 PDF 改副檔名。** 用 `python-docx` 直接組段落，
+>    不要走「HTML 轉檔」那條——轉出來的 docx 樣式結構很難再編輯。
+>
+> 建議 `docx` 先做（做起來比 PDF 單純、而且「可續編」才是承辦人真正要的），
+> `pdf` 若時間不夠可暫時用「瀏覽器列印」頂著，但**契約不退**。
+> 前端 `exportDownload()`（`App.vue:169-171`）現在只是 toast，要改成真下載。
 
 ### 1.6 辦案對話（唯一串流）
 
@@ -664,7 +675,9 @@ backend/output/cases/{case_id}/manifest.json
   - 後端實作：`load_run(run_id)` → `build_payload()` → 取 `doc[]` 轉成 `sections[]`。
   - 「來源控管」文案只有在**每個 cite 真的可回溯**時才顯示，否則拿掉。
 - `DELETE /api/cases/{id}/artifacts/{artifactId}` → `204`（從 manifest 移除，**不刪 run**）
-- `GET /api/cases/{id}/artifacts/{artifactId}/export?format=html|md` → 回檔案（`Content-Disposition: attachment`）
+- `GET /api/cases/{id}/artifacts/{artifactId}/export?format=pdf|docx` → 回檔案（`Content-Disposition: attachment`）
+  - `docx`：`python-docx` 直接組段落（要能續編）。`pdf`：需 CJK 字型進容器，否則整片豆腐字且不報錯。
+  - **引註要跟著出去**：`sections[].blocks[].cites` 轉成註腳或行內標註，不要只匯出白文。
 
 > **同一份文件被切多 chunk**：`GET /api/laws`、`GET /api/decisions` 與本案清單 **後端先去重再回**
 > （`dedupe_by_source`，預設 False，**母庫查要記得開**），否則「命中 5 筆」其實只有 2 份文件。
@@ -689,7 +702,7 @@ backend/output/cases/{case_id}/manifest.json
 | 砍／改 | 位置 | 理由 |
 |---|---|---|
 | ~~關聯圖 `build_relation_graph`~~ **改成保留，後端要做** | `RelationGraph.vue`、`graph.js GNODES/GEDGES` | **⑨ 這列反轉。** 原因寫在 §3.7：邊在 payload 裡已經是現成的，零 LLM 可組。`GNODES`/`GEDGES` 的假資料換成 `tool_result.graph`，元件保留。**注意：跟 `plans/kb-graph.md` 不是同一個東西**——那份是全庫 2477 份的三層知識圖、獨立展示頁、不接工作台 |
-| `export_pdf`/`export_docx` 當成 chat 工具 | `data.js TOOLS[pdf,doc]`、`ToolOut out.type==='export'` | 匯出是**下載**（§1.5 #23），不是 agent 工具。**且本期只做 `html`／`md`**，PDF 交給瀏覽器列印 |
+| `export_pdf`/`export_docx` 當成 chat 工具 | `data.js TOOLS[pdf,doc]`、`ToolOut out.type==='export'` | 匯出是**下載**（§1.5 #23），不是 agent 工具。chip 點下去打 export 端點拿檔案，不發 chat。**格式維持 `pdf`／`docx`** |
 | **`steps[]` 的假耗時** | `store/app.js:222-232` 的 `await sleep(900)` | **②③ 新增此列。** 工具卡的逐行打勾**保留**，但 step 名稱與耗時改吃 `tool_step` 事件的真值（§2.3）。其餘五支工具不發 step，用單純 spinner |
 | **分層誠實燈號 UI** | 全新，前端目前沒有 | **本期不做**（Ci 拍板）。後端照送欄位。**但 §2.4.1 的兩項要做**——那兩項是「系統會不會講假話」，不是燈號好不好看 |
 | `/` 斜線指令選單 | `Composer.vue` slash 選單 | 工具由 agent 決定並發 `tool_call`；留著會讓人以為「點了就一定跑那支」。可保留為**輸入輔助**但別暗示保證。`tool_hint` 會加速命中，但後端仍可忽略或覆寫 |
@@ -723,7 +736,7 @@ backend/output/cases/{case_id}/manifest.json
      ＋ `GET|POST /cases/{id}/laws`、`DELETE …/laws/{lawId}`
    - 案例：`GET /decisions?q=`、`GET /decisions/{decisionId}`（filter `doc_kind=decision`）
      ＋ `GET|POST /cases/{id}/references`、`DELETE …/references/{refId}`
-   - 產出：`GET /cases/{id}/artifacts`、`GET|DELETE …/{artifactId}`、`GET …/{artifactId}/export?format=html|md`
+   - 產出：`GET /cases/{id}/artifacts`、`GET|DELETE …/{artifactId}`、`GET …/{artifactId}/export?format=pdf|docx`
 3. **持久化**：一案一份 `manifest.json`（§4.0），**不加資料庫**。
 
 **沒有輪詢**；三類卷宗成員只有 C/R/D 沒有 U（不改母庫）；資料夾維持前端本地（§0.2）。
@@ -740,6 +753,7 @@ KB 檢索與 `doc_kind` filter、`load_run`／`build_payload`。
 | **C. 持久化 + 13 支 CRUD** | `manifest.json` + `GET /cases/{id}` 彙整版 + files／laws／references／artifacts 的 GET/POST/DELETE | **不碰對話框，可與 A/B 並行開工** |
 | **D. 關聯圖** | `build_relation_graph` 工具（§3.7）。零 LLM，從 run payload 組節點與四種邊 | 計畫見 `plans/2026-09-12-relation-graph.md` |
 
-外加兩件小的：母庫查四支（#10／#11／#15／#16）、#23 匯出改 `html`／`md`。
+外加兩件：母庫查四支（#10／#11／#15／#16）；**#23 匯出 `pdf`／`docx`**——
+這件不小，要處理 CJK 字型與容器體積，建議獨立成一個工作包，`docx` 先做。
 
 **順序建議**：C 先發（無依賴）→ A（B 的前提）→ B → D。
