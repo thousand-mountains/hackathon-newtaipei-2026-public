@@ -2,7 +2,7 @@
 
 把後端部署到大會 AWS 帳號，取得一個評審可以自己點開的部署網址。
 
-- **負責**：`-72` session（後端與 AWS）
+- **負責**：後端與 git `-d4` session／部署執行 `-2e` session（原 `-72` 已結束）
 - **相依**：前端 `rebuild-staff-workbench-frontend` 由 Pink 負責，**本 change 不等它**——映像檔帶的是目前已建置的 `prototype/dist/`，前端換版後重建映像檔即可。
 - **死線**：繳交 2026-09-13 13:00。**部署網址是繳交必要項，評審會自己點。**
 
@@ -111,7 +111,7 @@
 |---|---|
 | 忘記給 `RUN_MODE` | fallback 到 fixture（fail-safe，不偷打模型），但 `/api/health` 的 `fixture_only=true` 會讓 US-1 驗收失敗，抓得到 |
 | Bedrock 臨時憑證過期 | Workshop Studio 憑證僅供**本機**；雲上走 task role 不受影響 |
-| ALB 閒置逾時 | 預設 60 秒。**我們的 202＋輪詢每個呼叫都是秒級**，不受影響——這是當初選這個架構的附帶好處 |
+| ALB 閒置逾時 | ~~預設 60 秒，我們每個呼叫都是秒級不受影響~~ **這條已被實測推翻（2026-09-12）**。「秒級」只對 `/runs` 成立，**對 `/submit` 不成立**——`/submit` 刻意同步重跑六節點（`backend/api/app.py` 的 `run_case()`），bedrock 檔位端到端實測 65.7～75 秒，第一次部署時 C 型 submit 回的是 **ALB 504 而不是 409**。本機沒有 ALB，這條在本機驗不出來。現況：ALB idle timeout 設 **900 秒**；不取剛好夠用的 300，是因為前端輪詢逾時為 600 秒（`prototype/static/app.js` `POLL_TIMEOUT_MS`），**ALB 若短於它會先切斷**，評審看到的是我們沒寫也解釋不了的 504，而前端那句「後端連得上、只是這次跑失敗」的誠實訊息根本輪不到出場——**這是誠實性問題，不只是可用性**。⚠️ 900 秒是止血不是解法，正解是 `/submit` 改 202＋輪詢 |
 | Bedrock throttle | `llm/client.py` 已主動節流 1.1 秒；仍被 throttle 時節點失敗回 502 帶原因，**不會靜默退回 fixture** |
 | KB 不可用 | N4 通道 B 降級、通道 A 照常，`degraded` 欄位會說明是「檢索失敗」而非「查無相似案」 |
 | 映像檔架構錯 | Fargate 起不來，CloudWatch 看得到；**先本機 `docker run` 驗過再推** |
@@ -159,7 +159,8 @@ curl -s -X POST http://<endpoint>/api/cases/synthetic-blocked-01/submit \
 
 1. **KB 正本 bucket 未定。** 帳號內有三個 KB、四個 bucket，`.env` 的 `S3_KB_BUCKET` 指的那個**目前沒有被 KB 索引**（已在 `.env` 加警語）。task definition 的 `BEDROCK_KB_ID` 要填哪個，取決於這題。**本 change 可以先用現行的 `BEDROCK_KB_ID` 部署**，正本定案後改 task definition 重新部署即可（不需重建映像檔）。
 2. **賽後網址是否需存活。** 環境關閉時刻兩說並陳（一手書面 9/13 13:00／無來源的 9/15 08:00 推論），**規劃基準取較保守的 9/13 13:00**。需向賽方一手確認，並由 Ci 拍板是否另議帳號。
-3. **要不要引入 CDK／IaC。** 本 change 的立場是**不要**：只建六種資源各一次，帳號兩天後收回，CDK 的 bootstrap 成本（建 S3 + IAM roles）與學習成本換不回可重複部署的價值。**若 Ci 要求則另議。**
+3. ~~**要不要引入 CDK／IaC。** 本 change 的立場是不要。~~ **已推翻：Ci 拍板採用 CDK，且已用 CDK 部署完成**（worktree `team/hackathon-deploy`，分支 `hack-deploy-aws`）。換版流程 `infra/cdk/deploy.sh deploy`（約 4 分鐘、改設定不需重建映像檔），驗收 `infra/cdk/verify.sh`。
+   ⚠️ **CDK 的 build context `exclude` 同時決定「什麼能被 `COPY`」與「映像檔 hash 怎麼算」**，兩邊不對齊不會報錯（已踩過兩次）。動 Dockerfile 的 `COPY` 要同時看 `infra/cdk/lib/appeal-backend-stack.ts` 的 exclude 清單。
 
 ---
 
@@ -183,10 +184,11 @@ curl -s -X POST http://<endpoint>/api/cases/synthetic-blocked-01/submit \
 |---|---|---|
 | 0 | 修 Dockerfile（RUN_MODE、前端） | ✅ 完成 `16f46cd` |
 | 1 | 本機 `--platform linux/amd64` 建置並實跑驗證 | ✅ 完成（四項驗收全過，含 409） |
-| 2 | 建 ECR repository、推映像檔 | ⏳ |
-| 3 | 建 task role（`bedrock:InvokeModel` 限定 inference profile ARN、`bedrock:Retrieve` 限定 KB ARN） | ⏳ |
-| 4 | 建 `SG-alb`／`SG-task`、ECS cluster、task definition、service | ⏳ |
-| 5 | 建 ALB ＋ target group（health check `/api/health`） | ⏳ |
-| 6 | 跑 Success Criteria 四條 | ⏳ |
-| 7 | 更新 `backend/DEPLOY.md` 為實測後的版本 | ⏳ |
+| 2 | 建 ECR repository、推映像檔 | ✅ 完成（改以 CDK 實作） |
+| 3 | 建 task role（`bedrock:InvokeModel` 限定 inference profile ARN、`bedrock:Retrieve` 限定 KB ARN） | ✅ 完成（改以 CDK 實作） |
+| 4 | 建 `SG-alb`／`SG-task`、ECS cluster、task definition、service | ✅ 完成（改以 CDK 實作） |
+| 5 | 建 ALB ＋ target group（health check `/api/health`） | ✅ 完成（改以 CDK 實作） |
+| 6 | 跑 Success Criteria 四條 | ✅ 完成（改以 CDK 實作） |
+| 7 | 更新 `backend/DEPLOY.md` 為實測後的版本 | ✅ 完成（改以 CDK 實作） |
 | 8 | 9/13 上午複驗 US-1 四項與 US-3 的 409 | ⏳ |
+| 8a | **複驗第一步：回 Workshop Studio dashboard 重取 AWS 憑證**——那是臨時憑證會過期，且 `~/.aws/credentials` 沒有 expiry 欄位查不出剩多久，不要假設舊憑證還活著 | ⏳ |
