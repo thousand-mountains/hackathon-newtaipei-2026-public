@@ -372,11 +372,13 @@ TOOL_LABELS = {
     "generate_decision_draft": "生成草稿",
     "refine_text": "潤稿",
     "read_case": "讀卷內",
+    "build_relation_graph": "畫案件關聯圖",
 }
-# 契約 v2 §3.0 的表還有第八支 `build_relation_graph`（案件關聯圖）。**這裡刻意不列**：
-# 它是獨立的新功能，計畫在 `plans/2026-09-12-relation-graph.md`，本 change 不實作。
-# 先把名字放進值域會讓前端以為它在，而 `test_every_tool_entry_point_throttles_exactly_once`
-# 也會要求它有進入點——列一個不存在的工具，兩邊都在說謊。
+# 第八支 `build_relation_graph` 2026-09-13 實作完成才進這張表
+# （計畫 `plans/2026-09-12-relation-graph.md`，契約 v2 §3.0／§3.7）。
+# **在那之前它刻意不在這裡**：先把名字放進值域會讓前端以為它在，而
+# `test_every_tool_entry_point_throttles_exactly_once` 也會要求它有進入點——
+# 列一個不存在的工具，兩邊都在說謊。
 
 #: pipeline 工具轉發 `tool_step` 時的節點中文標籤（契約 v2 §2.3 ③）。
 #: **後端帶 label，前端不維護對照表**——兩邊各存一份遲早會有一份走歪。
@@ -393,6 +395,16 @@ PIPELINE_NODE_LABELS = {
 #: **明說「這個檔位沒有」，不要靜默失敗**（契約 v2 §0.1 末段）。
 _NO_PIPELINE = ("這個檔位沒有六節點流水線，解析卷證與生成草稿在這裡跑不了。"
                 "請告訴使用者這項功能目前不可用，不要改用推測代替。")
+
+#: 同理：關聯圖要讀 run 檔才畫得出來，沒有注入 adapter 的檔位畫不了。
+#: **明說沒有，不要回一張空圖**——空圖看起來就像「這個案子本來就沒什麼關聯」。
+_NO_GRAPH = ("這個檔位沒有辦法讀取執行紀錄，案件關聯圖在這裡畫不出來。"
+             "請告訴使用者這項功能目前不可用，不要自己描述一張圖。")
+
+#: 還沒有任何一次 run 就要畫圖：不是失敗，是還沒到那一步。
+_NO_RUN_FOR_GRAPH = ("這個案子還沒有執行紀錄，畫不出關聯圖。"
+                     "請先用 extract_case_document 解析卷證、"
+                     "再用 generate_decision_draft 生成草稿。")
 
 #: `read_case` 讀得到的分區。值域固定，讓模型不能亂要一個不存在的欄位。
 CASE_SECTIONS = ("intake", "facts_excerpt", "screen", "laws", "cases")
@@ -485,7 +497,8 @@ class ChatTools:
                  retriever: Any = None, snapshot: dict[str, Any] | None = None,
                  emit: Any = None, *, run_pipeline: Any = None,
                  run_id: str | None = None,
-                 case_manifest: dict[str, Any] | None = None) -> None:
+                 case_manifest: dict[str, Any] | None = None,
+                 build_graph: Any = None) -> None:
         self.case_payload = case_payload or {}
         self.refbook = refbook
         self.retriever = retriever
@@ -503,6 +516,11 @@ class ChatTools:
         #   回傳 {"run_id", "state", "node_timings", "cite_count",
         #         "artifact_id", "has_draft", "sections"}
         self.run_pipeline = run_pipeline
+        #: 關聯圖 adapter，由呼叫端注入（`backend/orchestrator/chat_bridge.py`
+        #: 的 `relation_graph_adapter`）。理由與 `run_pipeline` 完全相同：
+        #: 這一層只碰得到 dict，runstore 與 `build_payload` 都在另一側。
+        #:   build_graph(*, run_id) -> dict（契約 v2 §3.7 的形狀）
+        self.build_graph = build_graph
         #: 本案最後一次成功的 run。extract 跑完會換成新的，generate 拿它當 base。
         self.run_id = run_id
         #: 本案卷宗清單（`manifest.json`，契約 v2 §4.0）。由呼叫端唯讀帶進來。
@@ -811,6 +829,56 @@ class ChatTools:
                 f"引用 {out.get('cite_count')} 處）。草稿全文請由承辦人在產出區檢視，"
                 f"不要在這裡整份複述。{note}")
 
+    def build_relation_graph(self) -> str:
+        """畫本案的關聯圖：卷證 → 事實 → 爭點 → 法規依據 → 結論（契約 v2 §3.7）。
+
+        **零模型呼叫**：圖整個是 payload 欄位的字串比對推出來的
+        （`backend/graph/relation.py`）。這一層只負責把它拿到、放進 `tool_result`
+        的 `graph` 欄位，**不描述圖的內容**——圖是給眼睛看的，複述一遍只會
+        多一個可能說錯的地方。
+
+        回給模型的是**數字與斷點**，不是節點清單：模型要講的是
+        「有幾條引用查無」這種承辦人需要被提醒的事。
+        """
+        _throttle()
+        self._call("build_relation_graph", {})
+        if self.build_graph is None:
+            self._result("build_relation_graph", [], _NO_GRAPH, status="failed")
+            return _NO_GRAPH
+        if not self.run_id:
+            self._result("build_relation_graph", [], _NO_RUN_FOR_GRAPH, status="empty")
+            return _NO_RUN_FOR_GRAPH
+        try:
+            graph = self.build_graph(run_id=self.run_id)
+        except Exception as e:  # noqa: BLE001 — 畫不出來照實說，不要描述一張沒有的圖
+            note = f"畫關聯圖失敗（{type(e).__name__}）：{e}"
+            self._result("build_relation_graph", [], note, status="failed")
+            return f"{note}。請告訴使用者這次畫不出來，不要自己描述一張圖。"
+
+        stats = graph.get("stats") or {}
+        if graph.get("status") == "empty":
+            # `empty` 不是 `failed`：資料還沒到那一步，不是東西壞了（契約 v2 §2.3 ②）。
+            note = str(graph.get("note") or "")
+            self._result("build_relation_graph", [], note, status="empty", graph=graph)
+            return f"{note}（這不是失敗，是還沒生成草稿。）"
+        self._result("build_relation_graph", [], "", status="ok", graph=graph)
+
+        flagged = graph.get("flagged") or []
+        unlinked = graph.get("unlinked") or {}
+        parts = [f"已畫出關聯圖：{stats.get('nodes')} 個節點、{stats.get('edges')} 條關聯，"
+                 f"草稿 {stats.get('sentences_total')} 句裡有 "
+                 f"{stats.get('sentences_in_graph')} 句連得上爭點或法規。"]
+        if flagged:
+            raws = "、".join(str(f.get("raw")) for f in flagged)
+            parts.append(f"**有 {len(flagged)} 處引用在檢索結果裡查無：{raws}。**"
+                         f"這一項請務必告訴使用者——草稿引了我們沒檢索到的法條。")
+        if unlinked.get("laws"):
+            parts.append(f"另有 {len(unlinked['laws'])} 條檢索到的法規沒有被任何句子引用。")
+        if unlinked.get("issues"):
+            parts.append(str(unlinked.get("note") or ""))
+        parts.append("圖已經回給畫面了，**不要在對話裡逐一複述節點**。")
+        return "".join(parts)
+
     # ── 給 Strands 的 @tool 包裝 ────────────────────────────────────
 
     def as_strands_tools(self) -> list[Any]:
@@ -866,6 +934,16 @@ class ChatTools:
             return outer.generate_decision_draft()
 
         @tool
+        def build_relation_graph() -> str:
+            """畫本案的關聯圖：卷證 → 事實 → 爭點 → 法規依據 → 結論。
+
+            **只有承辦人想看「這個結論是從哪裡推出來的」時才用。**
+            需要先生成草稿；只解析過卷證的話會回「還畫不出來」，
+            這時請照實說要先生成草稿，不要自己描述一張圖。
+            """
+            return outer.build_relation_graph()
+
+        @tool
         def read_case(section: str) -> str:
             """讀本案卷內資料。
 
@@ -886,7 +964,8 @@ class ChatTools:
             return outer.refine_text(text, instruction)
 
         return [extract_case_document, search_regulations, search_similar_decisions,
-                retrieve_refs, generate_decision_draft, read_case, refine_text]
+                retrieve_refs, generate_decision_draft, read_case, refine_text,
+                build_relation_graph]
 
 
 def build_chat_agent(case_payload: dict[str, Any], refbook: RefBook,
@@ -894,6 +973,7 @@ def build_chat_agent(case_payload: dict[str, Any], refbook: RefBook,
                      emit: Any = None, *, run_pipeline: Any = None,
                      run_id: str | None = None,
                      case_manifest: dict[str, Any] | None = None,
+                     build_graph: Any = None,
                      ) -> tuple[Any, ChatTools]:
     """建一個聊天 agent。回傳 `(agent, tools)`——`tools` 帶著本回合的狀態。
 
@@ -909,7 +989,7 @@ def build_chat_agent(case_payload: dict[str, Any], refbook: RefBook,
         raise LLMError(_STRANDS_MISSING)
     tools = ChatTools(case_payload, refbook, retriever, snapshot, emit,
                       run_pipeline=run_pipeline, run_id=run_id,
-                      case_manifest=case_manifest)
+                      case_manifest=case_manifest, build_graph=build_graph)
     agent = Agent(
         model=_load_model(model_kind="draft"),
         system_prompt=_prompt("chat_ask"),

@@ -26,6 +26,7 @@ import pathlib
 from typing import Any, Callable
 
 from backend.dossier import store
+from backend.graph.relation import build_relation_graph
 from backend.orchestrator.graph import build_payload, run_case
 from backend.orchestrator.runstore import load_run
 
@@ -126,4 +127,32 @@ def pipeline_adapter(case_id: str, cases_dir: pathlib.Path | None = None,
     return run_pipeline
 
 
-__all__ = ["PAYLOAD_SECTIONS", "load_case_manifest", "pipeline_adapter"]
+def relation_graph_adapter(case_id: str) -> Callable[..., dict[str, Any]]:
+    """把「讀 run → 組 payload → 畫關聯圖」包成聊天層看得懂的 callable。
+
+    簽章就是 `backend/llm/chat.py` 的 `ChatTools.build_graph` 契約：
+
+        build_graph(*, run_id: str) -> dict
+
+    理由與 `pipeline_adapter` 完全相同（見本檔檔頭）：聊天層碰得到的只有 dict，
+    runstore 與 `build_payload` 都留在這一側。**關聯圖本身**
+    （`backend/graph/relation.py`）沒有這個限制——它是純函式、零依賴——
+    但它需要的是**完整 payload**，而聊天層手上只有切過分區的五個鍵
+    （`PAYLOAD_SECTIONS` 沒有 `doc` 也沒有 `citations`），所以還是得從這裡讀。
+
+    **`case_id` 要比對**：理由同 `backend/api/chat.py:139` ——run_id 猜得到，
+    拿 A 案的 run 去畫 B 案的圖，畫出來的每一條線都是別人的卷。
+    """
+
+    def build_graph(*, run_id: str) -> dict[str, Any]:
+        payload = build_payload(load_run(run_id))
+        if payload.get("case_id") != case_id:
+            raise ValueError(
+                f"run_id {run_id} 屬於案件 {payload.get('case_id')}，不是 {case_id}")
+        return build_relation_graph(payload)
+
+    return build_graph
+
+
+__all__ = ["PAYLOAD_SECTIONS", "load_case_manifest", "pipeline_adapter",
+           "relation_graph_adapter"]

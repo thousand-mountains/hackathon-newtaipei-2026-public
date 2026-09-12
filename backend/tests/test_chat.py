@@ -350,7 +350,8 @@ class _FakeRetriever:
 
 
 def _tools(monkey_throttle: list, retriever=None, snapshot=None, payload=None, events=None,
-           run_pipeline=None, run_id=None, case_manifest=None, refbook=None):
+           run_pipeline=None, run_id=None, case_manifest=None, refbook=None,
+           build_graph=None):
     """建一組 ChatTools，並把 `_throttle` 換成計數器（真的節流會讓測試睡好幾秒）。"""
     chat_mod._throttle = lambda: monkey_throttle.append(1)
     emit = (lambda name, data: events.append((name, data))) if events is not None else None
@@ -358,6 +359,7 @@ def _tools(monkey_throttle: list, retriever=None, snapshot=None, payload=None, e
         payload if payload is not None else {"intake": {"案由": "x"}},
         refbook if refbook is not None else RefBook(), retriever, snapshot, emit,
         run_pipeline=run_pipeline, run_id=run_id, case_manifest=case_manifest,
+        build_graph=build_graph,
     )
 
 
@@ -422,6 +424,7 @@ def test_every_tool_entry_point_throttles_exactly_once():
         ("retrieve_refs", lambda t: t.retrieve_refs("信賴保護")),
         ("read_case", lambda t: t.read_case("intake")),
         ("refine_text", lambda t: t.refine_text("本件訴願為無理由。")),
+        ("build_relation_graph", lambda t: t.build_relation_graph()),
     ):
         calls.clear()
         t = _tools(calls, retriever, snapshot={"laws": {}})
@@ -1193,3 +1196,115 @@ def test_an_empty_or_unreadable_manifest_still_means_the_list_is_empty_not_broke
                payload={"screen": {"x": 1}}, case_manifest=manifest).generate_decision_draft()
         note = [d["note"] for n, d in events if n == "tool_result"][0]
         assert "還沒有查過法規與相似案例" in note, f"{manifest} → {note}"
+
+
+# ── 案件關聯圖工具（契約 v2 §3.7）─────────────────────────────────
+
+
+def _graph_ok(**over):
+    """一份最小但形狀正確的關聯圖回傳（`backend/graph/relation.py` 的輸出）。"""
+    g = {"run_id": "run-x", "generated": "2026-09-13T00:00:00+08:00", "status": "ok",
+         "note": "", "cols": ["卷證", "事實", "爭點", "法規依據", "結論"],
+         "nodes": [{"id": "D1", "k": "doc", "c": 0, "t": "a.pdf"}],
+         "edges": [{"from": "D1", "to": "F1", "rel": "quote", "basis": "x"}],
+         "flagged": [], "unlinked": {"laws": [], "issues": [], "note": ""},
+         "stats": {"nodes": 1, "edges": 1, "edges_flagged": 0,
+                   "sentences_total": 13, "sentences_in_graph": 4}}
+    g.update(over)
+    return g
+
+
+def test_relation_graph_tool_puts_the_graph_in_the_tool_result():
+    """圖走 `tool_result.graph`（契約 v2 §3.1 三類工具各填自己那塊）。"""
+    calls: list = []
+    events: list = []
+    graph = _graph_ok()
+    t = _tools(calls, events=events, run_id="run-x", build_graph=lambda *, run_id: graph)
+    answer = t.build_relation_graph()
+    result = [d for n, d in events if n == "tool_result"][0]
+    assert result["status"] == "ok", result
+    assert result["graph"] is graph, "圖沒有進 tool_result.graph"
+    assert result["hits"] == [], "關聯圖不產生引用事件"
+    assert "13" in answer and "4" in answer, f"回給模型的話沒帶上稀疏的真值：{answer}"
+    assert "複述" in answer, "沒有叫模型別在對話裡把節點念一遍"
+
+
+def test_relation_graph_tool_without_an_adapter_fails_loudly():
+    """乙案容器沒有 runstore：**明說沒有，不要回一張空圖**。
+
+    空圖與「畫不出來」在畫面上長得一模一樣，而意思相反——
+    一個是「這個案子沒什麼關聯」，一個是「我們沒去看」。
+    """
+    calls: list = []
+    events: list = []
+    note = _tools(calls, events=events, run_id="run-x").build_relation_graph()
+    result = [d for n, d in events if n == "tool_result"][0]
+    assert result["status"] == "failed", result
+    assert result["graph"] is None, "畫不出來卻給了 graph"
+    assert "不要自己描述" in note, note
+
+
+def test_relation_graph_tool_without_a_run_is_empty_not_failed():
+    """還沒跑過任何一次 run → `empty`，不是 `failed`：資料還沒到那一步，不是壞了。"""
+    calls: list = []
+    events: list = []
+    boom = lambda *, run_id: (_ for _ in ()).throw(AssertionError("不該被呼叫"))
+    note = _tools(calls, events=events, build_graph=boom).build_relation_graph()
+    result = [d for n, d in events if n == "tool_result"][0]
+    assert result["status"] == "empty", result
+    assert "extract_case_document" in note, note
+
+
+def test_relation_graph_tool_passes_empty_status_through():
+    """只解析過卷證的 run：純函式回 `empty`，工具要照原樣轉出去，**不翻成 failed**。"""
+    calls: list = []
+    events: list = []
+    graph = _graph_ok(status="empty", note="要先生成草稿才畫得出完整關聯", nodes=[], edges=[])
+    note = _tools(calls, events=events, run_id="run-x",
+                  build_graph=lambda *, run_id: graph).build_relation_graph()
+    result = [d for n, d in events if n == "tool_result"][0]
+    assert result["status"] == "empty", result
+    assert result["graph"] is graph, "退化時也要把圖帶出去（前端照樣渲染空狀態）"
+    assert "不是失敗" in note, note
+
+
+def test_relation_graph_tool_surfaces_flagged_citations_to_the_model():
+    """**紅線**：草稿引了檢索沒找到的法條，模型一定要講出來。
+
+    這條釘的不是格式是**內容**：`flagged` 非空時，回給模型的字串要帶上那些條號，
+    否則模型沒有材料可講，承辦人就看不到最該看到的那一項。
+    """
+    calls: list = []
+    events: list = []
+    graph = _graph_ok(flagged=[{"sentence_id": "s5", "raw": "訴願法第15條",
+                                "state": "ok", "lamp": "g", "basis": "查無"}])
+    note = _tools(calls, events=events, run_id="run-x",
+                  build_graph=lambda *, run_id: graph).build_relation_graph()
+    assert "訴願法第15條" in note, note
+    assert "查無" in note, note
+    assert [d for n, d in events if n == "tool_result"][0]["status"] == "ok"
+
+
+def test_relation_graph_tool_reports_adapter_failure_instead_of_describing_a_graph():
+    """adapter 炸了（例：run_id 屬於別的案件）→ `failed` + 照實說，不要描述一張圖。"""
+    calls: list = []
+    events: list = []
+
+    def boom(*, run_id: str) -> dict:
+        raise ValueError(f"run_id {run_id} 屬於案件 case-b，不是 case-a")
+
+    note = _tools(calls, events=events, run_id="run-x",
+                  build_graph=boom).build_relation_graph()
+    result = [d for n, d in events if n == "tool_result"][0]
+    assert result["status"] == "failed", result
+    assert "ValueError" in note and "case-b" in note, note
+
+
+def test_relation_graph_tool_is_in_the_tool_label_vocabulary():
+    """契約 §3.0 的值域：實作完成才進 `TOOL_LABELS`。
+
+    這條與 `test_every_tool_entry_point_throttles_exactly_once` 是一對：
+    那條保證表裡的每一支都有進入點，這條保證這一支真的在表裡
+    （前端靠 `label` 顯示，缺了會拿到 undefined）。
+    """
+    assert TOOL_LABELS["build_relation_graph"] == "畫案件關聯圖"
