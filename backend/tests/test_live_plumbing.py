@@ -6,6 +6,7 @@ import json
 import os
 import pathlib
 import tempfile
+import zipfile
 from contextlib import contextmanager
 
 import backend.intake.uploads as up
@@ -462,16 +463,72 @@ def test_save_and_load_upload_case_shape_and_prefix():
     assert_eq(list_upload_cases(uploads_dir=d), [meta["case_id"]])
 
 
-def test_save_upload_rejects_bad_suffix_and_oversize():
+def test_save_upload_rejects_oversize_but_no_longer_rejects_by_suffix():
+    """2026-09-12 Ci 拍板：不限制 input 格式。
 
+    大小上限保留——它擋的是資源耗盡，不是格式偏好。
+    副檔名不再擋：讀不讀得到交給 `route_documents` 判定並明說（見下一條）。
+    """
     d = pathlib.Path(tempfile.mkdtemp())
-    for files in ([("x.docx", b"1")], [("x.pdf", b"0" * (MAX_BYTES + 1))]):
-        try:
-            save_upload(files, uploads_dir=d)
-        except ValueError:
-            pass
-        else:
-            raise AssertionError(f"{files[0][0]} 必須被拒絕")
+    try:
+        save_upload([("x.pdf", b"0" * (MAX_BYTES + 1))], uploads_dir=d)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("超過大小上限必須被拒絕")
+
+    for name in ("x.docx", "x.png", "x.doc", "x.weird", "x"):
+        meta = save_upload([(name, b"1")], uploads_dir=d)
+        assert_true(meta["case_id"].startswith("upload-"), f"{name} 不該被副檔名擋下")
+
+
+def test_unreadable_formats_are_reported_not_silently_dropped():
+    """**收下不等於讀得到，但一定要說出來是哪一種。**
+
+    舊版 `route_documents` 只認 .txt/.pdf，其他副檔名直接 `continue`——於是
+    上傳回 201、執行成功，而那份卷證從頭到尾沒被讀過、`documents` 是空的。
+    上傳白名單一拿掉，那個靜默跳過就會變成主要失敗模式，所以這條要釘死。
+    """
+    d = pathlib.Path(tempfile.mkdtemp())
+    (d / "掃描件.png").write_bytes(b"\x89PNG fake")
+    (d / "舊檔.doc").write_bytes(b"\xd0\xcf legacy")
+    (d / "說明.txt").write_text("訴願人：王大明", encoding="utf-8")
+
+    docs = {doc.n: doc for doc in route_documents(d)}
+    assert_eq(len(docs), 3, "三份都要出現在 documents，不得靜默消失")
+    assert_eq(docs["說明.txt"].kind, "txt")
+
+    for name in ("掃描件.png", "舊檔.doc"):
+        assert_eq(docs[name].kind, "unreadable", f"{name} 必須標成讀不到")
+        assert_eq(docs[name].text, "", "讀不到就不得有內容")
+        assert_true(docs[name].notes, f"{name} 必須說明為什麼讀不到")
+    assert_in("OCR", docs["掃描件.png"].notes[0])
+    assert_in(".docx", docs["舊檔.doc"].notes[0])
+
+
+def test_docx_is_extracted_with_stdlib_only():
+    """.docx 就是一個 zip，正文在 word/document.xml——用標準庫解，零新依賴。"""
+    d = pathlib.Path(tempfile.mkdtemp())
+    doc_xml = (
+        '<?xml version="1.0"?><w:document xmlns:w="x"><w:body>'
+        "<w:p><w:r><w:t>訴願人：王大明</w:t></w:r></w:p>"
+        "<w:p><w:r><w:t>原處分機關：新北市環保局</w:t></w:r></w:p>"
+        "</w:body></w:document>"
+    )
+    with zipfile.ZipFile(d / "訴願書.docx", "w") as z:
+        z.writestr("word/document.xml", doc_xml)
+    docs = {doc.n: doc for doc in route_documents(d)}
+    got = docs["訴願書.docx"]
+    assert_eq(got.kind, "docx_text")
+    assert_in("王大明", got.text)
+    assert_in("新北市環保局", got.text)
+    assert_true(got.cjk_ratio > 0.5, "中文比例要算得出來")
+
+    # 壞掉的 docx 不得偽裝成讀到了
+    (d / "壞掉.docx").write_bytes(b"not a zip")
+    bad = {doc.n: doc for doc in route_documents(d)}["壞掉.docx"]
+    assert_eq(bad.kind, "unreadable")
+    assert_true(bad.notes)
 
 
 def test_load_case_dispatches_on_prefix():

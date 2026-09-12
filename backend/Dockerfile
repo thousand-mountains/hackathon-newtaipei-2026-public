@@ -23,6 +23,16 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
+# ── poppler-utils（提供 pdftotext）────────────────────────────────
+# **不是 optional。** `backend/intake/documents.py` 用 `pdftotext -layout` 抽 PDF 文字層；
+# 找不到它時每一份 PDF 都退到 `pdf_visual`（整份餵模型看圖說話）——慢、貴、且準確度低。
+# 2026-09-12 線上實測缺這個套件，症狀是每份上傳 PDF 都出現
+# 「文字抽取不可用：pdftotext 不在 PATH」，而合成測資的卷證其實**都有文字層**。
+# 失敗方式是靜默降級不是報錯，所以裝上去之後 `/api/health` 也加了一項檢查。
+RUN apt-get update \
+    && apt-get install --no-install-recommends -y poppler-utils \
+    && rm -rf /var/lib/apt/lists/*
+
 # 先裝相依再複製程式碼，讓 layer cache 在改程式時仍然有效
 COPY backend/requirements.txt /app/backend/requirements.txt
 RUN pip install --no-cache-dir -r /app/backend/requirements.txt

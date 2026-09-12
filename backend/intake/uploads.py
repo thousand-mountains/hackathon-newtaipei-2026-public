@@ -15,7 +15,10 @@ from backend.config.settings import OUTPUT_DIR
 from backend.intake.documents import route_documents
 
 UPLOADS_DIR = OUTPUT_DIR / "uploads"
-ALLOWED_SUFFIXES = (".pdf", ".txt")
+#: **不再以副檔名擋上傳**（2026-09-12 Ci 拍板：不限制 input 格式）。
+#: 讀不讀得到由 `intake/documents.route_documents` 決定，讀不到會產出
+#: kind="unreadable" 並在 notes 說明——**收下不等於讀得到，但一定要說出來是哪一種**。
+#: 大小上限保留：它擋的是資源耗盡，不是格式偏好。
 MAX_BYTES = 20 * 1024 * 1024
 _SAFE = re.compile(r"[^\w.\-（）()]+")
 
@@ -45,8 +48,6 @@ def save_upload(files: list[tuple[str, bytes]], uploads_dir: pathlib.Path | None
     h = hashlib.sha256()
     seen: set[str] = set()
     for name, data in files:
-        if pathlib.Path(name).suffix.lower() not in ALLOWED_SUFFIXES:
-            raise ValueError(f"只接受 {ALLOWED_SUFFIXES}，實得 {name!r}")
         if len(data) > MAX_BYTES:
             raise ValueError(f"{name!r} 超過 {MAX_BYTES} bytes")
         # 清過的檔名撞在一起時**先擋下來**：兩份都寫進同一個路徑的話，磁碟上只會剩後者，

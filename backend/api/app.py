@@ -39,6 +39,7 @@ import datetime as dt
 import json
 import pathlib
 import re
+import shutil
 import sys
 import uuid
 from typing import Any
@@ -89,6 +90,25 @@ FRONTEND_ASSETS = FRONTEND_DIST / "assets"
 
 #: index.html 裡形如 src="/assets/x.js" / href="/assets/x.css" 的絕對路徑引用。
 _ASSET_REF_RE = re.compile(r'(?:src|href)="(/assets/[^"]+)"')
+
+
+def _pdftotext_check() -> dict[str, Any]:
+    """pdftotext 在不在 PATH。**缺它不會報錯，只會靜默降級**——每份 PDF 都改走
+    視覺讀取，慢、貴、準確度低，而畫面上看不出差別。所以要在健檢講出來。
+
+    非 blocking：沒有它系統仍能運作（走 pdf_visual），只是品質下降。
+    """
+    exe = shutil.which("pdftotext")
+    return {
+        "name": "pdftotext",
+        "ok": bool(exe),
+        "detail": (
+            f"{exe}（PDF 走文字層抽取）" if exe else
+            "不在 PATH——**每份上傳 PDF 都會退到視覺讀取**（慢、貴、準確度低）。"
+            "映像檔請裝 poppler-utils。"
+        ),
+        "blocking": False,
+    }
 
 
 def _frontend_check() -> dict[str, Any]:
@@ -223,6 +243,7 @@ def _health_checks() -> list[dict]:
     # 逐一對到實體檔案。擋不了「檔案被手改」，但擋得住「建置產物不完整就部署」，
     # 而後者才是會讓人打開網址看到空白畫面的那一種。
     checks.append(_frontend_check())
+    checks.append(_pdftotext_check())
 
     # 4. live 檔位真的跑得起來嗎：缺環境變數、或缺第三方套件，都要在這裡就說出來。
     #    套件檢查不能省——`missing_live_settings()` 只看環境變數，設定齊全但沒裝
@@ -499,7 +520,32 @@ def submit_case(case_id: str, body: RunIn | None = None) -> JSONResponse:
         "intake_confirmed": payload["intake_confirmed"],
     }
     if not payload["submit_allowed"]:
-        return JSONResponse({**common, "accepted": False}, status_code=409)
+        # **拒絕一定要說得出為什麼。** 流程若停在 N1（NEEDS_INPUT），守門節點根本沒跑到，
+        # `blockers` 會是空的——於是前端收到一個 409 卻拿不到任何理由，畫面只能顯示
+        # 「被擋」。2026-09-12 實測：上傳一份沒有文字層的 PDF 就會走到這裡。
+        # 理由其實一直存在於 `run_meta.degraded`，只是沒有被翻成 blocker。
+        blockers = list(payload["blockers"])
+        if not blockers:
+            reasons = [
+                d.get("reason") or "" for d in (payload.get("run_meta") or {}).get("degraded", [])
+            ]
+            blockers = [{
+                "level": "P0",
+                "code": "run_incomplete",
+                "node": "n1",
+                "why": (
+                    f"本次執行停在 {payload.get('state')}，六節點沒有全部跑完，"
+                    "因此沒有可供送出的完整結果。"
+                    + ("　原因：" + "；".join(r for r in reasons if r) if any(reasons) else "")
+                ),
+                "how_to_clear": (
+                    "請在收文欄位確認面板補齊必填欄位後按「我已核對」重跑。"
+                    "若卷證是掃描件或無文字層的 PDF，抽取器讀不到內容，欄位需要人工輸入。"
+                ),
+            }]
+        return JSONResponse(
+            {**common, "blockers": blockers, "accepted": False}, status_code=409
+        )
 
     receipt = {
         **common,
