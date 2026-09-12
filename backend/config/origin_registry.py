@@ -102,6 +102,14 @@ ORIGIN = {
     "laws[].gate_note": "rule",     # 這張卡為什麼是這個狀態
     "laws[].gate_ref_key": "rule",  # 跨模組比對用的穩定鍵（法規名｜條號）
     "cases[]": "retrieval",
+    # N5 `retrieve_refs` 工具當次撈到的函釋／判解。origin 是 retrieval 而不是 llm——
+    # 這些是檢索器回來的文件，模型只是在句子裡引用它們的編號，沒有生成它們的內容。
+    # 2026-09-12 補上輸出：在那之前這些依據完全沒進 payload，草稿引用了 R2、
+    # 畫面上卻查不到出處（CONSTITUTION §2 引用必可驗）。
+    "refs[]": "retrieval",
+    # 工具問了什麼、撈到哪些 id。外顯它是為了讓「依法務部歷次函釋意旨」這種句子
+    # 有跡可循——承辦人看得到那是哪一次檢索的結果，不必只能相信它。
+    "ref_tool_calls[]": "retrieval",
     "issues[]": "rule",  # N3 事實認定爭點偵測
     "issues[].lamp": "rule",
     "issues[].tag": "rule",

@@ -19,6 +19,7 @@ provider 是 bedrock」才真驗，其餘一律標「未驗」而**不是**失�
 from __future__ import annotations
 
 import argparse
+import ast
 import json
 import pathlib
 import sys
@@ -36,7 +37,7 @@ FIXTURE_PATH = "backend/data/synthetic/synthetic-ordinary-01.json"
 DEFAULT_TIMEOUT = 600.0
 
 # AC 名稱集中放，⏸ 與 ✅／❌ 兩條路徑印出來的列名才不會漂掉
-AC4 = "AC4 N1 live：12 欄 origin=llm、conf 0–1、model_id 非空"
+AC4 = "AC4 N1 live：欄位數對齊 schema、origin=llm、conf 0–1、model_id 非空"
 AC5 = "AC5 N5 live：每句 cite_ids ⊆ N4 ∪ 工具命中"
 AC6 = "AC6 C 型封鎖成立（requires_human_conclusion／無 llm 結論／submit_allowed=false）"
 AC7 = "AC7 KB recall：cases ≥ 3 且同案型 ≥ 3"
@@ -215,19 +216,71 @@ def detail_of(body: dict | str) -> str:
     return str(body)[:300]
 
 
+CONFIRMABLE = ("d2", "d3", "service_method", "transit_days", "interested_party", "note")
+
+
+def run_full(base: str, case: str, timeout: float):
+    """跑完整六節點，回 `(code, 第一次的 payload, 完整那次的 payload, 兩次的事件合起來)`。
+
+    送空 body 時，流程跑完 N1 就停在 `NEEDS_INPUT` 等人確認收文欄位
+    （commit 31b3486 引入的**正確行為**）。所以「一次 POST 驗六節點」這個假設
+    在這個系統上已經不成立——照舊寫法量到的是「N2–N6 沒跑」，不是「跑錯」。
+
+    2026-09-12 踩到的具體代價：AC7 報 `cases=0` 被讀成檢索壞掉（實際是 N4 沒執行），
+    而 AC5 因此**假通過**——沒有任何句子，「越界引用：無」當然成立。
+    一條永遠綠的驗收比紅的更危險，它讓人以為那裡被守著。
+
+    確認的值直接取 N1 抽出來的，等同承辦人「看過沒問題就按確認」；
+    要驗的是流程能不能跑完，不是承辦人會不會改值。
+    """
+    code, p0, ev0 = safe_run(base, case, timeout=timeout)
+    if code != 200 or not isinstance(p0, dict) or p0.get("state") != "NEEDS_INPUT":
+        return code, p0, p0, ev0          # fixture 檔位一次跑完，沒有停等這一步
+    confirmed = {k: p0["intake"][k] for k in CONFIRMABLE if k in p0.get("intake", {})}
+    code2, p2, ev2 = safe_run(
+        base, case,
+        {"base_run_id": p0["run_id"], "from_node": "n2", "confirmed_intake": confirmed},
+        timeout)
+    return code2, p0, p2, (ev0 or []) + (ev2 or [])
+
+
+def expected_intake_fields() -> int:
+    """N1 該回幾個欄位——**問 schema，不寫死數字**。
+
+    寫死會過時而且過時得很安靜：`INTAKE_FIELDS` 因為 §77-3 當事人適格加了
+    `interested_party`／`respondent_name` 之後，這裡還釘著 12，AC4 就變成紅的，
+    而系統其實完全正確（2026-09-12 實測：產出的 13 個欄位與 schema 逐一相符）。
+    **一條會因為別處正常演進而變紅的驗收，比沒有這條更糟**——它會讓人去改沒壞的東西。
+
+    用 ast 解析而不是 import：本腳本刻意只靠 stdlib（`backend.llm.schemas` 要 pydantic，
+    而驗收要能在任何一台機器上對著跑起來的服務執行，不該綁開發環境的套件）。
+    """
+    src = (pathlib.Path(__file__).resolve().parents[1] / "backend/llm/schemas.py").read_text(encoding="utf-8")
+    for node in ast.walk(ast.parse(src)):
+        if isinstance(node, ast.Assign) and any(
+                getattr(t, "id", None) == "INTAKE_FIELDS" for t in node.targets):
+            return len(node.value.elts)
+    raise RuntimeError("在 backend/llm/schemas.py 找不到 INTAKE_FIELDS")
+
+
 def check_ac4(p: dict) -> tuple[bool, str]:
     fields = [k for k in p["intake"] if k not in ("auto_fields", "auto_toast")]
     all_llm = all(p["intake_origin"].get(k) == "llm" for k in fields)
     conf_ok = bool(p["intake_conf"]) and all(0 <= v <= 1 for v in p["intake_conf"].values())
     model_ok = bool((p["run_meta"].get("model_ids") or {}).get("extract"))
-    ok = all_llm and conf_ok and model_ok and len(fields) == 12
-    return ok, f"欄位數={len(fields)}、全 llm={all_llm}、conf 皆 0–1={conf_ok}、extract model_id 非空={model_ok}"
+    want = expected_intake_fields()
+    ok = all_llm and conf_ok and model_ok and len(fields) == want
+    return ok, f"欄位數={len(fields)}/{want}、全 llm={all_llm}、conf 皆 0–1={conf_ok}、extract model_id 非空={model_ok}"
 
 
 def check_ac5(p: dict) -> tuple[bool, str]:
     allowed = (
         {law["id"] for law in p["laws"]}
         | {c["id"] for c in p["cases"]}
+        # 工具命中的來源：payload 頂層的 `refs`（2026-09-12 才補上輸出；
+        # 在那之前 build_payload 沒有輸出 draft，這條 AC 只要 N5 引用 R* 就必紅）。
+        # 舊 payload 的 `draft.refs` 一併接受，讓這支腳本對得起兩種版本。
+        | {r["id"] for r in (p.get("refs") or [])}
         | {r["id"] for r in ((p.get("draft") or {}).get("refs") or [])}
     )
     bad = [
@@ -361,7 +414,7 @@ def main() -> int:
         ),
     )
 
-    code, p, ev = safe_run(base, "synthetic-ordinary-01", timeout=a.timeout)
+    code, p0, p, ev = run_full(base, "synthetic-ordinary-01", a.timeout)
     ok_main = code == 200 and isinstance(p, dict)
     mode = p["run_meta"]["run_mode"] if ok_main else "unknown"
     # 需要真模型的 AC 得同時看 provider：`run_mode=bedrock` 只說明走了 live 程式路徑，
@@ -378,6 +431,8 @@ def main() -> int:
         local_ac(
             AC10,
             lambda: (
+                # 兩次執行加起來要涵蓋六個節點：第一次 N1（1 對），確認後 N2–N6（5 對）。
+                # 停等收文是正確行為，所以「一次 POST 六對」這個舊斷言已經不適用。
                 ev.count("node_start") == 6 and ev.count("node_done") == 6 and ev[-1] == "run_done",
                 " → ".join(ev),
             ),
@@ -395,14 +450,18 @@ def main() -> int:
         print("\n".join(OUT))
         return 1
 
-    live_ac(AC4, live_mode, lambda: check_ac4(p))
+    # AC4 驗的是 N1 的產出，要看**N1 真的跑過的那一次**；續跑那次 n1 沒執行，
+    # 它的 intake_origin 是 human、run_meta 也沒有 extract 的 model_id。
+    live_ac(AC4, live_mode, lambda: check_ac4(p0 if isinstance(p0, dict) else p))
     live_ac(AC5, live_mode, lambda: check_ac5(p))
     live_ac(AC7, live_mode, lambda: check_ac7(p))
     local_ac(AC8, lambda: check_ac8(base, p, a.timeout))
-    local_ac(AC9, lambda: check_ac9(base, p, a.timeout))
+    # AC9 驗的是「確認後從 n2 續跑」，base 要用**第一次那個停在 NEEDS_INPUT 的 run**，
+    # 不是已經續跑完的 p——拿 p 當 base 等於在驗「續跑的續跑」，不是這條 AC 的對象。
+    local_ac(AC9, lambda: check_ac9(base, p0 if isinstance(p0, dict) else p, a.timeout))
     local_ac(AC8B, lambda: check_ac8b(base, "synthetic-ordinary-01"))
 
-    code_b, pb, _ = safe_run(base, "synthetic-blocked-01", timeout=a.timeout)
+    code_b, _pb0, pb, _ = run_full(base, "synthetic-blocked-01", a.timeout)
     local_ac(AC6, lambda: check_ac6(code_b, pb))
 
     # AC15：上傳合成訴願書 txt → 抽取結果與該案 fixture 一致
@@ -413,7 +472,9 @@ def main() -> int:
         check(AC15, False, f"上傳建案失敗：HTTP {code_c} {detail_of(created)}")
     else:
         cid = created["case_id"]
-        code_u, pu, _ = safe_run(base, cid, timeout=a.timeout)
+        # 上傳案同樣會停在 NEEDS_INPUT——AC15 要比的是 N1 抽取與 N2 案型，
+        # N2 沒跑的話 `classification` 是空 dict，檢查時就炸 KeyError: 'class'。
+        code_u, _pu0, pu, _ = run_full(base, cid, a.timeout)
         if mode != "bedrock":  # fixture／local：上傳案根本跑不起來
             # 上傳案沒有可重播的 fixture，fixture 檔位會擋下來（graph.py:221）。
             # 這代表「機制正確、live 未驗」，不是失敗。
