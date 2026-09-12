@@ -2,7 +2,7 @@
 import { ref, reactive, computed, watch, onMounted } from 'vue'
 import {
   state, active, boot, toast, runTool,
-  availableEvidence, attachToPending, uploadToFolder,
+  attachToPending, uploadToFolder, humanSize, MAX_UPLOAD_BYTES,
   searchHave, searchLibrary, addSearched, deleteCase, deleteFolder,
   viewLawFull, viewDecisionFull, viewArtifactFull,
 } from './store/app.js'
@@ -43,8 +43,10 @@ function closeSheet() {
 
 // prompt / rename
 const promptVal = ref('')
-// pick (attach/upload)
-const pickState = reactive({ items: [], checked: [] })
+// pick (attach/upload)：使用者從本機選的真 File 物件
+const pickState = reactive({ files: [] })
+const pickable = computed(() => pickState.files.filter((f) => f.size <= MAX_UPLOAD_BYTES))
+const oversized = computed(() => pickState.files.filter((f) => f.size > MAX_UPLOAD_BYTES))
 // search
 const searchState = reactive({ q: '', results: [], searching: false, checked: [], have: null, group: null })
 let searchDeb = null
@@ -73,14 +75,9 @@ function onSheetRequest(req) {
       confirmLabel: '刪除資料夾',
       fn: () => deleteFolder(req.folder),
     })
-  } else if (req.kind === 'attach') {
-    pickState.items = availableEvidence(true)
-    pickState.checked = pickState.items.map((_, i) => i)
-    openSheet('attach', {})
-  } else if (req.kind === 'upload') {
-    pickState.items = availableEvidence(false)
-    pickState.checked = pickState.items.map((_, i) => i)
-    openSheet('upload', {})
+  } else if (req.kind === 'attach' || req.kind === 'upload') {
+    pickState.files = []
+    openSheet(req.kind, {})
   } else if (req.kind === 'search') {
     const g = req.group || { key: req.groupKey, name: req.groupKey === 'laws' ? '相關法規' : '相關案例' }
     Object.assign(searchState, { q: '', results: [], searching: false, checked: [], have: searchHave(g.key), group: g })
@@ -107,22 +104,27 @@ function confirmOk() {
   closeSheet()
   fn && fn()
 }
-// ── attach ──
-function submitAttach() {
-  const files = pickState.checked.map((i) => pickState.items[i]).filter(Boolean)
-  attachToPending(files)
-  closeSheet()
+// ── attach / upload（真的本機檔案）──
+function onPickFiles(e) {
+  const picked = Array.from(e.target.files || [])
+  picked.forEach((f) => {
+    if (!pickState.files.some((x) => x.name === f.name && x.size === f.size)) pickState.files.push(f)
+  })
+  // 清掉 value：同一個檔案再選一次也要能觸發 change
+  e.target.value = ''
 }
-// ── upload ──
-function submitUpload() {
-  const files = pickState.checked.map((i) => pickState.items[i]).filter(Boolean)
-  uploadToFolder(files)
-  closeSheet()
+function dropPick(i) {
+  pickState.files.splice(i, 1)
 }
-function toggleCheck(i) {
-  const idx = pickState.checked.indexOf(i)
-  if (idx >= 0) pickState.checked.splice(idx, 1)
-  else pickState.checked.push(i)
+function submitPick() {
+  const files = pickable.value
+  if (!files.length) {
+    toast(oversized.value.length ? '所選檔案都超過 20 MB 上限，沒有可上傳的檔案' : '尚未選擇檔案')
+    return
+  }
+  if (sheet.kind === 'attach') attachToPending(files)
+  else uploadToFolder(files)
+  closeSheet()
 }
 // ── search ──
 function onSearchInput() {
@@ -274,36 +276,38 @@ const moveFolders = computed(() => state.folders)
     </template>
   </Sheet>
 
-  <!-- attach (附加至訊息) -->
+  <!-- attach（附加至訊息）／upload（直接入卷宗）：同一個本機檔案選擇器 -->
   <Sheet
-    v-else-if="sheet.kind === 'attach'"
-    title="選擇卷證檔案"
+    v-else-if="sheet.kind === 'attach' || sheet.kind === 'upload'"
+    :title="sheet.kind === 'attach' ? '附加卷證至訊息' : '上傳卷證檔案'"
     sub="本機檔案"
-    :actions="[{ label: '取消', fn: closeSheet }, { label: '附加至訊息', pri: true, fn: submitAttach }]"
+    :actions="[
+      { label: '取消', fn: closeSheet },
+      { label: sheet.kind === 'attach' ? '附加至訊息' : '上傳', pri: true, fn: submitPick },
+    ]"
     @close="closeSheet"
   >
-    <p><span style="color: var(--muted); font-size: 12.5px">原型展示：以下為模擬的本機卷證檔案，勾選後將附加至訊息並觸發解析卷證工具。</span></p>
-    <p v-if="!pickState.items.length"><span style="color: var(--faint); font-size: 12.5px">示範檔案皆已上傳。</span></p>
-    <label v-for="(f, i) in pickState.items" :key="i" class="pickrow">
-      <input type="checkbox" :checked="pickState.checked.includes(i)" @change="toggleCheck(i)" />
-      <span class="pt">{{ f.name }}<small>{{ f.note }}</small></span>
+    <p>
+      <span style="color: var(--muted); font-size: 12.5px">
+        選你電腦裡的檔案，原始內容會直接送到後端。不限副檔名，單檔上限 20 MB。
+        <b>收下不等於讀得到</b>：沒有文字層的掃描影像會由後端標為無法辨讀，上傳後以右側卷宗顯示的狀態為準。
+      </span>
+    </p>
+    <label class="filepick">
+      <input type="file" multiple @change="onPickFiles" />
+      <span class="fp-btn">選擇檔案⋯⋯</span>
+      <span class="fp-hint">可一次選多份，也可以分次加</span>
     </label>
-  </Sheet>
-
-  <!-- upload (直接入卷宗) -->
-  <Sheet
-    v-else-if="sheet.kind === 'upload'"
-    title="上傳卷證檔案"
-    sub="卷證檔案"
-    :actions="[{ label: '取消', fn: closeSheet }, { label: '上傳', pri: true, fn: submitUpload }]"
-    @close="closeSheet"
-  >
-    <p><span style="color: var(--muted); font-size: 12.5px">原型展示：以下為模擬的本機卷證檔案，勾選後直接上傳至卷宗。</span></p>
-    <p v-if="!pickState.items.length"><span style="color: var(--faint); font-size: 12.5px">示範檔案皆已上傳。</span></p>
-    <label v-for="(f, i) in pickState.items" :key="i" class="pickrow">
-      <input type="checkbox" :checked="pickState.checked.includes(i)" @change="toggleCheck(i)" />
-      <span class="pt">{{ f.name }}<small>{{ f.note }}</small></span>
-    </label>
+    <p v-if="!pickState.files.length"><span style="color: var(--faint); font-size: 12.5px">尚未選擇檔案。</span></p>
+    <div v-for="(f, i) in pickState.files" :key="f.name + ':' + f.size" class="pickrow" :class="{ over: f.size > MAX_UPLOAD_BYTES }">
+      <span class="pt"
+        >{{ f.name }}
+        <small
+          >{{ humanSize(f.size) }}<template v-if="f.size > MAX_UPLOAD_BYTES">．超過 20 MB 上限，不會上傳</template></small
+        ></span
+      >
+      <button class="rm" aria-label="移除" @click.prevent="dropPick(i)">×</button>
+    </div>
   </Sheet>
 
   <!-- search add -->

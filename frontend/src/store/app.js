@@ -1,7 +1,7 @@
 // 訴願智慧輔助平台 — 應用狀態與辦案流程（單例 reactive store）
 // 移植自 design/訴願智慧輔助平台.html 的命令式 JS，改為 Vue 響應式模型。
 import { reactive, computed } from 'vue'
-import { CASE_NO, EVIDENCE_POOL, TOOLS, GROUPS, ACKS } from '../data/data.js'
+import { CASE_NO, TOOLS, GROUPS, ACKS } from '../data/data.js'
 import { api } from '../api/index.js'
 import { ApiError } from '../api/http.js'
 import { scoreCaption, corpusScoreCaption } from '../api/ranker.js'
@@ -263,7 +263,9 @@ export async function refreshCase(c) {
 
 // 把彙整版的四類資源映射回 docs 結構（name/note/ext/full/_libId/_artifactId）
 function fillDocsFromServer(c, r) {
-  if (Array.isArray(r.files)) c.docs.evidence = r.files.map((f) => ({ name: f.name, note: f.note || '', ext: f.ext || '', _libId: f.id }))
+  // readable 要一路帶著：重開一個舊案時，讀不到的卷證也必須照樣標出來（契約 §4.1／§6）
+  if (Array.isArray(r.files))
+    c.docs.evidence = r.files.map((f) => ({ name: f.name, note: f.note || '', ext: f.ext || '', readable: f.readable !== false, _libId: f.id }))
   if (Array.isArray(r.laws))
     c.docs.laws = r.laws.map((l) => ({
       name: l.t,
@@ -982,7 +984,7 @@ export async function send(text) {
     const added = []
     files.forEach((f) => {
       if (!c.docs.evidence.some((x) => x.name === f.name)) {
-        addOne(c, 'evidence', { name: f.name, note: f.note, ext: f.ext })
+        addOne(c, 'evidence', { name: f.name, note: f.note, ext: f.ext, _file: f._file })
         added.push(f)
       }
     })
@@ -1023,33 +1025,60 @@ export async function send(text) {
 }
 
 // ── 附加 / 上傳 ──
-export function availableEvidence(includePending) {
-  const c = active()
-  const have = new Set(c.docs.evidence.map((x) => x.name).concat(includePending ? state.pendingFiles.map((x) => x.name) : []))
-  return EVIDENCE_POOL.filter((f) => !have.has(f.name))
+// 這一段處理的是**真的 File 物件**（來自 <input type="file">）。本機只知道檔名與大小；
+// 一份卷證讀不讀得到（`readable`）一律等後端回（契約 §4.1），前端不拿 File 的屬性去猜。
+
+//: 對齊 `backend/intake/uploads.py` 的 `MAX_BYTES`。前端擋是為了不讓人傳了 30 秒才看到 400，
+//: **權威仍在後端**——後端回的 detail 會照原文顯示，不會被這個常數蓋掉。
+export const MAX_UPLOAD_BYTES = 20 * 1024 * 1024
+
+export function humanSize(n) {
+  if (!Number.isFinite(n)) return ''
+  if (n < 1024) return `${n} bytes`
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
+  return `${(n / 1024 / 1024).toFixed(1)} MB`
+}
+function extOf(name = '') {
+  const m = /\.([a-z0-9]+)$/i.exec(name)
+  return m ? m[1].toLowerCase() : ''
+}
+// File → 畫面用的卷證項目。`_file` 帶著真的 bytes，送 multipart 時用它。
+// note 先寫本機看得到的大小並標「待後端判讀」，後端回來後由 reconcileFiles 整批換掉。
+export function fileItem(file) {
+  return { name: file.name, note: `${humanSize(file.size)}．待後端判讀`, ext: extOf(file.name), _file: file }
 }
 export function attachToPending(files) {
-  files.forEach((f) => state.pendingFiles.push(f))
+  files.forEach((f) => state.pendingFiles.push(fileItem(f)))
 }
 export function removePending(i) {
   state.pendingFiles.splice(i, 1)
 }
 export function uploadToFolder(files) {
   const c = active()
-  let n = 0
+  const have = new Set(c.docs.evidence.map((x) => x.name))
+  const dup = files.filter((f) => have.has(f.name))
+  const added = []
   files.forEach((f) => {
-    addOne(c, 'evidence', f)
-    n++
+    // 同名檔後端會回 409（清理後同名會互相覆蓋），先在這裡擋掉，訊息說得出是哪幾份。
+    // ⚠️ 這道前置檢查讓補件的 409 **從 UI 走不到**（2026-09-13 實測時想觸發，被自己攔下）。
+    // `errText` 的 409 分支沒有測試不是漏寫——要驗它得繞過這裡直接打端點。
+    // 這道檢查若被拿掉，409 的顯示路徑要補驗一次。
+    if (have.has(f.name)) return
+    have.add(f.name)
+    added.push(addOne(c, 'evidence', fileItem(f)))
   })
+  const n = added.length
+  if (dup.length) toast(`卷宗內已有同名卷證，略過 ${dup.length} 份：${dup.map((f) => f.name).join('、')}`)
   if (n) {
     c.started = true
     if (isAutoName(c.name)) c.name = '吉○實業／違反廢清法'
     // 樂觀更新：本地已加，背景同步後端（契約 #8 multipart files）。
     // mock 只是回聲；real 會真的持久化。失敗不回捲，demo 以本地為準。
-    syncUploadFiles(c, files)
+    syncUploadFiles(c, added)
   }
   flushTouched()
-  toast(n ? `已上傳 ${n} 份卷證` : '未選擇任何檔案')
+  if (n) toast(`已送出 ${n} 份卷證，等後端判讀`)
+  else if (!dup.length) toast('未選擇任何檔案')
 }
 
 // 首次上傳＝建案（契約 §1.1「上傳卷證即建案」，走 createCase multipart 拿真 id）；
@@ -1057,9 +1086,13 @@ export function uploadToFolder(files) {
 // 建案會設 c._createTask（Promise），chat/runTool 前會 await 它，確保拿到真 caseId 再打後端。
 function syncUploadFiles(c, files) {
   const task = (async () => {
+    // 送的是使用者選的那個 File，不是同名的空殼——空殼上傳會建出一個有案號、有進度、
+    // 卷證卻是 0 bytes 的案子，抽取什麼都抽不到，而失敗看起來完全像成功。
+    const real = files.map((f) => f && f._file).filter(Boolean)
+    if (!real.length) return
     try {
       const form = new FormData()
-      files.forEach((f) => form.append('files', new File([''], f.name)))
+      real.forEach((f) => form.append('files', f, f.name))
       if (!c._serverCreated) {
         // 真後端 POST /api/cases 回 {case_id, files, provenance, next}（非 {case:{...}}）。
         const r = await api.createCase(form)
@@ -1070,12 +1103,52 @@ function syncUploadFiles(c, files) {
       } else {
         await api.uploadFiles(c.caseId, form)
       }
-    } catch {
-      toast('卷證同步後端失敗，畫面仍可操作')
+      // 建案回應的 files[] 是 {n,s,x}、**沒有 readable**；補件回應只含新上傳那幾份。
+      // 兩條路徑統一再拉一次 listFiles（契約 §4.1 的 {id,name,ext,note,readable}），
+      // 畫面上的卷證狀態就只有後端這一個來源。
+      await reconcileFiles(c)
+    } catch (e) {
+      markUnsynced(files, e)
+      toast(`卷證上傳失敗：${errText(e)}`)
     }
   })()
   c._createTask = task
   return task
+}
+
+// 後端的錯誤原文（ApiError.message 已是 body.detail）。**不吞掉**——20 MB 上限、
+// 同名 409、合成案不能補件，這三種都只有後端說得出是哪一份、為什麼。
+function errText(e) {
+  const detail = (e && e.message) || ''
+  if (detail) return detail
+  return e && e.status ? `HTTP ${e.status}` : '後端無回應'
+}
+
+// 上傳失敗時不把使用者選的檔從畫面上抹掉，但要標明它**還沒進後端**，
+// 不能讓它看起來跟已經收下的卷證一樣。
+function markUnsynced(files, e) {
+  const why = errText(e)
+  files.forEach((f) => {
+    f._unsynced = why
+    f.note = `未同步到後端：${why}`
+  })
+}
+
+// 以後端的卷證清單覆蓋本地（含 readable 與讀不到的原因）。拉不回就維持現狀。
+export async function reconcileFiles(c) {
+  try {
+    const r = await api.listFiles(c.caseId)
+    if (!r || !Array.isArray(r.files)) return
+    c.docs.evidence = r.files.map((f) => ({
+      name: f.name,
+      note: f.note || '',
+      ext: f.ext || '',
+      readable: f.readable !== false,
+      _libId: f.id,
+    }))
+  } catch {
+    /* 清單拉不回來就維持現狀：上一步的成功不會因此被說成失敗 */
+  }
 }
 
 // chat/工具打後端前呼叫：若正在建案就等它完成，確保用的是真 caseId。

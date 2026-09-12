@@ -243,6 +243,7 @@ button{font:inherit;color:inherit;cursor:pointer}
 .ccard .r2{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
 .tag{font-size:11px;padding:1px 7px;border-radius:2px;background:var(--panel-2);color:var(--muted)}
 .tag.real{background:var(--acc-wash);color:var(--acc-2)}
+.tag.alert{background:var(--alert-wash);color:var(--alert)}
 .simbar{height:2px;background:var(--line-soft);border-radius:2px;margin-top:8px;overflow:hidden}
 .simbar i{display:block;height:100%;background:var(--acc-2)}
 
@@ -421,6 +422,16 @@ button{font:inherit;color:inherit;cursor:pointer}
 .pickrow input{margin-top:5px;accent-color:var(--acc-2)}
 .pickrow .pt{font-size:13px}
 .pickrow .pt small{display:block;color:var(--muted);font-size:11.5px}
+.pickrow .rm{margin-left:auto;border:0;background:none;color:var(--faint);font-size:15px;line-height:1;cursor:pointer;padding:0 2px}
+.pickrow .rm:hover{color:var(--alert)}
+.pickrow.over{border-color:var(--alert);background:var(--alert-wash)}
+.pickrow.over .pt small{color:var(--alert)}
+.filepick{display:flex;gap:10px;align-items:center;margin:2px 0 12px}
+.filepick input[type=file]{position:absolute;width:1px;height:1px;opacity:0;pointer-events:none}
+.filepick .fp-btn{display:inline-block;border:1px solid var(--line);border-radius:3px;padding:7px 14px;font-size:13px;background:var(--panel);cursor:pointer}
+.filepick:hover .fp-btn{border-color:var(--acc-2);color:var(--acc-2)}
+.filepick input[type=file]:focus-visible + .fp-btn{outline:2px solid var(--acc-2);outline-offset:2px}
+.filepick .fp-hint{color:var(--faint);font-size:11.5px}
 .field{width:100%;border:1px solid var(--line);border-radius:3px;padding:7px 10px;font:inherit;font-size:13px;background:var(--ground);color:var(--ink)}
 .field:focus{outline:none;border-color:var(--acc-2)}
 .flabel{display:block;font-size:11px;letter-spacing:.1em;color:var(--muted);font-weight:700;margin:0 0 5px}
