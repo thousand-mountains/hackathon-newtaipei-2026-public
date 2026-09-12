@@ -15,6 +15,7 @@ Managed KB 的 filter 不支援路徑比對（AppealAssist 實測），所以多
 from __future__ import annotations
 
 import dataclasses
+import difflib
 import re
 import time
 import urllib.parse
@@ -160,6 +161,113 @@ def retrieve_raw(client: Any, kb_id: str, query: str, want: int,
         _SEARCH_KEY_CACHE[kb_id] = key
         return resp
     raise last_exc  # type: ignore[misc]  兩個鍵都被拒，讓原始例外照原樣冒出去
+
+
+# 通道自檢的探針查詢。**刻意用五句涵蓋不同類別的查詢**，而不是「每個前綴配一句」：
+# 後者要求寫探針的人事先知道哪句話一定命中哪個目錄，猜錯就會把「查詢不相關」
+# 誤報成「前綴設錯」。這裡反過來——不預設任何一句該命中誰，只把五次查詢回來的
+# 目錄全部收集起來，再跟設定對照。誰都沒撈到的那句話不會害到任何人。
+CHECK_PROBES = (
+    "訴願駁回 原處分撤銷 訴願人主張",
+    "行政函釋 法規適用疑義 釋示",
+    "司法院釋字 行政法院判決 法律見解",
+    "訴願期間 送達 不受理 程序",
+    "空氣污染 廢棄物清理 裁處罰鍰",
+)
+
+
+def _top_dir(rel: str) -> str:
+    """相對路徑的第一層目錄，帶尾斜線（設定裡的前綴就是這個形狀）。"""
+    head = rel.split("/", 1)[0]
+    return f"{head}/" if head else ""
+
+
+def check_channels(client: Any, kb_id: str, *, probes: tuple[str, ...] = CHECK_PROBES,
+                   want: int = 50) -> dict[str, Any]:
+    """打幾次 KB，回報「設定要的前綴／doc_kind」與「KB 裡實際有的」對不對得上。
+
+    **為什麼需要這個**：前綴比對是後過濾，設錯一個字就整條通道回 0 筆而且不報錯
+    （`_relative_path` 的說明記了同一類問題咬過我們一次）。`DEFAULT_SIMILAR_CASE_QUOTA`
+    寫的是 `新北訴願決定書_全量/`，而第三方 corpus 的目錄叫 `新北訴願決定書_環保局全量/`
+    ——忘了設 `.env` 的人拿到的不是錯誤訊息，是安靜的「相似案：無」。
+
+    **不做斷言，只做對照。** 回傳裡不判「對／錯」，而是把兩邊的名字擺在一起、
+    並對撈不到的前綴給出最接近的實際目錄名。取樣命中不到不代表設定錯（也可能是
+    這五句查詢剛好不碰那類文件），把判斷留給看的人比替他決定有用。
+
+    `doc_kind` 分三態，因為 `_retrieve` 的防呆（篩空就退回不篩）會把兩種不同的
+    失敗壓成同一個表現——值打錯與這個 KB 根本沒有側檔，都是安靜退回舊行為：
+
+    - `no_sidecar`：取樣裡沒有任何一筆帶 `doc_kind` → 這個 KB 不能開 `REF_DOC_KINDS`
+    - `missing`：別的值有、要的值沒有 → 值打錯，或該類文件不在這個 KB
+    - `ok`：取樣裡出現過
+
+    **不掛在 N4 的每案路徑上**：每個探針一次 retrieve，1 RPS 下五次就是五秒多，
+    而相似案通道端到端已經 5.8 秒、硬上限 90 秒。這是換 corpus／換 KB 時跑一次的
+    檢查，不是每件案子都要付的成本。
+    """
+    seen_dirs: dict[str, int] = {}
+    seen_kinds: dict[str, int] = {}
+    sampled = 0
+    for i, q in enumerate(probes):
+        if i:
+            time.sleep(RETRIEVE_INTERVAL_S)
+        for r in retrieve_raw(client, kb_id, q, want).get("retrievalResults", []):
+            md = r.get("metadata") or {}
+            uri = md.get("_source_uri") or ((r.get("location") or {}).get("s3Location") or {}).get("uri", "")
+            _, rel = _relative_path(uri)
+            d = _top_dir(rel)
+            if d:
+                seen_dirs[d] = seen_dirs.get(d, 0) + 1
+            kind = md.get("doc_kind")
+            if kind:
+                seen_kinds[str(kind)] = seen_kinds.get(str(kind), 0) + 1
+            sampled += 1
+
+    quota = settings.similar_case_quota()
+    wanted: dict[str, list[str]] = {}
+    for pfx in quota:
+        wanted.setdefault(pfx, []).append("SIMILAR_CASE_QUOTA")
+    for pfx in settings.ref_prefixes():
+        wanted.setdefault(pfx, []).append("REF_PREFIXES")
+
+    prefixes = []
+    for pfx, sources in wanted.items():
+        n = sum(c for d, c in seen_dirs.items() if d == pfx or pfx.startswith(d) or d.startswith(pfx))
+        # 撈不到時給最接近的實際目錄名——打錯字的人要的是「那該填什麼」，
+        # 不是又一句「找不到」。difflib 的門檻放寬到 0.4：`新北訴願決定書_全量/`
+        # 與 `新北訴願決定書_環保局全量/` 這種只差三個字的才是我們要抓的。
+        #
+        # **但候選池要排除其他也在設定裡的前綴**（2026-09-12 實測誤報）：
+        # `REF_PREFIXES` 同時有 `行政函釋/` 與 `行政函釋_全量/`，前者在 KB A 撈不到，
+        # 若不排除就會指著後者說「疑似打錯字」——而後者明明也在設定裡、也撈得到。
+        # 那不是拼錯，是兩個不同 corpus 的不同目錄，其中一個在這個 KB 不存在。
+        # 誤報會讓人不信任這支工具，比漏報更傷。
+        pool = [d for d in seen_dirs if d not in (set(wanted) - {pfx})]
+        prefixes.append({
+            "prefix": pfx, "sources": sources, "sampled_hits": n,
+            "closest": (difflib.get_close_matches(pfx, pool, n=1, cutoff=0.4) or [None])[0]
+            if n == 0 else None,
+        })
+
+    kinds = []
+    for k in settings.ref_doc_kinds():
+        if not seen_kinds:
+            state = "no_sidecar"
+        elif k in seen_kinds:
+            state = "ok"
+        else:
+            state = "missing"
+        kinds.append({"doc_kind": k, "state": state, "sampled_hits": seen_kinds.get(k, 0),
+                      "closest": (difflib.get_close_matches(k, list(seen_kinds), n=1, cutoff=0.4)
+                                  or [None])[0] if state == "missing" else None})
+
+    return {
+        "search_key": search_key_for(kb_id), "sampled": sampled, "probes": len(probes),
+        "kb_dirs": dict(sorted(seen_dirs.items(), key=lambda x: -x[1])),
+        "kb_doc_kinds": dict(sorted(seen_kinds.items(), key=lambda x: -x[1])),
+        "prefixes": prefixes, "doc_kinds": kinds,
+    }
 
 
 def _relative_path(uri: str) -> tuple[str, str]:

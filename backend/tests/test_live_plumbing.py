@@ -2555,6 +2555,123 @@ def test_search_key_is_probed_once_then_cached():
     kb_module.reset_search_key_cache()
 
 
+class _SamplingRuntime:
+    """每次 retrieve 都回同一批結果的假 client（check_channels 只在乎路徑與 metadata）。"""
+
+    def __init__(self, results):
+        self.results = results
+        self.calls = 0
+
+    def retrieve(self, **kw):
+        self.calls += 1
+        return {"retrievalResults": self.results}
+
+
+def _sample_hit(rel, doc_kind=None):
+    md = {"_file_type": "TXT", "_source_uri": f"s3://bucket/kb/public/{rel}"}
+    if doc_kind:
+        md["doc_kind"] = doc_kind
+    return {"score": 0.9, "content": {"text": "x"},
+            "location": {"s3Location": {"uri": f"s3://bucket/kb/public/{rel}"}},
+            "metadata": md}
+
+
+def test_channel_check_names_the_real_directory_when_a_prefix_is_misspelled():
+    """自檢的**全部價值**在這裡：打錯字時要說出該填什麼，不是又一句「找不到」。
+
+    這重演的是真實情況——`DEFAULT_SIMILAR_CASE_QUOTA` 寫 `新北訴願決定書_全量/`，
+    第三方 corpus 的目錄卻叫 `新北訴願決定書_環保局全量/`。只差三個字，前綴比不中，
+    整條相似案通道靜默回 0 筆（`_relative_path` 的說明記過同一類問題）。
+    """
+    kb_module.reset_search_key_cache()
+    fake = _SamplingRuntime([_sample_hit("新北訴願決定書_環保局全量/113年/x.txt")])
+    with env(SIMILAR_CASE_QUOTA="新北訴願決定書_全量/:3", REF_PREFIXES="行政函釋/",
+             REF_DOC_KINDS=None), _no_retrieve_interval():
+        r = kb_module.check_channels(fake, "kb-typo", probes=("q",))
+    by = {p["prefix"]: p for p in r["prefixes"]}
+    assert_eq(by["新北訴願決定書_全量/"]["sampled_hits"], 0, "打錯的前綴不該撈到東西")
+    assert_eq(by["新北訴願決定書_全量/"]["closest"], "新北訴願決定書_環保局全量/",
+              "撈不到時必須指出 KB 裡最接近的目錄名——那才是使用者要填的值")
+    kb_module.reset_search_key_cache()
+
+
+def test_channel_check_does_not_cry_typo_at_another_configured_prefix():
+    """兩個 corpus 的相似目錄名同時在設定裡時，不得把其中一個報成另一個的拼錯。
+
+    2026-09-12 對 KB A 實測時真的誤報了：`REF_PREFIXES` 同時有 `行政函釋/` 與
+    `行政函釋_全量/`，前者在這個 KB 不存在，工具卻指著後者說「疑似打錯字」——
+    而後者明明也在設定裡、也撈得到。那不是拼錯，是別的 corpus 留下的設定。
+    **誤報比漏報傷**：一次錯誤指控就會讓人不再相信這支工具說的話。
+    """
+    kb_module.reset_search_key_cache()
+    fake = _SamplingRuntime([_sample_hit("行政函釋_全量/a.txt")])
+    with env(SIMILAR_CASE_QUOTA="歷史訴願決定書/:1",
+             REF_PREFIXES="行政函釋/,行政函釋_全量/", REF_DOC_KINDS=None), _no_retrieve_interval():
+        r = kb_module.check_channels(fake, "kb-two-corpora", probes=("q",))
+    by = {p["prefix"]: p for p in r["prefixes"]}
+    assert_eq(by["行政函釋/"]["sampled_hits"], 0)
+    assert_eq(by["行政函釋/"]["closest"], None,
+              "`行政函釋_全量/` 也在設定裡，不能被當成 `行政函釋/` 的正確拼法")
+    assert_eq(by["行政函釋_全量/"]["sampled_hits"], 1)
+    kb_module.reset_search_key_cache()
+
+
+def test_channel_check_reports_prefixes_that_do_match():
+    kb_module.reset_search_key_cache()
+    fake = _SamplingRuntime([
+        _sample_hit("歷史訴願決定書/113年/a.txt"),
+        _sample_hit("歷史訴願決定書/114年/b.txt"),
+        _sample_hit("行政函釋/c.txt"),
+    ])
+    with env(SIMILAR_CASE_QUOTA="歷史訴願決定書/:2", REF_PREFIXES="行政函釋/",
+             REF_DOC_KINDS=None), _no_retrieve_interval():
+        r = kb_module.check_channels(fake, "kb-ok", probes=("q",))
+    by = {p["prefix"]: p for p in r["prefixes"]}
+    assert_eq(by["歷史訴願決定書/"]["sampled_hits"], 2)
+    assert_eq(by["行政函釋/"]["sampled_hits"], 1)
+    assert_true(all(p["closest"] is None for p in r["prefixes"]),
+                "撈得到就不必提示相近名字")
+    assert_eq(by["歷史訴願決定書/"]["sources"], ["SIMILAR_CASE_QUOTA"])
+    kb_module.reset_search_key_cache()
+
+
+def test_channel_check_separates_a_wrong_doc_kind_from_a_kb_without_sidecars():
+    """`_retrieve` 的防呆（篩空就退回不篩）把這兩種失敗壓成同一個表現，這裡要分開。
+
+    值打錯的話，伺服器端過濾帶來的改善會無聲消失——沒有這個判別，
+    沒有人會發現 `REF_DOC_KINDS` 其實沒在生效。
+    """
+    kb_module.reset_search_key_cache()
+    # 有側檔，但要的值不在裡面 → 值打錯
+    fake = _SamplingRuntime([_sample_hit("行政函釋/a.txt", doc_kind="ref_letter")])
+    with env(SIMILAR_CASE_QUOTA="行政函釋/:1", REF_PREFIXES="行政函釋/",
+             REF_DOC_KINDS="ref_letters"), _no_retrieve_interval():
+        r = kb_module.check_channels(fake, "kb-typo-kind", probes=("q",))
+    assert_eq(r["doc_kinds"][0]["state"], "missing")
+    assert_eq(r["doc_kinds"][0]["closest"], "ref_letter", "要指出正確的值")
+
+    # 完全沒有側檔 → 這個 KB 不該開 REF_DOC_KINDS
+    kb_module.reset_search_key_cache()
+    fake2 = _SamplingRuntime([_sample_hit("行政函釋/a.txt")])
+    with env(SIMILAR_CASE_QUOTA="行政函釋/:1", REF_PREFIXES="行政函釋/",
+             REF_DOC_KINDS="ref_letter"), _no_retrieve_interval():
+        r2 = kb_module.check_channels(fake2, "kb-no-sidecar", probes=("q",))
+    assert_eq(r2["doc_kinds"][0]["state"], "no_sidecar",
+              "沒有任何側檔時不能報成「值打錯」——該改的是要不要開這個開關")
+    kb_module.reset_search_key_cache()
+
+
+def test_channel_check_is_not_on_the_per_case_path():
+    """自檢是換 corpus 時跑的，不是每件案子都要付的成本（1 RPS × 五句探針 ≈ 5 秒）。
+
+    守的是「有人日後把它接進 N4」——那會讓端到端多五秒，而硬上限是 90 秒。
+    """
+    n4 = pathlib.Path(__file__).resolve().parents[2] / "backend/nodes/n4_retrieval.py"
+    src = n4.read_text(encoding="utf-8")
+    assert_true("check_channels" not in src,
+                "check_channels 不得出現在 N4 的每案路徑")
+
+
 def test_non_validation_errors_are_not_swallowed_by_the_probe():
     """throttle／權限／網路問題不是「鍵用錯了」，不得被試錯邏輯吞掉改試另一個鍵。
 
