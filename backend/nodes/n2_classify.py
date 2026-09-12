@@ -59,14 +59,15 @@ def run(state: CaseState, ctx: NodeCtx, digest: str = "") -> NodeResult:
     intake = state.intake
     case_type, basis, law_hits = classify_by_rule(intake, digest)
 
-    # 交叉比對安全網：fixture 檔位下 N1 與 N2 都在重播同一份資料，
-    # 所以這道安全網是「模擬的」，不是真的在比對（architecture §4.4）。
+    # 交叉比對安全網：kNN 通道兩個檔位都沒接上（fixture 是重播同一份資料，
+    # bedrock 也沒有相似案投票來源），所以這道安全網是「模擬的」，
+    # 不是真的在比對（architecture §4.4）。note 不提檔位——這句話與 RUN_MODE 無關。
     agreement = {
         "llm_type": intake.get("type"),
         "knn_type": None,
         "match": None,
         "simulated": True,
-        "note": "離線重播檔位：kNN 通道不可用，LLM 判讀 vs kNN 投票之交叉比對未實際執行。",
+        "note": "kNN 通道不可用，LLM 判讀 vs kNN 投票之交叉比對未實際執行。",
     }
 
     degraded = case_type == UNKNOWN_TYPE

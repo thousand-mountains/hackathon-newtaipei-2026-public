@@ -94,13 +94,62 @@ def missing_live_settings(mode: str | None = None, retriever: str | None = None)
 
 
 # 常駐合成／去識別化聲明（CONSTITUTION §3、§6）
+#
+# 「執行模式」與「資料性質」是兩個**獨立**維度，分兩句講：
+#   執行模式：fixture 離線重播 ↔ bedrock 即時推論（看 RUN_MODE）
+#   資料性質：合成測資 ↔ 承辦人上傳的真實卷證（看 provenance.kind）
+# 舊版把兩件事寫成同一句寫死的 note，`RUN_MODE=bedrock` 下那句就整句失真
+# （明明即時呼叫了基礎模型卻自稱離線重播）——CONSTITUTION §1 分層誠實。
+EXECUTION_NOTES = {
+    "fixture": "本系統目前執行於 fixture（離線重播）模式，未呼叫任何基礎模型。",
+    "bedrock": "本系統目前執行於 bedrock（即時推論）模式，抽取與草稿由 Amazon Bedrock 基礎模型即時產生。",
+    "local": "本系統目前執行於 local（本機模型）模式，未呼叫 Amazon Bedrock。",
+}
+UNKNOWN_EXECUTION_NOTE = "本系統的執行模式未知（RUN_MODE={mode}），無法據實描述推論來源。"
+
+DATA_NOTES = {
+    "synthetic": "本次案例為合成測資（synthetic）：案情自公開決定書之結構反推改寫，不對應任何真實案件。",
+    "synthetic-adversarial": "本次案例為合成對抗測資（synthetic adversarial）：刻意植入錯誤以驗證守門，不對應任何真實案件。",
+    "uploaded": "本次卷證由承辦人上傳，非合成測資；內容僅存於本服務 output/ 目錄，不進 git。",
+}
+UNKNOWN_DATA_NOTE = "本次案例的資料性質未標示（kind={kind}），本系統無法判定它是合成測資或真實卷證。"
+
 PROVENANCE = {
     "kind": "synthetic",
-    "note": "本系統目前執行於 fixture（離線重播）模式，全部案例為合成測資（synthetic）。",
     "banner": "合成測資：案情自公開決定書之結構反推改寫，人名、地址、案號均為虛構，不對應任何真實案件。",
     "constitution": "分層誠實：可驗算（規則引擎，攤開算式）／有出處（檢索，標明字號）／請人工判斷（拒絕生成，只給風險提示）。",
     "dataset_scope": "引用驗證的範圍即 laws-snapshot.json 的涵蓋範圍（11 部法規、17 筆判解、2 則釋字）。標「庫外，未驗證」代表本系統無法驗證，不代表該字號不存在。",
 }
+
+
+def execution_note(mode: str | None = None) -> str:
+    m = mode or run_mode()
+    return EXECUTION_NOTES.get(m) or UNKNOWN_EXECUTION_NOTE.format(mode=m)
+
+
+def data_note(kind: str | None) -> str:
+    return DATA_NOTES.get(kind or "") or UNKNOWN_DATA_NOTE.format(kind=kind or "未標示")
+
+
+def provenance(case_provenance: dict[str, Any] | None = None, mode: str | None = None) -> dict[str, Any]:
+    """服務層聲明打底，案件層（合成案例檔／上傳案 case.json）覆蓋，再補上兩個維度的描述。
+
+    `note` 是兩句合併後的人話版本（前端 tooltip 與 CLI 讀它）；要分開取用的
+    呼叫端讀 `execution_note` / `data_note`。案件層**不得**覆蓋這三個鍵——
+    它們是依當下 RUN_MODE 算出來的，寫死在檔案裡就會再度失真。
+    """
+    merged: dict[str, Any] = {**PROVENANCE, **(case_provenance or {})}
+    for k in ("note", "execution_note", "data_note"):
+        merged.pop(k, None)
+    exec_note = execution_note(mode)
+    dat_note = data_note(merged.get("kind"))
+    caveat = merged.get("caveat")
+    merged["run_mode"] = mode or run_mode()
+    merged["execution_note"] = exec_note
+    merged["data_note"] = dat_note
+    merged["note"] = "".join(x for x in (exec_note, dat_note, caveat) if x)
+    return merged
+
 
 # 七張幕僚卡片（architecture §3.2，origin=static）
 AGENTS_NARRATIVE = {

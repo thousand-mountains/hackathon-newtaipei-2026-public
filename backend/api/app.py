@@ -62,7 +62,7 @@ import backend.llm.client as llm_client  # noqa: E402  健康檢查用：只看 
 import backend.retrieval.kb as retrieval_kb  # noqa: E402  健康檢查用：只看 boto3 在不在，不打任何 API
 from backend.api.events import BUS  # noqa: E402
 from backend.config import settings  # noqa: E402
-from backend.config.settings import PROVENANCE, load_snapshot, run_mode  # noqa: E402
+from backend.config.settings import load_snapshot, provenance, run_mode  # noqa: E402
 from backend.engine.deadline import compute  # noqa: E402
 from backend.intake.uploads import save_upload  # noqa: E402
 from backend.orchestrator.graph import (  # noqa: E402
@@ -81,7 +81,7 @@ FRONTEND_INDEX = FRONTEND_DIST / "index.html"
 
 app = FastAPI(
     title="訴願案件審理 AI 輔助（v2 六節點 + 五步動線）",
-    description="六節點 deterministic pipeline，同一個 process 也 serve 五步動線前端。目前僅支援 RUN_MODE=fixture（離線重播）。",
+    description="六節點 deterministic pipeline，同一個 process 也 serve 五步動線前端。執行檔位由 RUN_MODE 決定（fixture 離線重播／bedrock 即時推論），實際值見 GET /api/health。",
     docs_url="/api/docs",
 )
 
@@ -212,14 +212,19 @@ def health() -> JSONResponse:
         "checks": checks,
         "run_mode": mode,
         "fixture_only": mode == "fixture",
-        "kb_backend": "lawtable_only",
-        "similar_case_backend": "unavailable",
-        # 沒有呼叫任何基礎模型就不報 model id
-        "model_ids": None,
-        "model_ids_note": "fixture 檔位未呼叫任何基礎模型。",
+        "kb_backend": settings.retriever_kind(),
+        "similar_case_backend": "kb" if settings.retriever_kind() == "kb" else "unavailable",
+        # fixture 檔位沒有呼叫任何基礎模型就不報 model id；live 檔位報環境變數設定的那組，
+        # 但那是「設定值」不是「這次真的呼叫過」——逐次執行的實際值在 run_meta.model_ids。
+        "model_ids": None if mode == "fixture" else llm_client.model_ids(),
+        "model_ids_note": (
+            "fixture 檔位未呼叫任何基礎模型。"
+            if mode == "fixture"
+            else f"{mode} 檔位的設定值；某一次執行實際呼叫了哪些模型，見該 run 的 run_meta.model_ids。"
+        ),
         "cases_available": case_ids,
         "frontend_served": FRONTEND_INDEX.exists(),
-        "provenance": PROVENANCE,
+        "provenance": provenance(),
     }
     return JSONResponse(body, status_code=200 if ok else 503)
 

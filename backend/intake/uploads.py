@@ -19,9 +19,11 @@ ALLOWED_SUFFIXES = (".pdf", ".txt")
 MAX_BYTES = 20 * 1024 * 1024
 _SAFE = re.compile(r"[^\w.\-（）()]+")
 
+# `note` 由 `settings.provenance()` 依「執行模式 × 資料性質」組出來，這裡只補本類來源
+# 特有的提醒（`caveat`）——把提醒寫進 note 會再度把兩個維度黏成一句話。
 PROVENANCE_UPLOADED = {
     "kind": "uploaded",
-    "note": "本案卷證由承辦人上傳，抽取結果為模型即時產出，未經人工確認前不得用於解除結論封鎖。",
+    "caveat": "抽取結果未經人工確認前不得用於解除結論封鎖。",
     "banner": "上傳案件：卷證來自使用者上傳，內容未進 git、未離開本服務所在環境。",
 }
 

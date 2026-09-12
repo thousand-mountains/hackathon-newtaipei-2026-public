@@ -1708,3 +1708,57 @@ def test_fixture_doc_sentences_have_no_unsupported_key():
             assert_true("dropped_cite_ids" not in s, f"{s['id']} 多了 dropped_cite_ids 鍵")
             assert_eq(s["cite_ids"], [], "fixture 的手寫 cite_ids 仍不得帶進 doc[]")
     assert_true(n > 0, "前提不成立：doc[] 沒有句子")
+
+
+# ── provenance 的兩個維度：執行模式 × 資料性質（CONSTITUTION §1）──────────
+
+
+def test_provenance_note_says_live_inference_in_bedrock_mode():
+    """`RUN_MODE=bedrock` 下 note 不得自稱離線重播——那是對評審說謊。
+
+    2026-09-12 實測踩到：note 被寫死成 fixture 那句，bedrock 檔位照樣輸出。
+    """
+    prov = settings.provenance(mode="bedrock")
+    assert_true("離線重播" not in prov["note"], "bedrock 檔位的 note 不得出現「離線重播」")
+    assert_in("Bedrock", prov["note"])
+    assert_eq(prov["run_mode"], "bedrock")
+
+
+def test_provenance_note_keeps_the_synthetic_declaration_in_every_mode():
+    """執行模式換檔不得把「案例是合成測資」這半句一起換掉——兩者是獨立維度。"""
+    for mode in ("fixture", "bedrock"):
+        prov = settings.provenance(mode=mode)
+        assert_in("合成測資", prov["note"], f"{mode} 檔位漏掉合成測資聲明")
+        assert_in("合成測資", prov["data_note"], f"{mode} 檔位的 data_note 漏掉合成測資聲明")
+
+
+def test_provenance_note_reflects_fixture_replay_in_fixture_mode():
+    prov = settings.provenance(mode="fixture")
+    assert_in("離線重播", prov["note"], "fixture 檔位仍要說自己是重播")
+    assert_true("Bedrock" not in prov["note"], "fixture 檔位不得宣稱呼叫了 Bedrock")
+
+
+def test_uploaded_case_is_not_described_as_synthetic():
+    """上傳的真實卷證不是合成測資：資料性質那半句要跟著換，執行模式那半句不動。"""
+    prov = settings.provenance(up.PROVENANCE_UPLOADED, mode="bedrock")
+    assert_true(
+        prov["data_note"] != settings.DATA_NOTES["synthetic"], "上傳案不得沿用合成測資那句描述"
+    )
+    assert_in("非合成測資", prov["data_note"], "上傳案要明說自己不是合成測資")
+    assert_in("承辦人上傳", prov["data_note"])
+    assert_in("Bedrock", prov["execution_note"], "上傳案的執行模式描述不得被案件層蓋掉")
+    assert_in("人工確認", prov["note"], "上傳案特有的提醒要留在 note 裡")
+
+
+def test_case_file_cannot_freeze_a_stale_note_into_provenance():
+    """案件層寫死的 note／execution_note 一律被當下 RUN_MODE 算出來的版本取代。"""
+    prov = settings.provenance(
+        {"kind": "synthetic", "note": "本系統目前執行於 fixture（離線重播）模式。"}, mode="bedrock"
+    )
+    assert_true("離線重播" not in prov["note"], "案件層寫死的過時 note 不得覆蓋算出來的版本")
+
+
+def test_unknown_data_kind_is_not_guessed():
+    """分不出資料性質就中性描述，不得預設當成合成測資（CONSTITUTION §3 不編造）。"""
+    prov = settings.provenance({"kind": "something-else"}, mode="fixture")
+    assert_in("無法判定", prov["data_note"])

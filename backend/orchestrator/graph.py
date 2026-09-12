@@ -28,12 +28,12 @@ from backend.config.settings import (
     CONFIRMABLE_INTAKE_FIELDS,
     DEADLINE_INPUT_FIELDS,
     NODE_TO_AGENTS,
-    PROVENANCE,
     SUBSTANTIVE_TYPES,
     SYNTHETIC_DIR,
     TOKEN_NOTE,
     UNCONFIRMED_DEADLINE_INPUT_CAVEAT,
     load_snapshot,
+    provenance,
     retriever_kind,
     run_mode,
 )
@@ -231,7 +231,7 @@ def run_case(
     # `run_id` 參數是給 API 端用的：202 要先把 id 回出去，才有東西可以查進度。
     state.run_id = run_id or f"run-{case_id}-{uuid.uuid4().hex[:12]}"
     state.files = list(fixture.get("files") or [])
-    # 案件層的來源聲明（合成／上傳）。build_payload 會疊在服務層的 PROVENANCE 上，
+    # 案件層的來源聲明（合成／上傳）。build_payload 會疊在服務層的 settings.PROVENANCE 上，
     # 讓前端橫幅講的是**這一件**卷證從哪裡來，不是服務預設的那一句。
     state.provenance = dict(fixture.get("provenance") or {})
     if base_state is not None:
@@ -652,11 +652,12 @@ def build_payload(state: CaseState) -> dict[str, Any]:
         "case_id": state.case_id,
         "run_id": state.run_id,
         "state": state.state,
-        # 服務層聲明打底，案件層（合成案例檔／上傳案的 case.json）覆蓋。
+        # 服務層聲明打底，案件層（合成案例檔／上傳案的 case.json）覆蓋，
+        # note 一律由 `settings.provenance()` 依本次 run_mode 與案件 kind 重算。
         # **不是整塊換掉**：合成案例的 provenance 區塊沒有 banner／dataset_scope，
         # 整塊換會讓前端橫幅從「合成測資：……」掉回泛稱的「示範案件」——
         # 那是誠實度的倒退，不是重構。
-        "provenance": {**PROVENANCE, **(state.provenance or {})},
+        "provenance": provenance(state.provenance, mode=state.run_mode),
         "files": state.files,
         "intake": intake_view,
         "intake_conf": state.intake_conf,
