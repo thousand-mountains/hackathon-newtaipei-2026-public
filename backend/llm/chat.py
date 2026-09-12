@@ -200,6 +200,24 @@ class RefBook:
             added.append(cid)
         return added
 
+    def reset_case_refs(self) -> list[str]:
+        """把卷內編號（`L1`、`C3`…）從白名單清掉，回傳被清掉的 id。
+
+        **為什麼需要這個**（契約 v2 §0.1 第 2 點）：N4 每次執行都從 `L1`／`C1` 重編
+        （`backend/nodes/n4_retrieval.py`），而 `add_case_refs` 對既有 id 直接 `continue`。
+        同一回合裡先 `read_case("laws")`（登記了舊 run 的 `L1`）再跑一次 pipeline，
+        新 run 的 `L1` 就登記不進去——模型引新草稿的 `[L1]`，`refs[]` 卻帶出舊 run 的法條。
+        **那是誠實層被靜默打穿**：號對得上、內容是別人的。
+
+        **只清 `origin == "record"`，不清 `cN`。** `cN` 是本回合聊天檢索配的號，
+        模型可能已經在前文引用過；一起清掉會讓那些引用變成 `dropped_refs` → 無辜紅燈。
+        `self._n` 也不動——兩者是不同的命名空間，`cN` 的計數器不該因為卷內換了一批而倒退。
+        """
+        stale = [cid for cid, e in self._by_id.items() if e.get("origin") == "record"]
+        for cid in stale:
+            del self._by_id[cid]
+        return stale
+
     def whitelist(self) -> set[str]:
         """本回合配出去過的所有編號。回答裡出現、但不在這裡面的就是捏造的。"""
         return set(self._by_id)
@@ -347,12 +365,34 @@ def classify_answer(
 #: `tool` 欄位的值域與給 UI 的中文標籤（spec §4.0）。後端帶 `label`，
 #: 前端不必自己維護對照表；兩邊必須一致。
 TOOL_LABELS = {
+    "extract_case_document": "解析卷證檔案",
     "search_regulations": "查法條",
     "search_similar_decisions": "查相似訴願決定",
     "retrieve_refs": "查判解與函釋",
-    "read_case": "讀卷內",
+    "generate_decision_draft": "生成草稿",
     "refine_text": "潤稿",
+    "read_case": "讀卷內",
 }
+# 契約 v2 §3.0 的表還有第八支 `build_relation_graph`（案件關聯圖）。**這裡刻意不列**：
+# 它是獨立的新功能，計畫在 `plans/2026-09-12-relation-graph.md`，本 change 不實作。
+# 先把名字放進值域會讓前端以為它在，而 `test_every_tool_entry_point_throttles_exactly_once`
+# 也會要求它有進入點——列一個不存在的工具，兩邊都在說謊。
+
+#: pipeline 工具轉發 `tool_step` 時的節點中文標籤（契約 v2 §2.3 ③）。
+#: **後端帶 label，前端不維護對照表**——兩邊各存一份遲早會有一份走歪。
+PIPELINE_NODE_LABELS = {
+    "n1": "讀卷抽取",
+    "n2": "案件分類",
+    "n3": "程序審查",
+    "n4": "檢索法條與相似案",
+    "n5": "草稿撰寫",
+    "n6": "引用守門",
+}
+
+#: 乙案（AgentCore Runtime）容器裡沒有六節點流水線，`run_pipeline` 不會被注入。
+#: **明說「這個檔位沒有」，不要靜默失敗**（契約 v2 §0.1 末段）。
+_NO_PIPELINE = ("這個檔位沒有六節點流水線，解析卷證與生成草稿在這裡跑不了。"
+                "請告訴使用者這項功能目前不可用，不要改用推測代替。")
 
 #: `read_case` 讀得到的分區。值域固定，讓模型不能亂要一個不存在的欄位。
 CASE_SECTIONS = ("intake", "facts_excerpt", "screen", "laws", "cases")
@@ -382,7 +422,9 @@ class ChatTools:
 
     def __init__(self, case_payload: dict[str, Any], refbook: RefBook,
                  retriever: Any = None, snapshot: dict[str, Any] | None = None,
-                 emit: Any = None) -> None:
+                 emit: Any = None, *, run_pipeline: Any = None,
+                 run_id: str | None = None,
+                 case_manifest: dict[str, Any] | None = None) -> None:
         self.case_payload = case_payload or {}
         self.refbook = refbook
         self.retriever = retriever
@@ -390,17 +432,85 @@ class ChatTools:
         self._emit = emit
         self.refine_used = False
         self.tool_calls: list[dict[str, Any]] = []
+        # 六節點流水線由呼叫端注入（契約 v2 §0.1 末段）。**注入的是回傳 plain dict 的
+        # adapter，不是 `run_case` 本身**：直接注入 run_case 的話這一層雖然沒有 import
+        # 語句，卻會拿到一個 CaseState 物件並讀它的屬性——AST 測試綠、層級實質被穿。
+        #
+        # adapter 契約（由 `backend/api/chat.py` 實作，那一層允許 import orchestrator）：
+        #   run_pipeline(*, to_node=None, from_node="n1", base_run_id=None,
+        #                overrides=None, on_event=None) -> dict
+        #   回傳 {"run_id", "state", "node_timings", "cite_count",
+        #         "artifact_id", "has_draft", "sections"}
+        self.run_pipeline = run_pipeline
+        #: 本案最後一次成功的 run。extract 跑完會換成新的，generate 拿它當 base。
+        self.run_id = run_id
+        #: 本案卷宗清單（`manifest.json`，契約 v2 §4.0）。由呼叫端唯讀帶進來。
+        self.case_manifest = case_manifest or {}
+        self._call_n = 0
+        self._current_call_id: str | None = None
 
     # ── 事件 ────────────────────────────────────────────────────────
 
-    def _call(self, name: str, args: dict[str, Any]) -> None:
-        self.tool_calls.append({"tool": name, "args": args})
-        if self._emit:
-            self._emit("tool_call", {"tool": name, "args": args, "label": TOOL_LABELS[name]})
+    def _call(self, name: str, args: dict[str, Any]) -> str:
+        """開一次工具呼叫，配一個本回合內遞增的 `call_id`（契約 v2 §2.3 ②）。
 
-    def _result(self, name: str, hits: list[dict[str, Any]], note: str = "") -> None:
+        **為什麼 `tool` + `seq` 配不起來**：同一回合內同一支工具可能被呼叫兩次以上
+        （讀完爭點常會再查一次法規），前端拿不到配對鍵就只能猜哪個 result 對應哪個 call。
+        """
+        self._call_n += 1
+        self._current_call_id = f"tc-{self._call_n}"
+        self.tool_calls.append({"tool": name, "args": args, "call_id": self._current_call_id})
         if self._emit:
-            self._emit("tool_result", {"tool": name, "hits": hits, "note": note})
+            self._emit("tool_call", {"call_id": self._current_call_id, "tool": name,
+                                     "args": args, "label": TOOL_LABELS[name]})
+        return self._current_call_id
+
+    def _result(self, name: str, hits: list[dict[str, Any]], note: str = "",
+                status: str = "ok", **extra: Any) -> None:
+        """收一次工具呼叫。`status` 的三態是契約 v2 §2.3 ② 的第二項。
+
+        **`empty` 與 `failed` 一定要分得開**：檢索失敗在 `_search` 內部就被攔下轉成文字
+        回給模型，不會冒到 `error` 事件。沒有 `status`，前端看到的兩者長得一模一樣，
+        會把「查詢來源壞了」畫成「資料庫裡沒有這筆資料」。
+
+        `run_id`／`graph` 一律帶（沒有就是 `None`）：契約 §3.1 說三類工具各填自己那塊、
+        其餘為 null，前端照著寫死解構。省略鍵會讓它拿到 undefined 而不是 null。
+        """
+        if not self._emit:
+            return
+        data: dict[str, Any] = {
+            "call_id": self._current_call_id,
+            "tool": name,
+            "status": status,
+            "note": note,
+            "hits": hits,
+            "run_id": None,
+            "graph": None,
+        }
+        data.update(extra)
+        self._emit("tool_result", data)
+
+    def _step(self, node: str, status: str, elapsed_ms: int | None = None,
+              degraded: bool = False, note: str = "") -> None:
+        """轉發一則流水線節點事件成 `tool_step`（契約 v2 §2.3 ③）。
+
+        `elapsed_ms` 與 `degraded` 都是 `run_case()` 實際回報的值——**一行都沒有估**。
+        前端 mock 那版的 step 是 `await sleep(900)` 寫死的，換成這條的整個意義就在
+        「畫面上那幾行真的對應到跑過的節點」。
+        """
+        if not self._emit or not node:
+            return
+        data = {
+            "call_id": self._current_call_id,
+            "step": node,
+            "label": PIPELINE_NODE_LABELS.get(node, node),
+            "status": status,
+            "elapsed_ms": elapsed_ms,
+            "degraded": degraded,
+        }
+        if note:
+            data["note"] = note
+        self._emit("tool_step", data)
 
     # ── 檢索共用 ────────────────────────────────────────────────────
 
@@ -415,18 +525,20 @@ class ChatTools:
         self._call(name, {"query": query})
         retriever = self._retriever_for(name)
         if retriever is None:
-            self._result(name, [], _NO_RETRIEVER)
+            # 沒有可用來源是**失敗**不是查無：查無的前提是真的查過了。
+            self._result(name, [], _NO_RETRIEVER, status="failed")
             return _NO_RETRIEVER
         try:
             hits = retriever.search(query, filters=filters, top_k=5)
         except Exception as e:  # noqa: BLE001 — 檢索失敗要說出來，不得靜默回空當「查無」
             note = f"檢索失敗（{type(e).__name__}）：{e}"
-            self._result(name, [], note)
+            self._result(name, [], note, status="failed")
             # 不回「查無結果」——那會讓模型把一次失敗講成「資料庫裡沒有」。
             # 訊息本身也不寫「查無」二字：模型很容易照抄回覆裡出現過的詞。
             return f"{note}。請告訴使用者這次查詢失敗了，不要說成資料庫裡沒有這筆資料。"
         entries = self.refbook.add_all(hits)
-        self._result(name, entries, "" if entries else f"{which}查無結果。")
+        self._result(name, entries, "" if entries else f"{which}查無結果。",
+                     status="ok" if entries else "empty")
         if not entries:
             return f"{which}查無結果。請直接說查無，不要引用任何編號。"
         lines = []
@@ -460,12 +572,13 @@ class ChatTools:
         self._call("read_case", {"section": section})
         if section not in CASE_SECTIONS:
             note = f"沒有「{section}」這個分區。可讀的是：{'、'.join(CASE_SECTIONS)}。"
-            self._result("read_case", [], note)
+            # 要一個不存在的分區是呼叫本身壞了，不是「這裡沒有資料」。
+            self._result("read_case", [], note, status="failed")
             return note
         value = self.case_payload.get(section)
         if value in (None, "", [], {}):
             note = f"卷內的「{section}」是空的。"
-            self._result("read_case", [], note)
+            self._result("read_case", [], note, status="empty")
             return note
         # 卷內的 laws/cases 自帶 id（N4 編的 `L1`、`C3`），模型讀了就會引用它們。
         # 註冊進白名單，否則那些引用會被當成捏造的（或更糟：在原版的小寫樣式下
@@ -492,7 +605,7 @@ class ChatTools:
         self.refine_used = True
         self._call("refine_text", {"instruction": instruction})
         if Agent is None:
-            self._result("refine_text", [], "模型不可用")
+            self._result("refine_text", [], "模型不可用", status="failed")
             raise LLMError(_STRANDS_MISSING)
         agent = Agent(model=_load_model(model_kind="draft"),
                       system_prompt=_prompt("chat_refine"),
@@ -500,6 +613,105 @@ class ChatTools:
         out = str(agent(f"指示：{instruction}\n\n原文：\n{text}"))
         self._result("refine_text", [], "已改寫；改寫文字無出處，本則回答標為請人工判斷。")
         return out
+
+    # ── 兩支 pipeline 工具（契約 v2 §3.3／§3.5）──────────────────────
+
+    def _forward_node_event(self, kind: str, data: dict[str, Any]) -> None:
+        """`run_case()` 的 `on_event` → `tool_step`。**只轉發，不加工。**"""
+        node = str(data.get("node") or "")
+        if kind == "node_start":
+            self._step(node, "running")
+        elif kind == "node_done":
+            self._step(node, "done",
+                       elapsed_ms=data.get("elapsed_ms"),
+                       degraded=bool(data.get("degraded")))
+        elif kind == "run_failed":
+            self._step(node, "failed", note=str(data.get("error") or ""))
+
+    def _adopt_run(self, out: dict[str, Any]) -> None:
+        """把流水線跑出來的新 run 接管成「本回合之後的卷內」。
+
+        **順序是契約的一部分**（契約 v2 §0.1 第 2 點）：先把舊 run 的卷內編號從白名單
+        清掉，再換上新 run 的分區。反過來的話 `read_case` 會拿新內容去撞舊編號，
+        模型引新草稿的 `[L1]`、`refs[]` 卻帶出舊 run 的法條——號對得上、內容是別人的。
+        呼叫時機在「工具回傳之後、模型組答案之前」，所以模型看到的一定是新的那批。
+        """
+        self.refbook.reset_case_refs()
+        self.case_payload = dict(out.get("sections") or {})
+        self.run_id = out.get("run_id") or self.run_id
+
+    def _pipeline_missing(self, name: str) -> str:
+        self._result(name, [], _NO_PIPELINE, status="failed")
+        return _NO_PIPELINE
+
+    def extract_case_document(self) -> str:
+        """跑 n1–n3，把卷證解析成收文欄位、事實摘錄與程序審查。"""
+        _throttle()
+        self._call("extract_case_document", {})
+        if self.run_pipeline is None:
+            return self._pipeline_missing("extract_case_document")
+        try:
+            out = self.run_pipeline(to_node="n3", on_event=self._forward_node_event)
+        except Exception as e:  # noqa: BLE001 — 解析失敗照實說，不得回一段編出來的卷內
+            note = f"解析卷證失敗（{type(e).__name__}）：{e}"
+            self._result("extract_case_document", [], note, status="failed")
+            return f"{note}。請告訴使用者這次解析失敗了，不要編造卷內內容。"
+        self._adopt_run(out)
+        self._result("extract_case_document", [], "", status="ok",
+                     run_id=out.get("run_id"), state=out.get("state"))
+        return (f"已完成卷證解析（run {out.get('run_id')}，終態 {out.get('state')}）。"
+                f"這個 run **只跑到程序審查，沒有草稿**。"
+                f"要看內容請用 read_case 讀 intake／facts_excerpt／screen。")
+
+    def generate_decision_draft(self) -> str:
+        """跑 n4–n6，產出一份經過引用守門的決定書草稿。
+
+        三個前置條件（契約 v2 §3.5.1）擋在這裡。**後端也要擋**，不是只靠前端 disable：
+        上游檢索全空時 N5 照樣生得出草稿，但每一個引用都會被清掉並判紅——
+        產出一份通篇沒有依據的草稿，而**那個失敗看起來很像成功**。
+        """
+        _throttle()
+        self._call("generate_decision_draft", {})
+        if self.run_pipeline is None:
+            return self._pipeline_missing("generate_decision_draft")
+
+        # 前置 2：要有一次跑過程序審查的 run。**不要自己先跑 n1** ——
+        # 那會讓使用者以為草稿是憑空生出來的。
+        if not self.run_id or not self.case_payload.get("screen"):
+            note = "還沒有解析過卷證。"
+            self._result("generate_decision_draft", [], note, status="failed")
+            return f"{note}請告訴使用者要先解析卷證，不要代為執行。"
+
+        # 前置 3：要有相關法規與相關案例。來源是本案卷宗清單（manifest），
+        # 不是 N4 自己查到的東西——這條擋的正是「使用者什麼都沒挑就按生成」。
+        laws = list(self.case_manifest.get("laws") or [])
+        refs = list(self.case_manifest.get("references") or [])
+        if not laws or not refs:
+            note = "還沒有查過法規與相似案例。"
+            self._result("generate_decision_draft", [], note, status="failed")
+            return f"{note}請告訴使用者要先查法規與相似案例，不要生一份沒有依據的草稿。"
+
+        # 手動挑的法規當**查詢詞**餵回 N4（契約 v2 §3.5.2，Ci 拍板 (b)）。
+        # 這不違反 2026-09-05「N4 獨立檢索」的拍板：餵的是查詢詞不是答案，
+        # N4 查得到才會進 laws[]，查不到就是查不到。
+        terms = "；".join(str(l.get("t") or "").strip() for l in laws if l.get("t"))
+        overrides = {"n4_query": terms} if terms else None
+        try:
+            out = self.run_pipeline(from_node="n4", base_run_id=self.run_id,
+                                    overrides=overrides,
+                                    on_event=self._forward_node_event)
+        except Exception as e:  # noqa: BLE001
+            note = f"生成草稿失敗（{type(e).__name__}）：{e}"
+            self._result("generate_decision_draft", [], note, status="failed")
+            return f"{note}。請告訴使用者這次生成失敗了，不要自己寫一份草稿代替。"
+        self._adopt_run(out)
+        self._result("generate_decision_draft", [], "", status="ok",
+                     run_id=out.get("run_id"), state=out.get("state"),
+                     artifact_id=out.get("artifact_id"),
+                     cite_count=out.get("cite_count"))
+        return (f"已生成草稿（run {out.get('run_id')}，終態 {out.get('state')}，"
+                f"引用 {out.get('cite_count')} 處）。草稿全文請由承辦人在產出區檢視，"
+                f"不要在這裡整份複述。")
 
     # ── 給 Strands 的 @tool 包裝 ────────────────────────────────────
 
@@ -537,6 +749,25 @@ class ChatTools:
             return outer.retrieve_refs(query)
 
         @tool
+        def extract_case_document() -> str:
+            """解析本案卷證檔案：抽收文欄位、摘錄事實、做程序審查。
+
+            **只有卷證還沒解析過、或承辦人明確要求重新解析時才用。**
+            這一支要跑十秒以上，不要為了確認一件小事就呼叫它。
+            """
+            return outer.extract_case_document()
+
+        @tool
+        def generate_decision_draft() -> str:
+            """依卷內資料與已挑選的法規、相似案例，生成決定書草稿。
+
+            **只有承辦人明確要求生成草稿時才用。** 需要先解析過卷證、
+            並且本案卷宗裡已經有法規與相似案例；缺任一項會回失敗，
+            這時請照實告訴承辦人缺什麼，不要自己寫一份草稿代替。
+            """
+            return outer.generate_decision_draft()
+
+        @tool
         def read_case(section: str) -> str:
             """讀本案卷內資料。
 
@@ -556,13 +787,16 @@ class ChatTools:
             """
             return outer.refine_text(text, instruction)
 
-        return [search_regulations, search_similar_decisions,
-                retrieve_refs, read_case, refine_text]
+        return [extract_case_document, search_regulations, search_similar_decisions,
+                retrieve_refs, generate_decision_draft, read_case, refine_text]
 
 
 def build_chat_agent(case_payload: dict[str, Any], refbook: RefBook,
                      retriever: Any = None, snapshot: dict[str, Any] | None = None,
-                     emit: Any = None) -> tuple[Any, ChatTools]:
+                     emit: Any = None, *, run_pipeline: Any = None,
+                     run_id: str | None = None,
+                     case_manifest: dict[str, Any] | None = None,
+                     ) -> tuple[Any, ChatTools]:
     """建一個聊天 agent。回傳 `(agent, tools)`——`tools` 帶著本回合的狀態。
 
     `case_payload` 是一個**普通 dict**，由 HTTP 層（`backend/api/chat.py`）先
@@ -575,7 +809,9 @@ def build_chat_agent(case_payload: dict[str, Any], refbook: RefBook,
     """
     if Agent is None:
         raise LLMError(_STRANDS_MISSING)
-    tools = ChatTools(case_payload, refbook, retriever, snapshot, emit)
+    tools = ChatTools(case_payload, refbook, retriever, snapshot, emit,
+                      run_pipeline=run_pipeline, run_id=run_id,
+                      case_manifest=case_manifest)
     agent = Agent(
         model=_load_model(model_kind="draft"),
         system_prompt=_prompt("chat_ask"),
@@ -593,6 +829,7 @@ __all__ = [
     "CASE_SECTIONS",
     "ChatTools",
     "TOOL_LABELS",
+    "PIPELINE_NODE_LABELS",
     "build_chat_agent",
     "cited_ids",
     "classify_answer",

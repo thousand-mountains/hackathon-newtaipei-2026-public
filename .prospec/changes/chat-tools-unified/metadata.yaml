@@ -1,4 +1,4 @@
 name: "chat-tools-unified"
 created_at: "2026-09-12T15:01:31.040Z"
-status: story
+status: tasks
 description: "七支工具統一走 POST /cases/{id}/chat：gen() 改真串流、加 call_id 與 tool_result.status、ack 帶 session_id、run_case 加 to_node（不得為 n5）、pipeline 以注入 callable 包成 extract_case_document 與 generate_decision_draft 工具、on_event 轉發成 tool_step、工具跑完重置 RefBook 卷內編號。契約見 docs/handoff/2026-09-12-frontend-contract-v2.md §0.1 §2.3 §3"

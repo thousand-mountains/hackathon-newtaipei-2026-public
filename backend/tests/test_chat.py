@@ -22,6 +22,7 @@ import pathlib
 from backend.config import settings
 from backend.config.origin_registry import TIER_HUMAN, TIER_SOURCED, tier_of
 import backend.llm.chat as chat_mod
+from backend.orchestrator import chat_bridge
 from backend.llm.chat import (
     CASE_SECTIONS,
     NUMERIC_Q,
@@ -348,14 +349,55 @@ class _FakeRetriever:
         return list(self._hits)
 
 
-def _tools(monkey_throttle: list, retriever=None, snapshot=None, payload=None, events=None):
+def _tools(monkey_throttle: list, retriever=None, snapshot=None, payload=None, events=None,
+           run_pipeline=None, run_id=None, case_manifest=None, refbook=None):
     """建一組 ChatTools，並把 `_throttle` 換成計數器（真的節流會讓測試睡好幾秒）。"""
     chat_mod._throttle = lambda: monkey_throttle.append(1)
     emit = (lambda name, data: events.append((name, data))) if events is not None else None
     return chat_mod.ChatTools(
         payload if payload is not None else {"intake": {"案由": "x"}},
-        RefBook(), retriever, snapshot, emit,
+        refbook if refbook is not None else RefBook(), retriever, snapshot, emit,
+        run_pipeline=run_pipeline, run_id=run_id, case_manifest=case_manifest,
     )
+
+
+class _FakePipeline:
+    """假的 `run_pipeline` adapter：發節點事件、回一份新 run 的分區。
+
+    **回 plain dict 不回 CaseState**——那正是真 adapter 的契約
+    （`backend/api/chat.py:_pipeline_adapter`）。假貨長得跟真貨不一樣的話，
+    這些測試綠了也不代表接得上。
+    """
+
+    def __init__(self, nodes: list[str], sections: dict | None = None,
+                 state: str = "SCREENED", boom: Exception | None = None,
+                 timings: dict | None = None) -> None:
+        self._nodes = nodes
+        self._sections = sections or {}
+        self._state = state
+        self._boom = boom
+        self.timings = timings or {n: (i + 1) * 1000 for i, n in enumerate(nodes)}
+        self.calls: list[dict] = []
+
+    def __call__(self, *, to_node=None, from_node="n1", base_run_id=None,
+                 overrides=None, on_event=None):
+        self.calls.append({"to_node": to_node, "from_node": from_node,
+                           "base_run_id": base_run_id, "overrides": overrides})
+        if self._boom is not None:
+            raise self._boom
+        for n in self._nodes:
+            if on_event:
+                on_event("node_start", {"node": n})
+                on_event("node_done", {"node": n, "elapsed_ms": self.timings[n],
+                                       "degraded": n == "n4"})
+        return {"run_id": "run-new-1", "state": self._state,
+                "node_timings": dict(self.timings), "cite_count": 7,
+                "artifact_id": None, "has_draft": self._state == "VERIFIED",
+                "sections": self._sections}
+
+
+_MANIFEST_OK = {"laws": [{"id": "L1", "t": "廢棄物清理法第 2 條"}],
+                "references": [{"id": "C1", "t": "新北市政府 112 年訴字第 1 號"}]}
 
 
 def test_every_tool_entry_point_throttles_exactly_once():
@@ -373,6 +415,8 @@ def test_every_tool_entry_point_throttles_exactly_once():
     checked = set()
 
     for name, invoke in (
+        ("extract_case_document", lambda t: t.extract_case_document()),
+        ("generate_decision_draft", lambda t: t.generate_decision_draft()),
         ("search_regulations", lambda t: t.search_regulations("訴願法第 14 條")),
         ("search_similar_decisions", lambda t: t.search_similar_decisions("裁處")),
         ("retrieve_refs", lambda t: t.retrieve_refs("信賴保護")),
@@ -685,3 +729,397 @@ def test_unknown_exceptions_are_internal_not_tool():
         "_stage_of 的兜底值必須是 internal——未知失敗不得被說成查詢來源失敗"
     # botocore 的例外要判成 model（檢索例外在工具層就被攔掉，到不了這裡）
     assert "botocore" in src, "沒有把 botocore 的例外判成 model"
+
+
+# ── 契約 v2 §2.3 ②：call_id / tool_result.status / ack.session_id ──────
+
+def test_the_same_tool_called_twice_gets_two_different_pairable_call_ids():
+    """契約 v2 §2.3 ②：`tool` + `seq` 配不起來，所以要有 `call_id`。
+
+    同一回合內同一支工具被呼叫兩次是常態（讀完爭點常會再查一次法規）。
+    沒有配對鍵，前端只能猜哪個 result 對應哪個 call——**猜錯就是把 A 的結果
+    畫進 B 的工具卡**。
+    """
+    calls: list = []
+    events: list = []
+    t = _tools(calls, _FakeRetriever([_hit("kb-1", "甲")]), events=events)
+    t.search_similar_decisions("第一次")
+    t.search_similar_decisions("第二次")
+    pairs = [(n, d["call_id"]) for n, d in events]
+    assert pairs == [("tool_call", "tc-1"), ("tool_result", "tc-1"),
+                     ("tool_call", "tc-2"), ("tool_result", "tc-2")], pairs
+
+
+def test_tool_result_status_tells_empty_apart_from_failed():
+    """契約 v2 §2.3 ②：`empty` 與 `failed` 長得一模一樣的話，前端會把
+    「查詢來源壞了」畫成「資料庫裡沒有這筆資料」。這是兩句不同的話。
+    """
+    calls: list = []
+
+    ev_ok: list = []
+    _tools(calls, _FakeRetriever([_hit("kb-1", "甲")]), events=ev_ok).retrieve_refs("x")
+    assert [d["status"] for n, d in ev_ok if n == "tool_result"] == ["ok"]
+
+    ev_empty: list = []
+    _tools(calls, _FakeRetriever([]), events=ev_empty).retrieve_refs("x")
+    assert [d["status"] for n, d in ev_empty if n == "tool_result"] == ["empty"]
+
+    ev_failed: list = []
+    _tools(calls, _FakeRetriever(boom=RuntimeError("KB 連不上")),
+           events=ev_failed).retrieve_refs("x")
+    result = [d for n, d in ev_failed if n == "tool_result"][0]
+    assert result["status"] == "failed"
+    assert "失敗" in result["note"], "failed 一定要說得出原因，否則跟 empty 沒兩樣"
+
+    ev_none: list = []
+    _tools(calls, retriever=None, events=ev_none).search_similar_decisions("x")
+    assert [d["status"] for n, d in ev_none if n == "tool_result"] == ["failed"], \
+        "沒有可用來源是失敗不是查無——查無的前提是真的查過了"
+
+
+def test_read_case_status_separates_a_bad_section_from_an_empty_one():
+    """要一個不存在的分區是呼叫壞了；分區存在但沒東西才是 empty。"""
+    calls: list = []
+    ev_bad: list = []
+    _tools(calls, events=ev_bad).read_case("secret_notes")
+    assert [d["status"] for n, d in ev_bad if n == "tool_result"] == ["failed"]
+
+    ev_empty: list = []
+    _tools(calls, events=ev_empty, payload={"intake": {}}).read_case("intake")
+    assert [d["status"] for n, d in ev_empty if n == "tool_result"] == ["empty"]
+
+
+def test_tool_result_always_carries_run_id_and_graph_keys():
+    """契約 v2 §3.1：三類工具各填自己那塊、其餘為 null。
+
+    **省略鍵不等於 null**：前端照契約寫死解構，拿到 undefined 跟拿到 null 的
+    分支不一樣。檢索類工具也要帶 `run_id: null`。
+    """
+    calls: list = []
+    events: list = []
+    _tools(calls, _FakeRetriever([_hit()]), events=events).retrieve_refs("x")
+    d = [d for n, d in events if n == "tool_result"][0]
+    for key in ("call_id", "tool", "status", "note", "hits", "run_id", "graph"):
+        assert key in d, f"tool_result 少了契約共通欄位 {key}"
+    assert d["run_id"] is None and d["graph"] is None
+
+
+# ── 契約 v2 §0.1：兩支 pipeline 工具 ────────────────────────────────
+
+def test_extract_forwards_real_node_events_as_tool_steps_with_labels():
+    """`tool_step` 的來源必須是流水線真的發出來的事件。
+
+    前端 mock 那版是 `await sleep(900)` 寫死的六行字。這條釘的是「每一行都對應到
+    一個跑過的節點」，而且 `elapsed_ms` 是**節點回報的值**，不是另外估的。
+    """
+    calls: list = []
+    events: list = []
+    fake = _FakePipeline(["n1", "n2", "n3"], sections={"screen": {"x": 1}})
+    t = _tools(calls, events=events, run_pipeline=fake)
+    t.extract_case_document()
+
+    steps = [d for n, d in events if n == "tool_step"]
+    assert [(s["step"], s["status"]) for s in steps] == [
+        ("n1", "running"), ("n1", "done"),
+        ("n2", "running"), ("n2", "done"),
+        ("n3", "running"), ("n3", "done"),
+    ], steps
+    assert [s["label"] for s in steps if s["status"] == "done"] == [
+        "讀卷抽取", "案件分類", "程序審查"], "label 由後端帶，前端不維護對照表"
+    # elapsed_ms 與 node_timings 數值相同——不是另外估的
+    done_ms = {s["step"]: s["elapsed_ms"] for s in steps if s["status"] == "done"}
+    assert done_ms == {k: v for k, v in fake.timings.items() if k in done_ms}
+    # degraded 照實帶（假管線把 n4 標降級，這裡沒跑 n4，所以全 False）
+    assert all(s["degraded"] is False for s in steps if s["status"] == "done")
+    # 所有 tool_step 都掛在同一個 call_id 上，才貼得回那張工具卡
+    assert {s["call_id"] for s in steps} == {"tc-1"}
+
+
+def test_extract_runs_only_to_n3_and_reports_that_this_run_has_no_draft():
+    calls: list = []
+    events: list = []
+    fake = _FakePipeline(["n1", "n2", "n3"], sections={"screen": {"x": 1}})
+    out = _tools(calls, events=events, run_pipeline=fake).extract_case_document()
+    assert fake.calls[0]["to_node"] == "n3", "解析卷證只跑到程序審查"
+    result = [d for n, d in events if n == "tool_result"][0]
+    assert result["status"] == "ok"
+    assert result["run_id"] == "run-new-1"
+    assert result["state"] == "SCREENED"
+    assert "沒有草稿" in out, "回給模型的話要講明這個 run 沒有草稿，否則它會去描述一份不存在的草稿"
+
+
+def test_only_the_two_pipeline_tools_emit_tool_steps():
+    """契約 v2 §2.3 ③：其餘五支沒有內部階段可報，發了就是編。"""
+    calls: list = []
+    for invoke in (
+        lambda t: t.retrieve_refs("x"),
+        lambda t: t.search_similar_decisions("x"),
+        lambda t: t.read_case("intake"),
+    ):
+        events: list = []
+        invoke(_tools(calls, _FakeRetriever([_hit()]), events=events))
+        assert not [n for n, _ in events if n == "tool_step"], "這支工具不該發 tool_step"
+
+
+def test_pipeline_tools_say_the_tier_is_unavailable_instead_of_failing_silently():
+    """乙案容器裡沒有六節點流水線。**明說不可用**，不要靜默失敗成一段空回答。"""
+    calls: list = []
+    for name, invoke in (("extract_case_document", lambda t: t.extract_case_document()),
+                         ("generate_decision_draft", lambda t: t.generate_decision_draft())):
+        events: list = []
+        out = invoke(_tools(calls, events=events, run_pipeline=None))
+        result = [d for n, d in events if n == "tool_result"][0]
+        assert result["status"] == "failed", name
+        assert "不可用" in out or "跑不了" in out, out
+
+
+def test_a_pipeline_blowup_is_reported_as_failed_not_as_an_invented_answer():
+    calls: list = []
+    events: list = []
+    fake = _FakePipeline(["n1"], boom=RuntimeError("N1 炸了"))
+    out = _tools(calls, events=events, run_pipeline=fake).extract_case_document()
+    result = [d for n, d in events if n == "tool_result"][0]
+    assert result["status"] == "failed"
+    assert "N1 炸了" in result["note"]
+    assert "不要編造" in out
+
+
+# ── 契約 v2 §3.5.1：生成草稿的前置條件（後端也要擋）──────────────────
+
+def test_draft_is_refused_when_the_case_has_not_been_extracted():
+    """前置 2。**不要自己先跑 n1**——那會讓使用者以為草稿是憑空生出來的。"""
+    calls: list = []
+    events: list = []
+    fake = _FakePipeline(["n4", "n5", "n6"], state="VERIFIED")
+    t = _tools(calls, events=events, run_pipeline=fake, run_id=None,
+               case_manifest=_MANIFEST_OK)
+    out = t.generate_decision_draft()
+    assert not fake.calls, "前置沒過就不該真的去跑流水線"
+    result = [d for n, d in events if n == "tool_result"][0]
+    assert result["status"] == "failed"
+    assert "還沒有解析過卷證" in result["note"]
+    assert "先解析卷證" in out
+
+
+def test_draft_is_refused_when_no_laws_or_references_were_picked():
+    """前置 3。上游全空時 N5 照樣生得出草稿，但每一個引用都會被清掉並判紅——
+    產出一份通篇沒有依據的草稿，而**那個失敗看起來很像成功**。所以擋在生成之前。
+    """
+    calls: list = []
+    for manifest in ({}, {"laws": [{"id": "L1", "t": "x"}], "references": []},
+                     {"laws": [], "references": [{"id": "C1", "t": "y"}]}):
+        events: list = []
+        fake = _FakePipeline(["n4", "n5", "n6"], state="VERIFIED")
+        t = _tools(calls, events=events, run_pipeline=fake, run_id="run-old",
+                   payload={"screen": {"x": 1}}, case_manifest=manifest)
+        t.generate_decision_draft()
+        assert not fake.calls, f"manifest={manifest} 前置沒過卻跑了流水線"
+        result = [d for n, d in events if n == "tool_result"][0]
+        assert result["status"] == "failed"
+        assert "還沒有查過法規與相似案例" in result["note"]
+
+
+def test_draft_resumes_from_n4_and_feeds_the_picked_laws_back_as_a_query_term():
+    """契約 v2 §3.5.2：手動挑的法規當**查詢詞**餵回 N4（`overrides.n4_query`）。
+
+    `n4_query` 是單一字串不是陣列，多條法規要自己 join——傳成 list 的話
+    `RunIn` 那邊是 `extra="forbid"`，而這裡直接進 `run_case`，錯了不會當場炸，
+    只會讓查詢句變成一個 repr。
+    """
+    calls: list = []
+    events: list = []
+    fake = _FakePipeline(["n4", "n5", "n6"], state="VERIFIED",
+                         sections={"screen": {"x": 1}, "laws": []})
+    manifest = {"laws": [{"id": "L1", "t": "廢棄物清理法第 2 條"},
+                         {"id": "L2", "t": "訴願法第 14 條"}],
+                "references": [{"id": "C1", "t": "112 年訴字第 1 號"}]}
+    t = _tools(calls, events=events, run_pipeline=fake, run_id="run-old",
+               payload={"screen": {"x": 1}}, case_manifest=manifest)
+    out = t.generate_decision_draft()
+    call = fake.calls[0]
+    assert call["from_node"] == "n4" and call["to_node"] is None
+    assert call["base_run_id"] == "run-old", "要接在已解析的那個 run 上，不是重跑 n1"
+    assert call["overrides"] == {"n4_query": "廢棄物清理法第 2 條；訴願法第 14 條"}
+    result = [d for n, d in events if n == "tool_result"][0]
+    assert result["status"] == "ok"
+    assert result["state"] == "VERIFIED"
+    assert result["cite_count"] == 7, "引用數是真值，不是設計稿寫死的那個 14"
+    assert "已生成草稿" in out
+
+
+# ── 契約 v2 §0.1 第 2 點：RefBook 的卷內編號要重置 ───────────────────
+
+def test_pipeline_tools_reset_the_case_ref_numbering_so_L1_means_the_new_run():
+    """**誠實層被靜默打穿的那條路徑。**
+
+    N4 每次都從 `L1` 重編，而 `add_case_refs` 對既有 id 直接 `continue`。
+    同一回合先 `read_case("laws")` 再跑一次流水線，不重置的話新 run 的 `L1`
+    登記不進去——模型引新草稿的 `[L1]`，`refs[]` 卻帶出舊 run 的法條。
+    **號對得上、內容是別人的**，而且沒有任何一個燈會亮。
+    """
+    calls: list = []
+    old_laws = [{"id": "L1", "t": "舊 run 的法條"}]
+    new_laws = [{"id": "L1", "t": "新 run 的法條"}]
+    fake = _FakePipeline(["n1", "n2", "n3"],
+                         sections={"screen": {"x": 1}, "laws": new_laws})
+    t = _tools(calls, payload={"laws": old_laws}, run_pipeline=fake)
+
+    t.read_case("laws")
+    assert t.refbook.get("L1")["t"] == "舊 run 的法條"
+
+    t.extract_case_document()
+    t.read_case("laws")
+    assert t.refbook.get("L1")["t"] == "新 run 的法條", \
+        "跑完流水線之後 L1 還指著舊 run——誠實層被靜默打穿了"
+
+
+def test_resetting_case_refs_leaves_this_turn_s_retrieval_numbers_alone():
+    """只清 `origin == "record"`。`cN` 是本回合聊天檢索配的號，模型可能已經引用過，
+    一起清掉會讓那些引用變成 `dropped_refs` → 無辜紅燈。
+    """
+    rb = RefBook()
+    rb.add(_hit("kb-1", "甲"))
+    rb.add_case_refs([{"id": "L1", "t": "法條"}, {"id": "C3", "t": "案例"}])
+    assert sorted(rb.whitelist()) == ["C3", "L1", "c1"]
+
+    stale = rb.reset_case_refs()
+    assert sorted(stale) == ["C3", "L1"]
+    assert sorted(rb.whitelist()) == ["c1"]
+    assert rb.get("c1")["t"] == "甲"
+    # 計數器不倒退：下一筆檢索要接 c2，不是重來一次 c1
+    assert rb.add(_hit("kb-2", "乙"))["id"] == "c2"
+
+
+# ── 契約 v2 §0.1 第 3 點：gen() 必須是真串流 ────────────────────────
+#
+# `backend/api/chat.py` import fastapi，而測試路徑零外部依賴（run_all.py 有靜態掃描），
+# 所以這裡只驗得了**結構**。行為證據靠實跑：抵達時間記在
+# `.prospec/changes/chat-tools-unified/verification.md`（改動前六個事件全在 2.993s
+# 一起到，改動後 0.000／0.000／0.999／2.002／3.007／3.008）。
+
+def _gen_fn() -> ast.FunctionDef:
+    tree = ast.parse(_api_chat_src())
+    chat_fn = next(n for n in ast.walk(tree)
+                   if isinstance(n, ast.FunctionDef) and n.name == "chat")
+    return next(n for n in ast.walk(chat_fn)
+                if isinstance(n, ast.FunctionDef) and n.name == "gen")
+
+
+def test_gen_does_not_buffer_events_into_a_list_before_yielding():
+    """**這條釘的是那個 2.02 秒。**
+
+    原版 `emit` 是 `pending.append(...)`，跑完才整批 yield。只要 `emit` 的函式體裡
+    出現 `.append(`，就是又回到攢一批再送——那會讓 10–72 秒的工作變成全黑一段時間
+    再一次跳出，畫面等於假裝剛才有過程。
+
+    `emit` 必須把事件推進一個有阻塞語義的佇列（`put`），由 generator 那端取。
+    """
+    gen = _gen_fn()
+    emit = next(n for n in ast.walk(gen)
+                if isinstance(n, ast.FunctionDef) and n.name == "emit")
+    attrs = [n.func.attr for n in ast.walk(emit)
+             if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)]
+    assert "append" not in attrs, "gen() 的 emit 又在攢清單了——串流會退回整批送"
+    assert "put" in attrs, "gen() 的 emit 沒有推進佇列，generator 那端取不到東西"
+
+
+def test_gen_runs_the_turn_on_a_worker_thread_so_the_generator_can_yield_meanwhile():
+    """同步 generator 自己跑 `_run_turn` 就沒有機會 yield——必須有人代跑。"""
+    src = ast.dump(_gen_fn())
+    assert "Thread" in src, "gen() 沒有把回合丟到工作執行緒，yield 不出中間事件"
+    assert "join" in src, "沒有 join：worker 還在寫 box 的時候就讀，done/error 可能讀到空"
+
+
+def test_every_event_carries_turn_id_not_just_done():
+    """契約 v2 §2.3：`turn_id` 是**所有事件**的共通欄位。
+
+    原本只有 `done` 有，前端沒辦法把稍早的 `tool_call` 歸到同一回合；`error` 那條
+    還明著填 `None`。所以 `turn_id` 要在事件框架（`record()`）這一層注入。
+    """
+    tree = ast.parse(_api_chat_src())
+    rec = next(n for n in ast.walk(tree)
+               if isinstance(n, ast.FunctionDef) and n.name == "record")
+    keys = [k.value for n in ast.walk(rec) if isinstance(n, ast.Dict)
+            for k in n.keys if isinstance(k, ast.Constant)]
+    assert "turn_id" in keys and "seq" in keys, \
+        "record() 沒有把 turn_id 注進每一個事件"
+
+
+def test_ack_is_emitted_at_the_top_of_the_turn_with_the_session_id():
+    """契約 v2 §2.3 ② 第三項：`session_id` 提前到 `ack`。
+
+    斷在 `token` 中途就永遠拿不到 `done`，下一輪只能開新 session，前面講過的話全丟。
+    """
+    tree = ast.parse(_api_chat_src())
+    fn = next(n for n in ast.walk(tree)
+              if isinstance(n, ast.FunctionDef) and n.name == "_run_turn")
+    acks = [n for n in ast.walk(fn) if isinstance(n, ast.Call)
+            and getattr(n.func, "id", "") == "emit"
+            and n.args and isinstance(n.args[0], ast.Constant) and n.args[0].value == "ack"]
+    assert acks, "_run_turn 沒有發 ack"
+    keys = [k.value for n in ast.walk(acks[0]) if isinstance(n, ast.Dict)
+            for k in n.keys if isinstance(k, ast.Constant)]
+    assert "session_id" in keys, "ack 沒有帶 session_id，斷線就接不回來"
+
+
+def test_run_id_is_optional_and_an_empty_one_is_not_a_400():
+    """契約 v2 §2.1 ③：新案子上傳完卷證、還沒有任何 run 的時候也要能開口。"""
+    tree = ast.parse(_api_chat_src())
+    cls = next(n for n in ast.walk(tree)
+               if isinstance(n, ast.ClassDef) and n.name == "ChatIn")
+    ann = next(n for n in cls.body
+               if isinstance(n, ast.AnnAssign) and getattr(n.target, "id", "") == "run_id")
+    assert "None" in ast.unparse(ann.annotation), "run_id 仍是必填"
+    assert ann.value is not None and ast.unparse(ann.value) == "None", "run_id 沒有預設值"
+    validate = next(n for n in ast.walk(tree)
+                    if isinstance(n, ast.FunctionDef) and n.name == "_validate")
+    assert "run_id" not in ast.unparse(validate), \
+        "_validate 還在擋空 run_id——契約已改成選填"
+
+
+def test_payload_sections_match_the_chat_layer_case_sections():
+    """橋那一側的 `PAYLOAD_SECTIONS` 與聊天層的 `CASE_SECTIONS` 必須一致。
+
+    兩邊各存一份是刻意的（編排層不該依賴聊天層，方向會反），代價是可能漂。
+    漂掉的症狀：`read_case("laws")` 說「卷內的 laws 是空的」，但畫面上明明有法條。
+    """
+    assert tuple(chat_bridge.PAYLOAD_SECTIONS) == tuple(CASE_SECTIONS), \
+        "橋與聊天層的分區值域漂了，read_case 會讀不到東西"
+
+
+def test_the_pipeline_callable_injected_into_the_chat_layer_is_an_adapter_not_run_case():
+    """層級禁令的真正守法：注入的必須是**回傳 plain dict 的 adapter**。
+
+    直接把 `run_case` 注進去的話，`backend/llm/chat.py` 雖然沒有 import 語句
+    （AST 那條測試會綠），卻會拿到一個 `CaseState` 物件並讀它的屬性——
+    **層級形式上守住、實質被穿**。這條檢查 `_pipeline_adapter` 真的存在，
+    而且 `build_chat_agent` 收到的是它而不是 `run_case`。
+    """
+    tree = ast.parse(_api_chat_src())
+    imported = _imports_of(_api_chat_src())
+    assert "backend.orchestrator.chat_bridge" in imported, \
+        "api/chat.py 沒有從橋那一側取 adapter"
+    build = [n for n in ast.walk(tree) if isinstance(n, ast.Call)
+             and getattr(n.func, "id", "") == "build_chat_agent"]
+    assert build, "找不到 build_chat_agent 的呼叫"
+    injected = [kw for kw in build[0].keywords if kw.arg == "run_pipeline"]
+    assert injected, "build_chat_agent 沒有收到 run_pipeline"
+    expr = ast.unparse(injected[0].value)
+    assert expr.startswith("pipeline_adapter("), f"注入的不是 adapter，而是 {expr}"
+    # 反向：`run_case` 不得被直接注入，也不該再出現在這個檔裡
+    assert "run_case" not in _api_chat_src(), \
+        "api/chat.py 還碰得到 run_case——adapter 的意義就是讓聊天層只碰得到 dict"
+
+
+def test_load_case_payload_reports_whether_that_run_has_a_draft():
+    """契約 v2 §0.1 第 1 點：BUS 只分「跑完／還在跑／失敗」。
+
+    `to_node="n3"` 之後「跑完」有兩種意思，分不出來的後果是
+    `generate_decision_draft` 把一個沒解析過的案子當成解析過的。
+    """
+    tree = ast.parse(_api_chat_src())
+    fn = next(n for n in ast.walk(tree)
+              if isinstance(n, ast.FunctionDef) and n.name == "_load_case_payload")
+    src = ast.unparse(fn)
+    assert "final_state" in src, "_load_case_payload 沒有看 final_state"
+    assert "has_draft" in src, "_load_case_payload 沒有回報這個 run 有沒有草稿"

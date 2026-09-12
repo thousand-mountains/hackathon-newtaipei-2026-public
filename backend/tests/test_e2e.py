@@ -17,6 +17,7 @@ from backend.config.settings import (
     CONFIRMABLE_INTAKE_FIELDS,
     SYNTHETIC_DIR,
 )
+from backend.orchestrator import chat_bridge
 from backend.orchestrator.graph import build_payload, list_synthetic_cases, load_case, run_case
 from backend.tests.harness import assert_eq, assert_in, assert_true
 
@@ -512,3 +513,186 @@ def test_cli_exit_codes():
     assert_eq(cli.main(["--case", ORDINARY, "--quiet"]), 0, "正常案例 CLI 必須 exit 0")
     assert_eq(cli.main(["--case", BLOCKED, "--quiet"]), 0, "對抗案例流程本身跑完，也是 exit 0（攔下是正確行為）")
     assert_eq(cli.main(["--case", "synthetic-does-not-exist"]), 1, "找不到案例要 exit 1")
+
+
+# ── `to_node`：停在中途的部分執行（契約 v2 §0.1）──────────────────────
+
+def test_to_node_n3_stops_at_screened_and_leaves_no_draft():
+    """聊天的「解析卷證」工具只跑 n1–n3。
+
+    釘住三件事，換一個看似合理的實作就會紅：
+    - 終態是 `SCREENED`（不是 `VERIFIED`，也不是失敗）——`STATE_AFTER` 的映射本來就在，
+      這條驗的是迴圈真的有上界。
+    - **沒有草稿**。停在 n3 卻生得出草稿，代表上界沒生效。
+    - `node_timings` 只含跑過的節點：多一個 key 就是虛報一次沒發生的執行。
+    """
+    state = run_case(ORDINARY, mode="fixture", to_node="n3")
+    assert_eq(state.run_meta["final_state"], "SCREENED", "停在 n3 的終態")
+    assert_true(not state.draft, f"停在 n3 不該有草稿，實得 {state.draft!r}")
+    assert_eq(sorted(state.run_meta["node_timings"]), ["n1", "n2", "n3"], "只跑 n1–n3")
+    assert_eq(state.run_meta["to_node"], "n3", "run_meta 要記下上界")
+    # 沒跑 N5 就不該報草稿的 model id（fixture 檔位本來就全 None，這裡驗的是不虛報）
+    assert_true(state.screen, "n3 的程序審查結果要在")
+
+
+def test_to_node_n5_is_refused_because_it_would_leave_an_unguarded_draft():
+    """紅線：停在 N5 ＝ 有草稿但沒過 N6 引用守門。
+
+    `graph.py` 的既有不變量是「續跑的終態一定經過守門」。`to_node` 開了一個能繞過它的
+    口子，所以這個值必須被拒絕——**不是**靜默改跑到 n6，那會讓呼叫端以為自己要到了 n5。
+    """
+    try:
+        run_case(ORDINARY, mode="fixture", to_node="n5")
+    except ValueError as e:
+        assert_true("n5" in str(e), f"錯誤訊息要指出是 n5：{e}")
+        return
+    raise AssertionError("to_node='n5' 必須拋 ValueError")
+
+
+def test_to_node_must_be_a_real_node_and_must_not_precede_from_node():
+    """兩種壞輸入都要當場炸，不要跑出一個空的 run。"""
+    for bad in ("n7", "N3", ""):
+        try:
+            run_case(ORDINARY, mode="fixture", to_node=bad)
+        except ValueError:
+            continue
+        raise AssertionError(f"to_node={bad!r} 必須拋 ValueError")
+    probe = run_case(ORDINARY, mode="fixture", to_node="n3")
+    try:
+        run_case(ORDINARY, mode="fixture", base_state=probe, from_node="n4", to_node="n3")
+    except ValueError as e:
+        assert_true("早於" in str(e), f"要說清楚是順序問題：{e}")
+        return
+    raise AssertionError("to_node 早於 from_node 必須拋 ValueError")
+
+
+def test_default_to_node_still_runs_all_six_nodes():
+    """不傳 `to_node` 的既有行為一個字都不變（這是所有既有呼叫端的保護網）。"""
+    state = run_case(ORDINARY, mode="fixture")
+    assert_eq(sorted(state.run_meta["node_timings"]), ["n1", "n2", "n3", "n4", "n5", "n6"],
+              "預設仍跑滿六節點")
+    assert_eq(state.run_meta["to_node"], "n6", "預設上界是 n6")
+
+
+def test_resume_from_n4_after_a_screened_run_reaches_verified_without_rerunning_n1_n3():
+    """聊天的「生成草稿」工具：接著 SCREENED 的 run 續跑 n4–n6。
+
+    這條同時驗「部分執行的 run 可以當 base_state 續跑」——若 `to_node` 讓 run 少了
+    某個續跑必需的上游欄位，這裡會炸。
+    """
+    base = run_case(ORDINARY, mode="fixture", to_node="n3")
+    state = run_case(ORDINARY, mode="fixture", base_state=base, from_node="n4")
+    assert_eq(state.run_meta["final_state"], "VERIFIED", "續跑要跑到守門")
+    assert_eq(sorted(state.run_meta["node_timings"]), ["n4", "n5", "n6"], "不得重跑 n1–n3")
+    assert_eq(state.run_meta["base_run_id"], base.run_id, "要指得回上一次")
+
+
+def test_node_done_events_carry_the_same_elapsed_ms_as_run_meta_node_timings():
+    """契約 v2 §2.3 ③：`tool_step.elapsed_ms` 是**真值，不是另外估的**。
+
+    聊天的 pipeline 工具只是把 `node_done` 原樣轉成 `tool_step`，所以「沒有另外估」
+    這件事真正要釘在**事件來源**這一層：`node_done.elapsed_ms` 必須就是
+    `run_meta.node_timings[node]` 那個數字。
+
+    兩邊各自算一次也會「看起來對」（同一次執行的時間本來就接近），差別在
+    `time.perf_counter()` 呼叫的位置不同會差幾毫秒——那種不一致沒有症狀，
+    只會讓畫面上的秒數跟紀錄裡的秒數對不起來，沒有人查得出為什麼。
+    """
+    seen: dict[str, int] = {}
+
+    def on_event(kind: str, data: dict) -> None:
+        if kind == "node_done":
+            seen[data["node"]] = data["elapsed_ms"]
+
+    state = run_case(ORDINARY, mode="fixture", on_event=on_event)
+    assert_eq(seen, state.run_meta["node_timings"],
+              "node_done 的 elapsed_ms 與 run_meta.node_timings 必須是同一個值")
+
+
+def test_node_done_events_report_degradation_from_the_node_not_from_a_guess():
+    """`degraded` 同理：轉發的那一層不判斷、只轉發，所以真值在這裡釘。"""
+    reported: dict[str, bool] = {}
+
+    def on_event(kind: str, data: dict) -> None:
+        if kind == "node_done":
+            reported[data["node"]] = bool(data["degraded"])
+
+    state = run_case(ORDINARY, mode="fixture", on_event=on_event)
+    from_meta = {d["node"] for d in state.run_meta["degraded"]}
+    assert_eq({n for n, v in reported.items() if v}, from_meta,
+              "事件說降級的節點，要跟 run_meta.degraded 記的是同一批")
+
+
+# ── 聊天層與六節點的橋（`backend/orchestrator/chat_bridge.py`）────────
+#
+# 這一段跑的是**真的 adapter 配真的 run_case**（fixture 檔位）。
+# adapter 原本寫在 `backend/api/chat.py` 裡，那個檔頂層 import fastapi，
+# 於是這段 `CaseState` → dict 的轉換一行都跑不到——而它正是 Epic C 要接的東西。
+
+def test_the_bridge_hands_the_chat_layer_a_plain_dict_with_no_orchestrator_types():
+    """橋的存在理由：聊天層從頭到尾只碰得到 dict。
+
+    直接注入 `run_case` 的話，聊天層沒有 import 語句（AST 檢查會綠），
+    卻會拿到一個 `CaseState` 並讀它的屬性——**層級形式上守住、實質被穿**。
+    """
+    run_pipeline = chat_bridge.pipeline_adapter(ORDINARY, mode="fixture")
+    out = run_pipeline(to_node="n3")
+    assert_eq(sorted(out), ["artifact_id", "cite_count", "has_draft", "node_timings",
+                            "run_id", "sections", "state"], "橋的回傳形狀")
+    for v in out.values():
+        assert_true(v is None or isinstance(v, (str, int, bool, dict, list)),
+                    f"橋回了一個非 plain 型別：{type(v)}")
+    assert_eq(sorted(out["sections"]), sorted(chat_bridge.PAYLOAD_SECTIONS), "分區值域")
+
+
+def test_the_bridge_reproduces_the_two_chat_tools_end_to_end():
+    """解析卷證 → 生成草稿，兩支工具背後真正會發生的事。
+
+    釘的是**驗收條件本身**：解析跑完 `SCREENED` 且該 run 沒有草稿；
+    接著續跑之後 `VERIFIED`，而且沒有重跑 n1–n3。
+    """
+    run_pipeline = chat_bridge.pipeline_adapter(ORDINARY, mode="fixture")
+
+    extracted = run_pipeline(to_node="n3")
+    assert_eq(extracted["state"], "SCREENED", "解析卷證停在程序審查")
+    assert_true(not extracted["has_draft"], "這個 run 不該有草稿")
+    assert_eq(sorted(extracted["node_timings"]), ["n1", "n2", "n3"], "只跑 n1–n3")
+
+    drafted = run_pipeline(from_node="n4", base_run_id=extracted["run_id"],
+                           overrides={"n4_query": "廢棄物清理法第 2 條"})
+    assert_eq(drafted["state"], "VERIFIED", "生成草稿要跑到守門")
+    assert_true(drafted["has_draft"], "續跑之後要有草稿")
+    assert_eq(sorted(drafted["node_timings"]), ["n4", "n5", "n6"], "不得重跑 n1–n3")
+    assert_true(drafted["run_id"] != extracted["run_id"], "續跑是一次新的執行")
+    assert_true(drafted["cite_count"] > 0, "引用數是從 payload 數的真值")
+
+
+def test_the_bridge_refuses_to_stop_at_n5_just_like_run_case_does():
+    """紅線要在橋這一層也穿得過去，不是只有 `run_case` 自己擋。"""
+    run_pipeline = chat_bridge.pipeline_adapter(ORDINARY, mode="fixture")
+    try:
+        run_pipeline(to_node="n5")
+    except ValueError as e:
+        assert_true("n5" in str(e), str(e))
+        return
+    raise AssertionError("橋讓 to_node='n5' 過去了")
+
+
+def test_a_missing_or_broken_manifest_reads_as_an_empty_case_file_not_an_error():
+    """讀不到卷宗清單＝清單是空的，而 `generate_decision_draft` 會據此擋下前置條件 3。
+
+    壞掉的 JSON 也當成空：半份清單比沒有清單更難查。
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        assert_eq(chat_bridge.load_case_manifest("nope", root), {}, "沒有這個案子")
+        (root / "broken").mkdir()
+        (root / "broken" / "manifest.json").write_text("{ 壞掉的", encoding="utf-8")
+        assert_eq(chat_bridge.load_case_manifest("broken", root), {}, "壞掉的 JSON")
+        (root / "listy").mkdir()
+        (root / "listy" / "manifest.json").write_text("[1,2]", encoding="utf-8")
+        assert_eq(chat_bridge.load_case_manifest("listy", root), {}, "不是物件")
+        (root / "good").mkdir()
+        (root / "good" / "manifest.json").write_text(
+            '{"laws":[{"id":"L1","t":"x"}]}', encoding="utf-8")
+        assert_eq(chat_bridge.load_case_manifest("good", root)["laws"][0]["id"], "L1", "正常讀")

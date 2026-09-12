@@ -186,6 +186,7 @@ def run_case(
     *,
     base_state: CaseState | None = None,
     from_node: str = "n1",
+    to_node: str = "n6",
     overrides: dict[str, Any] | None = None,
     on_event: Callable[[str, dict[str, Any]], None] | None = None,
     persist: bool = True,
@@ -201,16 +202,36 @@ def run_case(
     終態一定經過守門，不會出現「草稿改過但沒重驗引用」的狀態。
     `from_node != "n1"` 而沒給 `base_state` 是錯誤（沒有上游可沿用）。
     `overrides` 白名單只有 `n4_query`；`on_event(kind, data)` 供 SSE；`persist=False` 供測試。
+
+    `to_node`（預設 `"n6"`）讓執行**停在中途**，供聊天的「解析卷證」工具用
+    （`docs/handoff/2026-09-12-frontend-contract-v2.md` §0.1）。`STATE_AFTER` 本來就有
+    完整的 node → state 映射，停在 n3 自然落在 `SCREENED`——狀態機原本就模型化了部分完成，
+    這裡只是讓迴圈有上界。
+
+    **紅線：`to_node` 不得為 `"n5"`。** 停在 N5 會留下一份**沒過 N6 守門的草稿**，
+    而上面那條「續跑的終態一定經過守門」的不變量正是為了不讓這種狀態存在。
+    n1–n4 安全：沒有草稿就沒有「草稿沒重驗引用」的問題。
     """
     if from_node not in NODE_ORDER:
         raise ValueError(f"from_node 必須是 {NODE_ORDER} 之一，實得 {from_node!r}")
     if from_node != "n1" and base_state is None:
         raise ValueError("from_node 不是 n1 時必須提供 base_state（base_run_id）")
+    if to_node not in NODE_ORDER:
+        raise ValueError(f"to_node 必須是 {NODE_ORDER} 之一，實得 {to_node!r}")
+    if to_node == "n5":
+        # 見 docstring 的紅線：停在 N5 ＝ 有草稿但沒過 N6 守門。
+        raise ValueError(
+            "to_node 不得為 'n5'：那會留下一份沒有經過 N6 引用守門的草稿。"
+            "要只跑到程序審查用 'n3'，要整份草稿就跑到 'n6'。"
+        )
     overrides = dict(overrides or {})
     bad = [k for k in overrides if k not in OVERRIDE_WHITELIST]
     if bad:
         raise ValueError(f"overrides 只接受 {OVERRIDE_WHITELIST}，實得 {bad}")
     start_idx = NODE_ORDER.index(from_node)
+    end_idx = NODE_ORDER.index(to_node)
+    if end_idx < start_idx:
+        raise ValueError(f"to_node {to_node!r} 早於 from_node {from_node!r}，沒有節點可跑")
     if confirmed_intake and start_idx > 1:
         # 從 N3 以後續跑代表 N3 已經拿舊的 intake 算過了，這時候才送確認欄位，
         # 值不會進到任何計算裡——**寧可拒絕，也不要收下一個不生效的確認**。
@@ -266,7 +287,7 @@ def run_case(
     node_timings: dict[str, int] = {}
     degraded: list[dict[str, Any]] = []
     agents: dict[str, Any] = {}
-    rerun_nodes = set(NODE_ORDER[start_idx:])
+    rerun_nodes = set(NODE_ORDER[start_idx : end_idx + 1])
     if base_state is not None:
         # 續跑的 agents[] 與 degraded[] 要含**沒有重跑的那幾個節點**的內容。
         # 不帶過來的話，前端的 agent 卡片會只剩重跑的那兩張，看起來像
@@ -307,7 +328,7 @@ def run_case(
     intake_incomplete = False
     node = from_node  # 例外處理要報是哪一個節點炸的
     try:
-        for node in NODE_ORDER[start_idx:]:
+        for node in NODE_ORDER[start_idx : end_idx + 1]:
             emit("node_start", {"node": node, "agents": NODE_TO_AGENTS.get(node, [])})
             if node == "n2":
                 # 確認欄位在進 N2 之前一定套用過（不論這一次有沒有跑 N1）：
@@ -376,6 +397,9 @@ def run_case(
         "run_id": state.run_id,
         "base_run_id": base_state.run_id if base_state is not None else None,
         "from_node": from_node,
+        # 停在中途時要看得出來這是一次**部分執行**：`final_state` 是 SCREENED 不是失敗，
+        # 讀紀錄的人若不知道有上界，會把「沒有草稿」讀成「草稿生失敗了」。
+        "to_node": to_node,
         "overrides": overrides,
         "run_id_note": (
             "支援 base_run_id + from_node 續跑；同一份 body 重送仍會產生新的 run_id"
