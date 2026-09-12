@@ -396,9 +396,13 @@ wire 格式：`event: <名稱>\ndata: <一行 JSON>\n\n`。共通欄位：`seq`�
 | `retrieve_refs` | 查判解與函釋 | 已實作 | — | 不歸檔 |
 | `generate_decision_draft` | 生成草稿 | **包 pipeline**（`run_case(from_node="n4")`） | ✅ n4–n6 | `out` 群組 |
 | `refine_text` | 潤稿 | 已實作 | — | 不歸檔 |
-| `build_relation_graph` | 產生案件關聯圖 | **新功能**（§3.7） | — | `out` 群組 |
+| `build_relation_graph` | 產生案件關聯圖 | ⏳ **尚未實作**（Epic E，§3.7） | — | `out` 群組 |
 | `read_case` | 讀卷內 | 已實作 | — | 不歸檔 |
 
+> ⏳ **`build_relation_graph` 目前不在後端的 `TOOL_LABELS` 值域裡**，**這是刻意的**：
+> 列一個不存在的工具會讓前端以為它在，而節流測試也會要求它有進入點——兩邊都在說謊。
+> Epic E 落地時一起加。在那之前值域是七支（含 `read_case`）。
+>
 > 八列，因為 `read_case` 是 agent 內部的追問用工具，使用者不會主動點它——
 > **`tool_hint` 的值域是前七支**，`read_case` 由 agent 自己決定要不要用。
 >

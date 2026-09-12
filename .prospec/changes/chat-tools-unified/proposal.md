@@ -46,7 +46,8 @@
 **作為**陳專員，**我要**在系統跑那 10 到 72 秒的時候看得到它跑到哪一步，**才能**知道它是在工作而不是當掉了。
 
 - **A2.1** Given 一個會呼叫工具的回合、When 在 t=0 emit 一個事件、Then client 在 **1 秒內**收到它。**目前實測是 2.02 秒後才隨整批一起到——這條現在是紅的。**
-- **A2.2** Given 解析卷證、Then 收到 `tool_step` ×6（n1–n6 各一組 running/done），`elapsed_ms` 與 `run_meta.node_timings` **數值相同**（不是另外估的）。
+- **A2.2** Given 解析卷證、Then 收到 `tool_step` ×3（n1–n3，各一組 running/done）；生成草稿則是 n4–n6 ×3。`elapsed_ms` 與 `run_meta.node_timings` **數值相同**（不是另外估的）。
+  > **2026-09-13 更正**：原本誤寫「×6（n1–n6）」。契約 §3.0 說解析卷證是 `to_node="n3"`，只跑 n1–n3。執行者照契約做是對的（`CONSTITUTION` §9）。
 - **A2.3** 其餘五支工具**不發** `tool_step`（沒有內部階段可報，發了就是編）。
 - **A2.4** `?stream=0` 與 SSE 走**同一條** `_run_turn`，兩邊的 `done` 欄位集合相同。
 
