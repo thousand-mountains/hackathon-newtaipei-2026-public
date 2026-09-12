@@ -278,6 +278,18 @@ def build_relation_graph(payload: dict[str, Any]) -> dict[str, Any]:
     # 就會得出「9 條檢索到的法規沒有被引用」這種話——而其中 5 條是相似訴願決定，
     # 不是法規（2026-09-13 QA 在雲上實打抓到）。分得開的依據本來就在資料裡
     # （`origin`），不需要新的判斷邏輯，也不需要猜。
+    #
+    # ⚠️ **`k` 仍然是 `"law"`，相似案也是——這是刻意留著的，不要「順手修好」**
+    # （2026-09-13 Ci 拍板）。它跟上面那句假話**性質不同**：`k` 不是端到承辦人
+    # 面前的一句話，只是前端拿來決定節點形狀的鍵，而要分色分類的地方前端讀的是
+    # `origin`（`RelationGraph.vue`）。改 `k` 要同時動契約 §3.7 的節點定義與前端，
+    # 換來的只是一個好看的名字。
+    #
+    # **會想修它是很自然的反應，而那正是危險的地方**：今晚這個專案已經有過一次
+    # 教訓——把某個名詞機械地全部替換，會把一句本來正確的話一起改錯，而**改完
+    # grep 歸零、看起來很乾淨**，比漏改難發現得多。這裡要改的從來不是「law 這個
+    # 字出現在哪」，而是「哪一句話把相似案講成了法規」。那三處（`unlinked` 的計數、
+    # `_verify_of` 的驗證用語、`cite` 邊的 `basis`）已經修了，這一處不在其中。
     law_ids: set[str] = set()          # 只有 retrieval.laws
     case_ids: set[str] = set()         # 只有 retrieval.cases（相似訴願決定）
     by_raw_law: dict[str, str] = {}
@@ -396,6 +408,17 @@ def build_relation_graph(payload: dict[str, Any]) -> dict[str, Any]:
     base["edges"] = edges
     base["flagged"] = flagged
     # 加總一律用 len() 算，不手寫（`judgment-externalization.md` L1：衍生值用程式算）。
+    #
+    # ⚠️ **`edges_flagged` 是誤稱，但不改名**（2026-09-13 Ci 拍板）。它數的是
+    # `flagged` 的長度，而 `flagged` 裡的東西**不是邊**——正好相反，是「沒能變成
+    # 邊的引用」（`citations[]` 裡 `raw` 在 `laws[]`／`cases[]` 查無、或 `sentence_id`
+    # 不在 `doc[]` 裡的那幾筆）。契約 §3.7 已經照這個語意載明，改名要動契約與前端，
+    # demo 前不值得。**看到這個名字不要照字面理解成「被標記的邊數」。**
+    #
+    # 另外記一筆給前端：`frontend/src/api/mock.js:440` 的 mock 算的是
+    # **`lamp !== "g"` 的邊數**，跟這裡的 `len(flagged)` 是兩件不同的事。
+    # 開發時看到的數字與上線後不一樣，而兩邊各自都跑得起來——這條前端那邊排隊處理，
+    # **不要為了對齊 mock 而改這裡**：這裡是契約定義的那一邊。
     base["stats"] = {
         "nodes": len(nodes),
         "edges": len(edges),
