@@ -4,6 +4,7 @@ import { reactive, computed } from 'vue'
 import { CASE_NO, EVIDENCE_POOL, TOOLS, GROUPS, ACKS } from '../data/data.js'
 import { api } from '../api/index.js'
 import { ApiError } from '../api/http.js'
+import { scoreCaption, corpusScoreCaption } from '../api/ranker.js'
 
 // ── 草稿版本快取（localStorage）──
 // 優化文案的 diff 需要「上一版文字」。生成草稿／每次潤稿成功後，把新版純文字存進 localStorage；
@@ -696,7 +697,17 @@ function applyToolResult(c, toolMsg, data) {
       if (toolMsg && toolMsg.out && toolMsg.out.type === 'extract') toolMsg.out.loaded = true
     })
   } else if (tool === 'search_similar_decisions') {
-    archiveHits(c, 'cases', data.hits, (h) => ({ name: h.t, note: h.note || '向量相似度（非法律相似度）', ext: '例', full: h._full, _libId: h._libId }))
+    // 右欄那筆的 note 也要說得出分數是誰算的（走 api/ranker.js 的唯一文案）。
+    // **後端的 note 與分數來源兩者並存**，不是二選一：後端那句講的是「有沒有對實檔驗證」，
+    // 分數來源講的是「這個百分比誰算的」，是兩件事。用 `h.note || …` 的話
+    // 只要後端有帶 note（常態）右欄就永遠看不到分數來源。
+    archiveHits(c, 'cases', data.hits, (h) => ({
+      name: h.t,
+      note: [h.note, scoreCaption(h)].filter(Boolean).join('．'),
+      ext: '例',
+      full: h._full,
+      _libId: h._libId,
+    }))
     c.flags.cases = true
     refreshGroupIds(c, 'cases') // agent 自動歸檔了本案清單，重載拿正確的移除用 id（listReferences #17）
   } else if (tool === 'search_regulations') {
@@ -1134,7 +1145,11 @@ export async function searchLibrary(groupKey, q) {
       return (r.results || []).map((x) => ({
         id: x.id,
         name: x.t,
-        note: [x.category, x.verdict, x.score != null ? `向量相似度 ${Math.round(x.score * 100)}%（非法律相似度）` : '']
+        // 母庫查走 `search_corpus`，**那條通道沒有重排**（只做 doc_kind filter、
+        // 去重、截 limit，見 backend/retrieval/kb.py:334 的 docstring），
+        // 所以分數確實是向量距離。即使如此也不在這裡自己寫一句文案——
+        // 全前端只有 api/ranker.js 那一份，改了一處才不會漏掉另一處。
+        note: [x.category, x.verdict, x.score != null ? corpusScoreCaption(x.score) : '']
           .filter(Boolean)
           .join('．'),
         ext: '例',

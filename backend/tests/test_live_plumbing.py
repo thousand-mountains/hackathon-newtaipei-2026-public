@@ -3281,20 +3281,68 @@ def test_similar_case_card_says_which_ranker_produced_the_number():
     assert_eq(_n4_card({})["ranked_by"], "embedding")
 
 
-def test_frontend_similarity_caption_follows_the_ranker():
-    """前端的相似度文案不得寫死「向量比對」。
+#: 相似度文案的**唯一**出處。前端任何其他檔出現這幾句就是有人又寫了第二份。
+_RANKER_CAPTIONS = ("重排模型判定", "向量比對", "查表命中", "未標明排序來源")
 
-    這條測試的存在理由跟 `test_frontend_case_type_options_are_all_matchable` 一樣：
-    前後端各自維護一份字串，漂移只是時間問題。而這一份字串是**對承辦人解釋畫面上
-    那個數字是什麼**——開了重排之後還寫「向量比對」就是不實陳述，而且它就在 demo
-    主畫面上。用 Python 測試讀前端原始碼（frontend 沒有 JS test runner）。
+#: 這個字串標記「我就是那份唯一的文案表」。用**內容**找檔案，不是用路徑——
+#: 上一版把路徑寫死成 `frontend/src/api/adapt.js`，那個檔在重構時被移掉，
+#: 測試就變成 `FileNotFoundError`。守衛斷了，而它守的東西同時退步了，
+#: 兩件事一起發生時沒有人會發現。
+_RANKER_MODULE_MARKER = "export const RANKER_CAPTION"
+
+
+def _frontend_sources() -> list[pathlib.Path]:
+    root = pathlib.Path(__file__).resolve().parents[2] / "frontend" / "src"
+    if not root.is_dir():
+        raise AssertionError(f"找不到前端原始碼目錄 {root}，這條測試的前提不成立")
+    return sorted(p for p in root.rglob("*") if p.suffix in (".js", ".vue"))
+
+
+def test_frontend_similarity_caption_follows_the_ranker():
+    """前端的相似度文案不得寫死「向量比對」，而且只能有一份。
+
+    這一份字串是**對承辦人解釋畫面上那個數字是什麼**——開了重排之後那個百分比是
+    cross-encoder 判的語意相關性（`kb.py` 會設 `payload["ranked_by"]="rerank"`），
+    還寫「向量比對」就是不實陳述，而且它就在 demo 主畫面上（CONSTITUTION §1）。
+
+    **這一版比上一版難繞過的地方**：
+    1. 用**內容**找那份文案表，不是用寫死的路徑——檔案被改名或搬家時，
+       失敗訊息會說「找不到文案表」，而不是 `FileNotFoundError` 那種看起來像
+       測試自己壞掉、於是被順手刪掉的錯。
+    2. 斷言那幾句文案**只出現在那一個檔**。有人在新元件裡直接打
+       「向量相似度 87%」就會紅——上一版只檢查某個函式內有沒有那幾個字，
+       別的地方另寫一份它看不到。
+    3. 斷言四種 `ranked_by` 狀態**都有**對應文案，包含 `null`（法條查表，
+       score 固定 1.0 是二元命中）與欄位不存在。少一種就會有一批分數
+       被歸到錯的說法裡。
+
+    用 Python 測試讀前端原始碼（frontend 沒有 JS test runner）。
     """
-    src = (pathlib.Path(__file__).resolve().parents[2]
-           / "frontend" / "src" / "api" / "adapt.js").read_text(encoding="utf-8")
-    block = src.split("export function toCaseCards", 1)[1].split("\n}", 1)[0]
+    sources = _frontend_sources()
+    owners = [p for p in sources if _RANKER_MODULE_MARKER in p.read_text(encoding="utf-8")]
+    assert_eq(len(owners), 1)
+    owner = owners[0]
+    block = owner.read_text(encoding="utf-8")
+
     assert_in("ranked_by", block, "相似度文案沒有依 ranked_by 切換，等於對數字的來歷說死話")
-    assert_in("重排模型判定", block, "缺開了重排時的文案")
-    assert_in("向量比對", block, "缺沒開重排時的文案（那一種仍然存在，不能整段換掉）")
+    for caption in _RANKER_CAPTIONS:
+        assert_in(caption, block, f"文案表缺「{caption}」這一種排序來源的說法")
+
+    # 四種狀態都要能被對應到：rerank／embedding／null（查表）／欄位不存在
+    for key in ("RERANK", "EMBEDDING", "LAWTABLE", "UNKNOWN"):
+        assert_in(key, block, f"文案表沒有涵蓋 {key} 這種 ranked_by 狀態")
+
+    # 只能有一份：其餘檔案一律不得出現這幾句
+    strays = [
+        f"{p.relative_to(owner.parents[2])}:{caption}"
+        for p in sources if p != owner
+        for caption in _RANKER_CAPTIONS
+        if caption in p.read_text(encoding="utf-8")
+    ]
+    if strays:
+        raise AssertionError(
+            "相似度文案出現在文案表以外的檔案，兩處各寫一份遲早漂移："
+            + "、".join(strays))
 
 
 class _OldBotocoreRuntime:
