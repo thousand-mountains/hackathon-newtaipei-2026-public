@@ -13,6 +13,7 @@ import json
 import os
 import pathlib
 import re
+import threading
 import time
 from typing import Any, Callable
 
@@ -56,6 +57,42 @@ _DOC_NAME_MAXLEN = 60
 
 class LLMError(RuntimeError):
     """模型呼叫失敗（重試耗盡、schema 不符、輸出違反值域）。呼叫端不得吞掉改吐 fixture。"""
+
+
+# 賽方規範要求 Bedrock 請求壓在 1 RPS 以下（team-brain〈2026-09-12 決賽環境規範〉）。
+# MIN_INTERVAL_S 是可歸零的旋鈕：None＝讀環境變數（正式路徑），設 0＝關閉節流。
+# 測試把它設 0 以免整套多跑好幾分鐘——做法與 `retrieval/kb.py` 的 RETRIEVE_INTERVAL_S 一致。
+MIN_INTERVAL_S: float | None = None
+_RATE_LOCK = threading.Lock()
+_last_call_at = 0.0
+
+
+def _throttle() -> None:
+    """送出 Bedrock 請求前，等到與上一次至少隔 `settings.bedrock_min_interval_s()` 秒。
+
+    為什麼要主動節流而不是靠 `_with_retries`：退避只在**已經被打回來之後**才生效，
+    擋不住第一次就超速。評審面前吃 throttle 的代價遠大於多等一秒。
+
+    **兩個已知限制，不要當成全域 1 RPS 的保證**：
+    1. 這個閘只管本模組每一次 `_invoke_structured` 送出的請求。Strands 的 agent loop
+       在**一次**呼叫內可能因工具往返而多次打模型，那些內部往返不經過這裡。
+    2. `backend/retrieval/kb.py` 的 `RETRIEVE_INTERVAL_S` 是另一個獨立的閘。兩者相加
+       仍可能超過 1 RPS——真要嚴格全域限速，得把兩邊併進同一個節流器。
+
+    provider 不是 bedrock（openai 開發路徑）時不節流：那不受賽方規範約束。
+    """
+    if settings.model_provider() != "bedrock":
+        return
+    interval = MIN_INTERVAL_S if MIN_INTERVAL_S is not None else settings.bedrock_min_interval_s()
+    if interval <= 0:
+        return
+    global _last_call_at
+    # 鎖握著睡：多執行緒時要的就是序列化，否則各自算各自的間隔照樣會併發送出。
+    with _RATE_LOCK:
+        wait = _last_call_at + interval - time.monotonic()
+        if wait > 0:
+            time.sleep(wait)
+        _last_call_at = time.monotonic()
 
 
 def model_ids() -> dict[str, str | None]:
@@ -136,6 +173,7 @@ def _invoke_structured(system: str, user: str, schema_name: str, tools: list | N
             {"document": {"format": "pdf", "name": _safe_doc_name(n), "source": {"bytes": b}}}
             for n, b in attachments
         ]
+    _throttle()
     result = agent(prompt, structured_output_model=schema)
     obj = result.structured_output
     if obj is None:

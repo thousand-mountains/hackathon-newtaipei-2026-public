@@ -1967,3 +1967,90 @@ def test_unknown_data_kind_is_not_guessed():
     """分不出資料性質就中性描述，不得預設當成合成測資（CONSTITUTION §3 不編造）。"""
     prov = settings.provenance({"kind": "something-else"}, mode="fixture")
     assert_in("無法判定", prov["data_note"])
+
+
+# --- Bedrock 1 RPS 主動節流（2026-09-12 賽方規範） ---------------------------
+
+
+class _FakeClock:
+    """假時鐘：讓節流可驗又不真的睡。記下每次被要求睡多久。"""
+
+    def __init__(self, start: float = 1000.0):
+        self.now = start
+        self.slept: list[float] = []
+
+    def monotonic(self) -> float:
+        return self.now
+
+    def sleep(self, seconds: float) -> None:
+        self.slept.append(seconds)
+        self.now += seconds
+
+
+@contextmanager
+def _throttle_clock(interval, provider="bedrock"):
+    """把 client 模組的 time 換成假時鐘，並固定節流旋鈕與 provider。"""
+    orig = (client.time, client.MIN_INTERVAL_S, client._last_call_at,
+            os.environ.get("MODEL_PROVIDER"))
+    clock = _FakeClock()
+    client.time = clock
+    client.MIN_INTERVAL_S = interval
+    client._last_call_at = 0.0
+    os.environ["MODEL_PROVIDER"] = provider
+    try:
+        yield clock
+    finally:
+        client.time, client.MIN_INTERVAL_S, client._last_call_at = orig[0], orig[1], orig[2]
+        if orig[3] is None:
+            os.environ.pop("MODEL_PROVIDER", None)
+        else:
+            os.environ["MODEL_PROVIDER"] = orig[3]
+
+
+def test_throttle_first_call_does_not_wait():
+    """第一次呼叫不該被罰等——節流是間隔，不是固定延遲。"""
+    with _throttle_clock(1.1) as clock:
+        client._throttle()
+    assert_eq(clock.slept, [], "第一次呼叫不應該 sleep")
+
+
+def test_throttle_waits_only_the_remaining_time():
+    """已經過了 0.4 秒就只補 0.7 秒，不是每次都睡滿 1.1。
+
+    0.4／0.7／1.1 三個值互不相同：若實作改成「每次固定睡 interval」或「不扣已過時間」，
+    這條都會紅。
+    """
+    with _throttle_clock(1.1) as clock:
+        client._throttle()        # 記下起點，不等
+        clock.now += 0.4          # 呼叫端自己花掉 0.4 秒
+        client._throttle()
+    assert_eq(len(clock.slept), 1, "第二次才需要等")
+    assert_true(abs(clock.slept[0] - 0.7) < 1e-9,
+                f"應補等 0.7 秒（1.1 扣掉已過的 0.4），實際 {clock.slept}")
+
+
+def test_throttle_knob_zero_disables():
+    """MIN_INTERVAL_S=0 要能完全關掉——測試套件靠這個旋鈕不被拖慢。"""
+    with _throttle_clock(0) as clock:
+        client._throttle()
+        client._throttle()
+    assert_eq(clock.slept, [], "旋鈕歸零時不應該 sleep")
+
+
+def test_throttle_skips_non_bedrock_provider():
+    """openai 只供開發期調 prompt，不受賽方 1 RPS 規範約束，不該被節流。"""
+    with _throttle_clock(1.1, provider="openai") as clock:
+        client._throttle()
+        client._throttle()
+    assert_eq(clock.slept, [], "provider 不是 bedrock 時不該節流")
+
+
+def test_bedrock_min_interval_default_is_under_one_rps():
+    """預設值必須讓速率低於 1 RPS，否則這個閘等於沒開。"""
+    orig = os.environ.pop("BEDROCK_MIN_INTERVAL_S", None)
+    try:
+        assert_true(settings.bedrock_min_interval_s() > 1.0,
+                    f"預設間隔要 >1 秒才壓得到 1 RPS 以下，實際 {settings.bedrock_min_interval_s()}")
+    finally:
+        if orig is not None:
+            os.environ["BEDROCK_MIN_INTERVAL_S"] = orig

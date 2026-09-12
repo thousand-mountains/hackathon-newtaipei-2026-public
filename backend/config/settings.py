@@ -29,6 +29,9 @@ RUNS_DIR = OUTPUT_DIR / "runs"
 DEFAULT_MODEL_PROVIDER = "bedrock"
 DEFAULT_RETRIEVER = "lawtable_only"
 DEFAULT_KB_MIN_SCORE = 0.25
+# 賽方規範要求 Bedrock 請求壓在 1 RPS 以下。1.1 留一點餘裕，與
+# `backend/retrieval/kb.py` 的 RETRIEVE_INTERVAL_S 取同一個值。
+DEFAULT_BEDROCK_MIN_INTERVAL_S = 1.1
 
 
 def model_provider() -> str:
@@ -71,6 +74,15 @@ def kb_min_score() -> float:
 
 def kb_bucket() -> str | None:
     return os.environ.get("S3_KB_BUCKET") or None
+
+
+def bedrock_min_interval_s() -> float:
+    """兩次 Bedrock 模型呼叫之間至少要隔幾秒。0 或負值＝關閉節流。
+
+    賽方規範（team-brain〈2026-09-12 決賽環境規範〉）要求 Bedrock 壓在 1 RPS 以下。
+    這是**主動**節流：重試退避只在被打回來之後才生效，擋不住第一次就超速。
+    """
+    return float(os.environ.get("BEDROCK_MIN_INTERVAL_S", DEFAULT_BEDROCK_MIN_INTERVAL_S))
 
 
 def missing_live_settings(mode: str | None = None, retriever: str | None = None) -> list[str]:
