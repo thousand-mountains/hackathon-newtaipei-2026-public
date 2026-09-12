@@ -493,3 +493,14 @@ button{font:inherit;color:inherit;cursor:pointer}
 .msg blockquote{margin:6px 0;padding:2px 0 2px 10px;border-left:2px solid var(--line);color:var(--ink-2);font-size:13px}
 .msg .mdrule{border:0;border-top:1px solid var(--line-soft);margin:10px 0}
 .msg code{font-family:var(--mono);font-size:11.5px;background:var(--panel);padding:1px 4px;border-radius:2px}
+
+/* 期間計算的逐步算式（程序審查卡）。每一步三行：規則、值、法條依據——
+   依據那行不能省，那正是「可驗算」與「相信它」的差別。 */
+.calc{margin:0;padding:0;list-style:none;counter-reset:calc}
+.calc li{counter-increment:calc;position:relative;padding:7px 0 7px 26px;border-bottom:1px solid var(--line-soft)}
+.calc li:last-child{border-bottom:0}
+.calc li::before{content:counter(calc);position:absolute;left:0;top:8px;width:17px;height:17px;border-radius:50%;background:var(--panel);color:var(--muted);font-family:var(--mono);font-size:10px;line-height:17px;text-align:center}
+.calc .cr{display:block;font-size:13px;color:var(--ink)}
+.calc .cv{display:block;font-size:12.5px;color:var(--acc-2);margin-top:2px}
+.calc .cb{display:block;font-size:11.5px;color:var(--faint);margin-top:2px}
+.caveat{margin:8px 0 0;font-size:11.5px;color:var(--warn);line-height:1.65}

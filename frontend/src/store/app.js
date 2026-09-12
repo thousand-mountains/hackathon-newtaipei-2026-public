@@ -162,6 +162,13 @@ function newCaseObj(name, folderId) {
     stream: [], // 對話串訊息陣列
     flags: { extract: false, cases: false, laws: false, graph: false, draft: false, out: false },
     docs: { evidence: [], cases: [], laws: [], out: [] },
+    // 契約 §3.3／§4（2026-09-13 後端補上）：彙整版一律帶這四個鍵，
+    // **取不到是 null 不是省略**，所以這裡預設也用 null，不要用 {}／[]——
+    // 用空物件的話「還沒跑過」與「跑過但是空的」就分不出來了。
+    intake: null,
+    facts: null,
+    issues: null,
+    screen: null,
   }
 }
 
@@ -239,6 +246,20 @@ async function loadCase(c) {
   }
 }
 
+// 強制重載彙整版（解析卷證跑完之後要用——那一輪之後 intake／facts_excerpt／
+// issues／screen 才會有值，而 loadCase 有 _loaded 快取不會再打）。
+export async function refreshCase(c) {
+  if (!c._serverCreated) return
+  try {
+    const r = await api.getCase(c.caseId)
+    c._loaded = true
+    if (r.case && r.case.latest_run_id) c.runId = r.case.latest_run_id
+    fillDocsFromServer(c, r)
+  } catch {
+    /* 重載失敗維持現狀，不阻斷操作 */
+  }
+}
+
 // 把彙整版的四類資源映射回 docs 結構（name/note/ext/full/_libId/_artifactId）
 function fillDocsFromServer(c, r) {
   if (Array.isArray(r.files)) c.docs.evidence = r.files.map((f) => ({ name: f.name, note: f.note || '', ext: f.ext || '', _libId: f.id }))
@@ -266,6 +287,14 @@ function fillDocsFromServer(c, r) {
       _artifactId: a.id,
       graph: a.kind === 'graph',
     }))
+  // 四塊（契約 §3.3）。`latest_run_id` 是 null ＝ 還沒跑過（正常，四塊本來就該是 null）；
+  // 有值而四塊是 null ＝ run 讀不回來（異常）。這個區分推導得出來，後端沒有為它加新鍵。
+  c.intake = r.intake || null
+  c.facts = Array.isArray(r.facts_excerpt) ? r.facts_excerpt : null
+  c.issues = Array.isArray(r.issues) ? r.issues : null
+  c.screen = r.screen || null
+  c.runStale = !!(r.case && r.case.latest_run_id) && !c.screen
+
   // **旗標也要從後端還原。** 只還原 docs 不還原 flags 的話，重新整理之後
   // 後端明明已經有草稿，畫面卻回到「還沒有草稿可以匯出，先跑一次草稿生成吧」，
   // 而且建議 chips 也不會出現匯出與優化文案。旗標推得出來就推，不要等使用者重跑。
@@ -586,23 +615,29 @@ async function driveChat(c, payload, uiTool) {
   }
 }
 
-// redirect 的 CTA：捲到本案最近一次「解析卷證檔案」的工具卡並標記——
-// 程序審查（期限與算式）是那一次 run（n3）算出來的，規則引擎的結果在那條路徑上。
-// ⚠️ 目前**畫面上還看不到算式本身**：契約 §3.3 說跑完之後打 #4 彙整版取
-// intake／facts_excerpt／issues／screen，但後端的 GET /api/cases/{id} 只回
-// {case,files,laws,references,artifacts}，沒有那四塊。這是契約與後端對不上，已回報。
+// redirect 的 CTA（契約 §2.4.1 一）：捲到**規則引擎算好的期間計算算式**。
+// 這是 CONSTITUTION §4 紅線的下半截——上半截是「不顯示 agent 算的天數」，
+// 下半截是「給承辦人一個可以自己逐步驗算的算式」。只做上半截等於把問題吞掉。
+// 算式是 `screen.deadline.steps`（每步含 rule／basis 法條依據／value）。
 export function gotoProcedureCheck() {
   const c = active()
   if (!c) return
-  const idx = [...c.stream].reverse().find((m) => m.kind === 'tool' && m.api === 'extract_case_document')
-  if (!idx) {
-    toast('這件案子還沒有解析過卷證，先跑一次「解析卷證檔案」')
+  if (!c.screen) {
+    toast(c.runId ? '讀不回這次執行的程序審查，請重跑一次解析卷證' : '這件案子還沒有解析過卷證，先跑一次「解析卷證檔案」')
     return
   }
+  // 串流裡已經有程序審查（獨立卡或解析卷證的工具卡）就捲過去，沒有就補一張。
+  // 補一張是必要的：對話紀錄只存在記憶體，重新整理之後串流是空的，
+  // 但 screen 來自 manifest 一直都在——這時候不補就等於 CTA 按了沒反應。
+  let target = [...c.stream].reverse().find(
+    (m) => m.kind === 'screen' || (m.kind === 'tool' && m.api === 'extract_case_document'),
+  )
+  if (!target) target = push(c, { who: 'ai', kind: 'screen' })
   requestAnimationFrame(() => {
-    const el = document.querySelector(`[data-msg="${idx.id}"]`)
+    const el = document.querySelector(`[data-msg="${target.id}"]`)
     if (!el) return
-    el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    const box = el.querySelector('[data-anchor="deadline"]') || el
+    box.scrollIntoView({ behavior: 'smooth', block: 'center' })
     el.classList.add('glow')
     setTimeout(() => el.classList.remove('glow'), 1600)
   })
@@ -655,6 +690,11 @@ function applyToolResult(c, toolMsg, data) {
   if (tool === 'extract_case_document') {
     if (data.run_id) c.runId = data.run_id
     c.flags.extract = true
+    // 卷內四塊（案由／事實摘錄／爭點／程序審查）要**跑完之後**打彙整版才拿得到
+    // （契約 §3.3）。`tool_result` 只帶 run_id 與 state，不含內容。
+    refreshCase(c).then(() => {
+      if (toolMsg && toolMsg.out && toolMsg.out.type === 'extract') toolMsg.out.loaded = true
+    })
   } else if (tool === 'search_similar_decisions') {
     archiveHits(c, 'cases', data.hits, (h) => ({ name: h.t, note: h.note || '向量相似度（非法律相似度）', ext: '例', full: h._full, _libId: h._libId }))
     c.flags.cases = true
@@ -1255,4 +1295,4 @@ export async function checkHealth() {
   }
 }
 export { CASE_NO, TOOLS }
-export { esc, isAutoName }
+export { esc, isAutoName, inlineMd }

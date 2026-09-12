@@ -2,6 +2,7 @@
 import { computed } from 'vue'
 import { state, active, stages, TOOLS, runTool, gotoProcedureCheck } from '../store/app.js'
 import ToolOut from './ToolOut.vue'
+import ProcedureCheck from './ProcedureCheck.vue'
 import Composer from './Composer.vue'
 
 const emit = defineEmits(['view-case', 'view-graph', 'preview-paper', 'export-download', 'sheet'])
@@ -56,6 +57,22 @@ const caseMeta = computed(() =>
               </div>
               <!-- 純 HTML 回覆 -->
               <div v-else-if="m.kind === 'html'" v-html="m.html"></div>
+              <!-- 程序審查卡（redirect 的 CTA 目標）。對話紀錄只存在記憶體，
+                   重新整理之後串流是空的，但 screen 來自 manifest 一直都在——
+                   所以 CTA 找不到既有卡片時會補一張，就是這個 kind。 -->
+              <template v-else-if="m.kind === 'screen'">
+                <p>以下是規則引擎算出來的程序審查結果，每一步都附法條依據，可逐步核對。</p>
+                <div class="tool">
+                  <div class="tool-head">
+                    <span class="api">程序審查</span>
+                    <span class="nm">規則引擎．零 LLM</span>
+                    <span class="st"><span style="color: var(--ok)">✓</span> 完成</span>
+                  </div>
+                  <div class="tool-out">
+                    <ProcedureCheck v-if="c.screen" :screen="c.screen" />
+                  </div>
+                </div>
+              </template>
               <!-- 期限／天數類問題：規則引擎接手（契約 §2.4.1 一）。
                    **這一則刻意不顯示任何天數**——agent 算出來的天數在 done.answer 裡，
                    期間算錯在訴願案有實質後果，所以整段不落地，只給理由與一顆 CTA。 -->

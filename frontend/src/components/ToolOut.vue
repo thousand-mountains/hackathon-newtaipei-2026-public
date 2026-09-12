@@ -6,6 +6,44 @@
 // 畫面上出現的是一件廢棄物清理法的案子（訴願人、案號、日期、爭點、程序審查全是假的），
 // 而且看起來跟真的一模一樣。示範資料一律移除，拿不到就說拿不到。
 import RelationGraph from './RelationGraph.vue'
+import ProcedureCheck from './ProcedureCheck.vue'
+import { active } from '../store/app.js'
+
+// 解析卷證的四塊（案由／事實摘錄／爭點／程序審查）**不在 tool_result 裡**——
+// `tool_result` 只帶 run_id 與 state，內容要跑完之後打彙整版拿（契約 §3.3）。
+// store 在 refreshCase 裡填進 case，所以這裡從 case 讀，不是從 out 讀。
+const cur = () => active() || {}
+const INTAKE_LABEL = {
+  no: '案號', type: '案件類型', person: '訴願人', org: '原處分機關',
+  d1: '原處分日', d2: '送達日', d3: '收文日', agent: '代理人',
+  service_method: '送達方式', transit_days: '在途期間', respondent_name: '原處分相對人',
+}
+const SERVICE = { personal: '本人簽收', deposit: '寄存送達', public: '公示送達' }
+// 收文日期統一用民國顯示。後端 intake 給的是 ISO（2025-03-14），但同一張卡下面的
+// 期間計算算式是民國（114/3/14），混用會讓承辦人沒辦法一眼對上是不是同一天。
+// **只換顯示格式，不動值**；原始 ISO 留在 title，滑過去可核對。
+const DATE_KEYS = ['d1', 'd2', 'd3']
+const roc = (iso) => {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(iso || ''))
+  return m ? `${Number(m[1]) - 1911}/${Number(m[2])}/${Number(m[3])}` : iso
+}
+const intakeRows = () => {
+  const it = cur().intake
+  if (!it) return []
+  return ['no', 'type', 'person', 'org', 'd1', 'd2', 'd3', 'agent', 'service_method', 'transit_days']
+    .map((k) => {
+      let v = it[k]
+      const raw = v
+      if (k === 'service_method') v = SERVICE[v] || v
+      if (k === 'transit_days' && typeof v === 'number') v = v + ' 日'
+      if (DATE_KEYS.includes(k)) v = roc(v)
+      return { k, label: INTAKE_LABEL[k] || k, raw: DATE_KEYS.includes(k) ? String(raw || '') : '',
+               v: v === null || v === undefined || v === '' ? null : String(v),
+               // auto_fields＝由卷證自動擷取、**還沒有人確認**。要標出來。
+               auto: (it.auto_fields || []).includes(k) }
+    })
+    .filter((r) => r.v !== null)
+}
 
 const props = defineProps({ out: Object })
 const emit = defineEmits(['view-case', 'view-graph', 'preview-paper', 'export-download'])
@@ -18,16 +56,49 @@ const provLabel = (p) => PROV[p] || '出處未標示'
 </script>
 
 <template>
-  <!-- 解析卷證：tool_result 只帶 run_id 與 state（契約 §3.3），內容由 agent 逐字說明 -->
+  <!-- 解析卷證：run_id／state 來自 tool_result，四塊內容來自彙整版（契約 §3.3） -->
   <template v-if="out.type === 'extract'">
     <div class="sec">
-      <div class="sec-h">解析結果</div>
-      <dl class="kv">
-        <dt>run</dt><dd class="mono">{{ out.runId || '—' }}</dd>
-        <dt>終態</dt><dd class="mono">{{ out.state || '—' }}</dd>
+      <div class="sec-h">案件基本資訊</div>
+      <dl v-if="intakeRows().length" class="kv">
+        <template v-for="r in intakeRows()" :key="r.k">
+          <dt>{{ r.label }}</dt>
+          <dd :class="{ mono: ['no', 'd1', 'd2', 'd3'].includes(r.k) }" :title="r.raw ? '原始值 ' + r.raw : null">
+            {{ r.v }}<span v-if="r.auto" class="tag">自動擷取．待確認</span>
+          </dd>
+        </template>
       </dl>
-      <p style="margin: 8px 0 0; color: var(--muted); font-size: 12.5px">
-        這個 run 只跑到程序審查，還沒有草稿。卷內各欄（案由、事實摘錄、爭點、程序審查）由小願在下方逐項說明，右欄「卷證檔案」是本案實際收到的檔案。
+      <p v-else style="margin: 0; color: var(--muted); font-size: 12.5px">這次執行沒有收文欄位。</p>
+      <p style="margin: 8px 0 0; color: var(--faint); font-size: 11.5px">
+        run <span class="mono">{{ out.runId || '—' }}</span>．終態 <span class="mono">{{ out.state || '—' }}</span>．這個 run 只跑到程序審查，還沒有草稿。
+      </p>
+    </div>
+
+    <div v-if="(cur().facts || []).length" class="sec">
+      <div class="sec-h">事實摘錄</div>
+      <p v-for="(f, i) in cur().facts" :key="i" style="margin: 0 0 8px; font-size: 13.5px">
+        {{ f.text }}
+        <span v-if="f.quote_ref" class="cite">{{ f.quote_ref }}</span>
+      </p>
+    </div>
+
+    <div v-if="(cur().issues || []).length" class="sec">
+      <div class="sec-h">本案爭點</div>
+      <div v-for="iss in cur().issues" :key="iss.id" class="check">
+        <span class="bdg" :class="iss.severity === 'high' ? 'alert' : iss.severity === 'mid' ? 'warn' : 'ok'">{{ iss.tag || iss.severity }}</span>
+        <span class="ct">
+          <b>{{ iss.t }}</b>
+          <span>{{ iss.q }}</span>
+          <span v-if="iss.src" style="color: var(--faint)">{{ iss.src }}</span>
+        </span>
+      </div>
+    </div>
+
+    <ProcedureCheck v-if="cur().screen" :screen="cur().screen" />
+    <div v-else-if="cur().runStale" class="sec">
+      <div class="sec-h">程序審查</div>
+      <p style="margin: 0; color: var(--warn); font-size: 12.5px">
+        這件案子有執行紀錄，但讀不回程序審查內容。不顯示任何期間推算，請重跑一次解析卷證。
       </p>
     </div>
   </template>
