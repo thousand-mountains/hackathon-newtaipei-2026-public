@@ -425,7 +425,7 @@ wire 格式：`event: <名稱>\ndata: <一行 JSON>\n\n`。共通欄位：`seq`�
 | `generate_decision_draft` | 生成草稿 | **包 pipeline**（`run_case(from_node="n4")`） | ✅ n4–n6 | `out` 群組 |
 | `refine_text` | 潤稿 | 已實作 | — | 不歸檔 |
 | `build_relation_graph` | 產生案件關聯圖 | ✅ **已實作**（Epic E，§3.7；零 LLM） | — | 不歸檔，圖走 `tool_result.graph` |
-| `read_case` | 讀卷內 | 已實作 | — | 不歸檔 |
+| `read_case` | 讀卷內 | 已實作（§3.6 的 `section` 值域 2026-09-13 由 5 個擴為 7 個） | — | 不歸檔 |
 
 > ✅ **`build_relation_graph` 2026-09-13 落地，已進後端 `TOOL_LABELS`**，值域是八支
 > （含 `read_case`）。在那之前它刻意不在值域裡——列一個不存在的工具會讓前端以為它在，
@@ -642,9 +642,33 @@ lawtable 解析得了；決定書沒有對等的查詢詞形式，硬塞會稀�
 
 ### 3.6 `read_case`（讀卷內）
 
-`section` 值域：`intake` | `facts_excerpt` | `screen` | `laws` | `cases`。
+`section` 值域（**2026-09-13 由 5 個擴為 7 個**）：
+`intake` | `facts_excerpt` | `screen` | `laws` | `cases` | `retrieved_laws` | `retrieved_cases`。
 `hits: []`，內容走 `token`。給錯的 section 回一句說明。
 **沒有 `run_id` 時回「卷內是空的」**，不報錯。
+
+**兩份不同的東西，之前共用一個名字。** 擴充前 `laws`／`cases` 讀的是**上一次 run 的
+payload**（N4 這一輪檢索到的）。但畫面右欄的「案件卷宗」是 `manifest.json`（承辦人
+自己挑進來的），兩者不是同一份。2026-09-13 實測：承辦人用右欄的 `+` 加了兩條法規、
+兩件案例，畫面清楚顯示「相關法規 2」「相關案例 2」，然後問「可以生成草稿了嗎」，
+得到「法規依據：卷內還沒有」——**因為他的 run 只跑到 n3，payload 那份是空的**。
+連鎖後果是模型據此判定前置條件不滿足，於是根本沒有呼叫 `generate_decision_draft`
+（而那支自己的檢查用的是 manifest，本來會通過）。
+
+| `section` | 讀哪一份 | 用途 |
+|---|---|---|
+| `laws` / `cases` | **卷宗清單**（`manifest.json` 的 `laws` / `references`） | 承辦人挑的，＝右欄「相關法規」「相關案例」，也是 §3.5.1 前置條件 3 看的那份 |
+| `retrieved_laws` / `retrieved_cases` | **這一輪檢索**（run payload 的 `laws` / `cases`） | N4 查到的，§3.5.2 的三態標記靠它比對 |
+
+回傳的 JSON 帶 `{section, 是什麼, 內容}`——**分區的語意跟著資料一起給模型**，
+只給一個鍵名的話它會照自己的理解命名，兩份又混在一起。
+
+**引用編號只有 `retrieved_*` 那兩份有**（N4 編的 `L1`、`C3`，印在畫面的法條卡與
+相似案卡上）。卷宗清單那兩份的 `id` 是母庫 S3 key，不進引用白名單——註冊進去模型
+會寫出 `[kb/public/…]`，那既不是承辦人看得懂的東西，也不在任何一張卡片上。
+
+某一份是空的時候，`note` 會說明**另外那一份有沒有東西**，避免「卷宗空的、但這一輪
+檢索到 5 條」被講成「卷內什麼都沒有」。
 
 ### 3.7 `build_relation_graph`（案件關聯圖）— 新功能 ⑨
 

@@ -679,18 +679,95 @@ def test_case_ids_read_from_the_file_are_whitelisted_not_fabricated():
     calls: list = []
     t = _tools(calls, payload={"laws": [{"id": "L1", "t": "訴願法第 14 條"},
                                         {"id": "L2", "t": "行政程序法第 74 條"}]})
-    t.read_case("laws")
+    # 讀的是「這一輪檢索到的」那份——帶 `L1`／`C3` 編號的是它，
+    # 卷宗清單（`laws`）的 id 是母庫 S3 key，不進白名單（2026-09-13 拆開）。
+    t.read_case("retrieved_laws")
     v = classify_answer("本案引了哪些法條？", "依 [L1] 與 [L2]。", t.refbook)
     assert v.dropped_refs == [], "卷內 id 被誤判成捏造"
     assert v.lamp == "y", "卷內引用應該算有出處"
     assert [r["id"] for r in v.refs] == ["L1", "L2"]
 
 
+def test_read_case_does_not_call_the_dossier_empty_when_the_screen_shows_two():
+    """承辦人看到「相關法規 2」時，任何一個回答都不能說「卷內沒有法規」。
+
+    2026-09-13 實際發生：Ci 用右欄的 `+` 加了兩條法規、兩件案例（走 REST），
+    畫面清楚顯示，然後問「可以生成草稿了嗎」，得到「法規依據：卷內還沒有」。
+
+    根因是「卷內」被用在兩個不同的東西上——畫面右欄的案件卷宗是 `manifest.json`，
+    而 `read_case` 讀的是**上一次 run 的 payload**。他的 run 只跑到 n3，
+    payload 的 `laws` 當然是空的。**從他的角度那句話就是假的。**
+
+    連鎖後果不只是講錯一句：模型拿那份錯的去判斷前置條件，於是**根本沒有呼叫**
+    `generate_decision_draft`——而那支自己的檢查用的是 manifest，會通過。
+    """
+    calls: list = []
+    manifest = {"laws": [{"id": "kb/public/相關法規_全量/訴願法.txt", "t": "訴願法"}],
+                "references": [{"id": "kb/public/…/1143101448_駁回.txt", "t": "1143101448_駁回"}]}
+    # run 只跑到 n3：payload 的 laws／cases 是空的（N4 還沒跑）
+    t = _tools(calls, payload={"screen": {"x": 1}}, case_manifest=manifest)
+
+    for section, title in (("laws", "訴願法"), ("cases", "1143101448_駁回")):
+        events: list = []
+        t._emit = lambda n, d: events.append((n, d))
+        out = t.read_case(section)
+        result = [d for n, d in events if n == "tool_result"][-1]
+        assert result["status"] == "ok", \
+            f"卷宗裡有東西卻回 {result['status']}：{result['note']}"
+        assert "是空的" not in result["note"], f"畫面上有兩筆，它說空的：{result['note']}"
+        assert title in out, f"讀出來的不是承辦人挑的那筆：{out[:120]}"
+
+
+def test_the_dossier_and_this_turn_s_retrieval_are_two_different_sections():
+    """兩份都要讀得到，而且名字要說得出自己是哪一份。
+
+    只改成讀 manifest（選項 a）的話，「這一輪檢索到什麼」就讀不到了——
+    而那份資訊有人在用：右欄的三態標記（`matched`／`query_only`／`unused`）
+    靠它比對，Ci 剛剛才實際看到那個標記在運作。
+    """
+    calls: list = []
+    manifest = {"laws": [{"id": "kb/…/訴願法.txt", "t": "訴願法"}], "references": []}
+    retrieved = [{"id": "L1", "t": "訴願法第 14 條"}]
+    t = _tools(calls, payload={"laws": retrieved}, case_manifest=manifest)
+
+    assert "訴願法第 14 條" in t.read_case("retrieved_laws"), "這一輪檢索到的讀不到了"
+    assert "L1" in t.refbook.whitelist(), "檢索到的那份仍然要能被引用"
+
+    # 卷宗清單那份**不**進白名單：它的 id 是母庫 S3 key，不是畫面上印得出來的編號
+    t.read_case("laws")
+    assert "kb/…/訴願法.txt" not in t.refbook.whitelist(), \
+        "S3 key 進了白名單，模型會寫出 `[kb/public/…]` 這種沒人看得懂的引用"
+
+
+def test_an_empty_section_says_whether_the_other_one_has_anything():
+    """某份空的時候要講清楚另外那份有沒有東西。
+
+    不講的話最糟的形狀會回來：卷宗是空的、這一輪檢索到 5 條，模型回一句
+    「卷內沒有法規」，承辦人看著右欄的檢索結果一頭霧水。
+    """
+    calls: list = []
+    events: list = []
+    t = _tools(calls, payload={"laws": [{"id": "L1", "t": "訴願法第 14 條"}]},
+               case_manifest={"laws": [], "references": []}, events=events)
+    note = t.read_case("laws")
+    assert "retrieved_laws" in note and "1 筆" in note, \
+        f"卷宗空的時候沒說「檢索到的那份有東西」：{note}"
+    assert "不要說成" in note, "沒有擋掉「卷內什麼都沒有」這種講法"
+
+    # 反過來：兩份都空的時候不要無中生有地說另一份有東西
+    events2: list = []
+    t2 = _tools(calls, payload={}, case_manifest={"laws": [], "references": []},
+                events=events2)
+    note2 = t2.read_case("laws")
+    assert "retrieved_laws" not in note2, f"兩份都空卻說另一份有東西：{note2}"
+    assert "右欄" in note2, "沒告訴承辦人下一步怎麼做"
+
+
 def test_case_refs_are_marked_as_record_not_retrieval():
     """卷內引用**不該看起來像 KB 命中**。每筆 ref 自己帶 origin，前端才分得出來。"""
     calls: list = []
     t = _tools(calls, payload={"cases": [{"id": "C1", "t": "某決定"}]})
-    t.read_case("cases")
+    t.read_case("retrieved_cases")
     assert t.refbook.get("C1")["origin"] == "record"
     rb2 = RefBook(); rb2.add(_hit())
     assert rb2.get("c1")["origin"] == "retrieval"
@@ -704,7 +781,7 @@ def test_read_case_still_emits_no_hits_even_though_it_registers_ids():
     calls: list = []
     events: list = []
     t = _tools(calls, payload={"laws": [{"id": "L1", "t": "x"}]}, events=events)
-    t.read_case("laws")
+    t.read_case("retrieved_laws")
     assert [d["hits"] for n, d in events if n == "tool_result"] == [[]]
     assert "L1" in t.refbook.whitelist(), "id 沒進白名單"
 
@@ -714,7 +791,7 @@ def test_case_ids_keep_their_own_numbers():
     改號會讓聊天講的號跟畫面上的對不起來。"""
     calls: list = []
     t = _tools(calls, payload={"laws": [{"id": "L6", "t": "x"}]})
-    t.read_case("laws")
+    t.read_case("retrieved_laws")
     assert "L6" in t.refbook.whitelist()
     assert t.refbook.get("L6")["t"] == "x"
 
@@ -1263,11 +1340,11 @@ def test_pipeline_tools_reset_the_case_ref_numbering_so_L1_means_the_new_run():
                          sections={"screen": {"x": 1}, "laws": new_laws})
     t = _tools(calls, payload={"laws": old_laws}, run_pipeline=fake)
 
-    t.read_case("laws")
+    t.read_case("retrieved_laws")
     assert t.refbook.get("L1")["t"] == "舊 run 的法條"
 
     t.extract_case_document()
-    t.read_case("laws")
+    t.read_case("retrieved_laws")
     assert t.refbook.get("L1")["t"] == "新 run 的法條", \
         "跑完流水線之後 L1 還指著舊 run——誠實層被靜默打穿了"
 
@@ -1416,14 +1493,26 @@ def test_run_id_is_optional_and_an_empty_one_is_not_a_400():
         "_validate 還在擋空 run_id——契約已改成選填"
 
 
-def test_payload_sections_match_the_chat_layer_case_sections():
-    """橋那一側的 `PAYLOAD_SECTIONS` 與聊天層的 `CASE_SECTIONS` 必須一致。
+def test_every_payload_backed_section_is_actually_sliced_by_the_bridge():
+    """橋切出來的分區，與 `read_case` 從 payload 讀的分區，必須剛好對上。
 
     兩邊各存一份是刻意的（編排層不該依賴聊天層，方向會反），代價是可能漂。
-    漂掉的症狀：`read_case("laws")` 說「卷內的 laws 是空的」，但畫面上明明有法條。
+    漂掉的症狀：`read_case` 說某個分區是空的，但畫面上明明有東西。
+
+    **2026-09-13 起不再是「兩個 tuple 逐字相等」**：`CASE_SECTIONS` 多了
+    `laws`／`cases` 兩個**讀卷宗清單**（`manifest.json`）的分區，它們不經過橋。
+    所以這裡釘的是真正的那條不變量——**payload 那邊沒有多切、也沒有少切**。
+    寫成相等的話，拆開這件事會讓一條沒壞的測試紅，而那會誘人去把它改成恆真的。
     """
-    assert tuple(chat_bridge.PAYLOAD_SECTIONS) == tuple(CASE_SECTIONS), \
-        "橋與聊天層的分區值域漂了，read_case 會讀不到東西"
+    from_payload = ({"intake", "facts_excerpt", "screen"}
+                    | set(chat_mod._RETRIEVED_SECTIONS.values()))
+    assert from_payload == set(chat_bridge.PAYLOAD_SECTIONS), \
+        (f"橋與聊天層的分區值域漂了：橋切 {sorted(chat_bridge.PAYLOAD_SECTIONS)}、"
+         f"read_case 讀 {sorted(from_payload)}")
+    # 卷宗清單那兩個分區必須真的存在於 CASE_SECTIONS，否則模型讀不到承辦人挑的東西
+    for section in ("laws", "cases"):
+        assert section in CASE_SECTIONS
+        assert section in chat_mod._MANIFEST_SECTIONS, f"{section} 應該讀卷宗清單"
 
 
 def test_the_pipeline_callable_injected_into_the_chat_layer_is_an_adapter_not_run_case():

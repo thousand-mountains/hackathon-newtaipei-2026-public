@@ -468,7 +468,31 @@ _NO_RUN_FOR_GRAPH = ("這個案子還沒有執行紀錄，畫不出關聯圖。"
                      "再用 generate_decision_draft 生成草稿。")
 
 #: `read_case` 讀得到的分區。值域固定，讓模型不能亂要一個不存在的欄位。
-CASE_SECTIONS = ("intake", "facts_excerpt", "screen", "laws", "cases")
+#: `read_case` 可讀的分區。**`laws`／`cases` 與 `retrieved_*` 是兩份不同的東西**
+#: （2026-09-13 拆開；在那之前只有一份，而那一份是錯的那一份）。
+#:
+#: 實際發生的：承辦人用右欄的 `+` 把兩條法規、兩件案例加進卷宗，畫面清楚寫著
+#: 「相關法規 2」「相關案例 2」，然後問「可以生草稿了嗎」，得到
+#: 「法規依據：卷內還沒有／相似案例：卷內也還沒有」。
+#:
+#: 根因是「卷內」這個詞被用在兩個不同的東西上：
+#: - 畫面右欄的「案件卷宗」＝ `manifest.json`（**承辦人挑的**，走 REST 加入）
+#: - `read_case` 讀的「卷內」＝ 上一次 run 的 payload（**N4 這一輪檢索到的**）
+#: 那位承辦人的 run 只跑到 n3，payload 的 `laws` 當然是空的——而 manifest 有東西。
+#: 從他的角度，「卷內的 laws 是空的」**是一句假話**。
+#:
+#: 兩份都要讀得到，而且**名字要說得出自己是哪一份**：
+#: - `laws`／`cases`：卷宗清單。`generate_decision_draft` 的前置條件看的就是這份。
+#: - `retrieved_laws`／`retrieved_cases`：這一輪檢索到的。右欄的三態標記
+#:   （`matched`／`query_only`／`unused`，`classify_picks`）靠它比對，不能拿掉。
+CASE_SECTIONS = ("intake", "facts_excerpt", "screen", "laws", "cases",
+                 "retrieved_laws", "retrieved_cases")
+
+#: 卷宗清單那兩個分區 → `manifest.json` 的鍵。**`cases` 對到 `references`**：
+#: 契約 §4.0 的鍵名是 `references`，而畫面與工具講的是「相似案例」。
+_MANIFEST_SECTIONS = {"laws": "laws", "cases": "references"}
+#: 這一輪檢索那兩個分區 → run payload 的鍵。
+_RETRIEVED_SECTIONS = {"retrieved_laws": "laws", "retrieved_cases": "cases"}
 
 #: 承辦人挑的法規在這一輪檢索裡的三種下場（契約 v2 §3.5.2 末段，2026-09-13 Ci 改判）。
 #:
@@ -814,8 +838,63 @@ class ChatTools:
         return self._search("retrieve_refs", query,
                             {"prefix": settings.ref_prefixes()}, "函釋與判解")
 
+    #: 每個分區是什麼的一句話。**跟著資料一起給模型**：光給一個鍵名，
+    #: 模型會照自己的理解命名它，於是「卷宗清單」與「這一輪檢索到的」又混在一起。
+    _SECTION_WHAT = {
+        "intake": "收文欄位（卷證抽取出來的）",
+        "facts_excerpt": "事實段原文摘錄",
+        "screen": "程序審查結果",
+        "laws": "**案件卷宗**裡的相關法規——承辦人自己挑進來的那份，"
+                "就是畫面右欄「相關法規」看到的東西，也是生成草稿的前置條件看的那份",
+        "cases": "**案件卷宗**裡的相關案例——承辦人自己挑進來的那份，"
+                 "就是畫面右欄「相關案例」看到的東西，也是生成草稿的前置條件看的那份",
+        "retrieved_laws": "**這一輪檢索**查到的法條（N4 查表的結果），"
+                          "不是承辦人挑的那份",
+        "retrieved_cases": "**這一輪檢索**查到的相似決定，不是承辦人挑的那份",
+    }
+
+    def _section_value(self, section: str) -> Any:
+        """分區 → 值。兩個來源：卷宗清單（manifest）與這一輪的 run payload。
+
+        **`laws`／`cases` 讀的是 manifest 不是 payload**（2026-09-13 改，見
+        `CASE_SECTIONS` 的說明）。承辦人在右欄看到「相關法規 2」的時候，
+        任何一個回答都不能說「卷內沒有法規」。
+        """
+        if section in _MANIFEST_SECTIONS:
+            return self.case_manifest.get(_MANIFEST_SECTIONS[section])
+        if section in _RETRIEVED_SECTIONS:
+            return self.case_payload.get(_RETRIEVED_SECTIONS[section])
+        return self.case_payload.get(section)
+
+    def _empty_section_note(self, section: str) -> str:
+        """某個分區空的時候，順便講清楚**另外那一份有沒有東西**。
+
+        不講的話最糟的形狀會回來：卷宗是空的、但這一輪檢索到 5 條，模型回一句
+        「卷內沒有法規」，承辦人看著右欄的檢索結果一頭霧水。兩份各自的空滿要分開說。
+        """
+        what = self._SECTION_WHAT.get(section, section)
+        note = f"「{section}」是空的（{what}）。"
+        pair = {"laws": "retrieved_laws", "cases": "retrieved_cases",
+                "retrieved_laws": "laws", "retrieved_cases": "cases"}.get(section)
+        if not pair:
+            return note
+        other = self._section_value(pair)
+        n = len(other) if isinstance(other, list) else 0
+        if n:
+            note += (f"但另外那一份不是空的：「{pair}」有 {n} 筆"
+                     f"（{self._SECTION_WHAT.get(pair, pair)}）。"
+                     f"**不要說成「卷內什麼都沒有」**，兩份是不同的東西。")
+        elif section in _MANIFEST_SECTIONS:
+            note += "請承辦人用右欄的「＋」把法規／案例加進卷宗，或先查一次再加。"
+        return note
+
     def read_case(self, section: str) -> str:
-        """讀呼叫端餵進來的 payload 分區。**不碰 runstore、不呼叫 build_payload。**"""
+        """讀一個分區。**不碰 runstore、不呼叫 build_payload**（spec §4.0）。
+
+        兩個來源：卷宗清單（`case_manifest`，承辦人挑的）與這一輪的 run payload
+        （N4 檢索到的）。哪個分區走哪個來源見 `CASE_SECTIONS` 的說明——
+        那段也寫了為什麼 2026-09-13 要把它們拆開。
+        """
         _throttle()
         self._call("read_case", {"section": section})
         if section not in CASE_SECTIONS:
@@ -823,25 +902,33 @@ class ChatTools:
             # 要一個不存在的分區是呼叫本身壞了，不是「這裡沒有資料」。
             self._result("read_case", [], note, status="failed")
             return note
-        value = self.case_payload.get(section)
+        value = self._section_value(section)
         if value in (None, "", [], {}):
-            note = f"卷內的「{section}」是空的。"
+            note = self._empty_section_note(section)
             self._result("read_case", [], note, status="empty")
             return note
-        # 卷內的 laws/cases 自帶 id（N4 編的 `L1`、`C3`），模型讀了就會引用它們。
+        # 這一輪檢索到的 laws/cases 自帶 id（N4 編的 `L1`、`C3`），模型讀了就會引用它們。
         # 註冊進白名單，否則那些引用會被當成捏造的（或更糟：在原版的小寫樣式下
         # 根本偵測不到，靜默放行）。
+        #
+        # **卷宗清單那兩個分區不註冊**：它們的 `id` 是母庫 S3 key
+        # （`kb/public/…txt`），不是畫面上印得出來的編號。註冊進去模型就會寫
+        # `[kb/public/…]`，那既不是承辦人看得懂的東西，也不在任何一張卡片上。
         registered: list[str] = []
-        if isinstance(value, list):
+        if isinstance(value, list) and section in _RETRIEVED_SECTIONS:
             registered = self.refbook.add_case_refs(
                 [v for v in value if isinstance(v, dict) and v.get("id")])
-        note = f"已讀取卷內「{section}」。"
+        note = f"已讀取「{section}」（{self._SECTION_WHAT.get(section, section)}）。"
         if registered:
             note += f"可引用的卷內編號：{'、'.join(registered)}。"
+        elif section in _MANIFEST_SECTIONS:
+            note += ("這份是承辦人挑的卷宗清單，**沒有可引用的編號**——"
+                     "要引用請讀 retrieved_laws／retrieved_cases。")
         # hits 仍為 []：spec §4.0／§4.2 明訂 read_case 不產生引用事件，前端照這個寫。
         # 白名單是後端內部狀態，不走事件。
         self._result("read_case", [], note)
-        return json.dumps(value, ensure_ascii=False, indent=1)
+        return json.dumps({"section": section, "是什麼": self._SECTION_WHAT.get(section, section),
+                           "內容": value}, ensure_ascii=False, indent=1)
 
     def refine_text(self, text: str, instruction: str = "改寫得更通順") -> str:
         """單獨一次模型呼叫改寫文字。**本回合強制紅燈**（規則 2）。
