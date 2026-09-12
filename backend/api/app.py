@@ -24,6 +24,7 @@
 | GET  | `/api/runs/{run_id}`        | 輪詢執行結果：200／409 執行中／502 失敗／404 |
 | GET  | `/api/runs/{run_id}/events` | SSE 節點事件流（bedrock 檔位的加值層）      |
 | POST | `/api/cases/{case_id}/submit` | 送出審議：後端重算後 200／409（§6.1 #9）  |
+| POST | `/api/cases/{case_id}/chat`   | 聊天追問（SSE；`?stream=0` 一次性 JSON）。**只在 bedrock 檔位**，否則 503 |
 | POST | `/api/deadline`             | 期間計算（沿用 prototype/app.py 的契約）    |
 
 紅線：
@@ -62,6 +63,7 @@ except ImportError:
 
 import backend.llm.client as llm_client  # noqa: E402  健康檢查用：只看 Agent 在不在，不呼叫任何模型
 import backend.retrieval.kb as retrieval_kb  # noqa: E402  健康檢查用：只看 boto3 在不在，不打任何 API
+from backend.api.chat import router as chat_router  # noqa: E402
 from backend.api.events import BUS  # noqa: E402
 from backend.config import settings  # noqa: E402
 from backend.config.settings import load_snapshot, provenance, run_mode  # noqa: E402
@@ -151,6 +153,10 @@ app = FastAPI(
     description="六節點 deterministic pipeline，同一個 process 也 serve 五步動線前端。執行檔位由 RUN_MODE 決定（fixture 離線重播／bedrock 即時推論），實際值見 GET /api/health。",
     docs_url="/api/docs",
 )
+
+# 聊天追問（spec 2026-09-12-chat-honesty-lamps）。閘門與事件都在該檔，
+# 這裡只掛一行——回滾就是把這行拿掉。
+app.include_router(chat_router)
 
 # 本機開發用 CORS：只放行 localhost／127.0.0.1 的任意 port。
 # 不用 allow_origins=["*"]——那會讓任何網站都能打這支 API。

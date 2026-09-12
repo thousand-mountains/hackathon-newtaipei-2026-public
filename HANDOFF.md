@@ -18,7 +18,7 @@
 
 ```bash
 python3 prototype/build.py     # static/ 或 data/ 改過才需要重跑
-uv run --with fastapi --with "uvicorn[standard]" --with pydantic -- \
+uv run --with fastapi --with "uvicorn[standard]" --with pydantic --with python-multipart -- \
     python -m uvicorn backend.api.app:app --host 127.0.0.1 --port 8080
 ```
 

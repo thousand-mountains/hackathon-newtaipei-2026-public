@@ -36,6 +36,18 @@ except ImportError:  # pragma: no cover - 有裝 boto3 的環境走不到
 # N5 `REF_PREFIXES` 的材料，不是「相似案」。放寬不等於全收。
 DEFAULT_PREFIXES = ["歷史訴願決定書/", "新北訴願決定書_全量/"]
 
+# `retrieve_refs` 工具只准查這兩個前綴：函釋與判解是「可以引用的來源」，
+# 決定書、卷證等不在此列（那些走 N4 的檢索通道，並且要另外做引用驗證）。
+#
+# **放在這裡而不是 N5，是為了讓聊天層也拿得到同一份。** 原本定義在
+# `backend/nodes/n5_draft.py`，但 `backend/llm/chat.py` 不得 import
+# `backend.nodes.*`（n5_draft 自己 import backend.llm.client，聊天層再 import 它
+# 就是層級倒置，而且會把 backend.orchestrator.* 整包拉進純函式測試的 import 圖，
+# 見 spec 2026-09-12-chat-honesty-lamps §4.0）。
+# **不要在別處複製這份字面值**——兩處各寫一份，改一邊就會漂。
+# `backend/tests/run_all.py` 的 AC14 用 `is` 比對釘住「兩邊是同一個物件」。
+REF_PREFIXES = ["行政函釋/", "司法院釋字及行政判解/"]
+
 # 兩批的席次配額。**分開查、各自取 top-k、再合併**，不是先撈一大包再硬塞席次——
 # 後者會在官方那批其實不相關時，硬把爛結果塞進前五名。
 # 為什麼要配額：public 的檔數是 official 的 23 倍，單次查詢的前 15 名會被 public 佔滿

@@ -22,7 +22,7 @@
 ```bash
 python3 prototype/build.py     # 前端建置產物（單檔全內嵌）；static/ 或 data/ 改過才需要重跑
 
-uv run --with fastapi --with "uvicorn[standard]" --with pydantic -- \
+uv run --with fastapi --with "uvicorn[standard]" --with pydantic --with python-multipart -- \
     python -m uvicorn backend.api.app:app --host 127.0.0.1 --port 8080
 ```
 
@@ -32,6 +32,11 @@ uv run --with fastapi --with "uvicorn[standard]" --with pydantic -- \
 | <http://127.0.0.1:8080/?case=synthetic-blocked-01> | 換案例（也可以用頁面上的下拉選單） |
 | <http://127.0.0.1:8080/api/health> | 真的去載 laws-snapshot 與每個合成案例，載不動回 503 |
 | <http://127.0.0.1:8080/api/docs> | OpenAPI |
+
+> ⚠️ **`--with python-multipart` 不能省。** 少了它服務**起不來**，而且錯誤訊息
+> （`RuntimeError: Form data requires "python-multipart" to be installed`）指向的是
+> `POST /api/cases` 的檔案上傳，跟你當下在做的事八成無關——交件夜照文件照抄的人
+> 會卡在一個看起來毫不相干的錯誤上。（2026-09-12 實際踩到：這行原本漏了它。）
 
 **這是 fixture 檔位唯一的官方啟動指令**。以前 `uv run … backend/api/app.py`（port 8788）
 與 `prototype/app.py`（port 8787）是兩支各跑各的，整合後統一成上面這一行。

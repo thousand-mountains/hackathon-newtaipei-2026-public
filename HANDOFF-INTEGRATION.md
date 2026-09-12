@@ -19,7 +19,7 @@
 
 ```bash
 python3 prototype/build.py
-uv run --with fastapi --with "uvicorn[standard]" --with pydantic -- \
+uv run --with fastapi --with "uvicorn[standard]" --with pydantic --with python-multipart -- \
     python -m uvicorn backend.api.app:app --host 127.0.0.1 --port 8080
 # → http://127.0.0.1:8080/
 ```

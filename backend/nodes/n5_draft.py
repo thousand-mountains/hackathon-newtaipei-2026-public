@@ -36,12 +36,12 @@ from typing import Any
 from backend.llm import client as llm_client
 from backend.orchestrator.narrative import build_doc_skeleton
 from backend.orchestrator.state import CaseState, NodeCtx, NodeResult
+# REF_PREFIXES 的賦值在 kb.py，不在這裡——聊天層（backend/llm/chat.py）不得
+# import backend.nodes.*，但要用同一份前綴。**不要在這裡複製一份字面值。**
+from backend.retrieval.kb import REF_PREFIXES
 
 MAX_SENTENCES_PER_SLOT = 12
 
-# retrieve_refs 工具只准查這兩個資料集前綴：函釋與判解是「可以引用的來源」，
-# 決定書、卷證等不在此列（那些走 N4 的檢索通道，並且要另外做引用驗證）。
-REF_PREFIXES = ["行政函釋/", "司法院釋字及行政判解/"]
 
 
 def resolve_slots(requires_human_conclusion: bool) -> list[str]:

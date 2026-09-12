@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 部署驗收：proposal `deploy-backend-to-aws` 的 Success Criteria 四條。
+# 部署驗收：proposal `deploy-backend-to-aws` 的 Success Criteria 四條＋聊天 SSE 一條。
 #
 #   ./verify.sh                 # 自動從 CloudFormation 取部署網址
 #   ./verify.sh http://host     # 指定網址
@@ -161,7 +161,42 @@ if [[ "$submit_code" == "409" ]]; then
   python3 -m json.tool < /tmp/verify_submit.json 2>/dev/null | head -30
 else
   bad "US-3 C 型 submit：HTTP $submit_code — 期望 409，這是 P0"
-  head -c 600 /tmp/verify_submit.json
+  # 補 echo：head -c 不會收尾換行，少了它下一段的判定結果會被黏在這坨 JSON 後面，
+  # 用 grep 看輸出時會整條漏掉（2026-09-12 實際踩到）。
+  head -c 600 /tmp/verify_submit.json; echo
+fi
+
+# ── 5) 聊天端點真的在串流 ─────────────────────────────────────────────
+# 為什麼要有這一段：ALB 緩衝、X-Accel-Buffering 掉了、SSE generator 沒 flush——
+# 這些壞法在本機（沒有 ALB）全都看不到，而且在雲上**全都會回 HTTP 200**。
+# 既有四段沒有任何一段碰得到長連線。
+#
+# ⚠️ run_id 是必填、且必須是一次**已完成**的 run（spec 2026-09-12-chat-honesty-lamps
+#    §2.1）。只送 message 的版本在系統完全正常時也會拿不到 data: 行——那是恆假檢查，
+#    比假通過更毒，因為它會訓練人忽略整份 verify.sh。所以這裡重用第 3 段跑完的 $rid。
+if [[ -z "${rid:-}" ]]; then
+  bad "聊天 SSE：沒有可用的 run_id（第 3 段沒跑成）—— 這段無法驗，不是聊天壞了"
+else
+  chat_out="$(curl -N -s --max-time 90 -X POST \
+    "$base/api/cases/synthetic-ordinary-01/chat" \
+    -H 'content-type: application/json' \
+    -d "{\"run_id\":\"$rid\",\"message\":\"有沒有類似的訴願決定可以參考？\"}" \
+    | head -c 4000)"
+  # 判準是**真的收到 data: 行**，不是 HTTP 200。只比狀態碼抓不到上面那些壞法。
+  if printf '%s' "$chat_out" | grep -q '^data:'; then
+    if printf '%s' "$chat_out" | grep -q '^event: done'; then
+      ok "US-5 聊天 SSE：收到 data: 事件並以 done 收尾"
+    elif printf '%s' "$chat_out" | grep -q '^event: error'; then
+      # error 是合法的事件形狀（spec §4.6），但它代表這一輪失敗了，不能算綠。
+      bad "US-5 聊天 SSE：串流通了，但這一輪以 error 收尾"
+      printf '%s\n' "$chat_out" | grep '^data:' | tail -1 | head -c 600; echo
+    else
+      bad "US-5 聊天 SSE：有 data: 但沒有 done 也沒有 error —— 串流被截斷"
+    fi
+  else
+    bad "US-5 聊天 SSE：一個 data: 事件都沒收到（HTTP 通不代表串流通）"
+    printf '%s' "$chat_out" | head -c 600; echo
+  fi
 fi
 
 echo
