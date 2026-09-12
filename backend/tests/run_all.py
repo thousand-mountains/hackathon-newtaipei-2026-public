@@ -98,6 +98,43 @@ def _scan_files(roots: tuple[pathlib.Path, ...] = (BACKEND,)) -> list[pathlib.Pa
     return sorted(out)
 
 
+def scan_frontend_dist_has_no_stowaways() -> list[str]:
+    """`frontend/dist` 裡不得有 index.html 沒引用的檔案。
+
+    **為什麼這條是紅線而不是潔癖**：`frontend/public/` 是 vite 的靜態資源目錄，
+    裡面的東西會**原封不動複製進 dist**，而 `backend/Dockerfile` 是整包
+    `COPY frontend/dist/`。所以任何人往 public/ 放一個檔，它就會**靜默地**
+    上線到公開網址——而且 bundle 的 kB 數看不出來（它不在 JS 裡）。
+
+    2026-09-12 實際發生：另一個 session 為了知識圖研究把 1.6 MB 的
+    `kb-graph.json` 放進 `frontend/public/`。那份 json 是從
+    `data/local/kb/**/*.txt` 抽出來的，含 2,477 個賽方資料集文件的節點——
+    **賽方資料集「僅供競賽之用」，推到公開 ALB 網址就是資料隔離違規**。
+    當時 dist 是舊的所以沒中，但下一次 build 就會帶上去。
+
+    dist 是建置產物、不進 git（`frontend/.gitignore`），所以**不存在時視為通過**
+    ——不能因為沒 build 過就把測試弄紅。
+    """
+    dist = ROOT / "frontend" / "dist"
+    index = dist / "index.html"
+    if not index.exists():
+        return []
+    referenced = set(re.findall(r'(?:src|href)="/([^"]+)"', index.read_text(encoding="utf-8")))
+    allowed = {"index.html", "favicon.ico", "favicon.svg", "robots.txt"} | referenced
+    problems = []
+    for f in sorted(dist.rglob("*")):
+        if not f.is_file():
+            continue
+        rel = f.relative_to(dist).as_posix()
+        if rel in allowed:
+            continue
+        problems.append(
+            f"{rel}（{f.stat().st_size:,} bytes）：index.html 沒有引用它，"
+            "但它會跟著映像檔上線到公開網址。若來自 frontend/public/，搬去 data/local/。"
+        )
+    return problems
+
+
 def scan_redlines() -> list[str]:
     """掃 backend/ 與 prototype/ 全樹。**本檔自己除外**——它是掃描器，禁用字樣就是它的
     規則定義，不排除會永遠自己抓自己。其餘任何檔案出現這些字樣一律視為違規。
@@ -456,6 +493,8 @@ def main() -> int:
         ("N2/N3/N4/N6 無 LLM 依賴（ast 遞迴，含 strands）", scan_llm_import_graph),
         ("所有 import 在模組頂層（spec D8）", scan_top_level_imports),
         ("model id 的實際值不進 backend/ prototype/ scripts/（值只由環境變數注入）", scan_model_id_literals),
+        ("frontend/dist 無夾帶檔案（public/ 會靜默上線到公開網址）",
+         scan_frontend_dist_has_no_stowaways),
     ]
     for label, fn in checks:
         problems = fn()
