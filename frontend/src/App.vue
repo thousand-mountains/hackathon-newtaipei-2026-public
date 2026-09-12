@@ -3,7 +3,8 @@ import { ref, reactive, computed, watch, onMounted } from 'vue'
 import {
   state, active, boot, toast, CASE_NO,
   availableEvidence, attachToPending, uploadToFolder,
-  searchPool, addSearched, deleteCase, deleteFolder,
+  searchHave, searchLibrary, addSearched, deleteCase, deleteFolder,
+  viewLawFull, viewDecisionFull, viewArtifactFull,
 } from './store/app.js'
 import TopBar from './components/TopBar.vue'
 import CaseTree from './components/CaseTree.vue'
@@ -44,8 +45,9 @@ const promptVal = ref('')
 // pick (attach/upload)
 const pickState = reactive({ items: [], checked: [] })
 // search
-const searchState = reactive({ q: '', results: [], searching: false, checked: [], pool: [], have: null, group: null })
+const searchState = reactive({ q: '', results: [], searching: false, checked: [], have: null, group: null })
 let searchDeb = null
+let searchSeq = 0
 
 function onSheetRequest(req) {
   if (req.kind === 'prompt') {
@@ -80,8 +82,7 @@ function onSheetRequest(req) {
     openSheet('upload', {})
   } else if (req.kind === 'search') {
     const g = req.group || { key: req.groupKey, name: req.groupKey === 'laws' ? '相關法規' : '相關案例' }
-    const { pool, have } = searchPool(g.key)
-    Object.assign(searchState, { q: '', results: [], searching: false, checked: [], pool, have, group: g })
+    Object.assign(searchState, { q: '', results: [], searching: false, checked: [], have: searchHave(g.key), group: g })
     openSheet('search', {})
   }
 }
@@ -131,10 +132,13 @@ function onSearchInput() {
     return
   }
   searchState.searching = true
-  searchDeb = setTimeout(() => {
-    const term = searchState.q.trim().toLowerCase()
-    const avail = searchState.pool.filter((p) => !searchState.have.has(p.name))
-    searchState.results = avail.filter((p) => p.kw.includes(term))
+  searchDeb = setTimeout(async () => {
+    const q = searchState.q
+    const seq = ++searchSeq
+    const results = await searchLibrary(searchState.group.key, q)
+    if (seq !== searchSeq) return // 有更新的查詢在進行，丟棄這次舊結果
+    // 濾掉本案已加入的（避免重複）
+    searchState.results = results.filter((r) => !searchState.have.has(r.name))
     searchState.searching = false
   }, 420)
 }
@@ -151,13 +155,24 @@ function submitSearch() {
 }
 
 // ── 文件檢視 / 案例 / 圖 / 版型 ──
-const docView = reactive({ name: '', note: '', full: '', graph: false })
-function viewDoc(it) {
-  Object.assign(docView, { name: it.name, note: it.note || '', full: it.full || '', graph: !!it.graph })
+const docView = reactive({ name: '', note: '', full: '', graph: false, loading: false })
+async function viewDoc(it) {
+  Object.assign(docView, { name: it.name, note: it.note || '', full: it.full || '', graph: !!it.graph, loading: false })
   openSheet('doc', {})
+  // 沒有快取全文時即時打後端取：法規/案例 → getLaw/getDecision；產出草稿 → getArtifact
+  if (!it.full && !it.graph && (it._libId || it._artifactId)) {
+    docView.loading = true
+    let html = ''
+    if (it._artifactId) html = await viewArtifactFull(it._artifactId)
+    else if (it.ext === '例') html = await viewDecisionFull(it._libId)
+    else html = await viewLawFull(it._libId)
+    docView.full = html
+    docView.loading = false
+  }
 }
 function viewCase(k) {
-  Object.assign(docView, { name: k.no + '　' + k.title, note: k.type + '．' + k.verdict, full: k.full, graph: false })
+  // ToolOut 案例卡（工具結果）本身帶 full
+  Object.assign(docView, { name: k.no + '　' + k.title, note: k.type + '．' + k.verdict, full: k.full, graph: false, loading: false })
   openSheet('doc', {})
 }
 function viewGraph() {
@@ -307,6 +322,7 @@ const moveFolders = computed(() => state.folders)
     @close="closeSheet"
   >
     <RelationGraph v-if="docView.graph" />
+    <div v-else-if="docView.loading" class="typing" aria-label="載入全文中"><span></span><span></span><span></span></div>
     <div v-else v-html="docView.full"></div>
   </Sheet>
 

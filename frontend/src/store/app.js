@@ -87,6 +87,8 @@ function newCaseObj(name, folderId) {
     name: name || autoName(),
     folderId: folderId || null,
     started: false,
+    _loaded: false, // 是否已從後端載入彙整版（getCase）
+    _serverCreated: false, // 是否已在後端建案（第一次上傳走 createCase，之後走 uploadFiles）
     stream: [], // 對話串訊息陣列
     flags: { extract: false, cases: false, laws: false, graph: false, draft: false, out: false },
     docs: { evidence: [], cases: [], laws: [], out: [] },
@@ -109,6 +111,9 @@ export const state = reactive({
   // toast
   toastMsg: '',
   toastShow: false,
+  // 後端檔位（/health 回的 run_mode）；離線／非 live 檔位時聊天不可用（契約 §5）
+  runMode: null,
+  healthOk: null, // null=未檢查, true/false
 })
 
 export const active = () => state.cases.find((c) => c.id === state.activeId)
@@ -145,7 +150,50 @@ export function selectCase(id) {
   state.activeId = id
   state.leftOpen = false
   state.rightOpen = false
+  const c = state.cases.find((x) => x.id === id)
+  if (c) loadCase(c) // 首次選到就從後端載入彙整版（契約 §4 開案首載）
 }
+
+// 從後端載入單一案件的彙整版（getCase #4），填四群組。已載過就不重打。
+// 只有「已在後端建案」的案子才載；純本地空案（還沒上傳）沒得載。
+async function loadCase(c) {
+  if (c._loaded || !c._serverCreated) return
+  try {
+    const r = await api.getCase(c.caseId)
+    c._loaded = true
+    if (r.case && r.case.name) c.name = r.case.name
+    if (r.case && r.case.latest_run_id) c.runId = r.case.latest_run_id
+    fillDocsFromServer(c, r)
+  } catch {
+    /* 載入失敗維持現狀，不阻斷操作 */
+  }
+}
+
+// 把彙整版的四類資源映射回 docs 結構（name/note/ext/full/_libId/_artifactId）
+function fillDocsFromServer(c, r) {
+  if (Array.isArray(r.files)) c.docs.evidence = r.files.map((f) => ({ name: f.name, note: f.note || '', ext: f.ext || '', _libId: f.id }))
+  if (Array.isArray(r.laws))
+    c.docs.laws = r.laws.map((l) => ({
+      name: l.t,
+      note: l.note || '',
+      ext: '法',
+      _libId: l.id,
+      full: l.body_cached
+        ? `<p style="font-family:var(--serif);line-height:2">${esc(l.body_cached)}</p><p style="color:var(--muted);font-size:12.5px;border-top:1px solid var(--line-soft);padding-top:10px">本案關聯：${esc(l.note || '')}</p>`
+        : '',
+    }))
+  if (Array.isArray(r.references))
+    c.docs.cases = r.references.map((d) => ({ name: d.t, note: d.note || '', ext: '例', _libId: d.id, full: d.full_cached || '' }))
+  if (Array.isArray(r.artifacts))
+    c.docs.out = r.artifacts.map((a) => ({
+      name: a.name,
+      note: a.note || '',
+      ext: a.kind === 'graph' ? '圖' : a.kind === 'draft' ? '稿' : '檔',
+      _artifactId: a.id,
+      graph: a.kind === 'graph',
+    }))
+}
+
 export function moveCase(c, folderId, folderName) {
   if (c.folderId !== folderId) {
     c.folderId = folderId
@@ -154,6 +202,9 @@ export function moveCase(c, folderId, folderName) {
 }
 export function renameCase(c, name) {
   c.name = name
+  if (c._serverCreated) {
+    api.renameCase(c.caseId, name).catch(() => toast('改名同步後端失敗，畫面仍可操作'))
+  }
 }
 export function duplicateCase(c) {
   const d = createCase(c.name + '（副本）', c.folderId)
@@ -165,7 +216,8 @@ export function deleteCase(c) {
     return false
   }
   state.cases = state.cases.filter((x) => x.id !== c.id)
-  if (state.activeId === c.id) state.activeId = state.cases[0].id
+  if (state.activeId === c.id) selectCase(state.cases[0].id)
+  if (c._serverCreated) api.deleteCase(c.caseId).catch(() => toast('刪除同步後端失敗'))
   toast('案件已刪除')
   return true
 }
@@ -286,6 +338,7 @@ function aiMsg(html) {
 //   done       → 記 session_id / run_id；dropped_refs 非空標「引用有問題」（§2.4.1）
 //   error      → stage=transport 走「連線中斷可重問」，不當模型錯誤
 async function driveChat(c, payload, uiTool) {
+  await ensureServerCase(c) // 確保建案已完成、caseId 是真的
   let toolMsg = null
   let tokenMsg = null
   const stepIdx = {} // call_id:step -> steps[] 索引
@@ -441,18 +494,21 @@ function applyToolResult(c, toolMsg, data) {
     if (data.run_id) c.runId = data.run_id
     c.flags.extract = true
   } else if (tool === 'search_similar_decisions') {
-    archiveHits(c, 'cases', data.hits, (h) => ({ name: h.t, note: h.note || '向量相似度（非法律相似度）', ext: '例', full: h._full }))
+    archiveHits(c, 'cases', data.hits, (h) => ({ name: h.t, note: h.note || '向量相似度（非法律相似度）', ext: '例', full: h._full, _libId: h._libId }))
     c.flags.cases = true
+    refreshGroupIds(c, 'cases') // agent 自動歸檔了本案清單，重載拿正確的移除用 id（listReferences #17）
   } else if (tool === 'search_regulations') {
     archiveHits(c, 'laws', data.hits, (h) => ({
       name: h.t,
       note: h.note,
       ext: '法',
+      _libId: h._libId,
       full: h._body
         ? `<p style="font-family:var(--serif);line-height:2">${esc(h._body)}</p><p style="color:var(--muted);font-size:12.5px;border-top:1px solid var(--line-soft);padding-top:10px">本案關聯：${esc(h.note || '')}</p>`
         : '',
     }))
     c.flags.laws = true
+    refreshGroupIds(c, 'laws') // 同上（listCaseLaws #12）
   } else if (tool === 'build_relation_graph') {
     c.flags.graph = true
     if (!c.docs.out.some((x) => x.name === '案件關聯圖'))
@@ -482,6 +538,31 @@ function archiveHits(c, key, hits, mapper) {
     const item = mapper(h)
     if (!have.has(item.name)) addOne(c, key, item)
   })
+}
+
+// 工具自動歸檔到本案清單後，背景重載該群組拿「本案清單的真 id」回填，
+// 讓之後的移除（deleteFile/removeCaseLaw/removeReference）能對得上後端。
+// 用到 listFiles #7 / listCaseLaws #12 / listReferences #17 / listArtifacts #20。
+const GROUP_LIST = {
+  evidence: (id) => api.listFiles(id).then((r) => r.files || []),
+  laws: (id) => api.listCaseLaws(id).then((r) => r.laws || []),
+  cases: (id) => api.listReferences(id).then((r) => r.references || []),
+  out: (id) => api.listArtifacts(id).then((r) => r.artifacts || []),
+}
+async function refreshGroupIds(c, key) {
+  if (!c._serverCreated || !GROUP_LIST[key]) return
+  try {
+    const server = await GROUP_LIST[key](c.caseId)
+    // 以標題比對，把後端本案清單 id 回填到本地項目的 _libId/_artifactId
+    c.docs[key].forEach((it) => {
+      const m = server.find((s) => (s.t || s.name) === it.name)
+      if (!m) return
+      if (key === 'out') it._artifactId = m.id
+      else it._libId = m.id
+    })
+  } catch {
+    /* 重載失敗不影響顯示；移除時退化為只改本地 */
+  }
 }
 
 // runTool：組 payload → 走 chat 串流。pdf/doc 例外走匯出下載（契約 §1.5 #23）。
@@ -659,48 +740,119 @@ export function uploadToFolder(files) {
   toast(n ? `已上傳 ${n} 份卷證` : '未選擇任何檔案')
 }
 
-async function syncUploadFiles(c, files) {
-  try {
-    const form = new FormData()
-    files.forEach((f) => form.append('files', new File([''], f.name)))
-    await api.uploadFiles(c.caseId, form)
-  } catch {
-    // 樂觀更新已顯示成功，僅在背景同步失敗時輕提示（不回捲，demo 以本地為準）
-    toast('卷證同步後端失敗，畫面仍可操作')
+// 首次上傳＝建案（契約 §1.1「上傳卷證即建案」，走 createCase multipart 拿真 id）；
+// 之後的上傳才走 uploadFiles。都是背景同步，失敗只提示不回捲。
+// 建案會設 c._createTask（Promise），chat/runTool 前會 await 它，確保拿到真 caseId 再打後端。
+function syncUploadFiles(c, files) {
+  const task = (async () => {
+    try {
+      const form = new FormData()
+      files.forEach((f) => form.append('files', new File([''], f.name)))
+      if (!c._serverCreated) {
+        const r = await api.createCase(form)
+        c._serverCreated = true
+        c._loaded = true // 建案回應即最新狀態，不用再 getCase
+        if (r && r.case && r.case.id) c.caseId = r.case.id
+        if (r && r.case && r.case.name && isAutoName(c.name)) c.name = r.case.name
+      } else {
+        await api.uploadFiles(c.caseId, form)
+      }
+    } catch {
+      toast('卷證同步後端失敗，畫面仍可操作')
+    }
+  })()
+  c._createTask = task
+  return task
+}
+
+// chat/工具打後端前呼叫：若正在建案就等它完成，確保用的是真 caseId。
+async function ensureServerCase(c) {
+  if (c._createTask) {
+    try {
+      await c._createTask
+    } catch {
+      /* 已在 syncUploadFiles 內提示 */
+    }
   }
 }
 
 // ── 搜尋加入（右欄群組的 ＋） ──
-// 母庫查詢的候選清單。id 對齊契約母庫 id（擬 S3 相對路徑），供 addSearched 送真後端。
-// demo 用本地目錄即為母庫；real 模式下 addSearched 會用這裡的 id 打 #13/#18。
-export function searchPool(groupKey) {
+// 開對話框時取「本案已加入的名單」，避免重複加入。實際搜尋改走 searchLibrary（async，打後端）。
+export function searchHave(groupKey) {
   const c = active()
-  const pool =
-    groupKey === 'laws'
-      ? LAW_POOL.map((l) => ({
-          id: `kb/public/相關法規_全量/${l.title}.txt`,
-          name: l.no + '　' + l.title,
-          note: l.note,
-          ext: '法',
-          kw: (l.no + l.title + l.note + l.body).toLowerCase(),
-          full: `<p style="font-family:var(--serif);line-height:2">${esc(l.body)}</p><p style="color:var(--muted);font-size:12.5px;border-top:1px solid var(--line-soft);padding-top:10px">本案關聯：${esc(l.note)}</p>`,
-        }))
-      : CASE_POOL.map((k) => ({
-          id: `kb/public/新北訴願決定書_環保局全量/${k.no}_${k.verdict}.txt`,
-          name: k.no + '　' + k.title,
-          note: k.type + '．' + k.verdict + '．相似度 ' + k.sim + '%',
-          ext: '例',
-          kw: (k.no + k.title + k.type + k.verdict + k.law).toLowerCase(),
-          full: k.full,
-        }))
-  const have = new Set(c.docs[groupKey].map((x) => x.name))
-  return { pool, have }
+  return new Set(c.docs[groupKey].map((x) => x.name))
+}
+
+// 看全文：打 getLaw #11 / getDecision #16 取母庫全文，組成顯示 HTML。
+// real 模式本案清單項目的 full 為空，靠這裡即時取；mock 也回，故兩邊一致。
+export async function viewLawFull(libId) {
+  try {
+    const l = await api.getLaw(libId)
+    return `<p style="font-family:var(--serif);line-height:2">${esc(l.body || '')}</p>`
+  } catch {
+    toast('取法規全文失敗')
+    return ''
+  }
+}
+export async function viewDecisionFull(libId) {
+  try {
+    const d = await api.getDecision(libId)
+    return d.full || `<p style="color:var(--muted)">${esc((d.verdict || '') + ' ' + (d.category || ''))}</p>`
+  } catch {
+    toast('取決定書全文失敗')
+    return ''
+  }
+}
+// 產出（草稿）看全文：打 getArtifact #21 取草稿結構／HTML。
+export async function viewArtifactFull(artifactId) {
+  try {
+    const a = await api.getArtifact(active().caseId, artifactId)
+    if (a.html) return a.html
+    // sections[] 結構 → 簡單組成 HTML（契約 §4.4）
+    if (Array.isArray(a.sections)) {
+      return a.sections
+        .map((s) => `<h4>${esc(s.h || '')}</h4>` + (s.blocks || []).map((b) => `<p>${esc(b.text || '')}</p>`).join(''))
+        .join('')
+    }
+    return ''
+  } catch {
+    toast('取產出全文失敗')
+    return ''
+  }
+}
+
+// 母庫查（server-side）：laws → searchLaws #10、cases → searchDecisions #15。
+// 回統一形狀 [{id,name,note,ext}]（id＝母庫 id，供 addSearched 送 #13/#18）。
+// 看全文的 body/full 母庫查不回，點看全文時再打 getLaw/getDecision（§4.2/§4.3）。
+export async function searchLibrary(groupKey, q) {
+  const query = (q || '').trim()
+  if (!query) return []
+  try {
+    if (groupKey === 'laws') {
+      const r = await api.searchLaws(query)
+      return (r.results || []).map((x) => ({ id: x.id, name: x.t, note: x.src || '', ext: '法' }))
+    } else {
+      const r = await api.searchDecisions(query)
+      return (r.results || []).map((x) => ({
+        id: x.id,
+        name: x.t,
+        note: [x.category, x.verdict, x.score != null ? `向量相似度 ${Math.round(x.score * 100)}%` : '']
+          .filter(Boolean)
+          .join('．'),
+        ext: '例',
+      }))
+    }
+  } catch {
+    toast('搜尋失敗，可重試')
+    return []
+  }
 }
 export function addSearched(groupKey, items) {
   const c = active()
   let n = 0
   items.forEach((item) => {
-    addOne(c, groupKey, { name: item.name, note: item.note, ext: item.ext, full: item.full, _libId: item.id })
+    // full 留空：看全文時再打 getLaw/getDecision 取（§4.2/§4.3）。_libId 供查全文與同步用。
+    addOne(c, groupKey, { name: item.name, note: item.note, ext: item.ext, full: item.full || '', _libId: item.id })
     n++
   })
   flushTouched()
@@ -778,9 +930,44 @@ function syncThemeAttr() {
 }
 
 // ── 啟動 ──
-export function boot() {
-  const first = createCase(null, null)
-  state.activeId = first.id
+export async function boot() {
+  // 開機檢查檔位（health #1）＋載入既有案件清單（listCases #2）。
+  // mock 模式一樣會回應（run_mode:'mock'），流程一致；real 模式才是真的檢查後端。
+  await checkHealth()
+  let loadedAny = false
+  try {
+    const r = await api.listCases()
+    const list = (r && r.cases) || []
+    list.forEach((cs) => {
+      const c = newCaseObj(cs.name, null)
+      c.caseId = cs.id
+      c._serverCreated = true
+      if (cs.latest_run_id) c.runId = cs.latest_run_id
+      state.cases.push(c)
+    })
+    loadedAny = list.length > 0
+  } catch {
+    /* 後端不可用時退回本地空案 */
+  }
+  // 沒有既有案件 → 建一個本地空案讓使用者可以開始（上傳時才真的建案）
+  if (!loadedAny) {
+    const first = createCase(null, null)
+    state.activeId = first.id
+  } else {
+    selectCase(state.cases[0].id)
+  }
+}
+
+// health #1：把 run_mode／可用性存進 state，供 UI 判斷聊天是否可用（契約 §5）
+export async function checkHealth() {
+  try {
+    const h = await api.health()
+    state.healthOk = true
+    state.runMode = (h && (h.run_mode || (h.provenance && h.provenance.run_mode))) || null
+  } catch {
+    state.healthOk = false
+    state.runMode = null
+  }
 }
 export { CASE_NO, TOOLS }
 export { esc, isAutoName }
