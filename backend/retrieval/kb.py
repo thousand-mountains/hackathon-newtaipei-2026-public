@@ -43,14 +43,18 @@ except ImportError:  # pragma: no cover - 有裝 boto3 的環境走不到
 # `retrieve_refs` 工具只准查這兩個前綴：函釋與判解是「可以引用的來源」，
 # 決定書、卷證等不在此列（那些走 N4 的檢索通道，並且要另外做引用驗證）。
 #
-# **放在這裡而不是 N5，是為了讓聊天層也拿得到同一份。** 原本定義在
-# `backend/nodes/n5_draft.py`，但 `backend/llm/chat.py` 不得 import
-# `backend.nodes.*`（n5_draft 自己 import backend.llm.client，聊天層再 import 它
-# 就是層級倒置，而且會把 backend.orchestrator.* 整包拉進純函式測試的 import 圖，
-# 見 spec 2026-09-12-chat-honesty-lamps §4.0）。
-# **不要在別處複製這份字面值**——兩處各寫一份，改一邊就會漂。
-# `backend/tests/run_all.py` 的 AC14 用 `is` 比對釘住「兩邊是同一個物件」。
-REF_PREFIXES = ["行政函釋/", "司法院釋字及行政判解/"]
+# **唯一的事實來源是 `settings.ref_prefixes()`，這裡不留模組層常數。**
+#
+# 這份清單原本定義在 `backend/nodes/n5_draft.py`，後來搬到這裡，為的是讓聊天層
+# 也拿得到同一份——`backend/llm/chat.py` 不得 import `backend.nodes.*`
+# （n5_draft 自己 import backend.llm.client，聊天層再 import 它就是層級倒置，
+# 而且會把 backend.orchestrator.* 整包拉進純函式測試的 import 圖，
+# 見 spec 2026-09-12-chat-honesty-lamps §4.0）。那個分層理由**仍然成立**。
+#
+# 但答案不是「把字面值搬到檢索層」，是**搬到比兩者都底層的 settings**：
+# 目錄名跟著 corpus 走（第三方 corpus 的函釋在 `行政函釋_全量/`，4,520 筆），
+# 寫死 `行政函釋/` 的話 N5 只看得到自己整理的那 10 份、而且不報錯。
+# `settings` 誰都可以依賴，白名單由 `.env` 的 `REF_PREFIXES` 帶，預設值只有一份。
 
 # 兩批的席次配額。**分開查、各自取 top-k、再合併**，不是先撈一大包再硬塞席次——
 # 後者會在官方那批其實不相關時，硬把爛結果塞進前五名。

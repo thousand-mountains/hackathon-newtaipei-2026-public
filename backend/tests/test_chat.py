@@ -19,6 +19,7 @@ from __future__ import annotations
 import ast
 import pathlib
 
+from backend.config import settings
 from backend.config.origin_registry import TIER_HUMAN, TIER_SOURCED, tier_of
 import backend.llm.chat as chat_mod
 from backend.llm.chat import (
@@ -30,7 +31,6 @@ from backend.llm.chat import (
     classify_answer,
     is_numeric_question,
 )
-from backend.retrieval.kb import REF_PREFIXES
 from backend.retrieval.base import Hit
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
@@ -283,18 +283,22 @@ def test_chat_module_does_not_import_fastapi():
     assert not [m for m in imported if m.split(".")[0] in ("fastapi", "starlette")]
 
 
-def test_ref_prefixes_is_assigned_in_exactly_one_place_and_imported_elsewhere():
-    """S2b 的結構檢查：賦值只剩 `backend/retrieval/kb.py` 一處，N5 改成 import。
+def test_ref_prefixes_has_exactly_one_source_and_nobody_copies_the_literal():
+    """引用白名單只能有一個事實來源，誰都不准複製字面值。
 
-    複製字面值會漂——改一邊漏一邊，`retrieve_refs` 就會撈到不准引用的來源。
+    S2b 原本的規則是「賦值只剩 `backend/retrieval/kb.py` 一處，N5 改成 import」。
+    **來源換了、規則沒換**：白名單現在由 `settings.ref_prefixes()` 供給
+    （`.env` 的 `REF_PREFIXES` 帶值，預設只有 `settings.DEFAULT_REF_PREFIXES` 一份）。
+
+    為什麼搬到 settings 而不是留在檢索層：目錄名跟著 corpus 走——第三方 corpus 的
+    函釋在 `行政函釋_全量/`（4,520 筆），寫死 `行政函釋/` 的話 N5 只看得到自己整理的
+    那 10 份，**而且不報錯**。原本的分層理由（聊天層不得 import `backend.nodes.*`）
+    仍然成立，`settings` 比聊天層與檢索層都底層，誰都可以依賴它。
 
     **這裡刻意用 AST 讀原始碼，不 import `backend/nodes/n5_draft.py`**：把六節點
     import 進這支純函式測試，等於讓聊天層的測試背著 orchestrator 跑，正是 spec §4.0
-    要避免的事（而且函式內 import 會違反紅線第 5 條，模組頂層 import 又會把相依寫死）。
-    執行期的 `is` 同一物件由 AC14 在 run_all 之外單獨驗。
-
-    這條也比 AC13 的 `grep -c '^REF_PREFIXES'` 強：AST 看得到縮排過的賦值與
-    `REF_PREFIXES, X = ...` 這種寫法，行首 grep 看不到。
+    要避免的事。AST 也看得到縮排過的賦值與 `REF_PREFIXES, X = ...` 這種行首 grep
+    看不到的寫法。
     """
     def _assignments(rel: str) -> list[str]:
         tree = ast.parse((ROOT / rel).read_text(encoding="utf-8"))
@@ -311,17 +315,20 @@ def test_ref_prefixes_is_assigned_in_exactly_one_place_and_imported_elsewhere():
                         found.append(rel)
         return found
 
-    assert len(_assignments("backend/retrieval/kb.py")) == 1, "kb.py 應該是唯一的賦值處"
-    assert _assignments("backend/nodes/n5_draft.py") == [], "n5_draft 仍在自己賦值，字面值會漂"
+    def _calls_settings(rel: str) -> bool:
+        tree = ast.parse((ROOT / rel).read_text(encoding="utf-8"))
+        return any(isinstance(n, ast.Attribute) and n.attr == "ref_prefixes"
+                   for n in ast.walk(tree))
 
-    n5 = ast.parse((ROOT / "backend" / "nodes" / "n5_draft.py").read_text(encoding="utf-8"))
-    imported_from_kb = any(
-        isinstance(n, ast.ImportFrom)
-        and n.module == "backend.retrieval.kb"
-        and any(a.name == "REF_PREFIXES" for a in n.names)
-        for n in ast.walk(n5)
-    )
-    assert imported_from_kb, "n5_draft 沒有從 backend/retrieval/kb.py 取 REF_PREFIXES"
+    for rel in ("backend/retrieval/kb.py", "backend/nodes/n5_draft.py", "backend/llm/chat.py"):
+        assert _assignments(rel) == [], f"{rel} 自己賦值了一份 REF_PREFIXES，字面值會漂"
+    assert len(_assignments("backend/config/settings.py")) == 0, \
+        "settings 也不該有 REF_PREFIXES 這個名字的賦值——預設值叫 DEFAULT_REF_PREFIXES"
+    assert "DEFAULT_REF_PREFIXES" in (ROOT / "backend/config/settings.py").read_text(encoding="utf-8"), \
+        "settings 缺 DEFAULT_REF_PREFIXES，白名單沒有事實來源"
+
+    for rel in ("backend/nodes/n5_draft.py", "backend/llm/chat.py"):
+        assert _calls_settings(rel), f"{rel} 沒有走 settings.ref_prefixes()，可能又複製了一份"
 
 
 # ── S4：工具層（離線，不打 Bedrock）─────────────────────────────────
@@ -397,12 +404,12 @@ def test_refine_text_throttles_before_it_can_fail():
 
 
 def test_retrieve_refs_passes_the_shared_prefix_filter():
-    """`retrieve_refs` 只准查函釋與判解兩個前綴，而且用的是 kb.py 那一份。"""
+    """`retrieve_refs` 只准查函釋與判解兩個前綴，而且用的是 settings 那一份。"""
     calls: list = []
     r = _FakeRetriever()
     t = _tools(calls, r)
     t.retrieve_refs("信賴保護")
-    assert r.calls[0][1] == {"prefix": list(REF_PREFIXES)}
+    assert r.calls[0][1] == {"prefix": settings.ref_prefixes()}
 
 
 def test_similar_decisions_does_not_pin_a_prefix():
