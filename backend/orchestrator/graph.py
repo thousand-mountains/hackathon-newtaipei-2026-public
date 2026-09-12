@@ -298,6 +298,7 @@ def run_case(
     # 檢索佐證的是自己。2026-09-05 Ci 拍板改獨立檢索。
     # 續跑時起始狀態＝上一個節點跑完該有的狀態，不從 EXTRACTING 重來
     state.transition("EXTRACTING" if start_idx == 0 else STATE_AFTER[NODE_ORDER[start_idx - 1]])
+    intake_incomplete = False
     node = from_node  # 例外處理要報是哪一個節點炸的
     try:
         for node in NODE_ORDER[start_idx:]:
@@ -336,14 +337,31 @@ def run_case(
                     },
                 },
             )
-            # N1 信心不足 → NEEDS_INPUT，狀態機停在這裡等人工補齊（architecture §4.2）
+            # N1 信心不足 → 終態仍是 NEEDS_INPUT（等人工補齊），但**不在這裡中斷**
+            # （2026-09-12 改）。原本是 `break`，結果是必填欄位缺一個就整條停在 N1：
+            # 法規、相似案、事實爭點一個都不出現，畫面全空。
+            #
+            # **為什麼可以不停**：判斷卡 7 不是靠這個 break 守的，是靠
+            # `lamps.requires_human_conclusion` 守的——
+            # `procedurally_resolved = art77.clause and procedural_inputs_confirmed`，
+            # 沒有人確認過就永遠解不開結論封鎖。實測缺 `d2` 時 N3 的行為也正確：
+            # `deadline=None`、`art77.clause=None`、`requires_human_conclusion=True`
+            # ——它拒絕計算，不猜。所以往下跑不會讓任何紅線鬆掉，只會讓**不依賴那些
+            # 欄位的東西**（法條查表、相似案檢索）先出現。
+            #
+            # 終態刻意保留 `NEEDS_INPUT` 而不是 `VERIFIED`：這件案子確實還要補件，
+            # 改成 VERIFIED 等於說「驗完了」。驗收腳本與前端據此判斷要不要請人確認。
             if node == "n1" and result.degraded:
-                state.transition("NEEDS_INPUT")
-                break
+                intake_incomplete = True
             state.transition(STATE_AFTER[node])
     except Exception as e:  # noqa: BLE001 — 事件要發得出去，例外照原樣往上拋
         emit("run_failed", {"node": node, "error": f"{type(e).__name__}: {e}"})
         raise
+
+    # 六節點都跑完了，但必填欄位還缺——終態回到 NEEDS_INPUT。
+    # 畫面上因此同時有「要補哪幾欄」與「已經查到的法規／相似案」，而不是二選一。
+    if intake_incomplete and state.state != "NEEDS_INPUT":
+        state.transition("NEEDS_INPUT")
 
     for entry in agents.values():
         entry["prompt"], entry["prompt_note"] = _agent_prompt(entry.get("node"), mode)
