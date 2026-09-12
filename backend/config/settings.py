@@ -25,6 +25,10 @@ def run_mode() -> str:
 
 
 RUNS_DIR = OUTPUT_DIR / "runs"
+#: 卷宗書籤（一案一份 manifest.json，見 `backend/dossier/store.py`）。
+#: 與 RUNS_DIR 同一個目錄樹、同一套 gitignore、同一個部署單元——**刻意的**：
+#: 決賽期間不為了 manifest 一個新檔案去動儲存層（契約 v2 §4.0）。
+CASES_DIR = OUTPUT_DIR / "cases"
 
 DEFAULT_MODEL_PROVIDER = "bedrock"
 DEFAULT_RETRIEVER = "lawtable_only"

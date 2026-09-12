@@ -324,6 +324,70 @@ def _provenance(kind: str) -> str:
     return {"official": "official", "public": "public_crawl"}.get(kind, "unknown")
 
 
+#: 母庫查一次抓多深。使用者自己搜法規／決定書時**沒有配額也沒有重排**，
+#: 只靠 server-side `doc_kind` filter 把類別框住，所以不需要 `QUOTA_FETCH_DEPTH`
+#: 那種深度；但同一份文件會被切多個 chunk（實測：filter 後 10 筆只有 5 份文件），
+#: 去重會吃掉席次，所以抓 `limit` 的三倍再去重。
+CORPUS_FETCH_MULTIPLIER = 3
+
+
+def search_corpus(client: Any, kb_id: str, query: str, doc_kinds: list[str], *,
+                  limit: int = 10, min_score: float = 0.0) -> list[dict[str, Any]]:
+    """母庫查：使用者在「搜尋並加入」對話框裡查法規／訴願決定（契約 v2 §4.2、§4.3）。
+
+    **這是一條獨立通道，不是 `KBRetriever._retrieve` 的變形**，兩者服務的對象不同：
+
+    - `_retrieve` 服務 N4 相似案與 N5 判解——有前綴白名單、兩批配額、重排、
+      `exclude_case`（案子不能是自己的相似案）。那套語意套到「使用者手動搜法規」
+      上全都是錯的：使用者要的就是那一部法規，沒有「本案要排除誰」。
+    - 這裡只做三件事：server-side `doc_kind` filter、來源去重、截 `limit`。
+
+    **兩個刻意的差異，都不是漏看：**
+
+    1. **不退回不篩。** `_retrieve` 有「篩了全空就退回不篩再試」的防呆，那在 N4 是對的
+       （寧可回相關性低的，也不要靜默 0 筆）。母庫查**不能**退：退了就會把法院裁判書
+       當成法規端給承辦人。2026-09-12 實測「廢棄物」不篩抓 20 筆，法規佔 **0 筆**
+       （15 筆裁判書 + 5 筆決定書）——filter 是必要條件，不是優化。查無就回空。
+    2. **去重一律開。** `dedupe_by_source` 在 `_retrieve` 預設 False 是為了不動已驗證的
+       相似案通道；這裡沒有那個包袱。2026-09-12 實測同一查詢 filter 後 10 筆
+       只有 **5 份**不同法規——不去重的話「命中 10 筆」會把讀的人騙成 10 部法律。
+
+    `id` 是**完整的 S3 key**（`kb/{official|public}/{rel}`），不是 `_relative_path` 的 `rel`：
+    `rel` 分不出 official 與 public 兩批，而且沒辦法直接餵 `s3.get_object` 讀全文。
+    """
+    want = max(limit * CORPUS_FETCH_MULTIPLIER, limit)
+    resp = retrieve_raw(client, kb_id, query, want, doc_kind_filter(doc_kinds))
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for r in resp.get("retrievalResults", []):
+        score = float(r.get("score", 0.0))
+        if score < min_score:
+            continue
+        md = r.get("metadata") or {}
+        uri = md.get("_source_uri") or ((r.get("location") or {}).get("s3Location") or {}).get("uri", "")
+        kind, rel = _relative_path(uri)
+        if not rel:
+            continue
+        key = f"kb/{kind}/{rel}" if kind in ("official", "public") else rel
+        if key in seen:          # 同一份文件的其他 chunk（結果已按分數遞減，留最高分那筆）
+            continue
+        seen.add(key)
+        fname = rel.rsplit("/", 1)[-1]
+        out.append({
+            "id": key,
+            "t": fname.rsplit(".", 1)[0],
+            "src": rel,
+            "score": round(score, 3),
+            "doc_kind": md.get("doc_kind"),
+            "provenance": md.get("provenance") or _provenance(kind),
+            "verdict": md.get("outcome"),
+            "category": md.get("category"),
+        })
+        if len(out) >= limit:
+            break
+    return out
+
+
 class KBRetriever:
     """Managed KB 相似案／函釋檢索。命中一律 `verified=False`——對回資料集實檔是 N6 的事。"""
 
