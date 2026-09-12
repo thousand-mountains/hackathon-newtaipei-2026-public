@@ -48,8 +48,12 @@ const caseMeta = computed(() =>
           <template v-else>
             <div class="av ai">小願</div>
             <div class="body">
+              <!-- 思考中（loading）：純問答／等待首個事件時的打字點點 -->
+              <div v-if="m.kind === 'thinking'" class="typing" aria-label="小願正在思考">
+                <span></span><span></span><span></span>
+              </div>
               <!-- 純 HTML 回覆 -->
-              <div v-if="m.kind === 'html'" v-html="m.html"></div>
+              <div v-else-if="m.kind === 'html'" v-html="m.html"></div>
               <!-- 工具清單卡 -->
               <template v-else-if="m.kind === 'tools-help'">
                 <p>我是訴願案件的辦案助理。目前開放 7 支工具（API），可用「/」呼叫，也可以直接用中文描述需求：</p>

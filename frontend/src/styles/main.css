@@ -183,6 +183,13 @@ button{font:inherit;color:inherit;cursor:pointer}
 .body p:last-child{margin-bottom:0}
 .body strong{font-weight:700}
 
+/* 思考中：三顆跳動的點（chat loading 指示） */
+.typing{display:inline-flex;gap:4px;align-items:center;padding:4px 2px}
+.typing span{width:6px;height:6px;border-radius:50%;background:var(--faint);animation:typing 1.2s infinite ease-in-out}
+.typing span:nth-child(2){animation-delay:.18s}
+.typing span:nth-child(3){animation-delay:.36s}
+@keyframes typing{0%,60%,100%{opacity:.25;transform:translateY(0)}30%{opacity:1;transform:translateY(-3px)}}
+
 .attach-line{display:flex;flex-wrap:wrap;gap:6px;margin-top:7px}
 .file-chip{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--line);background:var(--panel);border-radius:3px;padding:3px 9px;font-size:12px;color:var(--ink-2)}
 .file-chip .ext{font-family:var(--mono);font-size:10px;color:var(--acc-2);text-transform:uppercase}
