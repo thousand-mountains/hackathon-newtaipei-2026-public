@@ -47,6 +47,7 @@ from backend.orchestrator.chat_bridge import (
     PAYLOAD_SECTIONS,
     load_case_manifest,
     pipeline_adapter,
+    relation_graph_adapter,
 )
 from backend.orchestrator.graph import build_payload
 from backend.orchestrator.runstore import RunNotFound, load_run
@@ -223,6 +224,7 @@ def _run_turn(case_id: str, body: ChatIn, emit: Any,
         run_pipeline=pipeline_adapter(case_id),
         run_id=(run_info or {}).get("run_id"),
         case_manifest=load_case_manifest(case_id),
+        build_graph=relation_graph_adapter(case_id),
     )
     answer = str(agent(_user_message(body, history)))
 

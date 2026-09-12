@@ -24,6 +24,7 @@
 | ⑦ | §4 | 新增 §4.0：持久化＝一案一份 `manifest.json`，**不加資料庫** | 四份清單原本無處可存 |
 | ⑧ | §1.5 §4.4 | 匯出**維持 `pdf`/`docx`**（Ci 拍板，2026-09-12 23:50 覆蓋前一版的降級） | 承辦人拿到的必須是能直接送簽／續編的格式，`.md` 交不出去 |
 | ⑨ | §3.7 | **關聯圖改成後端新功能**（原本列在「建議砍」） | 邊在 payload 裡已經是現成的（`citations[].sentence_id` → `resolved_id`），零 LLM 可組 |
+| ⑩ | §3.0 §3.7 | **2026-09-13 實作落地**：§3.0 的 ⏳ 轉成已實作、進 `TOOL_LABELS`；§3.7 補三個回傳欄位（`status`／`note`／`flagged`）與實測值 | 加欄位不改形狀，前端既有的解構照樣成立。`cite` 的 join key 更正為 `raw ↔ laws[].t`——原本寫的 `resolved_id` 實測 0 命中 |
 
 已拍板（2026-09-12 Ci）：
 
@@ -396,12 +397,16 @@ wire 格式：`event: <名稱>\ndata: <一行 JSON>\n\n`。共通欄位：`seq`�
 | `retrieve_refs` | 查判解與函釋 | 已實作 | — | 不歸檔 |
 | `generate_decision_draft` | 生成草稿 | **包 pipeline**（`run_case(from_node="n4")`） | ✅ n4–n6 | `out` 群組 |
 | `refine_text` | 潤稿 | 已實作 | — | 不歸檔 |
-| `build_relation_graph` | 產生案件關聯圖 | 🔨 **必要項，實作中**（Epic E，§3.7） | — | `out` 群組 |
+| `build_relation_graph` | 產生案件關聯圖 | ✅ **已實作**（Epic E，§3.7；零 LLM） | — | 不歸檔，圖走 `tool_result.graph` |
 | `read_case` | 讀卷內 | 已實作 | — | 不歸檔 |
 
-> ⏳ **`build_relation_graph` 目前不在後端的 `TOOL_LABELS` 值域裡**，**這是刻意的**：
-> 列一個不存在的工具會讓前端以為它在，而節流測試也會要求它有進入點——兩邊都在說謊。
-> Epic E 落地時一起加。在那之前值域是七支（含 `read_case`）。
+> ✅ **`build_relation_graph` 2026-09-13 落地，已進後端 `TOOL_LABELS`**，值域是八支
+> （含 `read_case`）。在那之前它刻意不在值域裡——列一個不存在的工具會讓前端以為它在，
+> 而節流測試也會要求它有進入點，兩邊都在說謊。
+>
+> **它不歸檔**（與上表其他「有產出」的工具不同）：關聯圖是同一份 run 的**視圖**，
+> 不是新的產出物。每次呼叫都從當下的 run payload 重算，所以不會有「圖跟草稿不同步」
+> 這種狀態。前端從 `tool_result.graph` 直接拿，形狀見 §3.7。
 >
 > 八列，因為 `read_case` 是 agent 內部的追問用工具，使用者不會主動點它——
 > **`tool_hint` 的值域是前七支**，`read_case` 由 agent 自己決定要不要用。
@@ -639,8 +644,35 @@ lawtable 解析得了；決定書沒有對等的查詢詞形式，硬塞會稀�
 （「查到了但沒用上」）。不要靜默丟掉。
 
 **前置條件**：要有一次 `state == "VERIFIED"` 的 run（需要 `doc[]` 與 `citations[]`）。
-只有 `SCREENED` 的話回 `status:"empty"` + `note:"要先生成草稿才畫得出完整關聯"`，
-或退化成只畫前三欄（卷證／事實／爭點）——**哪一種由 `plans/` 定案**。
+只有 `SCREENED` 的話回 `status:"empty"` + `note:"要先生成草稿才畫得出完整關聯"`。
+**定案是回 `empty`，不是退化成前三欄**（2026-09-13）：半張圖在畫面上跟完整的圖
+長得一樣，看的人不會知道後兩欄是「沒有」還是「沒連上」。
+
+#### 2026-09-13 實作落地：三個欄位是上面範例沒有的（加欄位，沒有改形狀）
+
+| 欄位 | 是什麼 | 為什麼加 |
+|---|---|---|
+| `status` | `"ok"` ／ `"empty"` | **一律存在**，前端不必用「`nodes` 是不是空的」去猜是哪一種 |
+| `note` | `status=="empty"` 時說明為什麼，`"ok"` 時為空字串 | 同上 |
+| `flagged[]` | `{sentence_id, raw, state, lamp, basis}` | **紅線**（plan AC5）：草稿引了、檢索沒找到的法條。`stats.edges_flagged` 是它的長度。**不靜默丟棄**——「AI 引了一條我們沒檢索到的法條」正是承辦人最需要知道的事 |
+
+`cite` 邊的 `basis` 實際寫的是 `"citations[].raw ↔ laws[].t 字串相等"`，
+不是上面範例的 `"citations[].sentence_id→resolved_id"`——**範例那個 join key 是空的**：
+`resolved_id` 的格式是 `L-{法名}-{條號}`、`gate_ref_key` 是 `{法名}|{條號}`，
+實測 0/4 命中，而 `raw` ↔ `t` 是 3/4。`basis` 是寫給人核對的，所以它得寫真的那條。
+
+**實測值（兩份合成 run，`backend/tests/fixtures/runs/`）**：
+
+| 合成案 | `quote` | `trigger` | `address` | `cite` | `flagged` | 句子進圖 |
+|---|---|---|---|---|---|---|
+| 程序型 `ordinary` | 2 | 0 | 1 | 3 | 1（訴願法第15條） | 4 / 13 |
+| 建築法時效型 `blocked` | 2 | 1 | 2 | 0 | 3 | 2 / 12 |
+
+**四種邊湊不出同一份 run**：掃過 9,421 份不重複的 VERIFIED run，一份都沒有。
+`trigger` 要爭點關鍵詞落在卷證摘錄裡，`cite` 要草稿引的條號在 `laws[]` 裡，
+現有兩種合成案各滿足一個。**這是語料的事實，不是實作走歪**——沒有為了讓四種
+邊同時出現而放寬判準或補合成案（CONSTITUTION §3）。前端做視覺時要預期
+**某一種線型在某些案子上一條都沒有**。
 
 ---
 
