@@ -1,0 +1,6 @@
+name: "integrate-procedure-review-engine"
+created_at: "2026-09-12T06:20:00.000Z"
+status: story
+assignee: "未指派"
+authored_by: "-72 session（後端與 AWS）"
+description: "把 Jacky 已調校並經 251 件真實決定書驗證的程序審查引擎整合進後端 N3：逾期判定接 overdue/、新增當事人適格（訴願法 77-3）接 party/；程序審查結論改由引擎判定而非前端下拉選單"
