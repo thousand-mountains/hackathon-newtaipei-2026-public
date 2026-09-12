@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import datetime as dt
+from typing import Any
 
 from backend.config.settings import SUBSTANTIVE_TYPES, load_fact_issue_signals, load_snapshot
 from backend.gate.citations import (
@@ -146,6 +147,96 @@ def test_n3_art77_hits_only_when_overdue():
     r2 = n3_procedure.run(state2, _ctx(), digest="")
     assert_eq(r2.data["art77"]["clause"], "77-2", "逾期必須命中 77-2")
     assert_eq(r2.data["art77"]["requires_substantive_review"], False)
+
+
+def _n3(intake: dict) -> Any:
+    """跑**真的 N3 節點**（不是只呼叫 `compute()`）。
+
+    炸點在呼叫端還是引擎端，決定了有沒有改對地方：2026-09-13 的
+    `AttributeError` 是 `run()` 把 `None` 餵進 `compute()` 造成的，
+    只測 `compute()` 會得出「引擎壞了」這個錯誤結論。
+    """
+    state = CaseState(case_id="synthetic-unit-01")
+    state.classification = {"class": {"case_type": "違反建築法事件"}}
+    state.intake = dict(intake)
+    return n3_procedure.run(state, _ctx(), digest="")
+
+
+def test_n3_refuses_instead_of_crashing_when_the_service_date_is_missing():
+    """缺送達日時 N3 必須降級拒答，**不得拋例外**（2026-09-13 修）。
+
+    原本的行為：`compute()` 的 `service_date` 型別標的是 `dt.date`，
+    `personal`／`deposit` 兩條路都會走到 `_roc(eff)` → `None.year` → `AttributeError`
+    → 整條 run 以 `run_failed` 收掉，聊天視窗只說「解析卷證失敗」。
+    `public` 不會，它在 `compute()` 第一步就先拒答回傳——所以
+    `graph.py` 那句「實測缺 d2 時 N3 的行為也正確」**只有三分之一成立**。
+
+    **為什麼是主線不是邊角**：`backend/llm/prompts/n1_extract.md` 明寫
+    「卷證沒有這種記載就 null」，而訴願書本來就常常沒寫送達日（那在原處分書上）。
+
+    六格逐一測（三種送達方式 × 送達日有／無），**含會過的那幾格**——
+    只測會壞的那兩格的話，「把三條路都改成拒答」這種過度修正不會被抓到。
+    """
+    for method in ("personal", "deposit", "public"):
+        for d2 in ("2025-03-14", None):
+            intake = {"service_method": method, "d3": "2025-04-07"}
+            if d2:
+                intake["d2"] = d2
+            r = _n3(intake)  # 拋例外就是這條測試紅的方式
+            cell = f"{method}/d2={'有' if d2 else '無'}"
+            if method == "public" or not d2:
+                assert_eq(r.data["deadline"]["deadline"], None, f"{cell} 不該算得出期滿日")
+                assert_eq(r.degraded, True, f"{cell} 必須降級")
+                assert_true(bool(r.degrade_reason), f"{cell} 降級卻沒給理由")
+                assert_true(bool(r.data["deadline"]["caveats"]),
+                            f"{cell} 沒有給承辦人看的說明")
+            else:
+                assert_true(r.data["deadline"]["deadline"] is not None,
+                            f"{cell} 資料齊全卻算不出期滿日")
+                assert_eq(r.degraded, False, f"{cell} 資料齊全不該降級")
+
+    # 缺送達日的理由要說得出缺的是**哪一欄**，而且用中文標籤不是鍵名
+    r = _n3({"service_method": "personal", "d3": "2025-04-07"})
+    assert_in("送達日", r.degrade_reason or "", "降級理由沒說缺的是哪一欄")
+    assert_true("d2" not in (r.degrade_reason or ""),
+                f"降級理由漏出開發者鍵名：{r.degrade_reason!r}")
+
+
+def test_n3_does_not_change_a_single_date_it_could_already_compute():
+    """這一輪只處理「該拒答時拒答而不是崩潰」，**既有算出來的日期一個都不准變**。
+
+    拿資料齊全的兩條路去比對直接呼叫引擎的結果，逐鍵相同。
+    """
+    for method in ("personal", "deposit"):
+        r = _n3({"service_method": method, "d2": "2024-06-13", "d3": "2024-07-20"})
+        direct = compute(method, dt.date(2024, 6, 13), dt.date(2024, 7, 20)).as_dict()
+        assert_eq(r.data["deadline"], direct, f"{method}：N3 的輸出跟引擎不一致了")
+
+
+def test_n3_says_so_when_a_date_field_cannot_be_read_at_all():
+    """日期欄位存在但不是 ISO（`114/5/1`、民國字樣）同樣不得炸。
+
+    `_date()` 走 `dt.date.fromisoformat`，非 ISO 會 raise `ValueError`。
+    N1 的 prompt 只是**要求** ISO，不保證——bedrock 抽取回民國格式是真的會發生的。
+
+    兩欄的後果不同級，訊息也不同：
+    - `d2` 讀不出來 → 算不了，降級拒答。
+    - `d3` 讀不出來 → 期滿日照算（`filing_date=None` 是合法輸入），但**逾期與否
+      變成未判定**。那件事會安靜地發生，所以要寫進 caveats。
+    """
+    bad_d2 = _n3({"service_method": "personal", "d2": "114/5/1", "d3": "2025-04-07"})
+    assert_eq(bad_d2.data["deadline"]["deadline"], None, "讀不出送達日卻算出了期滿日")
+    assert_eq(bad_d2.degraded, True)
+    assert_in("送達日", bad_d2.degrade_reason or "")
+    assert_in("114/5/1", " ".join(bad_d2.data["deadline"]["caveats"]),
+              "沒把讀不出來的原值寫出來，承辦人不知道要改哪裡")
+
+    bad_d3 = _n3({"service_method": "personal", "d2": "2025-03-14", "d3": "民國114年4月7日"})
+    assert_true(bad_d3.data["deadline"]["deadline"] is not None,
+                "收文日讀不出來不該影響期滿日的計算")
+    assert_eq(bad_d3.data["deadline"]["overdue"], None, "沒有收文日就不得判逾期")
+    assert_in("收文日", " ".join(bad_d3.data["deadline"]["caveats"]),
+              "逾期未判定這件事安靜地發生了，沒有寫進 caveats")
 
 
 def test_n3_fact_issue_applies_to_filter_works():

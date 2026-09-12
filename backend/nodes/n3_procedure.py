@@ -28,6 +28,7 @@ from backend.config.settings import (
     load_fact_issue_signals,
 )
 from backend.engine.deadline import compute
+from backend.intake.fields import field_labels
 from backend.engine.overdue_ref import TimelinessInput as RefInput
 from backend.engine.overdue_ref import HOLIDAY_TABLE_YEARS, _is_rest_day, holiday_table_covers
 from backend.engine.overdue_ref import check_timeliness as ref_check
@@ -118,7 +119,19 @@ def cross_check_deadline(
     **那些差異本身是要給承辦人看的資訊**，合併成單一答案就消失了。
     """
     method = _METHOD_TO_REF.get(intake.get("service_method") or "")
-    if method is None or not intake.get("d2"):
+    # 日期讀不讀得出來這裡要自己判一次（2026-09-13 補）。`ref_check` 內部也走
+    # `fromisoformat`，所以「`d2` 有值但不是 ISO」會**通過上面的 `intake.get("d2")`
+    # 檢查、然後在第二意見引擎裡炸**——本系統那一側已經擋下來給了降級卡，
+    # 第二意見卻把整條 run 拖垮，看起來像期間計算壞了。
+    try:
+        readable_d2 = _date(intake.get("d2"))
+    except (ValueError, TypeError):
+        readable_d2 = None
+    try:
+        readable_d3 = _date(intake.get("d3"))
+    except (ValueError, TypeError):
+        readable_d3 = None
+    if method is None or readable_d2 is None:
         # 三個分流欄位一律回滿，即使是空的。**早退路徑少給 key 會讓前端讀到
         # undefined**，而「送達方式不明」是常見情境（251 件實測有 67 件），
         # 不是罕見的邊界。契約的形狀不該因為走哪條分支而變。
@@ -130,14 +143,16 @@ def cross_check_deadline(
             "disagreement": [],
             "not_comparable": [],
             "refusal_asymmetry": [],
-            "note": "送達方式或送達日不足，第二意見引擎未執行——與本系統一樣不猜。",
+            "note": ("送達方式或送達日不足（或記載無法判讀），"
+                     "第二意見引擎未執行——與本系統一樣不猜。"),
         }
 
     ref_out = ref_check(
         RefInput(
-            delivery_date=str(intake.get("d2")),
+            # 餵**解析過的值**，不是原字串：兩邊各自 parse 一次就會各自壞一次。
+            delivery_date=readable_d2.isoformat(),
             delivery_method=method,
-            appeal_filed_date=str(intake["d3"]) if intake.get("d3") else None,
+            appeal_filed_date=readable_d3.isoformat() if readable_d3 else None,
         )
     )
 
@@ -646,33 +661,85 @@ def detect_fact_issues(
     return issues
 
 
+def _no_deadline(caveat: str) -> dict[str, Any]:
+    """期間計算不執行時的結果形狀。**一律用這一份**，三個擋門各拼一次遲早漂掉
+    （少一個鍵就會在 `screen_art77`／前端某處變成 KeyError 或「未判定」畫不出來）。
+    """
+    return {
+        "effective_date": None,
+        "deadline": None,
+        "overdue": None,
+        "steps": [],
+        "caveats": [caveat],
+    }
+
+
 def run(state: CaseState, ctx: NodeCtx, digest: str = "") -> NodeResult:
     started = time.perf_counter()
     intake = state.intake
 
     method = intake.get("service_method") or "unknown"
+    # 日期欄位在**呼叫引擎之前**先解析，解析不了就當成「這一欄拿不到」並記下來。
+    # `_date()` 走 `dt.date.fromisoformat`，非 ISO 的值（`114/5/1`、`民國114年5月1日`、
+    # `2025-13-01`）會 raise `ValueError`，而 N1 的 prompt 只是**要求** ISO，不保證。
+    # 讓它冒上去的後果不是一張寫著原因的降級卡，是整條 run 以 `run_failed` 收掉、
+    # 聊天視窗只說「解析卷證失敗」（2026-09-13 實測）。
+    unreadable: list[str] = []
+    dates: dict[str, dt.date | None] = {}
+    for key in ("d2", "d3"):
+        try:
+            dates[key] = _date(intake.get(key))
+        except (ValueError, TypeError):
+            dates[key] = None
+            unreadable.append(key)
+
     if method not in ("personal", "deposit", "public"):
         # 送達方式不明時不猜——引擎會 raise，這裡先擋下來給明確理由
-        deadline_result = {
-            "effective_date": None,
-            "deadline": None,
-            "overdue": None,
-            "steps": [],
-            "caveats": [f"送達方式為 {method!r}，無法判定送達生效日，期間計算不執行，請人工確認送達方式。"],
-        }
+        deadline_result = _no_deadline(
+            f"送達方式為 {method!r}，無法判定送達生效日，期間計算不執行，請人工確認送達方式。")
         degraded = True
         degrade_reason = "送達方式不明，期間計算未執行"
+    elif method != "public" and dates["d2"] is None:
+        # ── 缺／壞掉的送達日：同上，先擋下來，不要讓引擎炸 ──────────────
+        #
+        # **`compute()` 的 `service_date` 型別標的是 `dt.date`，不是 `dt.date | None`**
+        # ——`personal` 與 `deposit` 兩條路都會走到 `_roc(eff)`，`None.year` 當場
+        # `AttributeError`。`public` 不會，它在第一步就先拒答回傳（2026-09-13 六格實測）。
+        #
+        # **為什麼這是主線不是邊角**：`backend/llm/prompts/n1_extract.md` 明寫
+        # 「卷證沒有這種記載就 null」，而訴願書本來就常常沒寫送達日（那在原處分書上）。
+        # 真實卷證一上傳就會踩到。
+        #
+        # **這不是改期間引擎的政策**：政策（「算不出來就拒答、不猜」）已經是既有的，
+        # 這裡只是讓現實符合它——拒答要長成一張說得出原因的降級卡，不是崩潰。
+        # 既有案件算出來的日期一個都沒動（`d2` 齊全時走的還是原本那條 `else`）。
+        label = field_labels(["d2"])
+        why = (f"{label}的記載無法判讀（值：{intake.get('d2')!r}）"
+               if "d2" in unreadable else f"卷證沒有{label}的記載")
+        deadline_result = _no_deadline(
+            f"{why}，無法判定送達生效日，期間計算不執行，"
+            f"請承辦人自原處分書或送達證書補上{label}。")
+        degraded = True
+        degrade_reason = f"缺{label}，期間計算未執行"
     else:
         result = compute(
             service_method=method,
-            service_date=_date(intake.get("d2")),
-            filing_date=_date(intake.get("d3")),
+            service_date=dates["d2"],
+            filing_date=dates["d3"],
             transit_days=int(intake.get("transit_days") or 0),
             interested_party=bool(intake.get("interested_party")),
         )
         deadline_result = result.as_dict()
         degraded = deadline_result["deadline"] is None
         degrade_reason = "期間引擎拒答（公示送達等情形），交人工確認" if degraded else None
+
+    # `d3` 判讀不出來**不會**讓引擎炸（`filing_date=None` 是合法輸入，六格實測確認過：
+    # 只是不判逾期），但它會**安靜地**把「逾期與否」變成未判定。說出來。
+    if "d3" in unreadable:
+        deadline_result["caveats"] = list(deadline_result.get("caveats") or []) + [
+            f"{field_labels(['d3'])}的記載無法判讀（值：{intake.get('d3')!r}），"
+            f"本件未判定是否逾期，請人工確認。"
+        ]
 
     art77 = screen_art77(deadline_result)
     party_standing = check_party_standing(intake, state.intake_origin)
