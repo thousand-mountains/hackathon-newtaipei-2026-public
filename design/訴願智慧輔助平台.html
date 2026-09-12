@@ -1,0 +1,1589 @@
+<title>訴願智慧輔助平台</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700&family=Noto+Serif+TC:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+:root{
+  --ink:#1C1F22;
+  --ink-2:#3D4348;
+  --muted:#6C7379;
+  --faint:#9AA1A7;
+  --ground:#FFFFFF;
+  --panel:#F4F5F6;
+  --panel-2:#E9EBED;
+  --line:#DBDEE1;
+  --line-soft:#E8EAEC;
+  --brand:#FFD400;
+  --brand-ink:#1C1F22;
+  --brand-edge:#E0B900;
+  --brand-wash:#FFF8D6;
+  --acc:#1F6C8C;
+  --acc-2:#1B6180;
+  --acc-ink:#FFFFFF;
+  --acc-wash:#E9F2F6;
+  --ok:#1F6B3E;
+  --ok-wash:#E6F1EA;
+  --warn:#8A5B0B;
+  --warn-wash:#FBF0D8;
+  --alert:#A32A22;
+  --alert-wash:#F9EAE8;
+  --n-doc:#1F6C8C; --n-doc-bg:#E9F2F6;
+  --n-fact:#8A6100; --n-fact-bg:#FCF2D2;
+  --n-issue:#9B3355; --n-issue-bg:#FAE8EC;
+  --n-law:#54479B; --n-law-bg:#ECEAF8;
+  --n-out:#1F6B3E; --n-out-bg:#E6F1EA;
+  --shadow:0 1px 2px rgba(28,31,34,.06),0 8px 24px rgba(28,31,34,.07);
+  --r:4px;
+  --sans:"Noto Sans TC",-apple-system,"PingFang TC","Microsoft JhengHei",sans-serif;
+  --serif:"Noto Serif TC",Georgia,"Songti TC",serif;
+  --mono:"IBM Plex Mono",ui-monospace,Menlo,monospace;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --ink:#E8EBEE; --ink-2:#C6CBD0; --muted:#8E969D; --faint:#727A81;
+    --ground:#111417; --panel:#181C20; --panel-2:#212629; --line:#2E343A; --line-soft:#252A2F;
+    --brand:#FFD400; --brand-ink:#111417; --brand-edge:#B79A00; --brand-wash:#2A2510;
+    --acc:#7FBDD8; --acc-2:#6FB0CD; --acc-ink:#0D181D; --acc-wash:#152730;
+    --ok:#6BC08D; --ok-wash:#152419; --warn:#DCAB55; --warn-wash:#2A2214;
+    --alert:#E58C81; --alert-wash:#2B1A18;
+    --n-doc:#7FBDD8; --n-doc-bg:#152730;
+    --n-fact:#DCB35A; --n-fact-bg:#2A2414;
+    --n-issue:#DE8FA5; --n-issue-bg:#2B1B21;
+    --n-law:#A79AE2; --n-law-bg:#201E30;
+    --n-out:#6BC08D; --n-out-bg:#152419;
+    --shadow:0 1px 2px rgba(0,0,0,.5),0 10px 28px rgba(0,0,0,.4);
+  }
+}
+:root[data-theme="dark"]{
+    --ink:#E8EBEE; --ink-2:#C6CBD0; --muted:#8E969D; --faint:#727A81;
+    --ground:#111417; --panel:#181C20; --panel-2:#212629; --line:#2E343A; --line-soft:#252A2F;
+    --brand:#FFD400; --brand-ink:#111417; --brand-edge:#B79A00; --brand-wash:#2A2510;
+    --acc:#7FBDD8; --acc-2:#6FB0CD; --acc-ink:#0D181D; --acc-wash:#152730;
+    --ok:#6BC08D; --ok-wash:#152419; --warn:#DCAB55; --warn-wash:#2A2214;
+    --alert:#E58C81; --alert-wash:#2B1A18;
+    --n-doc:#7FBDD8; --n-doc-bg:#152730;
+    --n-fact:#DCB35A; --n-fact-bg:#2A2414;
+    --n-issue:#DE8FA5; --n-issue-bg:#2B1B21;
+    --n-law:#A79AE2; --n-law-bg:#201E30;
+    --n-out:#6BC08D; --n-out-bg:#152419;
+    --shadow:0 1px 2px rgba(0,0,0,.5),0 10px 28px rgba(0,0,0,.4);
+}
+
+*{box-sizing:border-box}
+body{margin:0;background:var(--ground);color:var(--ink);font-family:var(--sans);font-size:14px;line-height:1.7;-webkit-font-smoothing:antialiased}
+button{font:inherit;color:inherit;cursor:pointer}
+:focus-visible{outline:2px solid var(--acc-2);outline-offset:2px}
+::-webkit-scrollbar{width:10px;height:10px}
+::-webkit-scrollbar-thumb{background:var(--line);border:3px solid transparent;background-clip:content-box;border-radius:8px}
+
+/* ── shell ─────────────────────────────── */
+.app{display:flex;flex-direction:column;height:100vh;height:100dvh}
+.topbar{display:flex;align-items:center;gap:14px;padding:0 16px;height:54px;flex:0 0 auto;
+  background:var(--ground);color:var(--ink);border-bottom:1px solid var(--line)}
+.brand{display:flex;align-items:center;gap:12px;min-width:0}
+.brand .mark{display:grid;grid-template-columns:6px 6px;grid-template-rows:6px 6px;gap:2px;flex:0 0 auto}
+.brand .mark i{display:block;border-radius:1px}
+.brand .seal{font-family:var(--serif);font-weight:700;font-size:15.5px;letter-spacing:.08em;white-space:nowrap}
+.brand .sys{font-size:12px;letter-spacing:.1em;white-space:nowrap;color:var(--ink-2);
+  box-shadow:inset 0 -4px 0 var(--brand);padding:0 2px 1px}
+.topbar .spacer{flex:1}
+.demo-badge{font-size:11px;letter-spacing:.08em;border:1px solid var(--line);background:var(--panel);color:var(--muted);border-radius:2px;padding:2px 8px;white-space:nowrap}
+.icon-btn{background:transparent;border:1px solid transparent;border-radius:var(--r);width:32px;height:32px;display:none;align-items:center;justify-content:center;color:var(--ink-2)}
+.icon-btn:hover{background:var(--panel-2)}
+.theme-btn{background:var(--ground);border:1px solid var(--line);border-radius:3px;width:32px;height:32px;
+  display:flex;align-items:center;justify-content:center;color:var(--ink-2);padding:0;flex:0 0 auto}
+.theme-btn:hover{border-color:var(--brand-edge);background:var(--brand-wash)}
+.theme-btn{width:34px;height:32px;color:#E3A200}
+.tsw .bite,.tsw .disc,.tsw .rays{transform-box:fill-box;transform-origin:center}
+.tsw .bite{transform:translate(11px,-4px);transition:transform .55s cubic-bezier(.45,0,.2,1)}
+.tsw .disc{transform:scale(1) rotate(0deg);transition:transform .55s cubic-bezier(.45,0,.2,1)}
+.tsw .rays{transform:rotate(0deg) scale(1);opacity:1;
+  transition:transform .55s cubic-bezier(.45,0,.2,1),opacity .35s ease}
+:root[data-theme="dark"] .theme-btn{color:#F0DFA6}
+:root[data-theme="dark"] .tsw .bite{transform:translate(-1.6px,1.2px)}
+:root[data-theme="dark"] .tsw .disc{transform:scale(1.22) rotate(-14deg)}
+:root[data-theme="dark"] .tsw .rays{transform:rotate(50deg) scale(.4);opacity:0}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]) .theme-btn{color:#F0DFA6}
+  :root:not([data-theme="light"]) .tsw .bite{transform:translate(-1.6px,1.2px)}
+  :root:not([data-theme="light"]) .tsw .disc{transform:scale(1.22) rotate(-14deg)}
+  :root:not([data-theme="light"]) .tsw .rays{transform:rotate(50deg) scale(.4);opacity:0}
+}
+@media (prefers-reduced-motion:reduce){.tsw .bite,.tsw .disc,.tsw .rays{transition:none}}
+
+.workspace{flex:1;display:flex;min-height:0}
+.rail{flex:0 0 auto;background:var(--panel);display:flex;flex-direction:column;min-height:0}
+.rail-left{width:248px;border-right:1px solid var(--line)}
+.rail-right{width:320px;border-left:1px solid var(--line)}
+.rail-head{display:flex;align-items:center;gap:6px;padding:10px 10px 8px;flex:0 0 auto}
+.rail-title{font-size:11px;font-weight:700;letter-spacing:.16em;color:var(--muted)}
+.rail-head .spacer{flex:1}
+.mini-btn{background:var(--ground);border:1px solid var(--line);border-radius:3px;padding:2px 7px;font-size:12px;color:var(--ink-2);line-height:1.6}
+.mini-btn:hover{border-color:var(--acc-2);color:var(--acc-2)}
+.rail-scroll{flex:1;overflow-y:auto;padding:0 8px 16px}
+
+/* ── case tree ─────────────────────────── */
+.tree-folder{margin-bottom:2px}
+.tree-row{display:flex;align-items:center;gap:6px;padding:5px 8px;border-radius:3px;cursor:pointer;user-select:none}
+.tree-row:hover{background:var(--panel-2)}
+.tree-row .tw{width:12px;flex:0 0 12px;color:var(--faint);font-size:9px;transition:transform .15s}
+.tree-row.collapsed .tw{transform:rotate(-90deg)}
+.tree-row .fname{font-size:13px;font-weight:500;color:var(--ink-2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tree-row .cnt{margin-left:auto;font-size:11px;color:var(--faint);font-variant-numeric:tabular-nums}
+.tree-children{padding-left:14px}
+.tree-children.hidden{display:none}
+.case-item{display:flex;align-items:center;gap:7px;padding:6px 8px;border-radius:3px;cursor:pointer;border-left:2px solid transparent}
+.case-item:hover{background:var(--panel-2)}
+.case-item.active{background:var(--ground);border-left-color:var(--brand-edge);box-shadow:0 1px 2px rgba(35,31,23,.06)}
+.case-item .dot{width:6px;height:6px;border-radius:50%;background:var(--line);flex:0 0 6px}
+.case-item.active .dot,.case-item.has-work .dot{background:var(--acc-2)}
+.case-item .cname{font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--ink)}
+.tree-empty{font-size:12px;color:var(--faint);padding:6px 10px 10px}
+.tree-row.fixed .fname{color:var(--faint)}
+.tree-folder.drop{background:var(--brand-wash);outline:1px dashed var(--brand-edge);outline-offset:-1px;border-radius:3px}
+.case-item{cursor:grab}
+.case-item.dragging{opacity:.4}
+.case-item .grip{margin-left:auto;color:var(--line);font-size:11px;letter-spacing:-1px;opacity:0}
+.case-item:hover .grip{opacity:1}
+.rail-act{width:27px;height:27px;border:1px solid var(--line);background:var(--ground);border-radius:3px;
+  display:flex;align-items:center;justify-content:center;color:var(--muted);padding:0;flex:0 0 auto}
+.rail-act:hover{border-color:var(--brand-edge);background:var(--brand-wash);color:var(--ink)}
+
+/* ── chat ──────────────────────────────── */
+.chat{flex:1;display:flex;flex-direction:column;min-width:0;background:var(--ground)}
+.chat-head{flex:0 0 auto;display:flex;align-items:center;gap:10px;padding:10px 20px;border-bottom:1px solid var(--line-soft)}
+.chat-head h1{margin:0;font-family:var(--serif);font-size:16px;font-weight:600;letter-spacing:.01em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.chat-head .meta{font-family:var(--mono);font-size:11px;color:var(--faint)}
+.chat-head .spacer{flex:1}
+.stage-strip{display:flex;gap:3px;align-items:center}
+.stage-pip{width:22px;height:3px;border-radius:2px;background:var(--line)}
+.stage-pip.on{background:var(--brand-edge)}
+
+.stream{flex:1;overflow-y:auto;padding:22px 20px 8px}
+.stream-inner{max-width:760px;margin:0 auto;display:flex;flex-direction:column;gap:20px}
+
+.msg{display:flex;gap:11px;align-items:flex-start}
+.msg.me{justify-content:flex-end}
+.msg.me .body{flex:0 1 auto;max-width:82%;background:var(--panel-2);border:1px solid var(--line-soft);
+  border-radius:12px 12px 3px 12px;padding:9px 13px}
+.msg.me .body p{color:var(--ink)}
+.msg.me .body .cmdline{font-family:var(--mono);font-size:12.5px;color:var(--acc-2)}
+.av{flex:0 0 28px;width:28px;height:28px;border-radius:3px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;letter-spacing:-.02em;margin-top:1px}
+.av.user{background:var(--panel-2);color:var(--muted)}
+.av.ai{background:var(--acc);color:var(--acc-ink)}
+.body{min-width:0;flex:1}
+.body p{margin:0 0 .7em}
+.body p:last-child{margin-bottom:0}
+.body strong{font-weight:700}
+
+.attach-line{display:flex;flex-wrap:wrap;gap:6px;margin-top:7px}
+.file-chip{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--line);background:var(--panel);border-radius:3px;padding:3px 9px;font-size:12px;color:var(--ink-2)}
+.file-chip .ext{font-family:var(--mono);font-size:10px;color:var(--acc-2);text-transform:uppercase}
+
+/* tool block */
+.tool{border:1px solid var(--line);border-radius:var(--r);background:var(--ground);overflow:hidden}
+.tool-head{display:flex;align-items:center;gap:9px;padding:8px 12px;background:var(--panel);border-bottom:1px solid var(--line-soft);border-left:3px solid var(--brand)}
+.tool-head .api{font-family:var(--mono);font-size:11px;color:var(--acc-2)}
+.tool-head .nm{font-size:12.5px;font-weight:700;letter-spacing:.02em}
+.tool-head .st{margin-left:auto;font-size:11px;color:var(--muted);display:flex;align-items:center;gap:6px}
+.spin{width:11px;height:11px;border:2px solid var(--line);border-top-color:var(--acc-2);border-radius:50%;animation:sp .7s linear infinite}
+@keyframes sp{to{transform:rotate(360deg)}}
+@media (prefers-reduced-motion:reduce){.spin{animation-duration:2s}}
+.tool-steps{padding:8px 12px;display:flex;flex-direction:column;gap:4px;border-bottom:1px solid var(--line-soft)}
+.tool-steps:empty{display:none}
+.step{font-size:12px;color:var(--muted);display:flex;gap:7px;align-items:baseline}
+.step .tick{color:var(--ok);font-size:10px}
+.step .t{font-family:var(--mono);font-size:10px;color:var(--faint);margin-left:auto;font-variant-numeric:tabular-nums}
+.tool-out{padding:14px}
+.tool-out:empty{display:none}
+
+/* result primitives */
+.sec{margin-bottom:16px}
+.sec:last-child{margin-bottom:0}
+.sec-h{font-size:11px;font-weight:700;letter-spacing:.14em;color:var(--muted);margin-bottom:7px;padding-bottom:5px;border-bottom:1px solid var(--line-soft)}
+.kv{display:grid;grid-template-columns:88px 1fr;gap:4px 12px;font-size:13px}
+.kv dt{color:var(--muted)}
+.kv dd{margin:0;color:var(--ink)}
+.mono{font-family:var(--mono);font-variant-numeric:tabular-nums}
+.olist{margin:0;padding-left:1.25em;display:flex;flex-direction:column;gap:6px;font-size:13.5px}
+.olist li::marker{color:var(--acc-2);font-weight:700}
+
+.check{display:flex;gap:9px;align-items:flex-start;padding:7px 10px;border-radius:3px;border:1px solid var(--line-soft);background:var(--panel);margin-bottom:5px}
+.check:last-child{margin-bottom:0}
+.check .bdg{flex:0 0 auto;font-size:10.5px;font-weight:700;letter-spacing:.06em;padding:1px 6px;border-radius:2px;margin-top:2px}
+.bdg.ok{background:var(--ok-wash);color:var(--ok)}
+.bdg.warn{background:var(--warn-wash);color:var(--warn)}
+.bdg.alert{background:var(--alert-wash);color:var(--alert)}
+.check .ct{font-size:12.5px}
+.check .ct b{display:block;font-weight:500;color:var(--ink)}
+.check .ct span{color:var(--muted);font-size:12px}
+
+.ccard{display:block;width:100%;text-align:left;border:1px solid var(--line);border-radius:var(--r);background:var(--ground);padding:10px 12px;margin-bottom:7px;transition:border-color .12s}
+.ccard:last-child{margin-bottom:0}
+.ccard:hover{border-color:var(--acc-2)}
+.ccard .r1{display:flex;align-items:baseline;gap:8px}
+.ccard .no{font-family:var(--mono);font-size:11.5px;color:var(--acc-2)}
+.ccard .sim{margin-left:auto;font-family:var(--mono);font-size:11px;color:var(--muted)}
+.ccard .ttl{font-size:13.5px;font-weight:500;margin:2px 0 3px}
+.ccard .r2{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.tag{font-size:11px;padding:1px 7px;border-radius:2px;background:var(--panel-2);color:var(--muted)}
+.tag.real{background:var(--acc-wash);color:var(--acc-2)}
+.simbar{height:2px;background:var(--line-soft);border-radius:2px;margin-top:8px;overflow:hidden}
+.simbar i{display:block;height:100%;background:var(--acc-2)}
+
+.lawrow{display:flex;gap:10px;align-items:flex-start;padding:8px 0;border-bottom:1px solid var(--line-soft)}
+.lawrow:last-child{border-bottom:0}
+.lawrow .lno{font-family:var(--mono);font-size:11px;color:var(--acc-2);flex:0 0 auto;padding-top:2px}
+.lawrow .lt{font-size:13px}
+.lawrow .lt em{font-style:normal;color:var(--muted);font-size:12px;display:block}
+
+.draft{font-family:var(--serif);font-size:14.5px;line-height:2.05;background:var(--panel);border:1px solid var(--line);border-radius:var(--r);padding:16px 18px}
+.draft h4{font-family:var(--sans);font-size:11px;letter-spacing:.16em;color:var(--muted);margin:16px 0 6px;font-weight:700}
+.draft h4:first-child{margin-top:0}
+.draft p{margin:0 0 .55em;text-align:justify}
+.draft .indent{text-indent:2em}
+.cite{font-family:var(--sans);font-size:10.5px;color:var(--acc-2);background:var(--acc-wash);border-radius:2px;padding:0 4px;margin-left:3px;white-space:nowrap;vertical-align:.08em}
+.nohallu{display:flex;gap:8px;align-items:flex-start;margin-top:10px;padding:8px 10px;border:1px dashed var(--line);border-radius:3px;font-size:12px;color:var(--muted)}
+
+.diffdel{background:var(--alert-wash);color:var(--alert);text-decoration:line-through;text-decoration-thickness:1px}
+.diffadd{background:var(--ok-wash);color:var(--ok)}
+
+/* suggestion chips */
+.composer-wrap{flex:0 0 auto;padding:0 20px 16px}
+.composer-inner{max-width:760px;margin:0 auto}
+.chips{display:flex;flex-wrap:wrap;gap:6px;padding:0 0 9px}
+.chip{border:1px solid var(--line);background:var(--ground);border-radius:999px;padding:4px 13px;font-size:12.5px;color:var(--ink-2);display:inline-flex;align-items:center;gap:6px;transition:all .12s}
+.chip:hover{border-color:var(--acc-2);color:var(--acc-2);background:var(--acc-wash)}
+.chip .lead{color:var(--acc-2);font-size:11px}
+.chip.ghost{border-style:dashed;color:var(--muted)}
+
+.composer{border:1px solid var(--line);border-radius:var(--r);background:var(--ground);box-shadow:var(--shadow);position:relative}
+.composer:focus-within{border-color:var(--acc-2)}
+.pending{display:flex;flex-wrap:wrap;gap:6px;padding:9px 10px 0}
+.pending:empty{display:none}
+.pending .file-chip button{border:0;background:transparent;color:var(--faint);padding:0 0 0 2px;font-size:13px;line-height:1}
+.composer-row{display:flex;align-items:flex-end;gap:8px;padding:8px 9px}
+#input{flex:1;border:0;background:transparent;resize:none;font:inherit;color:var(--ink);padding:5px 2px;max-height:150px;line-height:1.6}
+#input:focus{outline:none}
+#input::placeholder{color:var(--faint)}
+.cbtn{border:1px solid var(--line);background:var(--ground);border-radius:3px;width:30px;height:30px;display:flex;align-items:center;justify-content:center;flex:0 0 auto;color:var(--muted)}
+.cbtn:hover{border-color:var(--acc-2);color:var(--acc-2)}
+.cbtn.hintme{border-color:var(--brand-edge);background:var(--brand-wash);color:var(--ink)}
+.cbtn.send{background:var(--acc);border-color:var(--acc);color:var(--acc-ink)}
+.cbtn.send:disabled{opacity:.4;cursor:not-allowed}
+.hint{font-size:11px;color:var(--faint);padding:6px 2px 0;text-align:center}
+.hint code{font-family:var(--mono);font-size:10.5px;background:var(--panel-2);padding:1px 4px;border-radius:2px}
+
+/* slash menu */
+.slash{position:absolute;bottom:calc(100% + 6px);left:0;right:0;background:var(--ground);border:1px solid var(--line);border-radius:var(--r);box-shadow:var(--shadow);overflow:hidden;display:none;z-index:30}
+.slash.open{display:block}
+.slash-h{font-size:10.5px;letter-spacing:.14em;color:var(--muted);padding:7px 12px 5px;border-bottom:1px solid var(--line-soft);font-weight:700}
+.slash-list{max-height:266px;overflow-y:auto}
+.slash-item{display:flex;gap:10px;align-items:baseline;width:100%;text-align:left;border:0;background:transparent;padding:7px 12px;border-bottom:1px solid var(--line-soft)}
+.slash-item:last-child{border-bottom:0}
+.slash-item:hover,.slash-item.sel{background:var(--acc-wash)}
+.slash-item .cmd{font-family:var(--mono);font-size:11.5px;color:var(--acc-2);flex:0 0 92px}
+.slash-item .d{font-size:12.5px;color:var(--ink-2);min-width:0}
+.slash-item .d small{display:block;color:var(--muted);font-size:11.5px}
+
+/* empty state */
+.empty{max-width:760px;margin:0 auto;padding:6px 0 0}
+.empty .eh{font-family:var(--serif);font-size:22px;font-weight:600;margin:0 0 6px;text-wrap:balance}
+.empty .es{color:var(--ink-2);margin:0 0 14px;font-size:14px;max-width:56ch;line-height:1.85}
+.empty-note{font-size:12.5px;color:var(--faint);margin:0;max-width:56ch}
+.kbd{display:inline-flex;align-items:center;justify-content:center;min-width:20px;height:20px;
+  border:1px solid var(--line);border-bottom-width:2px;border-radius:4px;background:var(--panel);
+  color:var(--ink);font-size:12px;line-height:1;padding:0 4px;vertical-align:-.2em}
+.toolgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(216px,1fr));gap:8px}
+.tcard{text-align:left;border:1px solid var(--line);border-radius:var(--r);background:var(--ground);padding:11px 12px;transition:border-color .12s}
+.tcard:hover{border-color:var(--acc-2)}
+.tcard .n{display:flex;align-items:baseline;gap:7px}
+.tcard .idx{font-family:var(--mono);font-size:10.5px;color:var(--faint)}
+.tcard .nm{font-size:13px;font-weight:500}
+.tcard .api{font-family:var(--mono);font-size:10.5px;color:var(--acc-2);margin-top:3px}
+.tcard .ds{font-size:12px;color:var(--muted);margin-top:4px;line-height:1.55}
+
+/* ── right rail folders ────────────────── */
+.fgroup{border:1px solid var(--line);border-radius:var(--r);background:var(--ground);margin-bottom:8px;overflow:hidden}
+.fgroup-h{display:flex;align-items:center;gap:7px;padding:7px 10px;background:var(--panel-2);cursor:pointer;user-select:none}
+.fgroup-h .tw{font-size:9px;color:var(--faint);transition:transform .15s;width:10px}
+.fgroup.collapsed .fgroup-h .tw{transform:rotate(-90deg)}
+.fgroup-h .gn{font-size:12px;font-weight:700;letter-spacing:.04em}
+.fgroup-h .gc{margin-left:auto;font-family:var(--mono);font-size:10.5px;color:var(--muted)}
+.fgroup-h .add{border:1px solid var(--line);background:var(--ground);border-radius:2px;width:19px;height:19px;line-height:1;display:flex;align-items:center;justify-content:center;font-size:13px;color:var(--muted);padding:0}
+.fgroup-h .add:hover{color:var(--acc-2);border-color:var(--acc-2)}
+.fgroup-body{padding:5px}
+.fgroup.collapsed .fgroup-body{display:none}
+.fitem{display:flex;gap:7px;align-items:flex-start;padding:6px 7px;border-radius:3px}
+.fitem:hover{background:var(--panel)}
+.fitem .ic{font-family:var(--mono);font-size:9.5px;color:var(--acc-2);border:1px solid var(--line);border-radius:2px;padding:1px 4px;flex:0 0 auto;margin-top:2px;text-transform:uppercase}
+.fitem .ft{flex:1;min-width:0;font-size:12.5px;line-height:1.5;text-align:left;background:transparent;border:0;padding:0;color:var(--ink)}
+.fitem .ft small{display:block;color:var(--muted);font-size:11px}
+.fitem button.ft{cursor:pointer}
+.fitem button.ft:hover{color:var(--acc-2)}
+.fitem .rm{border:0;background:transparent;color:var(--faint);font-size:14px;line-height:1;padding:0 2px;opacity:0}
+.fitem:hover .rm{opacity:1}
+.fitem .rm:hover{color:var(--alert)}
+.fempty{font-size:11.5px;color:var(--faint);padding:8px 8px 10px;text-align:center;line-height:1.6}
+
+/* ── 關聯圖 ────────────────────────────── */
+.graphwrap{border:1px solid var(--line);border-radius:var(--r);background:var(--ground);overflow:hidden}
+.graphbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:8px 11px;background:var(--panel);border-bottom:1px solid var(--line-soft)}
+.legend{display:flex;gap:11px;flex-wrap:wrap;font-size:11px;color:var(--muted)}
+.legend span{display:inline-flex;align-items:center;gap:5px}
+.legend i{width:11px;height:11px;border-radius:2px;display:inline-block}
+.legend .ln{width:18px;height:0;border-top:1.5px solid var(--muted)}
+.legend .ln.dash{border-top-style:dashed}
+.legend .ln.bad{border-top-style:dashed;border-top-color:var(--alert)}
+.graphbar .gb-note{margin-left:auto;font-size:11px;color:var(--faint)}
+.gscroll{overflow:auto;background:var(--ground)}
+.gsvg{display:block}
+.gsvg .edge{fill:none;stroke:var(--line);stroke-width:1.4}
+.gsvg .edge.support{stroke:var(--acc-2);stroke-width:1.6}
+.gsvg .edge.relate{stroke:var(--faint);stroke-dasharray:4 4}
+.gsvg .edge.conflict{stroke:var(--alert);stroke-dasharray:5 3;stroke-width:1.6}
+.gsvg .edge.dim{opacity:.13}
+.gsvg .edge.hot{opacity:1;stroke-width:2.4}
+.gnode{cursor:pointer}
+.gnode rect{stroke-width:1.2}
+.gnode text{font-family:var(--sans);font-size:11.5px;dominant-baseline:middle}
+.gnode .gt2{font-size:10px}
+.gnode.dim{opacity:.28}
+.gnode.sel rect{stroke-width:2.4}
+.gcol{font-family:var(--sans);font-size:10.5px;letter-spacing:.16em;fill:var(--faint)}
+.gdetail{border-top:1px solid var(--line-soft);padding:11px 13px;background:var(--panel);min-height:74px}
+.gdetail .gd-h{display:flex;align-items:baseline;gap:8px;margin-bottom:4px}
+.gdetail .gd-k{font-size:10.5px;letter-spacing:.1em;padding:1px 6px;border-radius:2px}
+.gdetail .gd-t{font-size:13.5px;font-weight:500}
+.gdetail .gd-b{font-size:12.5px;color:var(--ink-2);line-height:1.65}
+.gdetail .gd-s{font-size:11.5px;color:var(--muted);margin-top:5px}
+
+/* ── modal / menu / toast ──────────────── */
+.scrim{position:fixed;inset:0;background:rgba(15,20,26,.5);display:flex;align-items:center;justify-content:center;padding:20px;z-index:60}
+.sheet{background:var(--ground);border:1px solid var(--line);border-radius:var(--r);box-shadow:0 20px 60px rgba(0,0,0,.3);width:min(720px,100%);max-height:min(86vh,880px);display:flex;flex-direction:column}
+.sheet.wide{width:min(860px,100%)}
+.sheet.xwide{width:min(1180px,100%)}
+.sheet-h{display:flex;align-items:center;gap:10px;padding:12px 16px;border-bottom:1px solid var(--line)}
+.sheet-h h3{margin:0;font-family:var(--serif);font-size:15px;font-weight:600}
+.sheet-h .sub{font-family:var(--mono);font-size:11px;color:var(--faint)}
+.sheet-h .x{margin-left:auto;border:0;background:transparent;color:var(--muted);font-size:19px;line-height:1;padding:0 2px}
+.sheet-b{padding:16px;overflow-y:auto}
+.sheet-f{padding:11px 16px;border-top:1px solid var(--line);display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap}
+.btn{border:1px solid var(--line);background:var(--ground);border-radius:3px;padding:6px 15px;font-size:13px}
+.btn:hover{border-color:var(--acc-2);color:var(--acc-2)}
+.btn.pri{background:var(--acc);border-color:var(--acc);color:var(--acc-ink)}
+.btn.pri:hover{color:var(--acc-ink);opacity:.9}
+
+.pickrow{display:flex;gap:10px;align-items:flex-start;padding:9px 10px;border:1px solid var(--line-soft);border-radius:3px;margin-bottom:6px;cursor:pointer}
+.pickrow:hover{border-color:var(--acc-2);background:var(--acc-wash)}
+.pickrow input{margin-top:5px;accent-color:var(--acc-2)}
+.pickrow .pt{font-size:13px}
+.pickrow .pt small{display:block;color:var(--muted);font-size:11.5px}
+.field{width:100%;border:1px solid var(--line);border-radius:3px;padding:7px 10px;font:inherit;font-size:13px;background:var(--ground);color:var(--ink)}
+.field:focus{outline:none;border-color:var(--acc-2)}
+.flabel{display:block;font-size:11px;letter-spacing:.1em;color:var(--muted);font-weight:700;margin:0 0 5px}
+
+/* paper preview */
+.paper{background:#fff;color:#141A21;border:1px solid var(--line);padding:44px 46px;font-family:var(--serif);font-size:13.5px;line-height:2.1;box-shadow:0 2px 10px rgba(0,0,0,.08)}
+.paper .ph{text-align:center;font-size:19px;font-weight:700;letter-spacing:.5em;text-indent:.5em;margin-bottom:6px}
+.paper .pno{text-align:right;font-family:var(--mono);font-size:11px;color:#5C6672;margin-bottom:18px}
+.paper .prow{display:grid;grid-template-columns:5.5em 1fr;gap:2px 10px;margin-bottom:2px}
+.paper .prow dt{letter-spacing:.5em}
+.paper .plabel{text-align:center;letter-spacing:1em;text-indent:1em;font-weight:700;margin:18px 0 4px}
+.paper p{margin:0 0 .4em;text-align:justify}
+.paper .indent{text-indent:2em}
+.paper .sig{margin-top:26px;font-size:13px;line-height:2.2}
+.paper .foot{margin-top:20px;border-top:1px solid #D6DDE5;padding-top:12px;font-size:12.5px;color:#3A4552}
+.paper-scroll{overflow-x:auto}
+
+.ctxmenu{position:fixed;z-index:90;background:var(--ground);border:1px solid var(--line);border-radius:3px;box-shadow:var(--shadow);padding:4px;min-width:150px;display:none}
+.ctxmenu.open{display:block}
+.ctxmenu button{display:block;width:100%;text-align:left;border:0;background:transparent;padding:6px 10px;font-size:13px;border-radius:2px}
+.ctxmenu button:hover{background:var(--panel-2)}
+.ctxmenu button.danger:hover{background:var(--alert-wash);color:var(--alert)}
+.ctxmenu hr{border:0;border-top:1px solid var(--line-soft);margin:4px 0}
+
+#toast{position:fixed;left:50%;bottom:26px;transform:translateX(-50%) translateY(12px);background:var(--ink);color:var(--ground);padding:9px 18px;border-radius:3px;font-size:13px;opacity:0;pointer-events:none;transition:opacity .2s,transform .2s;z-index:100;max-width:90vw;text-align:center}
+#toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+
+.scrim-rail{display:none}
+@media (max-width:1080px){ .rail-right{width:280px} }
+@media (max-width:900px){
+  .icon-btn{display:flex}
+  .rail{position:fixed;top:50px;bottom:0;z-index:50;box-shadow:0 0 40px rgba(0,0,0,.25);transition:transform .2s}
+  .rail-left{left:0;transform:translateX(-100%)}
+  .rail-right{right:0;width:300px;max-width:88vw;transform:translateX(100%)}
+  body.left-open .rail-left{transform:none}
+  body.right-open .rail-right{transform:none}
+  body.left-open .scrim-rail,body.right-open .scrim-rail{display:block;position:fixed;inset:50px 0 0;background:rgba(15,20,26,.4);z-index:45}
+  .stream{padding:18px 16px 8px}
+  .composer-wrap{padding:0 16px 14px}
+  .chat-head{padding:10px 16px}
+  .paper{padding:26px 20px}
+  .sheet-b{padding:12px}
+}
+@media (max-width:420px){
+  .brand .sys{display:none}
+  .toolgrid{grid-template-columns:1fr}
+  .kv{grid-template-columns:74px 1fr}
+}
+</style>
+
+<div class="app">
+  <header class="topbar">
+    <button class="icon-btn" id="tgl-left" aria-label="案件清單">☰</button>
+    <div class="brand">
+      <span class="mark" aria-hidden="true"><i style="background:#5AA84F"></i><i style="background:#2F7FBF"></i><i style="background:#FFD400"></i><i style="background:#E0679A"></i></span>
+      <span class="seal">新北市政府法制局</span>
+      <span class="sys">訴願智慧輔助平台</span>
+    </div>
+    <span class="spacer"></span>
+    <button class="theme-btn" id="theme" title="切換為深色" aria-label="切換為深色">
+      <svg class="tsw" viewBox="0 0 24 24" width="21" height="21" aria-hidden="true">
+        <mask id="crescent" maskUnits="userSpaceOnUse" x="0" y="0" width="24" height="24">
+          <rect width="24" height="24" fill="#fff"/>
+          <circle class="bite" cx="17.6" cy="8.4" r="6.6" fill="#000"/>
+        </mask>
+        <g class="rays" stroke="currentColor" stroke-width="1.9" stroke-linecap="round">
+          <path d="M12 2.2v2.1M12 19.7v2.1M2.2 12h2.1M19.7 12h2.1M5.1 5.1l1.5 1.5M17.4 17.4l1.5 1.5M18.9 5.1l-1.5 1.5M6.6 17.4l-1.5 1.5"/>
+        </g>
+        <circle class="disc" cx="12" cy="12" r="5.5" fill="currentColor" mask="url(#crescent)"/>
+      </svg>
+    </button>
+    <span class="demo-badge">原型展示 · 示範資料</span>
+    <button class="icon-btn" id="tgl-right" aria-label="案件卷宗">▤</button>
+  </header>
+
+  <div class="workspace">
+    <aside class="rail rail-left" id="rail-left">
+      <div class="rail-head">
+        <span class="rail-title">案件清單</span>
+        <span class="spacer"></span>
+        <button class="rail-act" id="new-case" title="新增案件" aria-label="新增案件">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M14.5 2.6H6.6a2 2 0 00-2 2v14.8a2 2 0 002 2h10.8a2 2 0 002-2V7.5z"/>
+            <path d="M14.2 2.8v4.4h4.6"/>
+            <path d="M12 11.6v6M9 14.6h6"/>
+          </svg>
+        </button>
+        <button class="rail-act" id="new-folder" title="新增資料夾" aria-label="新增資料夾">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M3.4 19.4h17.2a1 1 0 001-1V8.4a1 1 0 00-1-1h-7.5a2 2 0 01-1.66-.89L10.5 5.1a2 2 0 00-1.66-.89H3.4a1 1 0 00-1 1v13.2a1 1 0 001 1z"/>
+            <path d="M12 10.9v5.4M9.3 13.6h5.4"/>
+          </svg>
+        </button>
+      </div>
+      <div class="rail-scroll" id="tree"></div>
+    </aside>
+
+    <main class="chat">
+      <div class="chat-head">
+        <h1 id="case-title">新案件 1</h1>
+        <span class="meta" id="case-meta">尚未載入卷證</span>
+        <span class="spacer"></span>
+        <div class="stage-strip" id="stages" title="辦案進度：萃取 → 案例 → 法規 → 關聯圖 → 草稿 → 產出"></div>
+      </div>
+      <div class="stream" id="stream"></div>
+      <div class="composer-wrap">
+        <div class="composer-inner">
+          <div class="chips" id="chips"></div>
+          <div class="composer">
+            <div class="slash" id="slash">
+              <div class="slash-h">可呼叫的工具</div>
+              <div class="slash-list" id="slash-list"></div>
+            </div>
+            <div class="pending" id="pending"></div>
+            <div class="composer-row">
+              <button class="cbtn" id="attach" title="上傳卷證或相關檔案" aria-label="上傳卷證">＋</button>
+              <textarea id="input" rows="1" placeholder="輸入指令，或以「/」呼叫工具⋯⋯"></textarea>
+              <button class="cbtn send" id="send" aria-label="送出">↑</button>
+            </div>
+          </div>
+          <div class="hint">按 <code>/</code> 列出工具　·　也可直接輸入「你會什麼」查看全部 API</div>
+        </div>
+      </div>
+    </main>
+
+    <aside class="rail rail-right" id="rail-right">
+      <div class="rail-head">
+        <span class="rail-title">案件卷宗</span>
+        <span class="spacer"></span>
+        <span class="rail-title" id="folder-count" style="letter-spacing:.04em"></span>
+      </div>
+      <div class="rail-scroll" id="folders"></div>
+    </aside>
+  </div>
+</div>
+
+<div class="scrim-rail" id="scrim-rail"></div>
+<div class="ctxmenu" id="ctxmenu"></div>
+<div id="modal-root"></div>
+<div id="toast" role="status" aria-live="polite"></div>
+
+<script>
+"use strict";
+const $=(s,r=document)=>r.querySelector(s);
+const el=(t,c,h)=>{const n=document.createElement(t);if(c)n.className=c;if(h!==undefined)n.innerHTML=h;return n;};
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+const esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+/* ══════════════════ 示範資料 ══════════════════ */
+const CASE_NO="1143062584";
+const EVIDENCE_POOL=[
+  {ext:"pdf",name:"訴願書.pdf",note:"訴願人 114/06/16 提出．共 6 頁"},
+  {ext:"pdf",name:"原處分書.pdf",note:"新北環稽字第 1140876543 號．114/05/20"},
+  {ext:"pdf",name:"送達證書.pdf",note:"掛號回執．114/05/23 簽收"},
+  {ext:"pdf",name:"稽查工作紀錄.pdf",note:"114/04/09 現場稽查紀錄與採證照片 8 張"},
+  {ext:"pdf",name:"答辯書.pdf",note:"原處分機關檢卷答辯．114/07/04"},
+  {ext:"jpg",name:"現場照片_東側堆置區.jpg",note:"採證照片．廢塑膠混合物"},
+  {ext:"docx",name:"委任書.docx",note:"訴願代理人委任文件"}
+];
+
+const LAW_POOL=[
+  {no:"廢棄物清理法 §2 I",title:"廢棄物之定義",body:"本法所稱廢棄物，指下列能以搬動方式移動之固態或液態物質或物品：一、被拋棄者。二、減失原效用、被放棄原效用、不具效用或效用不明者。三、於營建、製造、加工、修理、販賣、應用或處理過程所產生目的以外之產物。四、其他經中央主管機關公告者。",note:"本案爭點一之判準：堆置物是否已「減失原效用」"},
+  {no:"廢棄物清理法 §36 I",title:"事業廢棄物貯存清除處理之方法及設施",body:"事業廢棄物之貯存、清除或處理方法及設施，應符合中央主管機關之規定。",note:"原處分所適用之處罰前提規定"},
+  {no:"廢棄物清理法 §52",title:"違反貯存規定之罰則",body:"貯存、清除、處理或再利用一般事業廢棄物違反第 36 條第 1 項……規定者，處新臺幣 6 千元以上 300 萬元以下罰鍰，並限期改善；屆期仍未完成改善者，按日連續處罰。",note:"原處分之裁罰依據"},
+  {no:"貯存清除處理方法及設施標準 §6",title:"事業廢棄物貯存之一般規定",body:"事業廢棄物之貯存方法及設施，應符合下列規定：一、貯存容器、設施應保持完整清潔，不得有廢棄物飛散、逸散、滲出、污染地面或散發惡臭情事。二、貯存地點、容器、設施應標示廢棄物名稱……並應有防止地面水、雨水流入之設施。",note:"原處分認定之違規事實所對應之技術標準"},
+  {no:"行政程序法 §102",title:"作成處分前之陳述意見機會",body:"行政機關作成限制或剝奪人民自由或權利之行政處分前，除已依第 39 條規定，通知處分相對人陳述意見，或決定舉行聽證者外，應給予該處分相對人陳述意見之機會。但法規另有規定者，從其規定。",note:"本案爭點二之核心：卷內未見陳述意見通知"},
+  {no:"行政程序法 §114 I③、II",title:"程序瑕疵之補正及其時限",body:"違反程序或方式規定之行政處分，除依第 111 條規定而無效者外，因下列情形而補正：……三、應給予當事人陳述意見之機會已於事後給予者。前項第 2 款至第 5 款之補正行為，僅得於訴願程序終結前為之。",note:"補正僅得於訴願程序終結前為之"},
+  {no:"行政罰法 §18 I",title:"裁處罰鍰之審酌事項",body:"裁處罰鍰，應審酌違反行政法上義務行為應受責難程度、所生影響及因違反行政法上義務所得之利益，並得考量受處罰者之資力。",note:"本案爭點三：裁量是否踐行"},
+  {no:"訴願法 §14 I",title:"訴願期間",body:"訴願之提起，應自行政處分達到或公告期滿之次日起 30 日內為之。",note:"程序審查依據．本案未逾期"},
+  {no:"訴願法 §81 I",title:"訴願有理由之決定",body:"訴願有理由者，受理訴願機關應以決定撤銷原行政處分之全部或一部，並得視事件之情節，逕為變更之決定或發回原行政處分機關另為處分。但於訴願人表示不服之範圍內，不得為更不利益之變更或處分。",note:"草稿主文所引之決定依據"},
+  {no:"訴願法 §79 I",title:"訴願無理由之決定",body:"訴願無理由者，受理訴願機關應以決定駁回之。",note:"備選主文依據"},
+  {no:"新北市裁罰基準 第 3 點",title:"新北市政府處理違反廢棄物清理法事件裁罰基準",body:"違反本法規定事件之裁罰基準，依附表之規定；同一違規行為第 2 次以上者，按次加重。",note:"原處分裁罰額度之地方基準"}
+];
+
+const CASE_POOL=[
+  {no:"1143062011",sim:94,real:false,type:"廢棄物清理法",title:"事業廢棄物露天堆置未設防雨設施，訴願駁回",verdict:"訴願駁回",law:"廢清法 §36 I、§52",
+   full:`<p><b>主文</b>：訴願駁回。</p><p><b>爭點</b>：訴願人主張堆置物屬暫存待運物料，非屬廢棄物。</p><p><b>理由要旨</b>：查稽查當日現場採證照片顯示，系爭物料已與泥土、雨水混雜並生積水，客觀上已減失原效用，核屬廢棄物清理法第 2 條第 1 項第 2 款所稱之廢棄物。訴願人雖稱屬暫存，惟未提出任何再利用申報或流向文件以實其說，所訴不足採據。原處分機關依同法第 52 條裁處法定最低額罰鍰，並無違誤。</p><p><b>可援引論點</b>：以「有無再利用申報／流向文件」作為判斷是否減失原效用之輔助標準。</p>`},
+  {no:"1143058447",sim:89,real:false,type:"廢棄物清理法",title:"堆置物是否屬廢棄物之認定未盡調查，原處分撤銷",verdict:"原處分撤銷",law:"廢清法 §2 I②、行程法 §36",
+   full:`<p><b>主文</b>：原處分撤銷。</p><p><b>爭點</b>：原處分機關僅憑現場目視即認定系爭物品為廢棄物。</p><p><b>理由要旨</b>：物品是否該當廢棄物清理法第 2 條第 1 項第 2 款所稱「減失原效用」，應就其物理狀態、有無交易價值、事業之處置意思等綜合判斷，非得僅以堆置外觀逕予推認。原處分機關未就上開事項調查明確，即遽為處罰，與行政程序法第 36 條應依職權調查證據之規定有違。</p><p><b>可援引論點</b>：廢棄物性質之認定應綜合「物理狀態＋交易價值＋處置意思」三要素。</p>`},
+  {no:"1143041902",sim:83,real:false,type:"空氣污染防制法",title:"作成處分前未給予陳述意見，撤銷另為適法處分",verdict:"撤銷另為適法之處分",law:"行程法 §102、§114 I③",
+   full:`<p><b>主文</b>：原處分撤銷，由原處分機關於 2 個月內另為適法之處分。</p><p><b>爭點</b>：原處分機關未依行政程序法第 102 條給予陳述意見機會。</p><p><b>理由要旨</b>：本件原處分係限制或剝奪人民權利之行政處分，原處分機關作成前既未依行政程序法第 39 條通知陳述意見，亦未舉行聽證，復未於訴願程序終結前依同法第 114 條第 1 項第 3 款事後補正，其程序即有瑕疵。爰將原處分撤銷，由原處分機關踐行正當行政程序後另為適法之處分。</p><p><b>可援引論點</b>：程序瑕疵未於訴願程序終結前補正者，即應撤銷另處，本案可直接援用其論理架構。</p>`},
+  {no:"1147030254",sim:76,real:true,type:"申請政府資訊事件",title:"未逐項檢視可否割裂處理，撤銷另為適法之處分",verdict:"撤銷，另為適法之處分",law:"訴願法 §81 I、II",
+   full:`<p class="mono" style="font-size:11.5px;color:var(--muted)">新北府訴決字第 1140408529 號．114 年 5 月 14 日．原處分機關：新北市政府警察局三重分局</p><p><b>主文</b>：原處分撤銷，由原處分機關於 2 個月內另為適法之處分。</p><p><b>理由要旨</b>：檔案法及政府資訊公開法所列限制公開或不予提供之資訊，係指各獨立單元之資訊而言，並非同一宗案卷內有部分資訊具限制公開情形，即得就全部限制公開；受理申請機關仍應檢視該政府資訊可否割裂處理，若得予區隔並施以防免揭露之處置即足達保密效果者，即應就其他部分提供之。</p><p><b>可援引論點</b>：主文採「撤銷＋命 2 個月內另為適法之處分」之體例，與本案擬採之主文一致，格式可直接參照。</p>`},
+  {no:"1143051259",sim:68,real:true,type:"違反建築法",title:"逾行政罰法 3 年裁處權時效，原處分撤銷",verdict:"原處分撤銷",law:"行政罰法 §27 I、II",
+   full:`<p class="mono" style="font-size:11.5px;color:var(--muted)">新北府訴決字第 1141934721 號．114 年 12 月 17 日．原處分機關：新北市政府工務局</p><p><b>主文</b>：原處分撤銷。</p><p><b>理由要旨</b>：行政罰之裁處權因 3 年期間之經過而消滅，自違反行政法上義務之行為終了時起算。訴願人於 111 年 6 月 9 日申報不實違法行為即已成立，裁處權時效應自該日起算，原處分機關遲至 114 年 7 月 4 日始作成處分並於同年月 9 日送達，顯已逾 3 年裁處權時效，所為處分於法有違。</p><p><b>可援引論點</b>：程序上「裁處權時效」之審查順位先於實體爭點，本案雖未逾時效，惟審查表之檢核項目可援用。</p>`}
+];
+
+const TOOLS=[
+  {id:"extract",cmd:"/萃取答辯書",name:"萃取答辯書",api:"extract_case_document",
+   param:"files[], case_id",
+   desc:"解析卷證，判斷案件類型，輸出事實經過、訴願主張、本案爭點與程序審查結果",
+   kw:["萃取","解析","讀取","擷取","分析卷","分析檔","摘要","案件類型","程序審查","看一下卷"]},
+  {id:"cases",cmd:"/查找相似案例",name:"查找相似案例",api:"search_similar_decisions",
+   param:"case_type, issues[], top_k=5",
+   desc:"檢索歷史訴願決定書資料庫，回傳相似案例卡片並存入右側卷宗",
+   kw:["相似","案例","類似","前例","比對","判決","過去怎麼","歷史"]},
+  {id:"laws",cmd:"/搜尋相關法規",name:"搜尋相關法規",api:"search_regulations",
+   param:"keywords[], include_interpretations=true",
+   desc:"檢索法條、函釋與裁罰基準，標示現行有效版本並存入右側卷宗",
+   kw:["法規","法條","條文","函釋","依據","基準","適用哪"]},
+  {id:"graph",cmd:"/生成關聯圖",name:"生成關聯圖",api:"build_relation_graph",
+   param:"case_id, scope=[卷證,事實,爭點,法規,結論]",
+   desc:"將卷證、事實、爭點、法規與結論繪成心智圖，標示支持、關聯與矛盾三種關係",
+   kw:["關聯圖","心智圖","圖","關係圖","脈絡","視覺化","graph","架構圖"]},
+  {id:"draft",cmd:"/生成草稿",name:"草稿生成",api:"generate_decision_draft",
+   param:"case_id, sources[]（限右側卷宗）",
+   desc:"以右側卷宗為唯一來源生成決定書草稿，逐句附引註，禁止無來源之陳述",
+   kw:["草稿","擬稿","起草","撰擬","寫決定書","生成決定","draft"]},
+  {id:"refine",cmd:"/優化文案",name:"優化文案",api:"refine_text",
+   param:"target_section, instruction",
+   desc:"依指定方向修潤草稿段落，保留引註並標示修改處",
+   kw:["優化","修潤","改寫","精簡","潤稿","調整語氣","再嚴謹"]},
+  {id:"pdf",cmd:"/生成PDF",name:"生成 PDF",api:"export_pdf",
+   param:"draft_id, template=訴願決定書",
+   desc:"依訴願決定書標準版型輸出 PDF 供下載",
+   kw:["pdf","匯出 pdf","輸出 pdf"]},
+  {id:"doc",cmd:"/生成DOC",name:"生成 DOC",api:"export_docx",
+   param:"draft_id, template=訴願決定書",
+   desc:"依訴願決定書標準版型輸出 Word 檔供承辦人續行編修",
+   kw:["doc","word","docx","匯出 word","輸出 word"]}
+];
+
+/* ══════════════════ 狀態 ══════════════════ */
+let uid=0; const nid=p=>p+(++uid);
+const S={
+  folders:[],
+  cases:[],
+  activeId:null,
+  pendingFiles:[]
+};
+let caseSeq=0;
+function autoName(){return "新案件 "+(++caseSeq);}
+function isAutoName(n){return /^新案件 \d+$/.test(n);}
+function newCase(name,folderId){
+  const c={id:nid("c"),name:name||autoName(),folderId:folderId||null,
+    dom:null,started:false,
+    flags:{extract:false,cases:false,laws:false,graph:false,draft:false,out:false},
+    docs:{evidence:[],cases:[],laws:[],out:[]}};
+  S.cases.push(c);return c;
+}
+const active=()=>S.cases.find(c=>c.id===S.activeId);
+
+/* ══════════════════ 左側案件樹 ══════════════════ */
+let rootOpen=true, dragId=null;
+function buckets(){
+  return S.folders.concat([{id:null,name:"未分類",fixed:true,get open(){return rootOpen;},set open(v){rootOpen=v;}}]);
+}
+function renderTree(){
+  const box=$("#tree");box.innerHTML="";
+  buckets().forEach(f=>{
+    const list=S.cases.filter(c=>c.folderId===f.id);
+    if(f.fixed&&!list.length&&S.folders.length)return;
+    const wrap=el("div","tree-folder");
+    const row=el("div","tree-row"+(f.open?"":" collapsed")+(f.fixed?" fixed":""));
+    row.innerHTML='<span class="tw">▼</span><span class="fname"></span>';
+    row.querySelector(".fname").textContent=f.name;
+    row.appendChild(el("span","cnt",String(list.length)));
+    row.onclick=()=>{f.open=!f.open;renderTree();};
+    if(!f.fixed)row.oncontextmenu=e=>{e.preventDefault();folderMenu(e,f);};
+    wrap.appendChild(row);
+    const kids=el("div","tree-children"+(f.open?"":" hidden"));
+    if(!list.length)kids.appendChild(el("div","tree-empty","（拖曳案件到這裡）"));
+    list.forEach(c=>kids.appendChild(caseNode(c)));
+    wrap.appendChild(kids);
+
+    wrap.addEventListener("dragover",e=>{
+      if(!dragId)return;e.preventDefault();
+      e.dataTransfer.dropEffect="move";wrap.classList.add("drop");
+      if(!f.open){f.open=true;}
+    });
+    wrap.addEventListener("dragleave",e=>{
+      if(!wrap.contains(e.relatedTarget))wrap.classList.remove("drop");
+    });
+    wrap.addEventListener("drop",e=>{
+      e.preventDefault();wrap.classList.remove("drop");
+      const c=S.cases.find(x=>x.id===dragId);
+      if(!c)return;
+      if(c.folderId!==f.id){c.folderId=f.id;toast("已移至「"+f.name+"」");}
+      dragId=null;renderTree();
+    });
+    box.appendChild(wrap);
+  });
+}
+function caseNode(c){
+  const n=el("div","case-item"+(c.id===S.activeId?" active":"")+(c.started?" has-work":""));
+  n.draggable=true;
+  n.appendChild(el("span","dot"));
+  const t=el("span","cname");t.textContent=c.name;n.appendChild(t);
+  n.appendChild(el("span","grip","⠿"));
+  n.onclick=()=>{S.activeId=c.id;renderAll();closeRails();};
+  n.oncontextmenu=e=>{e.preventDefault();caseMenu(e,c);};
+  n.addEventListener("dragstart",e=>{
+    dragId=c.id;n.classList.add("dragging");
+    e.dataTransfer.effectAllowed="move";
+    e.dataTransfer.setData("text/plain",c.id);
+  });
+  n.addEventListener("dragend",()=>{dragId=null;n.classList.remove("dragging");
+    document.querySelectorAll(".tree-folder.drop").forEach(x=>x.classList.remove("drop"));});
+  return n;
+}
+
+/* 右鍵選單 */
+const ctx=$("#ctxmenu");
+function openCtx(e,items){
+  ctx.innerHTML="";
+  items.forEach(it=>{
+    if(it==="-"){ctx.appendChild(el("hr"));return;}
+    const b=el("button",it.danger?"danger":"");b.textContent=it.label;
+    b.onclick=()=>{ctx.classList.remove("open");it.fn();};
+    ctx.appendChild(b);
+  });
+  ctx.classList.add("open");
+  const w=ctx.offsetWidth,h=ctx.offsetHeight;
+  ctx.style.left=Math.min(e.clientX,innerWidth-w-8)+"px";
+  ctx.style.top=Math.min(e.clientY,innerHeight-h-8)+"px";
+}
+addEventListener("click",()=>ctx.classList.remove("open"));
+addEventListener("scroll",()=>ctx.classList.remove("open"),true);
+
+function caseMenu(e,c){
+  openCtx(e,[
+    {label:"重新命名",fn:()=>promptSheet("重新命名案件","案件名稱",c.name,v=>{c.name=v;renderAll();})},
+    {label:"移至資料夾⋯",fn:()=>moveSheet(c)},
+    {label:"建立副本",fn:()=>{const d=newCase(c.name+"（副本）",c.folderId);S.activeId=d.id;renderAll();}},
+    "-",
+    {label:"刪除案件",danger:true,fn:()=>{
+      if(S.cases.length===1){toast("至少須保留一件案件");return;}
+      S.cases=S.cases.filter(x=>x.id!==c.id);
+      if(S.activeId===c.id)S.activeId=S.cases[0].id;
+      renderAll();toast("案件已刪除");
+    }}
+  ]);
+}
+function folderMenu(e,f){
+  openCtx(e,[
+    {label:"重新命名",fn:()=>promptSheet("重新命名資料夾","資料夾名稱",f.name,v=>{f.name=v;renderTree();})},
+    {label:"在此新增案件",fn:()=>{const c=newCase(null,f.id);f.open=true;S.activeId=c.id;renderAll();}},
+    "-",
+    {label:"刪除資料夾（案件移至未分類）",danger:true,fn:()=>{
+      S.cases.forEach(c=>{if(c.folderId===f.id)c.folderId=null;});
+      S.folders=S.folders.filter(x=>x.id!==f.id);renderTree();
+    }}
+  ]);
+}
+
+/* ══════════════════ 右側卷宗 ══════════════════ */
+const GROUPS=[
+  {key:"evidence",name:"卷證檔案",abbr:"卷",empty:"以聊天室的「＋」上傳訴願書、原處分書、答辯書等卷證。"},
+  {key:"cases",name:"相關案例",abbr:"例",empty:"執行「查找相似案例」後，案例卡片會自動歸檔於此。"},
+  {key:"laws",name:"相關法規",abbr:"法",empty:"執行「搜尋相關法規」後，法條會自動歸檔於此，可自行增減。"},
+  {key:"out",name:"答辯書與產出",abbr:"稿",empty:"草稿與匯出檔案會存放於此。"}
+];
+const collapsed={};
+function renderFolders(){
+  const box=$("#folders");box.innerHTML="";
+  const c=active();let total=0;
+  GROUPS.forEach(g=>{
+    const items=c.docs[g.key];total+=items.length;
+    const wrap=el("div","fgroup"+(collapsed[g.key]?" collapsed":""));
+    const head=el("div","fgroup-h");
+    head.innerHTML=`<span class="tw">▼</span><span class="gn"></span><span class="gc">${items.length}</span>`;
+    head.querySelector(".gn").textContent=g.name;
+    const add=el("button","add","＋");add.title="加入項目";
+    add.onclick=ev=>{ev.stopPropagation();addSheet(g);};
+    head.appendChild(add);
+    head.onclick=()=>{collapsed[g.key]=!collapsed[g.key];renderFolders();};
+    wrap.appendChild(head);
+    const body=el("div","fgroup-body");
+    if(!items.length)body.appendChild(el("div","fempty",g.empty));
+    items.forEach((it,i)=>{
+      const row=el("div","fitem");
+      row.appendChild(el("span","ic",it.ext||g.abbr));
+      const t=el((it.full||it.graph)?"button":"div","ft");
+      t.innerHTML=`${esc(it.name)}${it.note?`<small>${esc(it.note)}</small>`:""}`;
+      if(it.full||it.graph)t.onclick=()=>docSheet(it);
+      row.appendChild(t);
+      const rm=el("button","rm","×");rm.title="移除";
+      rm.onclick=()=>{items.splice(i,1);renderFolders();toast("已自卷宗移除");};
+      row.appendChild(rm);
+      body.appendChild(row);
+    });
+    wrap.appendChild(body);box.appendChild(wrap);
+  });
+  $("#folder-count").textContent=total?total+" 項":"";
+}
+function addSheet(g){
+  const c=active();
+  let pool=[];
+  if(g.key==="evidence")pool=EVIDENCE_POOL.map(f=>({name:f.name,note:f.note,ext:f.ext}));
+  if(g.key==="laws")pool=LAW_POOL.map(l=>({name:l.no+"　"+l.title,note:l.note,ext:"法",full:`<p>${esc(l.body)}</p><p style="color:var(--muted);font-size:12.5px">${esc(l.note)}</p>`}));
+  if(g.key==="cases")pool=CASE_POOL.map(k=>({name:k.no+"　"+k.title,note:k.type+"．"+k.verdict,ext:"例",full:k.full}));
+  if(g.key==="out")pool=[{name:"訴願決定書草稿 v1",note:"待生成",ext:"稿"}];
+  const have=new Set(c.docs[g.key].map(x=>x.name));
+  const avail=pool.filter(p=>!have.has(p.name));
+  const b=el("div");
+  b.appendChild(el("p",null,`<span style="color:var(--muted);font-size:12.5px">勾選要加入「${esc(g.name)}」的項目，或於下方自行輸入。</span>`));
+  const list=el("div");
+  if(!avail.length)list.appendChild(el("p",null,'<span style="color:var(--faint);font-size:12.5px">建議清單中的項目皆已加入。</span>'));
+  avail.forEach((p,i)=>{
+    const r=el("label","pickrow");
+    r.innerHTML=`<input type="checkbox" id="pk${i}"><span class="pt">${esc(p.name)}<small>${esc(p.note||"")}</small></span>`;
+    r.querySelector("input").dataset.i=i;list.appendChild(r);
+  });
+  b.appendChild(list);
+  const custom=el("div");custom.style.marginTop="12px";
+  custom.innerHTML='<label class="flabel" for="cust">自訂項目名稱</label><input class="field" id="cust" placeholder="例：環境部 114 年環部廢字第 1140012345 號函">';
+  b.appendChild(custom);
+  openSheet({title:"加入項目至卷宗",sub:g.name,body:b,actions:[
+    {label:"取消",fn:closeSheet},
+    {label:"加入",pri:true,fn:()=>{
+      let n=0;
+      list.querySelectorAll("input:checked").forEach(inp=>{c.docs[g.key].push(avail[+inp.dataset.i]);n++;});
+      const cv=$("#cust").value.trim();
+      if(cv){c.docs[g.key].push({name:cv,note:"承辦人手動加入",ext:g.abbr});n++;}
+      closeSheet();renderFolders();
+      toast(n?`已加入 ${n} 項至「${g.name}」`:"未選擇任何項目");
+    }}
+  ]});
+}
+function docSheet(it){
+  const b=el("div");
+  if(it.graph)b.appendChild(buildGraph());else b.innerHTML=it.full;
+  openSheet({title:it.name,sub:it.note||"",xwide:!!it.graph,body:b,actions:[{label:"關閉",fn:closeSheet}]});
+}
+
+/* ══════════════════ 對話串 ══════════════════ */
+function stream(){return $("#stream");}
+function scrollDown(){const s=stream();s.scrollTop=s.scrollHeight;}
+function mount(node){
+  const c=active();
+  let inner=c.dom;
+  if(!inner){inner=el("div","stream-inner");c.dom=inner;}
+  inner.appendChild(node);scrollDown();return node;
+}
+function userMsg(text,files,isCmd){
+  const m=el("div","msg me");
+  const b=el("div","body");
+  const p=el("p",isCmd?"cmdline":null);
+  p.innerHTML=esc(text).replace(/\n/g,"<br>");
+  b.appendChild(p);
+  if(files&&files.length){
+    const line=el("div","attach-line");
+    files.forEach(f=>line.appendChild(el("span","file-chip",`<span class="ext">${esc(f.ext)}</span>${esc(f.name)}`)));
+    b.appendChild(line);
+  }
+  m.appendChild(b);return mount(m);
+}
+function aiMsg(html){
+  const m=el("div","msg");
+  m.innerHTML='<div class="av ai">小願</div>';
+  const b=el("div","body");b.innerHTML=html;m.appendChild(b);return mount(m);
+}
+function aiShell(){
+  const m=el("div","msg");
+  m.innerHTML='<div class="av ai">小願</div>';
+  const b=el("div","body");m.appendChild(b);mount(m);
+  if(pendingAck){b.appendChild(el("p",null,esc(pendingAck)));pendingAck=null;}
+  return b;
+}
+
+async function toolBlock(host,tool,steps){
+  const box=el("div","tool");
+  box.innerHTML=`<div class="tool-head">
+      <span class="api">${esc(tool.api)}()</span>
+      <span class="nm">${esc(tool.name)}</span>
+      <span class="st"><span class="spin"></span>執行中</span>
+    </div><div class="tool-steps"></div><div class="tool-out"></div>`;
+  host.appendChild(box);scrollDown();
+  const sBox=box.querySelector(".tool-steps");
+  for(const s of steps){
+    await sleep(s[1]);
+    const r=el("div","step",`<span class="tick">✓</span><span>${esc(s[0])}</span><span class="t">${(s[1]/1000).toFixed(1)}s</span>`);
+    sBox.appendChild(r);scrollDown();
+  }
+  box.querySelector(".st").innerHTML='<span style="color:var(--ok)">✓</span> 完成';
+  return box.querySelector(".tool-out");
+}
+
+/* ══════════════════ 各工具實作 ══════════════════ */
+let busy=false, pendingAck=null;
+const ACKS={
+  extract:["收到！小願戴上老花眼鏡，開始逐頁讀卷⋯⋯","好的，先來看看雙方到底在吵什麼。","交給我，卷證從頭翻到尾一遍。"],
+  cases:["好的，小願潛進歷史決定書堆裡撈撈看。","收到！翻箱倒櫃找前例中⋯⋯","這就去 1,566 件裡面挑最像的幾件。"],
+  laws:["好的，法規資料庫走一趟。","收到，順便確認法條有沒有偷偷修過。","這就去把該引的條文一條條撿回來。"],
+  graph:["好的，小願拿出彩色筆來畫圖囉。","收到！把關係一條一條牽起來。","這就把整件案子攤成一張圖。"],
+  draft:["好的，小願捲起袖子開始擬稿。","收到，這就下筆——放心，沒來源的話我一個字都不敢寫。","開工！先把論理骨架搭起來。"],
+  refine:["好的，潤稿模式啟動。","收到！小願拿紅筆改作業去了。","這就把句子磨得像公文一點。"],
+  pdf:["好的，排版中，稍等一下下。","收到！這就套上決定書版型。"],
+  doc:["好的，Word 檔生產中。","收到，交一份可以直接改的給你。"]
+};
+const pick=a=>a[Math.floor(Math.random()*a.length)];
+
+async function runTool(id,arg,silent){
+  if(busy)return;const c=active();
+  const tool=TOOLS.find(t=>t.id===id);
+  if(!silent){userMsg(arg?`${tool.cmd} ${arg}`:tool.cmd,null,true);await sleep(240);}
+  pendingAck=pick(ACKS[id]||["好的，這就處理。"]);
+  busy=true;setChips();
+  try{await IMPL[id](c,tool,arg);}finally{pendingAck=null;busy=false;c.started=true;renderTree();setChips();renderFolders();renderStages();scrollDown();}
+}
+
+const IMPL={
+async extract(c,tool){
+  if(!c.docs.evidence.length){
+    aiMsg("<p>咦，卷宗還是空的——小願手上沒東西可以讀。先用輸入框左邊的「＋」把訴願書、原處分書和答辯書丟進來吧。</p>");
+    return;
+  }
+  const host=aiShell();
+  host.appendChild(el("p",null,`收到 ${c.docs.evidence.length} 份卷證，開始解析。`));
+  const out=await toolBlock(host,tool,[
+    ["OCR 與版面還原（共 "+c.docs.evidence.length+" 份檔案）",900],
+    ["擷取當事人、處分文號、日期等結構欄位",700],
+    ["文本分類：判定案件類型",600],
+    ["爭點識別與程序要件檢核",800]
+  ]);
+  out.innerHTML=`
+  <div class="sec">
+    <div class="sec-h">案件基本資訊</div>
+    <dl class="kv">
+      <dt>案號</dt><dd class="mono">${CASE_NO}</dd>
+      <dt>案件類型</dt><dd>違反廢棄物清理法事件　<span class="tag">分類信心 0.96</span></dd>
+      <dt>訴願人</dt><dd>吉○實業有限公司</dd>
+      <dt>原處分機關</dt><dd>新北市政府環境保護局</dd>
+      <dt>原處分</dt><dd class="mono">114/05/20　新北環稽字第 1140876543 號</dd>
+      <dt>裁罰內容</dt><dd>罰鍰新臺幣 6 萬元，並限期於 114/06/30 前完成改善</dd>
+      <dt>適用法條</dt><dd>廢棄物清理法第 36 條第 1 項、第 52 條</dd>
+    </dl>
+  </div>
+  <div class="sec">
+    <div class="sec-h">事實經過</div>
+    <p style="margin:0;font-size:13.5px">訴願人於本市林口區○○路 88 號設廠從事塑膠製品製造，為原處分機關列管之事業。原處分機關於 114 年 4 月 9 日派員稽查，查得廠區東側露天堆置未分類之廢塑膠混合物及廢木材約 12 立方公尺，未設置防止地面水、雨水流入之設施，認違反廢棄物清理法第 36 條第 1 項規定，爰依同法第 52 條裁處罰鍰 6 萬元並限期改善。訴願人不服，於 114 年 6 月 16 日提起本件訴願。</p>
+  </div>
+  <div class="sec">
+    <div class="sec-h">訴願主張</div>
+    <ol class="olist">
+      <li>系爭堆置物為可回收再利用之產源物料，仍具經濟價值，非屬廢棄物清理法所稱之廢棄物。</li>
+      <li>稽查當日正進行分類整理作業，屬作業中之暫時放置，並非長期貯存。</li>
+      <li>原處分機關作成處分前未通知訴願人陳述意見，違反行政程序法第 102 條規定。</li>
+      <li>訴願人為初次違規且已即時改善，原處分未審酌行政罰法第 18 條各款事由，裁罰過重。</li>
+    </ol>
+  </div>
+  <div class="sec">
+    <div class="sec-h">本案爭點</div>
+    <ol class="olist">
+      <li><b>爭點一</b>　系爭堆置物之法律性質，是否該當廢棄物清理法第 2 條第 1 項第 2 款所稱「減失原效用」之廢棄物。</li>
+      <li><b>爭點二</b>　原處分機關未給予陳述意見之程序瑕疵，得否依行政程序法第 114 條第 1 項第 3 款於訴願程序終結前補正。</li>
+      <li><b>爭點三</b>　罰鍰 6 萬元是否已踐行行政罰法第 18 條第 1 項之裁量義務並符合比例原則。</li>
+    </ol>
+  </div>
+  <div class="sec">
+    <div class="sec-h">程序審查</div>
+    <div class="check"><span class="bdg ok">未逾期</span><span class="ct"><b>訴願期間</b><span>原處分 114/05/23 送達，法定 30 日期間至 114/06/22 屆滿；訴願人 114/06/16 提起，未逾訴願法第 14 條第 1 項所定期間。</span></span></div>
+    <div class="check"><span class="bdg ok">合致</span><span class="ct"><b>當事人適格</b><span>訴願人為原處分之受處分人，具訴願能力；卷附委任書，代理權完備。</span></span></div>
+    <div class="check"><span class="bdg ok">合致</span><span class="ct"><b>管轄機關</b><span>原處分機關為新北市政府環境保護局，依訴願法第 4 條第 3 款，本府為管轄之受理訴願機關。</span></span></div>
+    <div class="check"><span class="bdg ok">未逾</span><span class="ct"><b>裁處權時效</b><span>違規行為日 114/04/09，處分日 114/05/20，未逾行政罰法第 27 條第 1 項 3 年期間。</span></span></div>
+    <div class="check"><span class="bdg warn">應補正</span><span class="ct"><b>陳述意見程序</b><span>卷內未見原處分機關依行政程序法第 102 條所為之陳述意見通知書或紀錄，建議先函請原處分機關補提；如確未踐行且未於訴願程序終結前補正，將構成撤銷事由。</span></span></div>
+    <div class="check"><span class="bdg alert">卷證不足</span><span class="ct"><b>廢棄物性質之證據</b><span>卷附採證照片僅呈現堆置外觀，未見物料成分、有無交易價值或再利用申報之調查資料，涉及爭點一之要件事實認定。</span></span></div>
+  </div>`;
+  c.flags.extract=true;
+  aiMsg("<p>讀完了！本案程序要件大致齊備，惟<b>陳述意見程序</b>與<b>廢棄物性質之證據</b>兩項有待補強，將直接影響主文走向。建議接續進行案例比對與法規檢索，以確立論理架構。</p>");
+},
+
+async cases(c,tool){
+  const host=aiShell();
+  const out=await toolBlock(host,tool,[
+    ["以案件類型與爭點建立檢索向量",600],
+    ["檢索歷史訴願決定書資料庫（114 年度 1,566 件）",900],
+    ["依爭點重疊度重排序，取前 5 筆",700],
+    ["寫入右側卷宗「相關案例」",300]
+  ]);
+  const sec=el("div","sec");
+  sec.appendChild(el("div","sec-h","相似案例（依爭點重疊度排序）"));
+  CASE_POOL.forEach(k=>{
+    const b=el("button","ccard");
+    b.innerHTML=`<div class="r1"><span class="no">${k.no}</span><span class="sim">相似度 ${k.sim}%</span></div>
+      <div class="ttl">${esc(k.title)}</div>
+      <div class="r2"><span class="tag">${esc(k.type)}</span><span class="tag">${esc(k.verdict)}</span><span class="tag">${esc(k.law)}</span>${k.real?'<span class="tag real">卷附實例</span>':'<span class="tag">示範資料</span>'}</div>
+      <div class="simbar"><i style="width:${k.sim}%"></i></div>`;
+    b.onclick=()=>docSheet({name:k.no+"　"+k.title,note:k.type+"．"+k.verdict,full:k.full});
+    sec.appendChild(b);
+  });
+  out.appendChild(sec);
+  const have=new Set(c.docs.cases.map(x=>x.name));
+  CASE_POOL.forEach(k=>{
+    const nm=k.no+"　"+k.title;
+    if(!have.has(nm))c.docs.cases.push({name:nm,note:k.type+"．"+k.verdict+"．相似度 "+k.sim+"%",ext:"例",full:k.full});
+  });
+  c.flags.cases=true;
+  aiMsg("<p>撈到 5 筆，都放進右側卷宗了，點卡片可以看全文。其中 <b>1143058447</b> 就爭點一提出「物理狀態＋交易價值＋處置意思」三要素判準，<b>1143041902</b> 就爭點二採撤銷另處之體例，二者最具參考價值。</p>");
+},
+
+async laws(c,tool){
+  const host=aiShell();
+  const out=await toolBlock(host,tool,[
+    ["自爭點萃取檢索關鍵字",500],
+    ["檢索全國法規資料庫與環境部函釋",900],
+    ["比對現行有效版本與修正沿革",700],
+    ["寫入右側卷宗「相關法規」",300]
+  ]);
+  const sec=el("div","sec");
+  sec.appendChild(el("div","sec-h","相關法規（皆為現行有效版本）"));
+  LAW_POOL.forEach(l=>{
+    const r=el("div","lawrow");
+    r.innerHTML=`<span class="lno">${esc(l.no)}</span><span class="lt"><b style="font-weight:500">${esc(l.title)}</b><em>${esc(l.note)}</em></span>`;
+    sec.appendChild(r);
+  });
+  out.appendChild(sec);
+  const have=new Set(c.docs.laws.map(x=>x.name));
+  LAW_POOL.forEach(l=>{
+    const nm=l.no+"　"+l.title;
+    if(!have.has(nm))c.docs.laws.push({name:nm,note:l.note,ext:"法",
+      full:`<p style="font-family:var(--serif);line-height:2">${esc(l.body)}</p><p style="color:var(--muted);font-size:12.5px;border-top:1px solid var(--line-soft);padding-top:10px">本案關聯：${esc(l.note)}</p>`});
+  });
+  c.flags.laws=true;
+  aiMsg("<p>11 筆法規入袋，點右側項目可以看條文全文。可在卷宗中自行增減——<b>草稿生成只會引用卷宗內的條文</b>，卷宗即為引註來源的白名單。</p>");
+},
+
+async graph(c,tool){
+  if(!c.flags.extract){
+    aiMsg("<p>還沒萃取，我手上沒有節點可以牽線。先跑一次<b>萃取答辯書</b>吧。</p>");return;
+  }
+  const host=aiShell();
+  const out=await toolBlock(host,tool,[
+    ["建立節點：卷證、事實、爭點、法規、結論",700],
+    ["以引用關係連結節點",800],
+    ["標示訴辯對立與證據不足之處",600],
+    ["版面配置與繪製",500]
+  ]);
+  const sec=el("div","sec");
+  sec.appendChild(el("div","sec-h","案件關聯圖"));
+  sec.appendChild(buildGraph());
+  const row=el("div");row.style.cssText="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap";
+  const bz=el("button","btn pri","放大檢視");
+  bz.onclick=()=>openSheet({title:"案件關聯圖",sub:"案號 "+CASE_NO,xwide:true,body:buildGraph(),actions:[{label:"關閉",fn:closeSheet}]});
+  row.appendChild(bz);
+  sec.appendChild(row);
+  out.appendChild(sec);
+  c.flags.graph=true;
+  if(!c.docs.out.some(x=>x.name==="案件關聯圖"))
+    c.docs.out.push({name:"案件關聯圖",note:GNODES.length+" 節點．"+GEDGES.length+" 條關聯",ext:"圖",graph:true});
+  aiMsg("<p>畫好了！<b>兩條紅色虛線</b>都指向爭點一：答辯意旨與訴願意旨就堆置物性質直接對立，而稽查工作紀錄僅呈現外觀、不足以支持「減失原效用」之要件事實。這是本案最脆弱的一環，撰擬理由欄時應優先處理。</p>");
+},
+
+async draft(c,tool){
+  if(!c.flags.laws||!c.flags.cases){
+    aiMsg("<p>先別急——草稿只認右側卷宗裡的東西當來源，現在還不夠。請先跑<b>查找相似案例</b>和<b>搜尋相關法規</b>，我才不會寫出沒憑沒據的句子。</p>");
+    return;
+  }
+  const host=aiShell();
+  const out=await toolBlock(host,tool,[
+    ["載入卷宗來源："+c.docs.evidence.length+" 卷證／"+c.docs.cases.length+" 案例／"+c.docs.laws.length+" 法規",700],
+    ["套用訴願決定書格式範本",500],
+    ["依爭點順序建構理由欄論理",1100],
+    ["逐句比對來源，標註引註並清除無來源陳述",900]
+  ]);
+  out.innerHTML=DRAFT_HTML;
+  c.flags.draft=true;
+  if(!c.docs.out.some(x=>x.name==="訴願決定書草稿 v1"))
+    c.docs.out.push({name:"訴願決定書草稿 v1",note:"AI 生成．引註 14 處．待承辦人審核",ext:"稿",full:DRAFT_HTML});
+  aiMsg("<p>初稿出爐，已歸檔。全文 14 處引註皆可回溯至右側卷宗，未附來源之推論已一律略去。<b>擬採主文為「原處分撤銷，由原處分機關於 2 個月內另為適法之處分」</b>——理由在於程序瑕疵尚待補正、且廢棄物性質之要件事實調查未足，宜由原處分機關重為調查認定，而非逕予撤銷。如欲改採其他主文，請告知方向由我修潤。</p>");
+},
+
+async refine(c,tool,arg){
+  if(!c.flags.draft){aiMsg("<p>還沒有草稿可以改／可以匯出，先跑一次<b>草稿生成</b>吧。</p>");return;}
+  const dir=arg&&arg.trim()?arg.trim():"語氣更嚴謹、論理更緊密";
+  const host=aiShell();
+  host.appendChild(el("p",null,`修潤方向：<b>${esc(dir)}</b>`));
+  const out=await toolBlock(host,tool,[
+    ["定位待修潤段落（理由欄第五、六點）",600],
+    ["套用修潤方向並保留全部引註",800],
+    ["校對法律用語與機關慣用體例",600]
+  ]);
+  out.innerHTML=`
+  <div class="sec">
+    <div class="sec-h">修潤對照　理由欄 第五點</div>
+    <div class="draft" style="font-size:14px">
+      <p class="indent">五、惟查，原處分機關於作成系爭處分書前，<span class="diffdel">卷內看不到有通知訴願人陳述意見的資料</span><span class="diffadd">遍查全卷，並無依行政程序法第 102 條規定通知訴願人陳述意見之相關文書可稽</span><span class="cite">卷證·全卷</span>，<span class="diffdel">也沒有依第 39 條通知，或是舉行聽證</span><span class="diffadd">亦未依同法第 39 條規定通知陳述意見或決定舉行聽證</span><span class="cite">行程法§102</span>。<span class="diffadd">又原處分機關迄本件訴願程序終結前，仍未依同法第 114 條第 1 項第 3 款規定事後給予陳述意見之機會以為補正</span><span class="cite">行程法§114 I③</span>，<span class="diffdel">所以程序上有問題</span><span class="diffadd">其踐行之行政程序即難謂無瑕疵</span>。</p>
+    </div>
+  </div>
+  <div class="sec">
+    <div class="sec-h">修潤說明</div>
+    <ol class="olist">
+      <li>將口語敘述改為公文慣用之法律用語（「遍查全卷」「難謂無瑕疵」），並統一以「系爭處分書」指稱。</li>
+      <li>補充行政程序法第 114 條第 1 項第 3 款之補正時限論述，使程序瑕疵之法律效果完整，此為撤銷主文之關鍵環節。</li>
+      <li>新增之敘述皆對應卷宗內既有來源，未引入卷宗外之資料。</li>
+    </ol>
+  </div>`;
+  aiMsg("<p>改好了。<span style=\"background:var(--ok-wash);color:var(--ok);padding:0 4px;border-radius:2px\">綠色</span>為新增、<span style=\"background:var(--alert-wash);color:var(--alert);padding:0 4px;border-radius:2px;text-decoration:line-through\">紅色</span>為刪除。可繼續指定其他方向，例如「爭點三再加入比例原則的三階段審查」。</p>");
+},
+
+async pdf(c,tool){ await exportFile(c,tool,"pdf"); },
+async doc(c,tool){ await exportFile(c,tool,"doc"); }
+};
+
+async function exportFile(c,tool,kind){
+  if(!c.flags.draft){aiMsg("<p>還沒有草稿可以改／可以匯出，先跑一次<b>草稿生成</b>吧。</p>");return;}
+  const isPdf=kind==="pdf";
+  const host=aiShell();
+  const out=await toolBlock(host,tool,[
+    ["載入訴願決定書標準版型",500],
+    ["排版：主文、事實、理由、委員署名、教示條款",800],
+    [isPdf?"輸出 PDF／嵌入標楷體字型":"輸出 DOCX／保留樣式與段落編號",700]
+  ]);
+  const fname=`新北府訴決字第1141234567號_訴願決定書草稿.${isPdf?"pdf":"docx"}`;
+  const card=el("div");
+  card.innerHTML=`<div class="fitem" style="border:1px solid var(--line);border-radius:3px;padding:10px 12px">
+      <span class="ic">${isPdf?"pdf":"docx"}</span>
+      <span class="ft">${esc(fname)}<small>版型：訴願決定書．${isPdf?"A4 直式．4 頁":"Word 相容．可續行編修"}．約 ${isPdf?"268":"41"} KB</small></span>
+    </div>`;
+  const row=el("div");row.style.cssText="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap";
+  const b1=el("button","btn pri","預覽版型");
+  b1.onclick=()=>paperSheet(isPdf);
+  const b2=el("button","btn","下載檔案");
+  b2.onclick=()=>toast("原型展示：正式系統將於此下載 "+(isPdf?"PDF":"DOCX")+" 檔案");
+  row.append(b1,b2);card.appendChild(row);
+  out.appendChild(card);
+  const nm=fname;
+  if(!c.docs.out.some(x=>x.name===nm))c.docs.out.push({name:nm,note:(isPdf?"PDF":"Word")+"．訴願決定書版型",ext:isPdf?"pdf":"docx"});
+  c.flags.out=true;
+  aiMsg(`<p>${isPdf?"PDF":"Word 檔"}已產出並歸檔至右側「答辯書與產出」。委員署名欄依訴願審議委員會現行名單自動帶入，教示條款依主文自動選用。</p>`);
+}
+
+/* ══════════════════ 關聯圖 ══════════════════ */
+const GCOLS=["卷證","事實","爭點","法規","結論"];
+const GKIND={doc:"卷證",fact:"事實",issue:"爭點",law:"法規",out:"結論"};
+const GNODES=[
+ {id:"d1",k:"doc",c:0,r:0.4,t:"訴願書",s:"訴願人 114-06-16 提出",d:"訴願意旨主張系爭堆置物為可再利用之產源物料、稽查當日正進行分類、未獲陳述意見機會、裁罰過重共四項。",src:"卷證·訴願書 p.1–6"},
+ {id:"d2",k:"doc",c:0,r:1.6,t:"原處分書",s:"新北環稽字第 1140876543 號",d:"裁處罰鍰 6 萬元並限期改善。處分書理由欄未記載已給予陳述意見之事實，亦未見行政罰法第 18 條之裁量說明。",src:"卷證·原處分書"},
+ {id:"d3",k:"doc",c:0,r:2.8,t:"稽查工作紀錄",s:"114-04-09．採證照片 8 張",d:"記載廠區東側露天堆置廢塑膠混合物及廢木材約 12 立方公尺、未設防雨設施。照片僅呈現堆置外觀，未載成分、數量量測方式或有無交易價值。",src:"卷證·稽查工作紀錄"},
+ {id:"d4",k:"doc",c:0,r:4.0,t:"答辯書",s:"原處分機關 114-07-04",d:"主張堆置物已與雨水泥土混雜、客觀上難認仍具原效用，且訴願人為列管事業本負貯存義務。與訴願意旨就爭點一直接對立。",src:"卷證·答辯書"},
+ {id:"d5",k:"doc",c:0,r:5.2,t:"送達證書",s:"114-05-23 簽收",d:"掛號回執載明處分書於 114-05-23 送達，為訴願期間起算之依據。",src:"卷證·送達證書"},
+
+ {id:"f1",k:"fact",c:1,r:0.9,t:"露天堆置 12 立方公尺",s:"廢塑膠混合物、廢木材",d:"現場堆置之客觀狀態，為爭點一「是否減失原效用」之待證事實。訴辯雙方對物之性質認定歧異。",src:"稽查工作紀錄．現場照片"},
+ {id:"f2",k:"fact",c:1,r:2.1,t:"未設防雨水流入設施",s:"技術標準第 6 條之要件",d:"若堆置物確屬事業廢棄物，此項欠缺即構成違反貯存標準；若非屬廢棄物，則無適用餘地。故本事實從屬於爭點一之認定。",src:"稽查工作紀錄"},
+ {id:"f3",k:"fact",c:1,r:3.3,t:"違規行為日 114-04-09",s:"裁處權時效起算",d:"處分作成日 114-05-20，距行為日 41 日，未逾行政罰法第 27 條第 1 項 3 年裁處權時效。",src:"稽查工作紀錄．原處分書"},
+ {id:"f4",k:"fact",c:1,r:4.7,t:"送達 05-23／訴願 06-16",s:"間隔 24 日",d:"法定 30 日期間至 114-06-22 屆滿，訴願人於 114-06-16 提起，未逾期，程序合法。",src:"送達證書．訴願書"},
+
+ {id:"i1",k:"issue",c:2,r:1.0,t:"爭點一　廢棄物性質",s:"是否減失原效用",d:"應就物理狀態、有無交易價值、事業之處置意思綜合判斷，非得僅憑堆置外觀推認。卷內欠缺成分、價值與流向之調查，要件事實基礎不足。",src:"廢清法 §2 I②．案例 1143058447"},
+ {id:"i2",k:"issue",c:2,r:2.4,t:"爭點二　陳述意見程序",s:"卷內未見通知",d:"原處分為限制人民權利之處分，作成前應給予陳述意見機會。全卷未見通知文書，且迄訴願程序終結前未補正，構成撤銷事由。",src:"行程法 §102、§114．案例 1143041902"},
+ {id:"i3",k:"issue",c:2,r:3.6,t:"爭點三　裁量與比例",s:"未見審酌記載",d:"處分書未載明應受責難程度、所生影響及所得利益之審酌，裁量瑕疵之虞。惟因爭點二已足生撤銷效果，此點於決定書列為附帶指摘。",src:"行政罰法 §18 I"},
+ {id:"i0",k:"issue",c:2,r:4.9,t:"程序要件　訴願期間",s:"未逾 30 日",d:"程序審查先行於實體審查。本案期間、當事人適格、管轄機關均無不合，應為實體審理。",src:"訴願法 §14 I"},
+
+ {id:"l1",k:"law",c:3,r:0.6,t:"廢清法 §2 I②",s:"廢棄物之定義",d:"「減失原效用、被放棄原效用、不具效用或效用不明者」為廢棄物。此為爭點一之涵攝基準。",src:"全國法規資料庫．現行有效"},
+ {id:"l2",k:"law",c:3,r:1.7,t:"廢清法 §36 I、§52",s:"貯存義務與罰則",d:"原處分之處罰依據。其適用以系爭物品確屬事業廢棄物為前提。",src:"全國法規資料庫．現行有效"},
+ {id:"l3",k:"law",c:3,r:2.7,t:"行政程序法 §102",s:"陳述意見義務",d:"作成限制或剝奪人民權利之處分前，應給予相對人陳述意見之機會。",src:"全國法規資料庫．現行有效"},
+ {id:"l4",k:"law",c:3,r:3.6,t:"行政程序法 §114 I③、II",s:"補正及其時限",d:"事後給予陳述意見得補正程序瑕疵，惟補正僅得於訴願程序終結前為之。本案未補正。",src:"全國法規資料庫．現行有效"},
+ {id:"l5",k:"law",c:3,r:4.5,t:"行政罰法 §18 I",s:"裁量審酌事項",d:"裁處罰鍰應審酌應受責難程度、所生影響及所得利益，並得考量資力。",src:"全國法規資料庫．現行有效"},
+ {id:"l6",k:"law",c:3,r:5.4,t:"訴願法 §14 I",s:"訴願期間",d:"應自處分達到之次日起 30 日內提起。",src:"全國法規資料庫．現行有效"},
+
+ {id:"o1",k:"out",c:4,r:2.0,t:"主文　原處分撤銷",s:"命 2 個月內另為適法處分",d:"程序瑕疵未於訴願程序終結前補正，且要件事實調查未足，宜撤銷原處分並命原處分機關重為調查認定，而非逕為變更。",src:"訴願法 §81 I．案例 1147030254"},
+ {id:"o2",k:"out",c:4,r:3.4,t:"應命補查事項",s:"廢棄物性質之要件事實",d:"另為處分時應調查：物料成分與物理狀態、有無交易價值、訴願人有無再利用申報或流向文件，並補行陳述意見程序。",src:"案例 1143058447、1143062011"},
+ {id:"o3",k:"out",c:4,r:4.9,t:"程序合法　應予受理",s:"期間、適格、管轄均無不合",d:"本件程序要件齊備，非屬訴願法第 77 條各款不受理情形，應為實體決定。",src:"訴願法 §14 I、§4③"}
+];
+const GEDGES=[
+ ["d3","f1","support"],["d3","f2","support"],["d3","f3","support"],
+ ["d2","f4","support"],["d5","f4","support"],["d1","f4","support"],
+ ["f1","i1","support"],["f2","i1","relate"],["f3","i0","relate"],["f4","i0","support"],
+ ["d1","i2","support"],["d2","i2","relate"],["d2","i3","support"],
+ ["d4","i1","conflict"],["d3","i1","conflict"],
+ ["i1","l1","support"],["i1","l2","relate"],
+ ["i2","l3","support"],["i2","l4","support"],
+ ["i3","l5","support"],["i0","l6","support"],
+ ["l3","o1","support"],["l4","o1","support"],
+ ["l1","o2","support"],["l2","o2","relate"],
+ ["l6","o3","support"],
+ ["i1","o2","relate"]
+];
+const GW=150,GH=46,GAPX=54,GAPY=64,PADX=18,PADT=40;
+const gx=c=>PADX+c*(GW+GAPX), gy=r=>PADT+r*GAPY;
+const GVW=PADX*2+5*GW+4*GAPX, GVH=PADT+5.4*GAPY+GH+26;
+
+function buildGraph(){
+  const wrap=el("div","graphwrap");
+  const bar=el("div","graphbar");
+  bar.innerHTML=`<div class="legend">
+    <span><i style="background:var(--n-doc-bg);border:1px solid var(--n-doc)"></i>卷證</span>
+    <span><i style="background:var(--n-fact-bg);border:1px solid var(--n-fact)"></i>事實</span>
+    <span><i style="background:var(--n-issue-bg);border:1px solid var(--n-issue)"></i>爭點</span>
+    <span><i style="background:var(--n-law-bg);border:1px solid var(--n-law)"></i>法規</span>
+    <span><i style="background:var(--n-out-bg);border:1px solid var(--n-out)"></i>結論</span>
+    <span><i class="ln" style="border-top-color:var(--acc-2)"></i>支持</span>
+    <span><i class="ln dash"></i>關聯</span>
+    <span><i class="ln bad"></i>爭執／不足</span>
+  </div><span class="gb-note">點選節點可追蹤關聯路徑．圖面可左右捲動</span>`;
+  wrap.appendChild(bar);
+
+  const sc=el("div","gscroll");
+  const NS="http://www.w3.org/2000/svg";
+  const svg=document.createElementNS(NS,"svg");
+  svg.setAttribute("class","gsvg");
+  svg.setAttribute("viewBox",`0 0 ${GVW} ${GVH}`);
+  svg.setAttribute("width",GVW);svg.setAttribute("height",GVH);
+  svg.setAttribute("role","img");
+  svg.setAttribute("aria-label","訴願案件卷證、事實、爭點、法規與結論之關聯圖");
+
+  GCOLS.forEach((n,i)=>{
+    const t=document.createElementNS(NS,"text");
+    t.setAttribute("class","gcol");t.setAttribute("x",gx(i));t.setAttribute("y",20);
+    t.textContent=n;svg.appendChild(t);
+  });
+
+  const map={};GNODES.forEach(n=>map[n.id]=n);
+  const eg=document.createElementNS(NS,"g");svg.appendChild(eg);
+  const paths=[];
+  GEDGES.forEach(([a,b,type])=>{
+    const A=map[a],B=map[b];
+    const x1=gx(A.c)+GW,y1=gy(A.r)+GH/2,x2=gx(B.c),y2=gy(B.r)+GH/2;
+    const p=document.createElementNS(NS,"path");
+    p.setAttribute("class","edge "+type);
+    p.setAttribute("d",`M${x1},${y1} C${x1+42},${y1} ${x2-42},${y2} ${x2},${y2}`);
+    eg.appendChild(p);paths.push({a,b,type,el:p});
+  });
+
+  const nodeEls={};
+  GNODES.forEach(n=>{
+    const g=document.createElementNS(NS,"g");
+    g.setAttribute("class","gnode");g.setAttribute("tabindex","0");
+    g.setAttribute("role","button");g.setAttribute("aria-label",`${GKIND[n.k]}：${n.t}`);
+    const r=document.createElementNS(NS,"rect");
+    r.setAttribute("x",gx(n.c));r.setAttribute("y",gy(n.r));
+    r.setAttribute("width",GW);r.setAttribute("height",GH);r.setAttribute("rx",3);
+    r.setAttribute("fill",`var(--n-${n.k}-bg)`);r.setAttribute("stroke",`var(--n-${n.k})`);
+    g.appendChild(r);
+    const t1=document.createElementNS(NS,"text");
+    t1.setAttribute("x",gx(n.c)+11);t1.setAttribute("y",gy(n.r)+17);
+    t1.setAttribute("fill","var(--ink)");t1.setAttribute("font-weight","500");
+    t1.textContent=n.t;g.appendChild(t1);
+    const t2=document.createElementNS(NS,"text");
+    t2.setAttribute("class","gt2");t2.setAttribute("x",gx(n.c)+11);t2.setAttribute("y",gy(n.r)+32);
+    t2.setAttribute("fill","var(--muted)");t2.textContent=n.s;g.appendChild(t2);
+    const act=()=>select(n.id);
+    g.addEventListener("click",act);
+    g.addEventListener("keydown",e=>{if(e.key==="Enter"||e.key===" "){e.preventDefault();act();}});
+    svg.appendChild(g);nodeEls[n.id]=g;
+  });
+  sc.appendChild(svg);wrap.appendChild(sc);
+
+  const det=el("div","gdetail");
+  wrap.appendChild(det);
+  const KC={doc:"n-doc",fact:"n-fact",issue:"n-issue",law:"n-law",out:"n-out"};
+  function showDetail(n,rel){
+    det.innerHTML=`<div class="gd-h">
+        <span class="gd-k" style="background:var(--${KC[n.k]}-bg);color:var(--${KC[n.k]})">${GKIND[n.k]}</span>
+        <span class="gd-t">${esc(n.t)}</span></div>
+      <div class="gd-b">${esc(n.d)}</div>
+      <div class="gd-s">來源：${esc(n.src)}　·　關聯節點 ${rel} 個</div>`;
+  }
+  function select(id){
+    const linked=new Set([id]);
+    paths.forEach(p=>{if(p.a===id)linked.add(p.b);if(p.b===id)linked.add(p.a);});
+    paths.forEach(p=>{
+      const hot=p.a===id||p.b===id;
+      p.el.classList.toggle("hot",hot);p.el.classList.toggle("dim",!hot);
+    });
+    Object.entries(nodeEls).forEach(([k,g])=>{
+      g.classList.toggle("dim",!linked.has(k));
+      g.classList.toggle("sel",k===id);
+    });
+    showDetail(map[id],linked.size-1);
+  }
+  det.innerHTML=`<div class="gd-b" style="color:var(--muted)">圖中共 ${GNODES.length} 個節點、${GEDGES.length} 條關聯。<b style="color:var(--ink);font-weight:500">紅色虛線</b>標示卷內互相爭執或證據不足之處——本案有 2 條，皆指向爭點一之要件事實認定。點選任一節點可追蹤其關聯路徑。</div>`;
+  return wrap;
+}
+
+/* 決定書草稿本文 */
+const DRAFT_HTML=`
+<div class="sec">
+  <div class="sec-h">訴願決定書草稿　v1</div>
+  <div class="draft">
+    <h4>主文</h4>
+    <p class="indent">原處分撤銷，由原處分機關於 2 個月內另為適法之處分。<span class="cite">訴願法§81 I</span><span class="cite">案例 1147030254</span></p>
+
+    <h4>事實</h4>
+    <p class="indent">緣訴願人於本市林口區○○路 88 號設廠從事塑膠製品製造，為原處分機關列管之事業。原處分機關於民國（下同）114 年 4 月 9 日派員前往稽查，查得廠區東側露天堆置未分類之廢塑膠混合物及廢木材約 12 立方公尺，且未設置防止地面水、雨水流入之設施<span class="cite">卷證·稽查工作紀錄</span>，認訴願人違反廢棄物清理法第 36 條第 1 項規定，爰依同法第 52 條及新北市政府處理違反廢棄物清理法事件裁罰基準規定，以 114 年 5 月 20 日新北環稽字第 1140876543 號裁處書（下稱系爭處分書），處訴願人新臺幣（下同）6 萬元罰鍰，並限期於 114 年 6 月 30 日前完成改善<span class="cite">卷證·原處分書</span>。訴願人不服，於 114 年 6 月 16 日提起本件訴願，並據原處分機關檢卷答辯到府。茲摘敘訴辯意旨於次：</p>
+    <p class="indent">一、訴願意旨略謂：系爭堆置物為可回收再利用之產源物料，仍具經濟價值，非屬廢棄物；稽查當日正進行分類整理，屬作業中之暫時放置；原處分機關作成處分前未給予陳述意見機會；訴願人初次違規且已即時改善，裁罰過重等語<span class="cite">卷證·訴願書</span>。</p>
+    <p class="indent">二、答辯意旨略謂：現場堆置物已與雨水、泥土混雜，客觀上難認仍具原效用；訴願人為列管事業，本負有依規定貯存之義務；原處分係依裁罰基準所定額度作成，並無違誤等語<span class="cite">卷證·答辯書</span>。</p>
+
+    <h4>理由</h4>
+    <p class="indent">一、按廢棄物清理法第 36 條第 1 項規定：「事業廢棄物之貯存、清除或處理方法及設施，應符合中央主管機關之規定。」同法第 52 條規定：「貯存、清除、處理或再利用一般事業廢棄物違反第 36 條第 1 項……規定者，處新臺幣 6 千元以上 300 萬元以下罰鍰，並限期改善……。」<span class="cite">廢清法§36 I</span><span class="cite">廢清法§52</span></p>
+    <p class="indent">二、次按同法第 2 條第 1 項第 2 款規定，廢棄物指能以搬動方式移動之固態或液態物質，而有「減失原效用、被放棄原效用、不具效用或效用不明」情形者<span class="cite">廢清法§2 I</span>。是物品是否該當廢棄物，應就其物理狀態、有無交易價值及事業之處置意思綜合判斷，非得僅憑堆置外觀逕予推認<span class="cite">案例 1143058447</span>。</p>
+    <p class="indent">三、再按行政程序法第 102 條規定，行政機關作成限制或剝奪人民自由或權利之行政處分前，除已依第 39 條通知陳述意見或決定舉行聽證者外，應給予處分相對人陳述意見之機會；同法第 114 條第 1 項第 3 款及第 2 項則規定，應給予陳述意見之機會已於事後給予者，其程序瑕疵得予補正，惟補正行為僅得於訴願程序終結前為之<span class="cite">行程法§102</span><span class="cite">行程法§114 I③</span>。</p>
+    <p class="indent">四、卷查訴願人所有系爭廠址經原處分機關於 114 年 4 月 9 日稽查，現場堆置廢塑膠混合物及廢木材，未設置防止雨水流入之設施，此有稽查工作紀錄及採證照片附卷可稽<span class="cite">卷證·稽查工作紀錄</span>，原處分機關據以認定訴願人違反貯存規定，固非無據。</p>
+    <p class="indent">五、惟查，遍查全卷，並無原處分機關依行政程序法第 102 條規定通知訴願人陳述意見之相關文書可稽<span class="cite">卷證·全卷</span>，亦未依同法第 39 條規定通知陳述意見或決定舉行聽證；又原處分機關迄本件訴願程序終結前，仍未依同法第 114 條第 1 項第 3 款規定事後給予陳述意見之機會以為補正<span class="cite">行程法§114 I③</span>，其踐行之行政程序即難謂無瑕疵<span class="cite">案例 1143041902</span>。</p>
+    <p class="indent">六、又系爭堆置物是否該當廢棄物清理法第 2 條第 1 項第 2 款所稱「減失原效用」之廢棄物，攸關處罰要件是否具備。卷附採證照片僅呈現堆置外觀，原處分機關就系爭物料之成分、有無交易價值、訴願人有無再利用申報或流向文件等節，均未見調查認定<span class="cite">卷證·稽查工作紀錄</span><span class="cite">案例 1143062011</span>，其事實認定之基礎尚有未足。另原處分書就行政罰法第 18 條第 1 項所定應受責難程度、所生影響及所得利益等裁量事由，亦未見具體審酌之記載<span class="cite">行政罰法§18 I</span>。</p>
+    <p class="indent">七、綜上論結，本件訴願為有理由，爰將原處分撤銷，由原處分機關於 2 個月內查明後另為適法之處分，依訴願法第 81 條第 1 項規定，決定如主文<span class="cite">訴願法§81 I</span>。</p>
+  </div>
+  <div class="nohallu"><span style="color:var(--acc-2)">◆</span><span><b style="color:var(--ink);font-weight:500">來源控管</b>　全文 14 處引註，皆對應右側卷宗之卷證、法規或案例；卷宗以外之資料一律不予採用，亦未生成任何無來源之法條字號或案號。承辦人核校時，可逐一點按引註回溯原文。</span></div>
+</div>`;
+
+/* ══════════════════ 匯出版型預覽 ══════════════════ */
+function paperSheet(isPdf){
+  const b=el("div","paper-scroll");
+  b.innerHTML=`<div class="paper" style="min-width:520px">
+    <div class="ph">新北市政府訴願決定書</div>
+    <div class="pno">案號：${CASE_NO} 號</div>
+    <dl class="prow"><dt>訴願人</dt><dd>吉○實業有限公司</dd></dl>
+    <dl class="prow"><dt>代表人</dt><dd>陳○德</dd></dl>
+    <dl class="prow"><dt>原處分機關</dt><dd>新北市政府環境保護局</dd></dl>
+    <p style="margin-top:12px">上列訴願人因違反廢棄物清理法事件，不服原處分機關民國 114 年 5 月 20 日新北環稽字第 1140876543 號裁處書所為之處分，提起訴願一案，本府依法決定如下：</p>
+    <div class="plabel">主文</div>
+    <p>原處分撤銷，由原處分機關於 2 個月內另為適法之處分。</p>
+    <div class="plabel">事實</div>
+    <p class="indent">緣訴願人於本市林口區○○路 88 號設廠從事塑膠製品製造，為原處分機關列管之事業。原處分機關於民國（下同）114 年 4 月 9 日派員前往稽查，查得廠區東側露天堆置未分類之廢塑膠混合物及廢木材約 12 立方公尺⋯⋯（略）</p>
+    <div class="plabel">理由</div>
+    <p class="indent">一、按廢棄物清理法第 36 條第 1 項規定：「事業廢棄物之貯存、清除或處理方法及設施，應符合中央主管機關之規定。」⋯⋯</p>
+    <p class="indent">五、惟查，遍查全卷，並無原處分機關依行政程序法第 102 條規定通知訴願人陳述意見之相關文書可稽⋯⋯</p>
+    <p class="indent">七、綜上論結，本件訴願為有理由，依訴願法第 81 條第 1 項規定，決定如主文。</p>
+    <div class="sig">訴願審議委員會主任委員　蔡○榕<br>
+      委員　陳○燦　　委員　陳○夫　　委員　張○郁<br>
+      委員　蔡○良　　委員　黃○銘　　委員　劉○德<br>
+      委員　景○鳳　　委員　王○芸　　委員　李○裕</div>
+    <div class="foot">如不服本決定，得於決定書送達之次日起 2 個月內向臺北高等行政法院（地址：臺北市士林區福國路 101 號）提起行政訴訟。<br><br>中華民國 114 年 8 月 15 日</div>
+  </div>`;
+  openSheet({title:isPdf?"PDF 版型預覽":"Word 版型預覽",sub:"訴願決定書．標準版型",wide:true,body:b,actions:[
+    {label:"關閉",fn:closeSheet},
+    {label:"下載檔案",pri:true,fn:()=>{closeSheet();toast("原型展示：正式系統將於此下載檔案");}}
+  ]});
+}
+
+/* ══════════════════ 建議按鈕 ══════════════════ */
+function setChips(){
+  const box=$("#chips");box.innerHTML="";
+  const c=active();if(!c)return;
+  if(busy){box.appendChild(el("span","chip ghost","工具執行中⋯⋯"));return;}
+  const f=c.flags;const add=(label,fn,lead)=>{
+    const b=el("button","chip");
+    b.innerHTML=(lead?`<span class="lead">${lead}</span>`:"")+esc(label);
+    b.onclick=fn;box.appendChild(b);
+  };
+  if(!c.docs.evidence.length){
+    add("上傳卷證檔案",()=>attachSheet(),"＋");
+    add("你會什麼？",()=>{$("#input").value="你會什麼？";send();},"?");
+    return;
+  }
+  if(!f.extract){add("萃取答辯書",()=>runTool("extract"),"▸");}
+  if(f.extract&&!f.cases)add("查找相似案例",()=>runTool("cases"),"▸");
+  if(f.extract&&!f.laws)add("搜尋相關法規",()=>runTool("laws"),"▸");
+  if(f.extract&&!f.graph)add("生成關聯圖",()=>runTool("graph"),"▸");
+  if(f.cases&&f.laws&&!f.draft)add("生成決定書草稿",()=>runTool("draft"),"▸");
+  if(f.draft){
+    add("優化文案：語氣更嚴謹",()=>runTool("refine","語氣更嚴謹、論理更緊密"),"▸");
+    add("補充卷宗資料",()=>addSheet(GROUPS[2]),"＋");
+    if(f.graph)add("重繪關聯圖",()=>runTool("graph"),"▸");
+    if(!f.out){add("生成 PDF",()=>runTool("pdf"),"▸");add("生成 DOC",()=>runTool("doc"),"▸");}
+    else{add("重新生成 PDF",()=>runTool("pdf"),"▸");add("生成 DOC",()=>runTool("doc"),"▸");}
+  }
+  if(f.extract&&!f.draft)add("再上傳卷證",()=>attachSheet(),"＋");
+  if(!box.children.length)add("你會什麼？",()=>{$("#input").value="你會什麼？";send();},"?");
+}
+function renderStages(){
+  const c=active();const box=$("#stages");box.innerHTML="";
+  ["extract","cases","laws","graph","draft","out"].forEach(k=>{
+    box.appendChild(el("span","stage-pip"+(c.flags[k]?" on":"")));
+  });
+}
+
+/* ══════════════════ 上傳 ══════════════════ */
+function attachSheet(){
+  const c=active();
+  const have=new Set(c.docs.evidence.map(x=>x.name).concat(S.pendingFiles.map(x=>x.name)));
+  const avail=EVIDENCE_POOL.filter(f=>!have.has(f.name));
+  const b=el("div");
+  b.appendChild(el("p",null,'<span style="color:var(--muted);font-size:12.5px">原型展示：以下為模擬的本機卷證檔案，勾選後將附加至訊息並觸發萃取工具。</span>'));
+  const list=el("div");
+  if(!avail.length)list.appendChild(el("p",null,'<span style="color:var(--faint);font-size:12.5px">示範檔案皆已上傳。</span>'));
+  avail.forEach((f,i)=>{
+    const r=el("label","pickrow");
+    r.innerHTML=`<input type="checkbox" checked><span class="pt">${esc(f.name)}<small>${esc(f.note)}</small></span>`;
+    r.querySelector("input").dataset.i=i;list.appendChild(r);
+  });
+  b.appendChild(list);
+  openSheet({title:"選擇卷證檔案",sub:"本機檔案",body:b,actions:[
+    {label:"取消",fn:closeSheet},
+    {label:"附加至訊息",pri:true,fn:()=>{
+      list.querySelectorAll("input:checked").forEach(inp=>S.pendingFiles.push(avail[+inp.dataset.i]));
+      closeSheet();renderPending();$("#input").focus();
+    }}
+  ]});
+}
+function renderPending(){
+  const p=$("#pending");p.innerHTML="";
+  S.pendingFiles.forEach((f,i)=>{
+    const chip=el("span","file-chip",`<span class="ext">${esc(f.ext)}</span>${esc(f.name)}`);
+    const x=el("button",null,"×");x.setAttribute("aria-label","移除");
+    x.onclick=()=>{S.pendingFiles.splice(i,1);renderPending();};
+    chip.appendChild(x);p.appendChild(chip);
+  });
+}
+
+/* ══════════════════ 訊息處理 ══════════════════ */
+function toolListHTML(){
+  return `<p>我是訴願案件的辦案助理。目前開放 7 支工具（API），可用「/」呼叫，也可以直接用中文描述需求：</p>`;
+}
+function renderToolCards(host){
+  const grid=el("div","toolgrid");
+  TOOLS.forEach((t,i)=>{
+    const b=el("button","tcard");
+    b.innerHTML=`<div class="n"><span class="idx">${String(i+1).padStart(2,"0")}</span><span class="nm">${esc(t.name)}</span></div>
+      <div class="api">${esc(t.api)}(${esc(t.param)})</div>
+      <div class="ds">${esc(t.desc)}</div>`;
+    b.onclick=()=>runTool(t.id);
+    grid.appendChild(b);
+  });
+  host.appendChild(grid);
+  host.appendChild(el("p",null,'<span style="color:var(--muted);font-size:12.5px;display:block;margin-top:12px">工具會依卷宗狀態自動檢核前提條件——例如未備妥法規與案例時，草稿生成會拒絕執行，以避免產生無來源之論述。</span>'));
+}
+
+function matchTool(text){
+  const t=text.toLowerCase();
+  for(const tool of TOOLS){
+    if(t.startsWith(tool.cmd.toLowerCase()))return tool;
+  }
+  for(const tool of TOOLS){
+    if(tool.kw.some(k=>t.includes(k.toLowerCase())))return tool;
+  }
+  return null;
+}
+
+async function send(){
+  if(busy)return;
+  const inp=$("#input");
+  const text=inp.value.trim();
+  const files=S.pendingFiles.slice();
+  if(!text&&!files.length)return;
+  const c=active();
+  inp.value="";autosize();S.pendingFiles=[];renderPending();closeSlash();
+  userMsg(text||"（附加檔案）",files);
+  if(files.length){
+    files.forEach(f=>{if(!c.docs.evidence.some(x=>x.name===f.name))c.docs.evidence.push({name:f.name,note:f.note,ext:f.ext});});
+    c.started=true;renderFolders();renderTree();$("#attach").classList.remove("hintme");
+    if(isAutoName(c.name)){c.name="吉○實業／違反廢清法";renderAll();}
+  }
+  await sleep(280);
+
+  if(/你會什麼|會做什麼|有哪些工具|有什麼工具|能做什麼|功能|help|工具清單/i.test(text)){
+    const h=aiShell();h.innerHTML=toolListHTML();renderToolCards(h);scrollDown();setChips();return;
+  }
+  const tool=text?matchTool(text):null;
+  if(tool){
+    let arg="";
+    if(tool.id==="refine")arg=text.replace(tool.cmd,"").replace(/優化文案|優化|修潤|潤稿/g,"").trim();
+    await runTool(tool.id,arg,true);return;
+  }
+  if(files.length&&!text){
+    aiMsg(`<p>已收到 ${files.length} 份卷證並歸檔至右側「卷證檔案」。是否要開始萃取？點選下方的「萃取答辯書」，或直接輸入 <code style="font-family:var(--mono);font-size:11.5px">/萃取答辯書</code>。</p>`);
+    setChips();return;
+  }
+  aiMsg('<p>這句我沒對到工具。可以按 <code style="font-family:var(--mono);font-size:11.5px">/</code> 查看可呼叫的工具清單，或輸入「你會什麼」讓我列出全部 7 支 API。</p>');
+  setChips();
+}
+
+/* ══════════════════ 斜線選單 ══════════════════ */
+let slashSel=0;
+function openSlash(filter){
+  const list=$("#slash-list");list.innerHTML="";
+  const items=TOOLS.filter(t=>!filter||t.cmd.includes(filter)||t.name.includes(filter));
+  if(!items.length){closeSlash();return;}
+  items.forEach((t,i)=>{
+    const b=el("button","slash-item"+(i===slashSel?" sel":""));
+    b.innerHTML=`<span class="cmd">${esc(t.cmd)}</span><span class="d">${esc(t.name)}<small>${esc(t.desc)}</small></span>`;
+    b.onclick=()=>{closeSlash();$("#input").value="";runTool(t.id);};
+    list.appendChild(b);
+  });
+  $("#slash").classList.add("open");
+  $("#slash").dataset.items=items.map(t=>t.id).join(",");
+}
+function closeSlash(){$("#slash").classList.remove("open");slashSel=0;}
+
+/* ══════════════════ Sheet / Toast ══════════════════ */
+let sheetEl=null;
+function openSheet({title,sub,body,actions,wide,xwide}){
+  closeSheet();
+  const scrim=el("div","scrim");
+  const sh=el("div","sheet"+(xwide?" xwide":wide?" wide":""));
+  const h=el("div","sheet-h");
+  h.innerHTML=`<h3></h3><span class="sub"></span>`;
+  h.querySelector("h3").textContent=title;
+  h.querySelector(".sub").textContent=sub||"";
+  const x=el("button","x","×");x.setAttribute("aria-label","關閉");x.onclick=closeSheet;h.appendChild(x);
+  const b=el("div","sheet-b");b.appendChild(body);
+  const f=el("div","sheet-f");
+  (actions||[]).forEach(a=>{const btn=el("button","btn"+(a.pri?" pri":""));btn.textContent=a.label;btn.onclick=a.fn;f.appendChild(btn);});
+  sh.append(h,b,f);scrim.appendChild(sh);
+  scrim.onclick=e=>{if(e.target===scrim)closeSheet();};
+  $("#modal-root").appendChild(scrim);sheetEl=scrim;
+  const first=b.querySelector("input,button")||x;first.focus();
+}
+function closeSheet(){if(sheetEl){sheetEl.remove();sheetEl=null;}}
+addEventListener("keydown",e=>{if(e.key==="Escape"){closeSheet();closeSlash();ctx.classList.remove("open");}});
+
+function promptSheet(title,label,val,fn){
+  const b=el("div");
+  b.innerHTML=`<label class="flabel" for="pv">${esc(label)}</label><input class="field" id="pv">`;
+  openSheet({title,body:b,actions:[
+    {label:"取消",fn:closeSheet},
+    {label:"確定",pri:true,fn:()=>{const v=$("#pv").value.trim();if(v)fn(v);closeSheet();}}
+  ]});
+  const i=$("#pv");i.value=val;i.select();
+  i.onkeydown=e=>{if(e.key==="Enter"){const v=i.value.trim();if(v)fn(v);closeSheet();}};
+}
+function moveSheet(c){
+  const b=el("div");
+  if(!S.folders.length){
+    b.innerHTML='<p style="font-size:13px;color:var(--muted);margin:0">尚未建立任何資料夾。請先於左下角點選「＋ 資料夾」。</p>';
+    openSheet({title:"移至資料夾",body:b,actions:[{label:"關閉",fn:closeSheet}]});return;
+  }
+  S.folders.forEach(f=>{
+    const r=el("label","pickrow");
+    r.innerHTML=`<input type="radio" name="mv" ${c.folderId===f.id?"checked":""}><span class="pt">${esc(f.name)}</span>`;
+    r.querySelector("input").onchange=()=>{c.folderId=f.id;f.open=true;};
+    b.appendChild(r);
+  });
+  const r0=el("label","pickrow");
+  r0.innerHTML=`<input type="radio" name="mv" ${!c.folderId?"checked":""}><span class="pt">未分類</span>`;
+  r0.querySelector("input").onchange=()=>{c.folderId=null;};
+  b.appendChild(r0);
+  openSheet({title:"移至資料夾",sub:c.name,body:b,actions:[{label:"完成",pri:true,fn:()=>{closeSheet();renderTree();}}]});
+}
+let toastT;
+function toast(msg){
+  const t=$("#toast");t.textContent=msg;t.classList.add("show");
+  clearTimeout(toastT);toastT=setTimeout(()=>t.classList.remove("show"),2400);
+}
+
+/* ══════════════════ 空狀態 ══════════════════ */
+function emptyState(){
+  const h=new Date().getHours();
+  const hi=h<5?"夜深了":h<11?"早安":h<18?"午安":"晚安";
+  const w=el("div","empty");
+  w.innerHTML=`<h2 class="eh">${hi}，我是訴小願。</h2>
+    <p class="es">你的訴願小助手。從下面的 <span class="kbd">＋</span> 開始，把卷證丟進來吧。</p>`;
+  return w;
+}
+
+/* ══════════════════ Render ══════════════════ */
+function renderAll(){
+  const c=active();
+  $("#case-title").textContent=c.name;
+  $("#case-meta").textContent=c.docs.evidence.length
+    ? `案號 ${CASE_NO}．卷證 ${c.docs.evidence.length} 份`
+    : "尚未載入卷證";
+  const s=stream();s.innerHTML="";
+  if(!c.dom||!c.dom.children.length){s.appendChild(emptyState());}
+  else s.appendChild(c.dom);
+  $("#attach").classList.toggle("hintme",!c.docs.evidence.length);
+  renderTree();renderFolders();setChips();renderStages();scrollDown();
+}
+
+/* ══════════════════ 綁定 ══════════════════ */
+const inp=$("#input");
+function autosize(){inp.style.height="auto";inp.style.height=Math.min(inp.scrollHeight,150)+"px";}
+inp.addEventListener("input",()=>{
+  autosize();
+  const v=inp.value;
+  if(v.startsWith("/"))openSlash(v.length>1?v:"");else closeSlash();
+});
+inp.addEventListener("keydown",e=>{
+  const open=$("#slash").classList.contains("open");
+  if(open&&(e.key==="ArrowDown"||e.key==="ArrowUp")){
+    e.preventDefault();
+    const items=[...$("#slash-list").children];
+    slashSel=(slashSel+(e.key==="ArrowDown"?1:-1)+items.length)%items.length;
+    items.forEach((n,i)=>n.classList.toggle("sel",i===slashSel));
+    items[slashSel].scrollIntoView({block:"nearest"});return;
+  }
+  if(e.key==="Enter"&&!e.shiftKey){
+    e.preventDefault();
+    if(open){const items=[...$("#slash-list").children];(items[slashSel]||items[0]).click();return;}
+    send();
+  }
+});
+$("#send").onclick=send;
+$("#attach").onclick=attachSheet;
+$("#new-case").onclick=()=>{
+  const c=newCase(null,active()?active().folderId:null);
+  S.activeId=c.id;renderAll();
+  toast("已建立「"+c.name+"」，上傳卷證後會自動命名");
+};
+$("#new-folder").onclick=()=>{
+  promptSheet("新增資料夾","資料夾名稱","新資料夾",v=>{
+    S.folders.push({id:nid("f"),name:v,open:true});renderTree();
+  });
+};
+/* 主題切換：半日半月 */
+const ROOT=document.documentElement;
+const MQ=window.matchMedia("(prefers-color-scheme: dark)");
+const curTheme=()=>ROOT.getAttribute("data-theme")||(MQ.matches?"dark":"light");
+function syncTheme(){
+  const dark=curTheme()==="dark";
+  const b=$("#theme");
+  b.title=dark?"切換為淺色":"切換為深色";
+  b.setAttribute("aria-label",b.title);
+  b.setAttribute("aria-pressed",String(dark));
+}
+$("#theme").onclick=()=>{ROOT.setAttribute("data-theme",curTheme()==="dark"?"light":"dark");syncTheme();};
+if(MQ.addEventListener)MQ.addEventListener("change",syncTheme);
+syncTheme();
+
+$("#tgl-left").onclick=()=>document.body.classList.toggle("left-open");
+$("#tgl-right").onclick=()=>document.body.classList.toggle("right-open");
+$("#scrim-rail").onclick=closeRails;
+function closeRails(){document.body.classList.remove("left-open","right-open");}
+
+/* 啟動：完全空白 */
+const first=newCase(null,null);
+S.activeId=first.id;
+renderAll();
+</script>
