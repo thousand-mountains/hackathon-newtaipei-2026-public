@@ -4,6 +4,7 @@ import { reactive, computed } from 'vue'
 import { CASE_NO, EVIDENCE_POOL, LAW_POOL, CASE_POOL, TOOLS, GROUPS, ACKS } from '../data/data.js'
 import { GNODES, GEDGES, DRAFT_HTML } from '../data/graph.js'
 import { api } from '../api/index.js'
+import { ApiError } from '../api/http.js'
 import { diffToHtml } from '../api/diff.js'
 
 // ── 草稿版本快取（localStorage）──
@@ -360,17 +361,10 @@ async function driveChat(c, payload, uiTool) {
     scrollSoon()
   }
 
-  let stream
+  // 注意：real 的 api.chat 是 async generator（lazy），fetch 與開串流前的 JSON 錯誤
+  // 會在下面 for-await 首次迭代時才拋，統一由該 catch 依 ApiError 分流處理。
   try {
-    stream = api.chat(c.caseId, payload)
-  } catch (e) {
-    clearThinking()
-    aiMsg('<p>連線建立失敗，可稍後重問。</p>')
-    return
-  }
-
-  try {
-    for await (const { event, data } of stream) {
+    for await (const { event, data } of api.chat(c.caseId, payload)) {
       if (event === 'ack') {
         if (data.session_id) c.sessionId = data.session_id
         if (uiTool) {
@@ -465,8 +459,24 @@ async function driveChat(c, payload, uiTool) {
   } catch (e) {
     clearThinking()
     if (toolMsg) toolMsg.running = false
-    aiMsg('<p>連線中斷，可重問。</p>')
-    toast('連線中斷，可重問')
+    // 開串流前的 JSON 錯誤（契約 §2.2）：503 非 live 檔位 / 404 案件不存在 / 400 訊息空。
+    // 顯示後端給的 detail，不要一律說「連線中斷」——尤其 fixture 檔位要說「聊天需要即時模型」。
+    if (e instanceof ApiError) {
+      const detail = (e.body && e.body.detail) || '請求失敗'
+      if (e.status === 503) {
+        aiMsg('<p>' + esc(detail) + '</p>')
+        toast('聊天需要即時模型檔位')
+      } else if (e.status === 404) {
+        aiMsg('<p>' + esc(detail) + '</p>')
+        toast('案件不存在')
+      } else {
+        aiMsg('<p>' + esc(detail) + '</p>')
+        toast('請求失敗，可重試')
+      }
+    } else {
+      aiMsg('<p>連線中斷，可重問。</p>')
+      toast('連線中斷，可重問')
+    }
   }
 }
 
@@ -749,11 +759,12 @@ function syncUploadFiles(c, files) {
       const form = new FormData()
       files.forEach((f) => form.append('files', new File([''], f.name)))
       if (!c._serverCreated) {
+        // 真後端 POST /api/cases 回 {case_id, files, provenance, next}（非 {case:{...}}）。
         const r = await api.createCase(form)
         c._serverCreated = true
-        c._loaded = true // 建案回應即最新狀態，不用再 getCase
-        if (r && r.case && r.case.id) c.caseId = r.case.id
-        if (r && r.case && r.case.name && isAutoName(c.name)) c.name = r.case.name
+        if (r && r.case_id) c.caseId = r.case_id
+        // 建案回應沒有彙整版四群組，之後選案時再 getCase 補齊
+        c._loaded = false
       } else {
         await api.uploadFiles(c.caseId, form)
       }

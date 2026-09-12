@@ -472,14 +472,15 @@ export const mock = {
       const id = nid('upload')
       const c = ensureCase(id, deriveName(files))
       files.forEach((f) => c.files.push(f))
-      return { case: caseSummary(c), files: c.files }
+      // 對齊真後端 POST /api/cases 形狀：{case_id, files, provenance, next}
+      return { case_id: id, files: c.files, provenance: { kind: 'mock' }, next: `/api/cases/${id}/runs` }
     }),
   getCase: (id) =>
     rest(() => {
       const c = ensureCase(id)
       return { case: caseSummary(c), files: c.files, laws: c.laws, references: c.references, artifacts: stripArtifacts(c.artifacts) }
     }),
-  renameCase: (id, name) => rest(() => { const c = ensureCase(id); c.name = name; return { case: caseSummary(c) } }),
+  renameCase: (id, name) => rest(() => { const c = ensureCase(id); c.name = name; return { id, name: c.name, created_at: c.created_at } }),
   deleteCase: (id) => rest(() => { DB.cases.delete(id); return null }),
 
   // §1.2 卷證
