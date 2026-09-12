@@ -404,19 +404,26 @@ def artifact_id_for(run_id: str) -> str:
 
 def _mark_law_retrieval(case_id: str, payload: dict[str, Any],
                         cases_dir: pathlib.Path | None = None) -> None:
-    """B4.3：把本案 `laws[]` 逐筆標上「檢索命中／未命中」（契約 §3.5.2 末段）。
+    """B4.3：把本案 `laws[]` 逐筆標上這一輪檢索走到哪（契約 §3.5.2 末段）。
+
+    **三態不是兩態**（2026-09-13 Ci 改判）：進法條查表／只進相似案檢索／完全沒用到。
 
     手動挑的法規是當**查詢詞**餵回 N4 的，所以「挑了」不等於「會進草稿」。
-    契約原文是「右欄該項標『檢索未命中，未進入草稿』」——**右欄**，
-    表示關掉對話再打開狀態還要在，所以寫進 manifest，而不是只在 chat 回合裡講一次
-    （chat 那半是 `llm/chat.py:unmatched_picks`，兩半都要）。
+    契約原文的「右欄」是對的（關掉對話再打開狀態還要在，所以寫進 manifest，
+    而不是只在 chat 回合裡講一次），但它寫的「檢索未命中」是錯的，見 runlink 檔頭
+    （chat 那半是 `llm/chat.py:classify_picks`，兩半都要）。
     比對規則不在這裡，見 `backend/dossier/runlink.py`。
 
     接在 `record_run` 裡而不是讓兩個呼叫端各自呼叫：理由與 `record_run` 本身
     下沉到這裡是同一個——複製的那份遲早分岔，而分岔的時候沒有症狀。
     """
     m = ensure(case_id, cases_dir)
-    marked = runlink.classify_law_retrieval(m["laws"], list((payload or {}).get("laws") or []))
+    # 通道 B 的依據：這一輪**真的**送進相似案檢索的查詢詞（N4 自己記的，不是推論）。
+    # 沒有它就分不出「只進了相似案檢索」與「完全沒用到」，三態會塌回兩態。
+    extra_terms = ((payload or {}).get("retrieval") or {}).get(
+        "retrieval_meta", {}).get("case_query_extra_terms")
+    marked = runlink.classify_law_retrieval(
+        m["laws"], list((payload or {}).get("laws") or []), extra_terms)
     if marked != m["laws"]:
         m["laws"] = marked
         save(m, cases_dir)
