@@ -24,7 +24,7 @@ from fastapi import APIRouter, File, HTTPException, Response, UploadFile
 from pydantic import BaseModel, ConfigDict
 
 from backend.config import settings
-from backend.dossier import corpus, runlink, store
+from backend.dossier import artifact_ref, corpus, runlink, store
 from backend.dossier.redact import redact
 from backend.intake.uploads import MAX_BYTES, UPLOADS_DIR, _safe_name
 from backend.orchestrator.artifact_sections import build_sections
@@ -72,7 +72,8 @@ def _translate(e: Exception) -> HTTPException:
     if isinstance(e, (corpus.OutOfScope, store.CaseNotDeletable)):
         # 「存在但本期不供應／不可刪」≠「找不到」。回 404 會讓人去找一份其實存在的東西。
         return HTTPException(status_code=400, detail=redact(str(e), settings.kb_bucket))
-    if isinstance(e, (store.CaseManifestNotFound, corpus.DocumentNotFound, RunNotFound)):
+    if isinstance(e, (store.CaseManifestNotFound, corpus.DocumentNotFound, RunNotFound,
+                      artifact_ref.ArtifactRunNotFound)):
         return HTTPException(status_code=404, detail=redact(str(e), settings.kb_bucket))
     if isinstance(e, corpus.CorpusUnavailable):
         return HTTPException(status_code=503, detail=redact(str(e), settings.kb_bucket))
@@ -88,6 +89,30 @@ def _translate(e: Exception) -> HTTPException:
         detail=(f"母庫這次沒有回應（{type(e).__name__}）。這不是你的操作問題，"
                 f"請稍後再試；若持續發生請把時間點告訴維運，詳細錯誤在伺服器紀錄裡。"),
     )
+
+
+def _read(case_id: str) -> dict[str, Any]:
+    """讀卷宗，**不無中生有**。所有唯讀端點走這支，不要直接呼叫 `store.ensure()`。
+
+    `ensure()` 是「有就讀、沒有就依來源推一份**並落地**」——那是建案與加入項目
+    要的語意，套到 GET 上就變成「打錯字的 case_id 回 200 加一個空案」，
+    而且在磁碟上留下一份永遠沒人清的 manifest（2026-09-13 雲上實測）。
+    契約 §1.1 附註：**沒有「先建空案」這個狀態**。
+
+    為什麼這裡還是呼叫 `ensure()` 而不是 `load()`：manifest 是**推導出來的書籤**，
+    合成案（`synthetic-blocked-01` 等）第一次被讀到時本來就沒有 manifest，
+    改成 `load()` 會讓 demo 的主要案例整個讀不到。所以判準是**案件來源在不在**
+    （`store.source_exists`），不是 manifest 在不在——來源在就照舊推一份，
+    來源不在就 404。
+
+    `store.exists()` 先跑是刻意的：它會驗 `case_id` 格式並在不合法時丟 `ValueError`
+    （→ 400「格式不合法」），跟這裡的 404（「格式對但沒這個案子」）是兩種回答。
+    """
+    if not store.exists(case_id) and not store.source_exists(case_id):
+        raise store.CaseManifestNotFound(
+            f"找不到案件 {case_id}。它不在合成測資裡，也沒有對應的上傳卷證。"
+        )
+    return store.ensure(case_id)
 
 
 class RenameIn(BaseModel):
@@ -116,7 +141,7 @@ def get_case(case_id: str) -> dict:
     中欄的工具卡與左欄的程序審查則要 `RUN_BLOCKS` 那四塊（見上面的說明）。
     """
     try:
-        m = store.ensure(case_id)
+        m = _read(case_id)
     except Exception as e:  # noqa: BLE001
         raise _translate(e) from e
     return {
@@ -162,7 +187,7 @@ def delete_case(case_id: str) -> Response:
 @router.get("/api/cases/{case_id}/files")
 def list_files(case_id: str) -> dict:
     try:
-        return {"files": store.ensure(case_id)["files"]}
+        return {"files": _read(case_id)["files"]}
     except Exception as e:  # noqa: BLE001
         raise _translate(e) from e
 
@@ -221,7 +246,7 @@ def remove_file(case_id: str, file_id: str) -> Response:
     刪磁碟檔才是使用者按下移除時真正期待的行為。
     """
     try:
-        m = store.ensure(case_id)
+        m = _read(case_id)
     except Exception as e:  # noqa: BLE001
         raise _translate(e) from e
     hit = next((f for f in m["files"] if f["id"] == file_id), None)
@@ -288,7 +313,7 @@ def get_decision(decision_id: str) -> dict:
 @router.get("/api/cases/{case_id}/laws")
 def list_case_laws(case_id: str) -> dict:
     try:
-        return {"laws": store.ensure(case_id)["laws"]}
+        return {"laws": _read(case_id)["laws"]}
     except Exception as e:  # noqa: BLE001
         raise _translate(e) from e
 
@@ -336,7 +361,7 @@ def remove_case_law(case_id: str, law_id: str) -> Response:
 @router.get("/api/cases/{case_id}/references")
 def list_case_references(case_id: str) -> dict:
     try:
-        return {"references": store.ensure(case_id)["references"]}
+        return {"references": _read(case_id)["references"]}
     except Exception as e:  # noqa: BLE001
         raise _translate(e) from e
 
@@ -385,7 +410,7 @@ def remove_case_reference(case_id: str, ref_id: str) -> Response:
 @router.get("/api/cases/{case_id}/artifacts")
 def list_artifacts(case_id: str) -> dict:
     try:
-        return {"artifacts": store.ensure(case_id)["artifacts"]}
+        return {"artifacts": _read(case_id)["artifacts"]}
     except Exception as e:  # noqa: BLE001
         raise _translate(e) from e
 
@@ -394,23 +419,29 @@ def list_artifacts(case_id: str) -> dict:
 
 @router.get("/api/cases/{case_id}/artifacts/{artifact_id}")
 def get_artifact(case_id: str, artifact_id: str) -> dict:
+    """一份產出的 JSON 檢視（契約 §4.4 #21）。
+
+    **`artifactId → runId` 的解析與匯出端（#23）共用同一支**
+    （`backend/dossier/artifact_ref.resolve_run_id`）——契約 §4.4 明講這個轉換
+    全系統只能有一份實作，含「manifest 還不存在時允許 artifactId 直接帶 `run-…`」
+    這條過渡規則。2026-09-13 之前只有匯出端做了後備，於是同一個 `run-…`
+    打匯出回 409（認得出它是 run）、打這支回 404（沒認出來）。
+    """
     try:
-        m = store.ensure(case_id)
+        m = _read(case_id)
     except Exception as e:  # noqa: BLE001
         raise _translate(e) from e
     hit = next((a for a in m["artifacts"] if a["id"] == artifact_id), None)
-    if hit is None:
-        raise HTTPException(status_code=404, detail=f"案件 {case_id} 沒有這份產出：{artifact_id}")
     try:
-        # 契約 §4.4：**這個轉換全系統只能有一份實作**，JSON 檢視與匯出（#23）共用。
-        # 兩份的話同一份草稿從兩支端點出來會長得不一樣——使用者當場看得到的不一致。
-        # `title` 仍用 manifest 記的產出名稱（`hit["name"]`），不是 doc 裡的抬頭：
-        # 那是承辦人在右欄看到的那個名字，換掉會讓清單與詳情對不起來。
-        view = build_sections(build_payload(load_run(str(hit["run_id"]))),
-                              artifact_id=hit["id"])
+        run_id = artifact_ref.resolve_run_id(case_id, artifact_id)
+        view = build_sections(build_payload(load_run(run_id)), artifact_id=artifact_id)
     except Exception as e:  # noqa: BLE001
         raise _translate(e) from e
-    return {"artifact_id": hit["id"], "title": hit["name"], "run_id": hit["run_id"],
+    # `title` 優先用 manifest 記的產出名稱（`hit["name"]`），不是 doc 裡的抬頭：
+    # 那是承辦人在右欄看到的那個名字，換掉會讓清單與詳情對不起來。
+    # manifest 還沒記到這筆（走 `run-…` 後備）時才退回 doc 的抬頭。
+    return {"artifact_id": artifact_id, "title": (hit or {}).get("name") or view["title"],
+            "run_id": run_id,
             "sections": view["sections"], "cite_count": view["cite_count"]}
 
 

@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import ast
+import asyncio
 import json
 import os
 import pathlib
@@ -21,11 +22,71 @@ if str(ROOT) not in sys.path:
 
 import backend.llm.chat as chat_mod  # noqa: E402
 import backend.retrieval.kb as kb_module  # noqa: E402
-from backend.dossier import corpus, runlink, store  # noqa: E402
+from backend.dossier import artifact_ref, corpus, runlink, store  # noqa: E402
 from backend.orchestrator import case_view  # noqa: E402
 from backend.orchestrator.artifact_sections import build_sections  # noqa: E402
 from backend.orchestrator.graph import build_payload, run_case  # noqa: E402
 from backend.tests.harness import assert_eq, assert_in, assert_true  # noqa: E402
+from backend.tests.harness import TestSkipped  # noqa: E402
+
+# 端點層要 fastapi 才 import 得動，而測試路徑不得**硬**依賴第三方（run_all 的零依賴掃描）。
+# 所以守衛起來、缺席就略過（**略過不是通過**，`harness.SKIPPED` 會單獨列出來）——
+# 跟 `test_export.py` 檔頭同一個做法。本檔其餘測試不受影響，照樣純 stdlib。
+#
+# **為什麼有些事非得走端點不可**：`_read()`／404 這一層就長在端點檔裡，
+# 拿 `store` 自己驗只會驗到「store 沒變」，而 2026-09-13 那個 bug 正是
+# 「store 沒變、端點呼叫錯函式」。
+try:
+    from backend.api import dossier as dossier_api  # noqa: E402
+except ImportError as _e_api:  # pragma: no cover — 只有裸機（未裝 requirements）會走到
+    dossier_api = None
+    API_IMPORT_ERROR = str(_e_api)
+else:
+    API_IMPORT_ERROR = ""
+
+try:
+    from backend.api import app as app_mod  # noqa: E402
+except ImportError as _e_app:  # pragma: no cover
+    app_mod = None
+    APP_IMPORT_ERROR = str(_e_app)
+else:
+    APP_IMPORT_ERROR = ""
+
+
+def _api():
+    if dossier_api is None:  # pragma: no cover
+        raise TestSkipped(f"卷宗端點需要 fastapi（{API_IMPORT_ERROR}）。"
+                          f"安裝：pip install -r backend/requirements.txt")
+    return dossier_api
+
+
+def _app_mod():
+    if app_mod is None:  # pragma: no cover
+        raise TestSkipped(f"需要 fastapi 與 python-multipart（{APP_IMPORT_ERROR}）。")
+    return app_mod
+
+
+@contextmanager
+def _cases_dir(tmp: pathlib.Path):
+    """把卷宗落地目錄整個改指到 tmp——**兩個模組都要改**。
+
+    `store` 負責寫（`ensure`／`save`），`artifact_ref` 負責讀（`resolve_run_id`），
+    兩邊各自從 `settings` from-import 了同一個常數。只改一邊的話測試會讀到
+    真正的 `backend/output/cases/`，那是「測試污染工作樹」而且看起來還會通過。
+    """
+    keep = (store.CASES_DIR, artifact_ref.CASES_DIR)
+    store.CASES_DIR = tmp
+    artifact_ref.CASES_DIR = tmp
+    try:
+        yield tmp
+    finally:
+        store.CASES_DIR, artifact_ref.CASES_DIR = keep
+
+
+#: demo 的兩個主要案例。它們的卷證內嵌在測資裡、沒有 uploads 目錄，
+#: 所以「manifest 不存在」對它們是**正常狀態**，不是「案子不存在」。
+ORDINARY_CASE = "synthetic-ordinary-01"
+BLOCKED_CASE = "synthetic-blocked-01"
 
 
 def _tmp() -> pathlib.Path:
@@ -582,12 +643,52 @@ def test_app_mounts_the_dossier_router():
     assert_in("dossier_router", mounted, "端點寫了但沒掛上去，等於沒有")
 
 
-def test_case_list_carries_name_and_created_at():
-    """契約 §1.1 #2：左欄要畫案名與建立時間，只回 id 字串陣列畫不出來。"""
-    src = (ROOT / "backend" / "api" / "app.py").read_text(encoding="utf-8")
-    body = src[src.index('@app.get("/api/cases")'):src.index('@app.post("/api/cases"')]
-    for field in ('"id": cid', '"name"', '"created_at"'):
-        assert_in(field, body, f"GET /api/cases 沒有帶 {field}")
+def test_case_list_carries_name_created_at_and_latest_run_id():
+    """契約 §1.1 #2：左欄要畫案名與建立時間，只回 id 字串陣列畫不出來。
+
+    `latest_run_id`（2026-09-13 補）：前端 `store/app.js:1376` 的 `bootAsync` 讀它，
+    `api/mock.js:482` 的 `caseSummary` 一直都有回——只有真後端漏掉，
+    於是 mock 跑起來正常、真後端缺一個鍵。缺 `run_id` 的 chat 會讓 `read_case`
+    回「卷內是空的」（契約 §2.1 ③）。
+
+    **2026-09-13 從「掃原始碼字串」改成實跑端點**：原本斷言 `'"name"' in 原始碼`，
+    那在註解裡寫過一次就會綠，而且它看不出**值對不對**——而這條要守的正是
+    「列表版與彙整版是同一個值」。
+    """
+    api = _api()
+    mod = _app_mod()
+    tmp = _tmp()
+    with _cases_dir(tmp):
+        state = run_case(ORDINARY_CASE, mode="fixture", persist=True)
+        store.record_run(ORDINARY_CASE, build_payload(state))
+        row = {c["id"]: c for c in mod.cases()["cases"]}[ORDINARY_CASE]
+        aggregate = api.get_case(ORDINARY_CASE)["case"]
+    assert_eq(sorted(row), ["created_at", "id", "kind", "latest_run_id", "name"],
+              "列表每筆的鍵變了——前端照這五個鍵畫左欄")
+    assert_eq(row["latest_run_id"], state.run_id,
+              "列表沒有帶上這件案子最後一次 run")
+    # **同一個來源同一個值**，不是兩份實作各算一次（今晚踩過三次的形狀）。
+    for key in ("name", "created_at", "latest_run_id"):
+        assert_eq(row[key], aggregate[key],
+                  f"列表版與彙整版的 {key} 對不起來——兩邊各算了一份")
+
+
+def test_the_case_list_still_carries_the_key_when_a_manifest_is_corrupt():
+    """一份壞掉的 manifest 走 except 分支。**鍵要在、值是 None**，不是省略。
+
+    省略會讓前端拿到 `undefined` 而不是 `null`（契約 §2.3「值為 null 也要送」同理），
+    而且 `cases[]` 每筆長得不一樣本身就是個會咬人的形狀。
+    """
+    mod = _app_mod()
+    tmp = _tmp()
+    (tmp / ORDINARY_CASE).mkdir(parents=True)
+    (tmp / ORDINARY_CASE / "manifest.json").write_text("{ 這不是 JSON", encoding="utf-8")
+    with _cases_dir(tmp):
+        row = {c["id"]: c for c in mod.cases()["cases"]}[ORDINARY_CASE]
+    assert_eq(sorted(row), ["created_at", "id", "kind", "latest_run_id", "name"],
+              "manifest 壞掉時少了鍵——前端會拿到 undefined")
+    assert_eq(row["latest_run_id"], None)
+    assert_eq(row["name"], ORDINARY_CASE, "讀不到名字就用 id，不要編一個")
 
 
 # ── 草稿結構：run payload → 契約 §4.4 的 sections[] ────────────────
@@ -718,13 +819,26 @@ def test_title_and_meta_are_document_header_not_sections():
 
 
 def test_the_artifact_endpoint_keeps_the_name_shown_in_the_dossier():
-    """右欄顯示的產出名是使用者看到的那一個，不該被轉換層推的預設名蓋掉。"""
-    src = (ROOT / "backend" / "api" / "dossier.py").read_text(encoding="utf-8")
-    body = src[src.index("def get_artifact"):src.index("def remove_artifact")]
-    assert_in('"title": hit["name"]', body,
+    """右欄顯示的產出名是使用者看到的那一個，不該被轉換層推的預設名蓋掉。
+
+    **2026-09-13 從「掃原始碼字串」改成實跑端點。** 原本這條斷言的是
+    `'"title": hit["name"]' in 原始碼`，而 grep 分不出程式碼與註解：
+    把那段字串搬進註解裡它照樣綠。現在它真的呼叫一次端點比對回傳值。
+    """
+    api = _api()
+    tmp = _tmp()
+    with _cases_dir(tmp):
+        rid = run_case(ORDINARY_CASE, mode="fixture", persist=True).run_id
+        m = store.ensure(ORDINARY_CASE)
+        m["artifacts"] = [{"id": "art-name-01", "name": "承辦人看到的名字",
+                           "kind": "draft", "note": "", "created_at": "", "run_id": rid}]
+        store.save(m)
+        out = api.get_artifact(ORDINARY_CASE, "art-name-01")
+    assert_eq(out["title"], "承辦人看到的名字",
               "產出名要用卷宗記的那個，不是 doc 抬頭——換掉會讓右欄清單與詳情對不起來")
-    assert_true('"sections": view["sections"]' in body,
-                "sections 要來自共用的 build_sections（契約 §4.4：全系統只有一份實作）")
+    assert_eq(out["run_id"], rid)
+    assert_true(out["sections"], "sections 要來自共用的 build_sections（契約 §4.4）")
+
 
 
 # ── B2.2／B2.3：掃描 PDF 的可讀性要誠實 ───────────────────────────
@@ -1103,3 +1217,186 @@ def test_the_four_blocks_come_from_the_run_not_from_the_manifest():
     """
     src = (ROOT / "backend" / "orchestrator" / "case_view.py").read_text(encoding="utf-8")
     assert_in("build_payload(load_run(run_id))", src)
+
+
+# ── 「不存在的案子」必須是 404，不是靜默建一個空案 ──────────────────
+#
+# 2026-09-13 雲上實測：五支 GET 對一個格式合法但從未存在的 case_id 回 200＋空案，
+# 而且在磁碟上落了一份永遠沒人清的 manifest。根因是它們呼叫 `store.ensure()`
+# ——「有就讀、沒有就推一份並落地」。契約 §1.1 附註：**沒有「先建空案」這個狀態**。
+
+
+def test_source_exists_asks_about_the_case_not_about_the_manifest():
+    """`exists()` 問 manifest 在不在，`source_exists()` 問**案子**在不在。
+
+    兩者混為一談就是那個 bug 的形狀：manifest 是推導出來的書籤，
+    拿它當「案子存不存在」的判準，等於任何人 GET 一下案子就存在了。
+    """
+    tmp = _tmp()
+    ghost = "upload-aaaaaaaaaaaa"
+    store.save(store.default_manifest(ghost), tmp)      # 只有書籤，沒有來源
+    assert_eq(store.exists(ghost, tmp), True, "manifest 的確落地了")
+    assert_eq(store.source_exists(ghost), False,
+              "沒有 uploads/<id>/case.json，這個案子不存在——manifest 有不算數")
+    # 合成案反過來：來源一直都在，manifest 可以還沒落地。
+    assert_eq(store.exists(BLOCKED_CASE, tmp), False)
+    assert_eq(store.source_exists(BLOCKED_CASE), True,
+              "合成測資檔在 backend/data/synthetic/，這個案子是存在的")
+
+
+def test_source_exists_says_false_for_a_malformed_id_instead_of_raising():
+    """格式錯是 400（`case_dir` 丟 ValueError），這裡回 False 就好，
+    不要在兩個地方各丟一次不同的例外。"""
+    for bad in ("../../etc/passwd", "real-case-001", "", "upload-XYZ"):
+        assert_eq(store.source_exists(bad), False, f"{bad!r} 不該被當成存在")
+
+
+def test_reading_a_case_that_never_existed_is_404_not_an_empty_shell():
+    """六支唯讀端點，全部要 404。**而且磁碟上不得留下任何東西。**"""
+    api = _api()
+    tmp = _tmp()
+    ghost = "upload-aaaaaaaaaaaa"
+    calls = [
+        ("GET /api/cases/{id}", lambda: api.get_case(ghost)),
+        ("GET …/files", lambda: api.list_files(ghost)),
+        ("GET …/laws", lambda: api.list_case_laws(ghost)),
+        ("GET …/references", lambda: api.list_case_references(ghost)),
+        ("GET …/artifacts", lambda: api.list_artifacts(ghost)),
+        ("GET …/artifacts/{aid}", lambda: api.get_artifact(ghost, "art-nope")),
+    ]
+    with _cases_dir(tmp):
+        for label, fn in calls:
+            try:
+                out = fn()
+            except api.HTTPException as e:
+                assert_eq(e.status_code, 404, f"{label} 預期 404，實得 {e.status_code}")
+                continue
+            raise AssertionError(f"{label} 對一個從未存在的案子回了 200：{out!r}")
+        left = sorted(x.name for x in tmp.iterdir()) if tmp.exists() else []
+    assert_eq(left, [], f"讀一個不存在的案子在磁碟上留下了東西：{left}"
+                        f"（這些檔案沒有任何 API 刪得掉，會無限累積）")
+
+
+def test_deleting_a_file_from_a_case_that_never_existed_is_404_too():
+    """同一個 `ensure()` 誤用也在這支 DELETE 上——刪之前先把案子建出來，
+    然後回「這個案子沒有這份卷證」，聽起來像案子是存在的。"""
+    api = _api()
+    tmp = _tmp()
+    with _cases_dir(tmp):
+        try:
+            api.remove_file("upload-aaaaaaaaaaaa", "f-whatever")
+        except api.HTTPException as e:
+            assert_eq(e.status_code, 404)
+        else:
+            raise AssertionError("刪一個不存在的案子的卷證竟然成功了")
+        left = sorted(x.name for x in tmp.iterdir()) if tmp.exists() else []
+    assert_eq(left, [], f"DELETE 也在磁碟上建了案：{left}")
+
+
+def test_the_synthetic_cases_still_open_on_a_clean_output_dir():
+    """**防過度修正的對照組，這條比上面那條更重要。**
+
+    合成案的 manifest 本來就是第一次被讀到時才推出來的（雲上那兩個案子的
+    `created_at` 是服務啟動後才出現的）。把 404 判準寫成「manifest 不存在」
+    會讓 demo 的主要案例整個打不開——那是比原本的 bug 嚴重得多的迴歸。
+    """
+    api = _api()
+    tmp = _tmp()
+    with _cases_dir(tmp):
+        for cid in (BLOCKED_CASE, ORDINARY_CASE):
+            out = api.get_case(cid)
+            assert_eq(out["case"]["id"], cid, f"{cid} 在乾淨的 output/ 上讀不到了")
+            assert_true(out["files"], f"{cid} 的卷證清單是空的——測資的內嵌卷證掉了")
+            assert_true(api.list_files(cid)["files"], f"{cid} 的 GET …/files 回了空")
+            assert_in("artifacts", api.list_artifacts(cid))
+        # 而且確實有落地（順手建一份是既有行為，不是這次要改的事）
+        assert_eq(sorted(x.name for x in tmp.iterdir()), [BLOCKED_CASE, ORDINARY_CASE])
+
+
+# ── artifactId → runId 只有一份實作（契約 §4.4）─────────────────────
+
+
+def test_resolve_run_id_prefers_the_manifest_and_falls_back_to_a_bare_run_id():
+    tmp = _tmp()
+    (tmp / ORDINARY_CASE).mkdir(parents=True)
+    (tmp / ORDINARY_CASE / "manifest.json").write_text(
+        json.dumps({"case_id": ORDINARY_CASE,
+                    "artifacts": [{"id": "art-x1", "run_id": "run-from-manifest"}]}),
+        encoding="utf-8")
+    assert_eq(artifact_ref.resolve_run_id(ORDINARY_CASE, "art-x1", tmp), "run-from-manifest")
+    assert_eq(artifact_ref.resolve_run_id(ORDINARY_CASE, "run-bare-01", tmp), "run-bare-01",
+              "manifest 還沒記到這筆時，artifactId 直接帶 run-… 要認（契約 §4.4 過渡規則）")
+    try:
+        artifact_ref.resolve_run_id(ORDINARY_CASE, "art-not-there", tmp)
+    except artifact_ref.ArtifactRunNotFound:
+        pass
+    else:
+        raise AssertionError("manifest 沒這筆、又不是 run-… ，竟然解析出了東西")
+
+
+def test_the_not_found_message_does_not_leak_the_container_path():
+    """訊息要說得出查過哪份檔，但不得吐 `/app/backend/output/…`
+    ——那是把部署佈局印在承辦人螢幕上。本模組其餘出口都做了遮蔽，就這行漏過。"""
+    try:
+        artifact_ref.resolve_run_id(ORDINARY_CASE, "art-not-there", _tmp())
+    except artifact_ref.ArtifactRunNotFound as e:
+        msg = str(e)
+    else:
+        raise AssertionError("預期丟 ArtifactRunNotFound")
+    assert_true("/app/" not in msg, f"訊息洩漏容器內路徑：{msg}")
+    assert_true(not any(part.startswith("/") for part in msg.split()),
+                f"訊息含絕對路徑：{msg}")
+    assert_in("manifest.json", msg, "另一個方向也要守住：不能為了遮蔽就不講查過哪裡")
+
+
+def test_the_json_view_resolves_a_bare_run_id_exactly_like_the_export_does():
+    """契約 §4.4：**這個轉換全系統只能有一份實作。**
+
+    2026-09-13 雲上實測的分岔：同一個 `run-…`，
+    `…/export` 回 409（認得出它是 run，只是那次還沒草稿）、
+    `…/artifacts/{id}` 回 404（根本沒認出來）。
+    """
+    api = _api()
+    tmp = _tmp()
+    with _cases_dir(tmp):
+        rid = run_case(ORDINARY_CASE, mode="fixture", persist=True).run_id
+        out = api.get_artifact(ORDINARY_CASE, rid)
+        assert_eq(out["run_id"], rid, "JSON 詳情沒有認出直接帶進來的 run id")
+        assert_true(out["sections"], "認出來了卻沒有內容")
+        assert_eq(out["artifact_id"], rid)
+    # 兩支端點指到同一個函式物件——就算現在輸出剛好一樣，下次有人改一邊就會分岔。
+    assert_true(_api().artifact_ref.resolve_run_id is artifact_ref.resolve_run_id)
+
+
+# ── 422 的 detail 是字串，不是物件陣列 ──────────────────────────────
+
+
+def test_validation_errors_send_a_string_detail_not_an_object_array():
+    """FastAPI 預設的 422 `detail` 是物件陣列，其餘端點手寫的都是字串。
+
+    前端統一照字串渲染（`frontend/src/api/http.js:8` → `store/app.js:1135`
+    的 `errText`），物件陣列進去畫面上就是 **`[object Object]`**——一句話都沒有。
+    實際打得到的兩處：`POST /api/cases` 少 `files`、`PATCH /api/cases/{id}` 少 `name`。
+    """
+    mod = _app_mod()
+    exc = mod.RequestValidationError([
+        {"type": "missing", "loc": ("body", "files"), "msg": "Field required", "input": None},
+        {"type": "missing", "loc": ("body", "name"), "msg": "Field required", "input": None},
+    ])
+    resp = asyncio.run(mod._validation_error(None, exc))
+    assert_eq(resp.status_code, 422, "狀態碼不動——改它會動到契約")
+    body = json.loads(bytes(resp.body).decode("utf-8"))
+    assert_true(isinstance(body["detail"], str),
+                f"detail 仍不是字串：{type(body['detail']).__name__}")
+    assert_in("files", body["detail"], "少了哪個欄位要講出來")
+    assert_in("name", body["detail"], "**兩個都要講**——只講第一個會讓人補完再被擋一次")
+    assert_true(isinstance(body["errors"], list) and len(body["errors"]) == 2,
+                "結構化細節不丟，挪到 errors")
+
+
+def test_the_validation_handler_is_actually_wired_to_the_app():
+    """處理器寫好了卻沒掛上去＝測試綠、畫面照樣 `[object Object]`。"""
+    mod = _app_mod()
+    handler = mod.app.exception_handlers.get(mod.RequestValidationError)
+    assert_true(handler is mod._validation_error,
+                "RequestValidationError 沒有掛到 app 上，預設處理器還是會贏")

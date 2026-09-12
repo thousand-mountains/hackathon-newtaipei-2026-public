@@ -55,6 +55,7 @@ if str(ROOT) not in sys.path:
 
 import anyio.to_thread  # noqa: E402
 from fastapi import BackgroundTasks, FastAPI, File, HTTPException, UploadFile  # noqa: E402
+from fastapi.exceptions import RequestValidationError  # noqa: E402
 from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse  # noqa: E402
 from fastapi.staticfiles import StaticFiles  # noqa: E402
@@ -212,6 +213,49 @@ app.add_middleware(
     allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["*"],
 )
+
+
+@app.exception_handler(RequestValidationError)
+async def _validation_error(request: Any, exc: RequestValidationError) -> JSONResponse:
+    """FastAPI 預設的 422 把 `detail` 送成**物件陣列**，這裡把它改成字串。
+
+    為什麼要改（2026-09-13 雲上實測）：其餘所有端點手寫的 `detail` 都是字串，
+    前端統一照字串渲染（`frontend/src/api/http.js:8` 的
+    `super((body && body.detail) || ...)` → `store/app.js:1135` 的 `errText`）。
+    物件陣列進去，承辦人畫面上看到的是 **`[object Object]`** ——一句話都沒有。
+    實際打得到的兩處：`POST /api/cases` 少 `files`、`PATCH /api/cases/{id}` 少 `name`。
+
+    **狀態碼仍是 422，結構化細節也不丟**（挪到 `errors`）：改狀態碼會動到契約，
+    丟細節會讓呼叫端少一份可程式判讀的資料。這裡只換 `detail` 的型別。
+    """
+    return JSONResponse(
+        status_code=422,
+        content={"detail": _validation_message(exc.errors()), "errors": _safe_errors(exc.errors())},
+    )
+
+
+def _validation_message(errors: list[dict[str, Any]]) -> str:
+    """把 pydantic 的錯誤清單攤成一句人看得懂的話。**逐條都講**，不只講第一條
+    ——少了兩個必填欄位卻只說一個，使用者會補完再送一次再被擋一次。"""
+    parts: list[str] = []
+    for err in errors or []:
+        loc = ".".join(str(x) for x in (err.get("loc") or ()) if x != "body")
+        msg = str(err.get("msg") or "").strip()
+        parts.append(f"{loc}：{msg}" if loc else msg)
+    if not parts:
+        return "請求內容不符合這支端點的規格。"
+    return "請求內容不符合這支端點的規格——" + "；".join(parts)
+
+
+def _safe_errors(errors: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """只留可序列化的三個鍵。pydantic 的 `ctx` 可能夾帶例外物件（不可 JSON 序列化），
+    原樣丟進 `JSONResponse` 會把 422 變成 500——那比原本的 `[object Object]` 更糟。"""
+    return [
+        {"loc": [str(x) for x in (e.get("loc") or ())],
+         "msg": str(e.get("msg") or ""),
+         "type": str(e.get("type") or "")}
+        for e in errors or []
+    ]
 
 
 class RunIn(BaseModel):
@@ -386,15 +430,32 @@ def _health_body() -> JSONResponse:
 
 @app.get("/api/cases")
 def cases() -> dict:
-    """左欄案件清單。`cases[]` 每筆是 `{id, name, created_at, kind}`（契約 v2 §1.1 #2）。
+    """左欄案件清單。`cases[]` 每筆是 `{id, name, created_at, latest_run_id, kind}`
+    （契約 v2 §1.1 #2）。
 
     **形狀變更（2026-09-12）**：`cases` 原本是 case_id 字串陣列，左欄只拿得到 id，
     畫不出案名與建立時間。`synthetic`／`uploaded` 兩個鍵**維持字串陣列不動**，
     既有呼叫端（`scripts/run_eval.py`、`scripts/live_acceptance.py`）不受影響。
 
-    `name` 與 `created_at` 從 manifest 來，沒有 manifest 的案子在這裡**順手建一份**
-    （`store.ensure`）——不是為了寫檔，是因為推導 name 要讀 case.json／測資檔，
-    讀都讀了就落地，下次列表就不必再推一次。
+    四個欄位全部從**同一份 manifest**（`m`）來，沒有 manifest 的案子在這裡
+    **順手建一份**（`store.ensure`）——不是為了寫檔，是因為推導 name 要讀
+    case.json／測資檔，讀都讀了就落地，下次列表就不必再推一次。
+    這裡的 `cid` 來自 `list_cases()`（掃的是真實來源），所以 `ensure` 在這支是
+    對的語意，**跟卷宗唯讀端點那邊不一樣**（那邊改走 `dossier._read`：
+    來源不存在就 404，不替一個不存在的案子建空案）。
+
+    **`latest_run_id`（2026-09-13 補）**：前端 `store/app.js` 的 `bootAsync` 讀它，
+    `api/mock.js` 的 `caseSummary` 也一直有回——只有真後端漏掉，於是 mock 跑起來正常、
+    真後端缺一個鍵，開發時完全看不出來。症狀平常被 `loadCase`（打彙整版）蓋掉，
+    但**在彙整版回來之前送出的 chat 會缺 `run_id`**，而缺 `run_id` 時 `read_case`
+    會回「卷內是空的」（契約 §2.1 ③）。
+
+    值與 `GET /api/cases/{id}` 彙整版是**同一個來源同一個值**（都是這份 manifest 的
+    `latest_run_id`），不是在這裡另算一份。成本也是零：這個迴圈本來就已經
+    逐件讀過 manifest 了（上一行的 `store.ensure`），原本只是把這個鍵丟掉不用。
+
+    manifest 壞掉走 except 分支時 `latest_run_id` 一樣**帶 `None` 而不是省略鍵**：
+    省略會讓前端拿到 `undefined` 而不是 `null`，跟契約 §2.3「值為 null 也要送」同理。
     """
     lst = list_cases()
     items = []
@@ -403,9 +464,10 @@ def cases() -> dict:
             try:
                 m = store.ensure(cid)
                 items.append({"id": cid, "name": m["name"], "created_at": m["created_at"],
-                              "kind": kind})
+                              "latest_run_id": m["latest_run_id"], "kind": kind})
             except Exception:  # noqa: BLE001 — 一個案子的 manifest 壞掉不該讓整個清單打不開
-                items.append({"id": cid, "name": cid, "created_at": None, "kind": kind})
+                items.append({"id": cid, "name": cid, "created_at": None,
+                              "latest_run_id": None, "kind": kind})
     return {
         "cases": items,
         "synthetic": lst["synthetic"],

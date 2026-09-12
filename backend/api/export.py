@@ -14,12 +14,10 @@
    所以這裡不留「其他格式就給純文字」的後路——留了就會有人在 demo 當天
    拿到一份副檔名對、內容是純文字的檔案，然後以為功能做完了。
 
-2. **`artifact_id` → `run_id` 有兩條解析，順序固定。**
-   - 主路徑：`backend/output/cases/{case_id}/manifest.json` 的 `artifacts[]`
-     （契約 §4.0，由 case-dossier-crud 產生）。**本檔只讀不寫。**
-   - 後備：`artifact_id` 本身就是 `run-…`。manifest 還沒落地時匯出仍可用。
-     **這是寫在 OpenAPI 說明裡的公開行為，不是隱藏後門**；manifest 一旦有了，
-     它永遠優先。
+2. **`artifact_id` → `run_id` 的解析不在本檔**，在 `backend/dossier/artifact_ref.py`。
+   契約 §4.4 要求這個轉換全系統只有一份實作——JSON 檢視端（`api/dossier.py`）
+   共用同一支。本檔只把它的例外翻成 404。（2026-09-13 之前這裡自己有一份，
+   於是同一個 `run-…` 打匯出回 409、打 JSON 詳情回 404。）
 
 3. **草稿還沒生成 → 409，不回空白檔。** run 存在但 `doc[]` 沒有任何句子時，
    回一份只有抬頭的 `.docx` 是「看起來很像成功的失敗」——承辦人會以為
@@ -33,8 +31,6 @@
 """
 from __future__ import annotations
 
-import json
-import pathlib
 import re
 import urllib.parse
 from typing import Any
@@ -42,7 +38,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Query, Response
 
 from backend.api import export_render
-from backend.config.settings import OUTPUT_DIR
+from backend.dossier import artifact_ref
 from backend.orchestrator.artifact_sections import build_sections, has_body
 from backend.orchestrator.graph import build_payload
 from backend.orchestrator.runstore import RunNotFound, load_run
@@ -62,48 +58,24 @@ _MEDIA_TYPES = {
 }
 
 # 一份案子的書籤檔（契約 §4.0）。這裡只讀，寫由 case-dossier-crud 負責。
-CASES_DIR = OUTPUT_DIR / "cases"
-MANIFEST_NAME = "manifest.json"
-
-
-def _manifest_path(case_id: str) -> pathlib.Path:
-    return CASES_DIR / case_id / MANIFEST_NAME
-
-
-def _run_id_from_manifest(case_id: str, artifact_id: str) -> str | None:
-    """manifest 裡這個 artifact 對應的 run_id；manifest 或該筆不存在回 None。
-
-    manifest 讀不動（壞掉的 JSON）時也回 None 走後備，而不是 500：
-    書籤檔壞掉不該讓「我只是想下載草稿」整條路斷掉。
-    """
-    p = _manifest_path(case_id)
-    if not p.is_file():
-        return None
-    try:
-        manifest = json.loads(p.read_text(encoding="utf-8"))
-    except (ValueError, OSError):
-        return None
-    for art in manifest.get("artifacts") or []:
-        if str(art.get("id")) == artifact_id:
-            run_id = art.get("run_id")
-            return str(run_id) if run_id else None
-    return None
+# **解析本身在 `backend/dossier/artifact_ref.py`**，不在本檔——契約 §4.4 要求
+# `artifactId → runId` 全系統只有一份實作，JSON 檢視端（`api/dossier.py`）共用它。
+# 這兩個名字保留是為了呼叫端與測試沿用既有的入口。
+CASES_DIR = artifact_ref.CASES_DIR
+MANIFEST_NAME = artifact_ref.MANIFEST_NAME
 
 
 def resolve_run_id(case_id: str, artifact_id: str) -> str:
-    """manifest 優先，`run-…` 後備。兩條都不成立就 404。"""
-    run_id = _run_id_from_manifest(case_id, artifact_id)
-    if run_id:
-        return run_id
-    if artifact_id.startswith("run-"):
-        return artifact_id
-    raise HTTPException(
-        status_code=404,
-        detail=(
-            f"案件 {case_id} 的產出 {artifact_id} 找不到對應的執行紀錄。"
-            f"（已查 {_manifest_path(case_id)}；artifact_id 若直接帶 run-… 亦可匯出）"
-        ),
-    )
+    """`artifact_ref.resolve_run_id` 的 HTTP 皮：對不到就 404。
+
+    訊息用 `describe_manifest()` 的**相對路徑**。原本這裡印的是絕對路徑，
+    在容器裡就是 `/app/backend/output/cases/…`——把部署佈局印在承辦人螢幕上
+    （2026-09-13 雲上實測抓到；本模組其餘出口都沒有這個問題，就這一行漏了）。
+    """
+    try:
+        return artifact_ref.resolve_run_id(case_id, artifact_id)
+    except artifact_ref.ArtifactRunNotFound as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
 
 
 def _filename(view: dict[str, Any], fmt: str) -> str:
