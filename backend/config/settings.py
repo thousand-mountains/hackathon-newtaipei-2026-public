@@ -42,7 +42,17 @@ DEFAULT_RETRIEVER = "lawtable_only"
 # 理由是兩種錯法的代價不對稱：門檻設太低只是多回幾筆低分的，看得見也查得出來；
 # 設太高會**靜默回 0 筆**——畫面上「相似案：無」，跟 KB 掛掉、權限不足長得一模一樣，
 # 承辦人與我們都分不出是哪一種。寧可寬鬆，不要假裝沒東西可撈。
+#
+# **但「寬鬆」的正當性完全建立在「後面有重排接手」上**（2026-09-12 覆核補）。
+# 放寬 recall 的前提是 precision 由 `RERANK_MIN_SCORE` 負責（分工見下方 rerank 段）。
+# 沒設重排模型時那個前提不成立，寬門檻就是**純粹的品質下降**：沒有任何一關擋得掉
+# 語意無關的命中，承辦人看到的相似案卡會更雜。所以預設值**分兩種**，
+# 由 `kb_min_score()` 依重排開關挑——這是唯一一個會自己變的預設值，
+# 因為它本來就不是獨立的旋鈕，是跟另一個旋鈕綁在一起的。
 DEFAULT_KB_MIN_SCORE = 0.15
+# 沒有重排時的預設：回到加重排之前那個值。這個 0.25 沒有量測背書（當時就是估的），
+# 但它至少是**已驗證過的行為**——決賽期間，未知的舊值優於已知會變差的新值。
+DEFAULT_KB_MIN_SCORE_NO_RERANK = 0.25
 
 # ── 重排（rerank）─────────────────────────────────────────────────
 #
@@ -151,9 +161,27 @@ def rerank_model_id() -> str | None:
     return os.environ.get("BEDROCK_RERANK_MODEL_ID") or None
 
 
+def rerank_state() -> dict[str, Any]:
+    """健康檢查要報的重排狀態。**不打任何 API，也不報 model id 的值**（CONSTITUTION §7）。
+
+    放在這裡而不是 `api/app.py`：API 層要 fastapi，測試路徑是 stdlib-only，
+    寫在那邊就沒有測試守得住（`kb.describe_similar_case_backend` 同一個理由）。
+
+    `kb_min_score` 一起報，因為它的預設**跟著重排開關變**——只報「重排沒開」
+    而不報「所以門檻是 0.25」，看的人還是要回頭翻程式碼才知道現在到底在用什麼。
+    """
+    return {"enabled": bool(rerank_model_id()),
+            "min_score": rerank_min_score(),
+            "kb_min_score": kb_min_score()}
+
+
 def rerank_min_score() -> float:
-    """重排後的相關性門檻。低於這個值的命中不回——那是「撈到了但不相關」。"""
-    return float(os.environ.get("RERANK_MIN_SCORE", DEFAULT_RERANK_MIN_SCORE))
+    """重排後的相關性門檻。低於這個值的命中不回——那是「撈到了但不相關」。
+
+    空字串當成沒設（與 `kb_min_score()` 同一個理由）。
+    """
+    raw = os.environ.get("RERANK_MIN_SCORE")
+    return float(raw) if raw and raw.strip() else DEFAULT_RERANK_MIN_SCORE
 # 賽方規範要求 Bedrock 請求壓在 1 RPS 以下。1.1 留一點餘裕，與
 # `backend/retrieval/kb.py` 的 RETRIEVE_INTERVAL_S 取同一個值。
 DEFAULT_BEDROCK_MIN_INTERVAL_S = 1.1
@@ -194,7 +222,15 @@ def kb_id() -> str | None:
 
 
 def kb_min_score() -> float:
-    return float(os.environ.get("KB_MIN_SCORE", DEFAULT_KB_MIN_SCORE))
+    """檢索的分數門檻。**沒設環境變數時，預設值依重排開關而異**（見上方註解）。
+
+    空字串（`.env` 裡寫了 `KB_MIN_SCORE=` 卻沒填值）當成沒設，不是當成 `float("")`
+    ——那會在檢索路徑深處炸出一個看不出成因的 ValueError。
+    """
+    raw = os.environ.get("KB_MIN_SCORE")
+    if raw and raw.strip():
+        return float(raw)
+    return DEFAULT_KB_MIN_SCORE if rerank_model_id() else DEFAULT_KB_MIN_SCORE_NO_RERANK
 
 
 def kb_bucket() -> str | None:

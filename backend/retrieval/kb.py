@@ -59,6 +59,12 @@ REF_PREFIXES = ["行政函釋/", "司法院釋字及行政判解/"]
 # 分數落在同一條線（實測 0.77–0.80）——**若哪天 official 的最佳命中掉到跟 public 差一截，
 # 這個配額就該回頭重議**，因為那時保席次等於犧牲相關性。
 # 某一批不足時由另一批補滿（不留空位），但一律仍受 KB_MIN_SCORE 門檻約束：寧可少一筆。
+#
+# **開了重排之後，席次保證的是「進得了候選池」，不是「進得了前五名」**（2026-09-12）。
+# 席次會按比例放大到候選池（5 席→30 筆候選，官方 2 席→12 筆），最終前五名純由
+# 重排的相關性分數決定。理由與上一段的但書是同一個：重排把相關性量準了
+# （負控制 0.00 vs 真實案件 0.81+），這時再保席次就是拿相關性換版面。
+# 細節見 `_quota_search`。
 # 兩次 retrieve 之間的間隔。賽方規範要求 Bedrock 壓在 1 RPS 以下；retrieve 不是
 # InvokeModel，但保守做——評審面前吃 throttle 的代價遠大於多等一秒。
 RETRIEVE_INTERVAL_S = 1.1
@@ -350,13 +356,31 @@ class KBRetriever:
         return [dataclasses.replace(h, id=f"kb-{i}") for i, h in enumerate(hits, start=1)]
 
     def _quota_search(self, query: str, exclude: str | None, top_k: int) -> list[Hit]:
-        """兩批各自查、各自取配額席次，不足由另一批補滿，最後按分數排序。"""
+        """兩批各自查、各自取配額席次，不足由另一批補滿，最後按分數排序。
+
+        `top_k` 是**這一層要交出幾筆**，不一定等於最後顯示幾筆：有重排時呼叫端會要
+        `RERANK_CANDIDATES` 筆當候選池。席次因此要**按比例放大到候選池**——
+        設定寫的是「5 席裡官方佔 2」，那 30 筆的候選池就該是「官方佔 12」。
+        不放大的話，配額在候選池這一層等於沒作用（2、3 席之後的補位迴圈會把兩批
+        剩下的全倒進來，再按 embedding 分數截斷），而 public 的檔數是 official 的
+        23 倍、單次查詢前 15 名實測 15/15 都是 public——官方那批會整批擠不進候選池，
+        **連被重排看一眼的機會都沒有**。配額當初就是為了防這件事。
+
+        放大只影響「誰進得了候選池」。最終前五名由重排的相關性分數決定，
+        **不保留席次**：重排把相關性量準了之後，保席次就等於犧牲相關性
+        （這個取捨在模組頂端的配額註解裡本來就寫了「哪天該回頭重議」）。
+        `top_k == 總席次` 時 `scale == 1`，行為與沒有重排時逐字相同。
+        """
+        quota_map = settings.similar_case_quota()
+        total_seats = sum(quota_map.values()) or 1
+        scale = max(1, -(-top_k // total_seats))     # ceil，讓席次總和撐滿候選池
         batches: list[tuple[int, list[Hit]]] = []
-        for i, (prefix, quota) in enumerate(settings.similar_case_quota().items()):
+        for i, (prefix, quota) in enumerate(quota_map.items()):
             if i:
                 time.sleep(RETRIEVE_INTERVAL_S)
             batches.append(
-                (quota, self._retrieve(query, [prefix], exclude, want=QUOTA_FETCH_DEPTH, limit=top_k))
+                (quota * scale,
+                 self._retrieve(query, [prefix], exclude, want=QUOTA_FETCH_DEPTH, limit=top_k))
             )
         picked: list[Hit] = []
         for quota, rows in batches:
@@ -380,6 +404,19 @@ class KBRetriever:
         **畫面上顯示的數字必須是真的決定了排序的那個** ——留著 embedding 分數當
         顯示值會讓看板出現「第一名 35 分、第二名 62 分」這種看不懂的順序，
         那是對「為什麼這幾筆排在前面」說謊（CONSTITUTION §1）。
+
+        **同一份文件的多個 chunk 只留最高分那筆**（2026-09-12 補）。這件事在
+        embedding-only 的時候是「已知且刻意未改」的小問題：候選池就是 top_k 那幾筆，
+        重複頂多吃掉一兩席。加了重排之後量級不一樣了——候選池變成 30 筆，而
+        cross-encoder 會把同一份高度相關決定書的**每個 chunk 都打高分**，
+        前五名很可能是同一件案子的五個片段。承辦人看到的是「五筆相似案」，
+        實際上只有一件，那是對「我們找到幾件」說謊。
+        去重按來源檔路徑（`h.source`），與 `_retrieve` 的 `dedupe_by_source` 同一把尺。
+
+        因此 `numberOfResults` 要一次要回**全部候選**的排名，不能只要 top_k：
+        只要 5 筆而那 5 筆都是同一份文件的話，去重後就只剩 1 筆，**而且沒有遞補**
+        ——那是把重複問題換成了另一種靜默少筆。要回全部再自己截斷，
+        成本相同（同一次 API 呼叫），但席次會被真正不同的文件補滿。
         """
         model = settings.rerank_model_id()
         if not model or not hits:
@@ -399,19 +436,28 @@ class KBRetriever:
             rerankingConfiguration={
                 "type": "BEDROCK_RERANKING_MODEL",
                 "bedrockRerankingConfiguration": {
-                    # numberOfResults 不得超過來源數，否則 ValidationException
-                    "numberOfResults": min(top_k, len(docs)),
+                    # 要回全部候選的排名（見 docstring：去重要有東西可以遞補）。
+                    # numberOfResults 不得超過來源數，否則 ValidationException——
+                    # 這裡剛好就是來源數，上限自然滿足。
+                    "numberOfResults": len(docs),
                     "modelConfiguration": {"modelArn": model},
                 },
             },
         )
         floor = settings.rerank_min_score()
         out: list[Hit] = []
+        seen_sources: set[str] = set()
         for r in resp.get("results", []):
+            if len(out) >= top_k:
+                break
             rs = float(r.get("relevanceScore", 0.0))
             if rs < floor:
                 continue            # 撈到了但不相關——寧可少一筆，不要塞
             h, _ = docs[int(r["index"])]
+            # 同一份文件的其他 chunk（結果已按相關性遞減，第一次遇到的就是最高分那筆）
+            if h.source in seen_sources:
+                continue
+            seen_sources.add(h.source)
             payload = dict(h.payload or {})
             payload["embedding_score"] = h.score
             payload["rerank_score"] = rs
@@ -431,7 +477,9 @@ class KBRetriever:
         `dedupe_by_source` **預設 False，只有判解／函釋通道開它**（2026-09-12）。
         去重本身對兩條通道都有意義，但相似案通道的「official 2 ＋ public_crawl 3」
         是當天實跑驗證過的行為，決賽期間不為了一個一般性的改善去動已驗證的路徑。
-        相似案通道同樣有 chunk 重複的問題，是**已知且刻意未改**，不是漏看。
+        相似案通道的 chunk 重複**在有重排時由 `_rerank` 收掉**（那裡候選池 30 筆，
+        重複的量級跟這裡不一樣，見該處說明）；沒有重排時仍維持已驗證的舊行為，
+        是**已知且刻意未改**，不是漏看。
         """
         flt = doc_kind_filter(doc_kinds or [])
         resp = self._retrieve_raw(query, want, flt)

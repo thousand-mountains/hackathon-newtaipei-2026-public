@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import concurrent.futures
 import datetime as dt
+import hashlib
 import json
 import os
 import pathlib
@@ -48,14 +49,6 @@ class MissingLocalFile(RuntimeError):
     """stage 目錄缺檔。跟上傳失敗分開：這是資料沒備齊，重試不會好。"""
 
 
-def _exists(s3, bucket: str, key: str) -> bool:
-    try:
-        s3.head_object(Bucket=bucket, Key=key)
-        return True
-    except s3.exceptions.ClientError:
-        return False
-
-
 def _sha_matches(s3, bucket: str, key: str, sha: str) -> bool:
     try:
         head = s3.head_object(Bucket=bucket, Key=key)
@@ -64,9 +57,15 @@ def _sha_matches(s3, bucket: str, key: str, sha: str) -> bool:
     return head.get("Metadata", {}).get("sha256") == sha
 
 
-def _upload_sidecar(s3, local: pathlib.Path, bucket: str, key: str) -> None:
+def _sha256_of(path: pathlib.Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _upload_sidecar(s3, local: pathlib.Path, bucket: str, key: str, sha: str) -> None:
+    """側檔也帶 `sha256` metadata，冪等比對才有東西可比（見 `_sync_one`）。"""
     s3.upload_file(str(local), bucket, key,
-                   ExtraArgs={"ContentType": "application/json; charset=utf-8"})
+                   ExtraArgs={"Metadata": {"sha256": sha},
+                              "ContentType": "application/json; charset=utf-8"})
 
 
 def _sync_one(entry: dict, *, bucket: str, region: str, stage: str) -> tuple[bool, int]:
@@ -75,8 +74,16 @@ def _sync_one(entry: dict, *, bucket: str, region: str, stage: str) -> tuple[boo
     冪等靠 S3 物件的 `sha256` metadata 比對，與序列版完全相同。
 
     側檔跟著本文走：`x.txt` 的分類欄位在 `x.txt.metadata.json`（build_kb_metadata.py 產）。
-    它**不是獨立文件**，是這一筆的屬性，所以不進 manifest、也不單獨算冪等——
-    本文要重傳時它一起重傳。沒有側檔（還沒跑過產生器）就跳過，不報錯。
+    它不進 manifest（它不是獨立文件，是這一筆的屬性），但**冪等要自己算一份**
+    ——側檔的 sha 跟本文的 sha 是兩件事（2026-09-12 覆核補）。
+
+    原本只檢查「S3 上有沒有側檔」，缺了才補。那在側檔第一次生出來時是對的，
+    但**改側檔產生器之後就會靜默留著舊版**：本文一個字都沒變（sha 相同）→ 略過 →
+    S3 上還是舊的 `doc_kind`／`category`。而側檔現在是 `outcome`／`category` 的
+    **優先來源**，也是 `REF_DOC_KINDS` 伺服器端 filter 的依據，用到舊值的表現是
+    「欄位都在、值是錯的」——比缺欄位難查得多。所以改成比側檔自己的 sha256。
+
+    沒有側檔（還沒跑過產生器）就跳過，不報錯。
     """
     s3 = _s3_client(region)
     local = pathlib.Path(stage) / entry["path"].removeprefix("kb/")
@@ -84,19 +91,18 @@ def _sync_one(entry: dict, *, bucket: str, region: str, stage: str) -> tuple[boo
         raise MissingLocalFile(str(local))
     side_local = local.with_name(local.name + ".metadata.json")
     side_key = entry["path"] + ".metadata.json"
-    if _sha_matches(s3, bucket, entry["path"], entry["sha256"]):
-        # 本文沒變，但側檔可能是這次才生出來的——缺了就補，不然 KB 永遠讀不到分類欄位
-        if side_local.exists() and not _exists(s3, bucket, side_key):
-            _upload_sidecar(s3, side_local, bucket, side_key)
-            return False, 1
-        return False, 0
-    s3.upload_file(str(local), bucket, entry["path"],
-                   ExtraArgs={"Metadata": {"sha256": entry["sha256"], "provenance": entry["provenance"]},
-                              "ContentType": "text/plain; charset=utf-8"})
-    if side_local.exists():
-        _upload_sidecar(s3, side_local, bucket, side_key)
-        return True, 1
-    return True, 0
+    side_sha = _sha256_of(side_local) if side_local.exists() else None
+    body_same = _sha_matches(s3, bucket, entry["path"], entry["sha256"])
+    if not body_same:
+        s3.upload_file(str(local), bucket, entry["path"],
+                       ExtraArgs={"Metadata": {"sha256": entry["sha256"],
+                                               "provenance": entry["provenance"]},
+                                  "ContentType": "text/plain; charset=utf-8"})
+    # 側檔獨立判斷：本文重傳時一起重傳；本文沒變也要在側檔是新的／改過時補上去。
+    if side_sha and not _sha_matches(s3, bucket, side_key, side_sha):
+        _upload_sidecar(s3, side_local, bucket, side_key, side_sha)
+        return not body_same, 1
+    return not body_same, 0
 
 
 def main() -> int:

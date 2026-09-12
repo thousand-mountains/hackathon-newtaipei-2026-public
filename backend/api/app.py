@@ -289,6 +289,11 @@ def health() -> JSONResponse:
         # （2026-09-12 實測）。健康檢查說的話必須是它真的知道的事（CONSTITUTION §1）。
         "kb_backend": settings.retriever_kind(),
         "similar_case_backend": retrieval_kb.describe_similar_case_backend(settings.retriever_kind()),
+        # 重排是**安靜地開或不開**：沒設 `BEDROCK_RERANK_MODEL_ID` 就不重排、不報錯，
+        # 而檢索的分數門檻又是跟著它一起變寬的（settings.kb_min_score）。
+        # ECS 上漏設這個變數，表現是「相似案卡混進語意無關的命中」——沒有人會發現。
+        # 這裡只報開關與門檻，**不報 model id 的值**（CONSTITUTION §7）。
+        "rerank": settings.rerank_state(),
         # fixture 檔位沒有呼叫任何基礎模型就不報 model id；live 檔位報環境變數設定的那組，
         # 但那是「設定值」不是「這次真的呼叫過」——逐次執行的實際值在 run_meta.model_ids。
         "model_ids": None if mode == "fixture" else llm_client.model_ids(),

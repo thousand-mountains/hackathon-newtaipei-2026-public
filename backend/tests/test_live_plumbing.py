@@ -60,11 +60,14 @@ def env(**kv):
 
 
 def test_settings_defaults_are_offline():
-    with env(RUN_MODE=None, MODEL_PROVIDER=None, RETRIEVER=None, KB_MIN_SCORE=None):
+    with env(RUN_MODE=None, MODEL_PROVIDER=None, RETRIEVER=None, KB_MIN_SCORE=None,
+             BEDROCK_RERANK_MODEL_ID=None):
         assert_eq(settings.run_mode(), "fixture")
         assert_eq(settings.model_provider(), "bedrock")
         assert_eq(settings.retriever_kind(), "lawtable_only")
-        assert_eq(settings.kb_min_score(), 0.15)
+        # 預設沒有重排 → 門檻用保守的那個（兩種預設的理由見
+        # test_kb_min_score_default_follows_the_rerank_switch）
+        assert_eq(settings.kb_min_score(), 0.25)
         assert_eq(settings.missing_live_settings("fixture", "lawtable_only"), [])
 
 
@@ -2914,3 +2917,232 @@ def test_outcome_is_only_read_from_filenames_of_decisions():
         r = KBRetriever(kb_id="k", region="r", min_score=0.15, client=fake)
         got = r.search("q", filters={"prefix": ["行政函釋_全量/"]}, top_k=3)
         assert_eq(got[0].payload["outcome"], "駁回", "沒有 doc_kind 時要保留退路")
+
+
+# ── 覆核補的四條（2026-09-12 PR #7 review）─────────────────────────
+#
+# 三條都在釘同一件事：**「有重排」與「沒重排」是兩種不同的行為**，
+# 而重排預設是關的。加功能時只量了開著的那一半，關著的那一半沒人看。
+
+
+class _QuotaRerankRuntime(_QuotaFakeRuntime):
+    """相似案通道（分批 retrieve）＋ rerank 的假 client。
+
+    rerank 依**文件內容**給分：`score_of(text) -> float`，預設照送進去的順序遞減。
+    刻意不依索引：索引順序是候選池排序的結果，拿它當旋鈕就會測到自己的假設。
+    """
+
+    def __init__(self, batches, score_of=None):
+        super().__init__(batches)
+        self.score_of = score_of
+        self.rerank_calls = []
+
+    def rerank(self, **kw):
+        self.rerank_calls.append(kw)
+        n = kw["rerankingConfiguration"]["bedrockRerankingConfiguration"]["numberOfResults"]
+        texts = [s["inlineDocumentSource"]["textDocument"]["text"] for s in kw["sources"]]
+        scored = sorted(
+            ((i, self.score_of(t) if self.score_of else 1.0 - i / 1000)
+             for i, t in enumerate(texts)),
+            key=lambda kv: kv[1], reverse=True)[:n]
+        return {"results": [{"index": i, "relevanceScore": s} for i, s in scored]}
+
+
+def test_similar_case_quota_scales_seats_to_the_candidate_pool():
+    """開了重排之後，候選池的組成仍要照設定的比例，不是照前綴的排列順序。
+
+    2026-09-12 覆核實測的舊行為：候選池 30 筆時，補位迴圈按批次順序倒，
+    **第一個前綴吃掉 27/30**，第二批只剩它那 3 個席次——即使第二批的分數全面較高。
+    重排再強也排不了沒進候選池的東西，等於設定的 2:3 在開了重排之後變成 27:3。
+
+    設定寫「5 席裡官方佔 2」，30 筆的候選池就該是「官方佔 12」。
+    """
+    official = [_kb_result(f"歷史訴願決定書/113年/o{i}-駁回.txt", 0.50 - i / 1000, f"官方{i}")
+                for i in range(30)]
+    public = [_kb_public_result(f"新北訴願決定書_全量/p{i}_駁回.txt", 0.95 - i / 1000, f"公開{i}")
+              for i in range(30)]
+    fake = _QuotaRerankRuntime([official, public])
+    with env(BEDROCK_RERANK_MODEL_ID="arn:fake:rerank", RERANK_MIN_SCORE="0.0"):
+        r = KBRetriever(kb_id="k", region="r", min_score=0.15, client=fake)
+        with _no_retrieve_interval():
+            r.search("q", top_k=5)
+    sent = [s["inlineDocumentSource"]["textDocument"]["text"] for s in fake.rerank_calls[0]["sources"]]
+    assert_eq(len(sent), kb_module.RERANK_CANDIDATES, "候選池要撐滿")
+    assert_eq(sum(1 for t in sent if t.startswith("官方")), 12, "2 席 ×6 ＝ 候選池裡 12 筆")
+    assert_eq(sum(1 for t in sent if t.startswith("公開")), 18, "3 席 ×6 ＝ 候選池裡 18 筆")
+
+
+def test_rerank_picks_the_final_five_purely_by_relevance_not_by_seats():
+    """席次保證的是「進得了候選池」，**不是「進得了前五名」**。
+
+    這條是刻意把行為釘死，免得日後有人看到「前五名全是公開批」以為是 bug：
+    重排把相關性量準了（負控制 0.00 vs 真實案件 0.81+），這時保席次就是拿相關性
+    換版面。要改回保席次的話，改的人會先看到這條測試失敗，然後讀到這段理由。
+    """
+    official = [_kb_result(f"歷史訴願決定書/113年/o{i}-駁回.txt", 0.90 - i / 1000, f"官方{i}")
+                for i in range(10)]
+    public = [_kb_public_result(f"新北訴願決定書_全量/p{i}_駁回.txt", 0.50 - i / 1000, f"公開{i}")
+              for i in range(10)]
+    # 公開批全拿高分、官方批全拿低分（都過門檻）——前五名應該全是公開批
+    fake = _QuotaRerankRuntime([official, public],
+                               score_of=lambda t: 0.9 if t.startswith("公開") else 0.6)
+    with env(BEDROCK_RERANK_MODEL_ID="arn:fake:rerank", RERANK_MIN_SCORE="0.5"):
+        r = KBRetriever(kb_id="k", region="r", min_score=0.15, client=fake)
+        with _no_retrieve_interval():
+            hits = r.search("q", top_k=5)
+    assert_eq(len(hits), 5)
+    assert_eq([h.payload["provenance"] for h in hits], ["public_crawl"] * 5,
+              "前五名由重排分數決定，官方的 2 席不在重排之後保留")
+
+
+def test_rerank_keeps_five_different_cases_not_five_chunks_of_one():
+    """同一份決定書的多個 chunk 只能佔一席，而且要由別的文件遞補。
+
+    候選池 30 筆之後這件事的量級變了：cross-encoder 會把同一份高度相關決定書的
+    每個 chunk 都打高分，前五名很可能是同一件案子的五個片段。承辦人看到「五筆相似案」
+    而實際只有一件，那是對「我們找到幾件」說謊（CONSTITUTION §1）。
+
+    也釘住「遞補」：只跟 rerank 要 5 筆的話，去重後會剩 1 筆且沒有東西補上來
+    ——那是把重複問題換成另一種靜默少筆。
+    """
+    same = [_kb_public_result("新北訴願決定書_全量/同一件_駁回.txt", 0.90 - i / 1000, f"第{i}段")
+            for i in range(5)]
+    others = [_kb_public_result(f"新北訴願決定書_全量/其他{i}_駁回.txt", 0.40 - i / 1000, f"其他{i}")
+              for i in range(4)]
+    fake = _QuotaRerankRuntime([[], same + others])
+    with env(BEDROCK_RERANK_MODEL_ID="arn:fake:rerank", RERANK_MIN_SCORE="0.0"):
+        r = KBRetriever(kb_id="k", region="r", min_score=0.15, client=fake)
+        with _no_retrieve_interval():
+            hits = r.search("q", top_k=5)
+    srcs = [h.source for h in hits]
+    assert_eq(len(srcs), len(set(srcs)), f"同一份文件佔了不只一席：{srcs}")
+    assert_eq(len(hits), 5, "去重之後席次要由別的文件補滿，不是剩一筆")
+    assert_eq(srcs[0], "新北訴願決定書_全量/同一件_駁回.txt", "重複的那份保留最高分的 chunk")
+
+
+def test_kb_min_score_default_follows_the_rerank_switch():
+    """放寬門檻的前提是「後面有重排接手」。沒有重排就不能用寬的那個預設。
+
+    0.15 的正當性全部建立在 rerank 負責 precision 上（證據見 rerank.md 的分工表）。
+    重排關著時那個前提不成立，寬門檻就是純粹的品質下降：沒有任何一關擋得掉
+    語意無關的命中。ECS 上漏設 `BEDROCK_RERANK_MODEL_ID` 就是這個情境。
+    """
+    with env(KB_MIN_SCORE=None, BEDROCK_RERANK_MODEL_ID=None):
+        assert_eq(settings.kb_min_score(), 0.25, "沒有重排就回到已驗證過的舊值")
+    with env(KB_MIN_SCORE=None, BEDROCK_RERANK_MODEL_ID="arn:fake:rerank"):
+        assert_eq(settings.kb_min_score(), 0.15, "有重排才放寬給 recall")
+    with env(KB_MIN_SCORE="0.42", BEDROCK_RERANK_MODEL_ID=None):
+        assert_eq(settings.kb_min_score(), 0.42, "明示設定永遠贏過兩個預設")
+    with env(KB_MIN_SCORE="", BEDROCK_RERANK_MODEL_ID="arn:fake:rerank"):
+        assert_eq(settings.kb_min_score(), 0.15, "`.env` 寫了變數卻沒填值＝沒設，不是 float('')")
+    with env(RERANK_MIN_SCORE=""):
+        assert_eq(settings.rerank_min_score(), 0.5, "同上，空字串不得炸在檢索路徑深處")
+
+
+def test_health_says_whether_rerank_is_actually_on():
+    """重排是安靜地開或不開，健康檢查要說得出來——這是漏設唯一看得見的地方。
+
+    測的是 `settings.rerank_state()`（`/api/health` 的 `rerank` 欄位直接用它）：
+    API 層要 fastapi，而測試路徑是 stdlib-only，所以可測的那一半放在 settings，
+    `api/app.py` 只負責把它掛進回應（`describe_similar_case_backend` 同一個做法）。
+    """
+    with env(BEDROCK_RERANK_MODEL_ID=None, KB_MIN_SCORE=None):
+        st = settings.rerank_state()
+    assert_eq(st["enabled"], False)
+    assert_eq(st["kb_min_score"], 0.25, "關著時報的是關著時真的在用的門檻")
+    with env(BEDROCK_RERANK_MODEL_ID="arn:fake:rerank", KB_MIN_SCORE=None, RERANK_MIN_SCORE="0.5"):
+        st = settings.rerank_state()
+    assert_eq(st, {"enabled": True, "min_score": 0.5, "kb_min_score": 0.15})
+    assert_true("arn:fake:rerank" not in json.dumps(st, ensure_ascii=False),
+                "model id 的值不得出現在健康檢查回應裡")
+
+
+class _FakeS3:
+    """`_sync_one` 用得到的最小 S3：head_object／upload_file／exceptions.ClientError。"""
+
+    class _Err(Exception):
+        pass
+
+    class _Exc:
+        ClientError = None      # 在 __init__ 綁成上面那個 _Err
+
+    def __init__(self, objects=None):
+        self.objects = dict(objects or {})      # {key: sha256 metadata}
+        self.uploads = []                       # [(key, sha)]
+        self.exceptions = self._Exc()
+        self.exceptions.ClientError = self._Err
+
+    def head_object(self, Bucket, Key):         # noqa: N803 — 照 boto3 的參數名
+        if Key not in self.objects:
+            raise self._Err(f"404 {Key}")
+        return {"Metadata": {"sha256": self.objects[Key]}}
+
+    def upload_file(self, local, bucket, key, ExtraArgs=None):  # noqa: N803
+        sha = (ExtraArgs or {}).get("Metadata", {}).get("sha256")
+        self.uploads.append((key, sha))
+        self.objects[key] = sha
+
+
+def _ingest_kb_module():
+    spec = importlib.util.spec_from_file_location(
+        "_ingest_kb", pathlib.Path(__file__).resolve().parents[2] / "scripts" / "ingest_kb.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+@contextmanager
+def _staged_entry(body="本文", sidecar='{"doc_kind": "decision"}'):
+    """一筆 manifest entry ＋ stage 目錄上的本文與側檔。"""
+    ing = _ingest_kb_module()
+    with tempfile.TemporaryDirectory() as d:
+        stage = pathlib.Path(d)
+        local = stage / "official" / "歷史訴願決定書" / "x.txt"
+        local.parent.mkdir(parents=True, exist_ok=True)
+        local.write_text(body, encoding="utf-8")
+        side = local.with_name("x.txt.metadata.json")
+        if sidecar is not None:
+            side.write_text(sidecar, encoding="utf-8")
+        entry = {"path": "kb/official/歷史訴願決定書/x.txt",
+                 "sha256": ing._sha256_of(local), "provenance": "official"}
+        yield ing, entry, str(stage), side
+
+
+def test_ingest_resends_a_changed_sidecar_even_when_the_body_is_untouched():
+    """側檔改了就要重傳——本文沒變不是「側檔也沒變」的證據。
+
+    2026-09-12 覆核抓到的舊行為：冪等只問「S3 上有沒有側檔」，有就跳過。
+    於是修了 `build_kb_metadata.py` 重跑入庫時，本文 sha 相同 → 整筆略過 →
+    S3 上留著舊的 `doc_kind`／`category`。而側檔是 `outcome`／`category` 的優先來源，
+    也是 `REF_DOC_KINDS` 伺服器端 filter 的依據——用到舊值的表現是
+    「欄位都在、值是錯的」，比缺欄位難查得多。
+    """
+    with _staged_entry() as (ing, entry, stage, side):
+        s3 = _FakeS3({entry["path"]: entry["sha256"],
+                      entry["path"] + ".metadata.json": "舊側檔的sha"})
+        ing._s3_client = lambda region: s3
+        body_uploaded, sidecars = ing._sync_one(entry, bucket="b", region="r", stage=stage)
+    assert_eq(body_uploaded, False, "本文沒變就不該重傳本文")
+    assert_eq(sidecars, 1, "側檔變了就要重傳")
+    assert_eq([k for k, _ in s3.uploads], [entry["path"] + ".metadata.json"])
+    assert_true(s3.uploads[0][1], "側檔上傳時要帶自己的 sha256，下次才比得出來")
+
+
+def test_ingest_is_idempotent_when_neither_body_nor_sidecar_changed():
+    """第二次跑要「上傳 0、側檔 0」（AC12）——加了側檔比對不得破壞冪等。"""
+    with _staged_entry() as (ing, entry, stage, side):
+        side_sha = ing._sha256_of(side)
+        s3 = _FakeS3({entry["path"]: entry["sha256"],
+                      entry["path"] + ".metadata.json": side_sha})
+        ing._s3_client = lambda region: s3
+        assert_eq(ing._sync_one(entry, bucket="b", region="r", stage=stage), (False, 0))
+    assert_eq(s3.uploads, [], "什麼都沒變就不該有任何上傳")
+
+
+def test_ingest_skips_the_sidecar_when_the_generator_has_not_run():
+    """還沒產側檔的 corpus 照樣入得了庫，不報錯（側檔是加值，不是前置條件）。"""
+    with _staged_entry(sidecar=None) as (ing, entry, stage, _side):
+        s3 = _FakeS3()
+        ing._s3_client = lambda region: s3
+        assert_eq(ing._sync_one(entry, bucket="b", region="r", stage=stage), (True, 0))
+    assert_eq([k for k, _ in s3.uploads], [entry["path"]], "只傳本文")
