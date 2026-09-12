@@ -396,7 +396,7 @@ wire 格式：`event: <名稱>\ndata: <一行 JSON>\n\n`。共通欄位：`seq`�
 | `retrieve_refs` | 查判解與函釋 | 已實作 | — | 不歸檔 |
 | `generate_decision_draft` | 生成草稿 | **包 pipeline**（`run_case(from_node="n4")`） | ✅ n4–n6 | `out` 群組 |
 | `refine_text` | 潤稿 | 已實作 | — | 不歸檔 |
-| `build_relation_graph` | 產生案件關聯圖 | ⏳ **尚未實作**（Epic E，§3.7） | — | `out` 群組 |
+| `build_relation_graph` | 產生案件關聯圖 | 🔨 **必要項，實作中**（Epic E，§3.7） | — | `out` 群組 |
 | `read_case` | 讀卷內 | 已實作 | — | 不歸檔 |
 
 > ⏳ **`build_relation_graph` 目前不在後端的 `TOOL_LABELS` 值域裡**，**這是刻意的**：
@@ -558,6 +558,9 @@ lawtable 解析得了；決定書沒有對等的查詢詞形式，硬塞會稀�
 ### 3.7 `build_relation_graph`（案件關聯圖）— 新功能 ⑨
 
 > **計畫見 `plans/2026-09-12-relation-graph.md`**（含驗收條件）。這一節只定義回傳形狀。
+>
+> **2026-09-13 Ci 拍板：關聯圖是必要交付項，不是加分項。** plan 的「最遲放棄時刻」已作廢。
+> 前端的 `RelationGraph.vue` 要接真資料，不是「示意圖，非後端產物」。
 >
 > 原本列在「建議砍」，理由是「後端不產關聯資料」。**重查之後那是錯的**：
 > 邊在 run payload 裡已經是現成的——`citations[]` 帶 `sentence_id` + `resolved_id` + `state`，
