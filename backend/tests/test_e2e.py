@@ -643,8 +643,9 @@ def test_the_bridge_hands_the_chat_layer_a_plain_dict_with_no_orchestrator_types
     with tempfile.TemporaryDirectory() as tmp:
         run_pipeline = chat_bridge.pipeline_adapter(ORDINARY, pathlib.Path(tmp), mode="fixture")
         out = run_pipeline(to_node="n3")
-        assert_eq(sorted(out), ["artifact_id", "cite_count", "has_draft", "node_timings",
-                                "run_id", "sections", "state"], "橋的回傳形狀")
+        assert_eq(sorted(out), ["artifact_id", "cite_count", "degraded", "has_draft",
+                                "node_timings", "run_id", "sections", "state"],
+                  "橋的回傳形狀")
         for v in out.values():
             assert_true(v is None or isinstance(v, (str, int, bool, dict, list)),
                         f"橋回了一個非 plain 型別：{type(v)}")

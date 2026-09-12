@@ -6,6 +6,7 @@ import importlib.util
 import json
 import os
 import pathlib
+import re
 import tempfile
 import zipfile
 from contextlib import contextmanager
@@ -16,6 +17,7 @@ from backend.config import settings
 from backend.config.settings import NODE_TO_AGENTS, load_snapshot
 from backend.engine import deadline as deadline_engine
 from backend.intake.documents import CJK_RATIO_THRESHOLD, cjk_ratio, route_documents
+from backend.intake import fields as intake_fields
 from backend.intake.uploads import (
     MAX_BYTES,
     list_upload_cases,
@@ -23,8 +25,10 @@ from backend.intake.uploads import (
     save_upload,
 )
 from backend.llm import client
+import backend.llm.chat as chat_mod
+from backend.llm.chat import ChatTools, RefBook
 from backend.nodes import n1_extract, n2_classify, n4_retrieval, n5_draft, n6_gate
-from backend.orchestrator import runstore
+from backend.orchestrator import chat_bridge, runstore
 from backend.orchestrator.graph import (
     build_payload,
     digest_from_state,
@@ -3343,6 +3347,118 @@ def test_frontend_similarity_caption_follows_the_ranker():
         raise AssertionError(
             "相似度文案出現在文案表以外的檔案，兩處各寫一份遲早漂移："
             + "、".join(strays))
+
+
+#: 後端那張欄位標籤表的**唯一**出處（`backend/nodes/n1_extract.py`）。
+#: 前端那份靠內容找（見下），不寫死路徑——理由同 `_RANKER_MODULE_MARKER`。
+_INTAKE_LABEL_MARKER = "const INTAKE_LABEL"
+
+
+def _frontend_intake_labels() -> tuple[pathlib.Path, dict[str, str]]:
+    sources = _frontend_sources()
+    owners = [p for p in sources
+              if _INTAKE_LABEL_MARKER in p.read_text(encoding="utf-8")]
+    if len(owners) != 1:
+        raise AssertionError(
+            f"前端的收文欄位標籤表應該只有一份，找到 {len(owners)} 份："
+            f"{[str(p) for p in owners]}。找不到就是它被改名或搬走了，"
+            f"這條跨層守衛的前提不成立。")
+    text = owners[0].read_text(encoding="utf-8")
+    start = text.index(_INTAKE_LABEL_MARKER)
+    brace = text.index("{", start)
+    end = text.index("}", brace)
+    body = text[brace + 1:end]
+    labels = {m.group(1): m.group(2)
+              for m in re.finditer(r"(\w+)\s*:\s*'([^']*)'", body)}
+    if not labels:
+        raise AssertionError(f"在 {owners[0]} 找到 INTAKE_LABEL 但解不出任何一項")
+    return owners[0], labels
+
+
+def test_intake_field_labels_agree_across_the_stack():
+    """後端與前端的收文欄位中文標籤必須逐字相同（2026-09-13 新增）。
+
+    **為什麼會有兩份**：降級原因（`run_meta.degraded[].reason`）要端到承辦人面前，
+    原本寫的是 `['no']` 這種開發者鍵名——承辦人看到只會覺得系統壞了，不會知道
+    要去補案號。後端於是需要一張 field→中文 的表（`backend/intake/fields.py`，
+    獨立成零依賴模組是因為 N3 也要用，而它不准碰 LLM），
+    而前端畫收文表格早就有一張（`ToolOut.vue` 的 `INTAKE_LABEL`）。
+    合併成一份要跨語言共用資料檔，不在這一輪。
+
+    所以這條守的是**副本之間的漂移**：今晚才踩過一次（相似度文案散在四個檔，
+    其中兩處寫錯）。只改一邊就要紅。
+
+    三件事一起釘：
+    1. 共同鍵上逐字相同——只改一邊會紅。
+    2. 必填欄位（`REQUIRED_FIELDS`）在後端表裡**全部有**——少一個就會在降級訊息裡
+       漏出鍵名，而那正是這輪要修掉的東西。
+    3. 必填欄位在前端表裡也全部有——否則第 1 條在那幾個鍵上根本沒比對到，
+       守衛會安靜地變成恆真。
+    """
+    owner, front = _frontend_intake_labels()
+    back = intake_fields.FIELD_LABELS
+
+    shared = sorted(set(back) & set(front))
+    assert_true(len(shared) >= len(n1_extract.REQUIRED_FIELDS),
+                f"兩張表的共同鍵只有 {shared}，少到不足以證明它們講的是同一件事")
+    drift = [f"{k}：後端「{back[k]}」／前端「{front[k]}」"
+             for k in shared if back[k] != front[k]]
+    if drift:
+        raise AssertionError(
+            f"收文欄位標籤在後端 backend/intake/fields.py 與前端 "
+            f"{owner.name} 之間漂了：{'、'.join(drift)}。"
+            f"兩處各寫一份就會這樣，改一邊要同時改另一邊。")
+
+    for f in n1_extract.REQUIRED_FIELDS:
+        assert_in(f, back, f"必填欄位 {f} 沒有後端中文標籤，降級訊息會漏出鍵名")
+        assert_in(f, front, f"必填欄位 {f} 不在前端標籤表裡，這條守衛對它是恆真的")
+
+
+def test_the_chat_layer_really_says_which_field_is_missing():
+    """真流水線 → 真 adapter → 真 `extract_case_document`：note 要出現中文欄位名。
+
+    上面那批 `test_chat.py` 的測試用的是假 adapter（自己塞 `degraded`），
+    **證明不了 `run_meta.degraded` 真的走得到聊天層**——2026-09-13 的漏正是
+    `chat_bridge.pipeline_adapter` 只取 `final_state`／`node_timings`，
+    中間那一行把原因丟掉，兩端各自看起來都對。
+
+    合成案例本身四個必填欄位都齊（不會降級），所以這裡**複製一份 fixture 到
+    暫存目錄並拿掉 `no`**，走 `data_dir` 餵給真的 `run_case`。改的是測試資料，
+    不是生產路徑。拿掉的是 `no` 而不是 `d2`，因為那正是 2026-09-13 雲上實測
+    兩個案子都缺的那一欄（`缺漏：['no']`）。
+    """
+    fixture = json.loads(
+        (settings.SYNTHETIC_DIR / "synthetic-ordinary-01.json").read_text(encoding="utf-8"))
+    fixture["extraction"]["intake"].pop("no", None)
+    fixture["extraction"]["conf"].pop("no", None)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        data_dir = root / "synthetic"
+        data_dir.mkdir()
+        (data_dir / "synthetic-ordinary-01.json").write_text(
+            json.dumps(fixture, ensure_ascii=False), encoding="utf-8")
+
+        events: list = []
+        chat_mod._throttle = lambda: None
+        tools = ChatTools(
+            {}, RefBook(), None, None,
+            lambda name, data: events.append((name, data)),
+            run_pipeline=chat_bridge.pipeline_adapter(
+                "synthetic-ordinary-01", root / "cases",
+                mode="fixture", data_dir=data_dir, persist=True),
+        )
+        out = tools.extract_case_document()
+
+    result = [d for n, d in events if n == "tool_result"][0]
+    assert_eq(result["state"], "NEEDS_INPUT", "缺必填欄位的終態")
+    assert_eq(result["status"], "ok", "降級不是失敗")
+    assert_in("案號", result["note"], "note 沒說缺的是哪一欄")
+    assert_in("需人工表單補齊後才能續跑", result["note"], "note 沒說下一步")
+    assert_true("'no'" not in result["note"] and "['no']" not in result["note"],
+                f"note 漏出了開發者鍵名：{result['note']!r}")
+    assert_in("案號", out, "回給模型的字串沒帶上原因，模型就講不出來")
+    assert_in("不要說解析已完成", out, "沒有擋掉模型講「已完成」")
 
 
 class _OldBotocoreRuntime:
