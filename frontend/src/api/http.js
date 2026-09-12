@@ -47,15 +47,30 @@ export const http = {
   del: (path, opts) => request('DELETE', path, opts),
 }
 
-/** 下載類（匯出）：回 Blob 與檔名（從 Content-Disposition 取）。 */
+/**
+ * 下載類（匯出）：回 Blob、檔名，以及契約的三個 X-* 標頭。
+ * - X-Unresolved-Cites：數字，非 0 代表有引用對不上，前端要警示。
+ * - X-Export-Warning：中文說明，HTTP 標頭只吃 latin-1，後端做過百分比編碼，要 decode。
+ * - X-Cite-Count：引用總數。
+ */
 export async function download(path) {
   const res = await fetch(API_BASE + path)
   if (!res.ok) throw new ApiError(res.status, null)
   const cd = res.headers.get('content-disposition') || ''
   const m = /filename\*?=(?:UTF-8'')?["']?([^"';]+)/i.exec(cd)
   const filename = m ? decodeURIComponent(m[1]) : 'download'
+  const unresolved = parseInt(res.headers.get('x-unresolved-cites') || '0', 10) || 0
+  const citeCount = parseInt(res.headers.get('x-cite-count') || '0', 10) || 0
+  let warning = res.headers.get('x-export-warning') || ''
+  if (warning) {
+    try {
+      warning = decodeURIComponent(warning)
+    } catch {
+      /* 已是純文字或解碼失敗，原樣用 */
+    }
+  }
   const blob = await res.blob()
-  return { blob, filename }
+  return { blob, filename, unresolved, citeCount, warning }
 }
 
 /**

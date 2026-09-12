@@ -435,6 +435,17 @@ async function driveChat(c, payload, uiTool) {
             }
           }
         }
+        // 紅線一（交接文件第一件）：redirect 非 null → 期限／天數這類問題交給規則引擎，
+        // **不得顯示 AI 算的天數**。改顯示 redirect.reason，不做捲動（顯示提示即可）。
+        if (data.redirect) {
+          if (!tokenMsg) tokenMsg = push(c, { who: 'ai', kind: 'html', html: '' })
+          const reason = data.redirect.reason || '期間計算由程序審查的規則引擎負責，聊天不計算期限。'
+          tokenMsg.html =
+            '<p>' + esc(reason) + '</p>' +
+            '<p style="color:var(--muted);font-size:12px;margin-top:6px">期限請以「程序審查」的規則引擎算式為準；本則不顯示聊天推算的天數。</p>'
+          if (toolMsg) toolMsg.running = false
+          return
+        }
         if (tokenMsg) {
           // 校正 token 串接：以 done.answer 為準，但「不得比已顯示的內容更短」——
           // 避免 answer 缺漏／截斷時反而把完整的逐字內容蓋掉（話被 cut 的第二個來源）。
@@ -443,6 +454,7 @@ async function driveChat(c, payload, uiTool) {
           const best = answer.length >= streamed.length ? answer : streamed
           tokenMsg.html = '<p>' + best + '</p>'
         }
+        // 紅線二（第二件）：dropped_refs 非空 → 標「引用有問題」。
         if (data.dropped_refs && data.dropped_refs.length && tokenMsg)
           tokenMsg.html += '<p style="color:var(--muted);font-size:12px;margin-top:6px">此則含無法對應的引用，請勿直接採用。</p>'
         if (toolMsg) toolMsg.running = false
@@ -636,7 +648,15 @@ async function runExport(c, tool, id) {
     if (!c.docs.out.some((x) => x.name === fname))
       addOne(c, 'out', { name: fname, note: (isPdf ? 'PDF' : 'Word') + '．訴願決定書版型', ext: isPdf ? 'pdf' : 'docx' })
     c.flags.out = true
-    aiMsg(`<p>${isPdf ? 'PDF' : 'Word 檔'}已產出並歸檔至右側「答辯書與產出」。</p>`)
+    // 匯出的引用警示（交接文件第二件的匯出部分）：X-Unresolved-Cites 非 0 要警示；
+    // X-Export-Warning 是後端做過編碼的中文，http.js 已 decode。
+    let msg = `<p>${isPdf ? 'PDF' : 'Word 檔'}已產出並歸檔至右側「答辯書與產出」。</p>`
+    if (res.unresolved > 0)
+      msg += `<p style="color:var(--muted);font-size:12px;margin-top:6px">此檔含 ${res.unresolved} 處無法對應的引用，送簽前請先核對。</p>`
+    if (res.warning)
+      msg += `<p style="color:var(--muted);font-size:12px;margin-top:4px">${esc(res.warning)}</p>`
+    aiMsg(msg)
+    if (res.unresolved > 0) toast(`匯出完成，但有 ${res.unresolved} 處引用待核對`)
   } catch (e) {
     card.running = false
     card.out = { type: 'html', html: '<p>匯出失敗，可重試。</p>' }
@@ -883,6 +903,16 @@ async function syncAddSearched(c, groupKey, items) {
   }
 }
 
+// 生成草稿的前置條件檢查（交接文件第三件）：三者缺一都不該讓草稿按下去。
+// 回傳「還缺什麼」的中文清單，空陣列＝可生成。
+export function draftBlockers(c) {
+  const miss = []
+  if (!c.flags.extract) miss.push('解析卷證')
+  if (!c.docs.laws.length) miss.push('相關法規')
+  if (!c.docs.cases.length) miss.push('相關案例')
+  return miss
+}
+
 // ── 建議 chips ──
 export const chips = computed(() => {
   const c = active()
@@ -890,7 +920,7 @@ export const chips = computed(() => {
   if (state.busy) return [{ ghost: true, label: '工具執行中⋯⋯' }]
   const f = c.flags
   const out = []
-  const add = (label, action, lead) => out.push({ label, action, lead })
+  const add = (label, action, lead, opts) => out.push({ label, action, lead, ...(opts || {}) })
   if (!c.docs.evidence.length) {
     add('上傳卷證檔案', { t: 'attach' }, '＋')
     add('你會什麼？', { t: 'ask' }, '?')
@@ -900,7 +930,14 @@ export const chips = computed(() => {
   if (f.extract && !f.cases) add('查找相似案例', { t: 'tool', id: 'cases' }, '▸')
   if (f.extract && !f.laws) add('搜尋相關法規', { t: 'tool', id: 'laws' }, '▸')
   if (f.extract && !f.graph) add('生成關聯圖', { t: 'tool', id: 'graph' }, '▸')
-  if (f.cases && f.laws && !f.draft) add('生成決定書草稿', { t: 'tool', id: 'draft' }, '▸')
+  // 生成草稿：解析後就顯示，但三個前置條件（解析／法規／案例）不齊時 disable 並說明缺什麼
+  // （交接文件第三件）。缺法規或案例時草稿其實生得出來，但引用會被清空、看起來像成功，
+  // 所以要在按之前就擋住。
+  if (f.extract && !f.draft) {
+    const miss = draftBlockers(c)
+    if (miss.length) add('生成決定書草稿', { t: 'tool', id: 'draft' }, '▸', { disabled: true, hint: '還需要：' + miss.join('、') })
+    else add('生成決定書草稿', { t: 'tool', id: 'draft' }, '▸')
+  }
   if (f.draft) {
     add('優化文案：語氣更嚴謹', { t: 'tool', id: 'refine', arg: '語氣更嚴謹、論理更緊密' }, '▸')
     add('補充相關法規', { t: 'search', key: 'laws' }, '＋')

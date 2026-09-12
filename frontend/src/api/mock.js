@@ -152,6 +152,18 @@ async function* chatStream(caseId, payload) {
 
   // 沒對到工具 → 純問答：只吐 token + done
   if (!tool) {
+    // 期限／天數問題：模擬後端的機械規則，強制帶 redirect（前端不得顯示 AI 算的天數）。
+    // 對「問題」做字面比對（寧可誤判也不漏判），對齊契約 §2.4.1。
+    if (/幾天|期限|多久|幾日|天內|逾期|截止|到期|deadline/i.test(payload.message || '')) {
+      const redirect = {
+        endpoint: '/api/deadline',
+        reason: '期間計算由程序審查的規則引擎負責，同一輸入必得同一結果、每一步都有法條依據可覆核；聊天不計算期限。',
+        cta: '查看程序審查的算式',
+      }
+      em.emit('done', { session_id: sessionId, answer: '', elapsed_ms: Date.now() - started, redirect, dropped_refs: [] })
+      yield await drain(em)
+      return
+    }
     const answer = fallbackAnswer(payload.message)
     for await (const t of tokenize(em, answer)) yield t
     em.emit('done', { session_id: sessionId, answer, elapsed_ms: Date.now() - started, redirect: null, dropped_refs: [] })
@@ -310,7 +322,7 @@ function buildToolResult(c, tool, callId, payload) {
       return {
         status: hits.length ? 'ok' : 'empty',
         hits,
-        answer: `${hits.length} 筆法規入袋，點右側項目可看條文全文。草稿只會引用卷宗內的條文，卷宗即為引註白名單。`,
+        answer: `${hits.length} 筆法規入袋，點右側項目可看條文全文。你挑的法規會成為檢索的關鍵字，查得到才會進草稿。`,
       }
     }
     case 'retrieve_refs': {
@@ -339,7 +351,7 @@ function buildToolResult(c, tool, callId, payload) {
       const hasLaws = c.laws.length
       const hasCases = c.references.length
       if (!hasLaws || !hasCases)
-        return { precheckFail: '草稿只認右側卷宗裡的東西當來源。請先查相似案例與相關法規，我才不會寫出沒憑沒據的句子。' }
+        return { precheckFail: '生成草稿前，請先備妥相關法規與相關案例。你挑的法規會成為檢索的關鍵字，查得到才會進草稿。' }
       const runId = nid('run')
       c.latest_run_id = runId
       const artId = nid('art')
@@ -559,7 +571,9 @@ export const mock = {
       const c = ensureCase(id)
       const a = c.artifacts.find((x) => x.id === artifactId)
       const name = (a?.name || '訴願決定書草稿').replace(/\s+/g, '_')
-      return { blob: new Blob([`（mock 匯出）${name}`], { type: 'text/plain' }), filename: `${name}.${format}`, _mock: true }
+      const citeCount = a && a._html ? (a._html.match(/class="cite"/g) || []).length : 0
+      // 對齊真後端的 X-* 標頭（mock 皆無未解引用）
+      return { blob: new Blob([`（mock 匯出）${name}`], { type: 'text/plain' }), filename: `${name}.${format}`, unresolved: 0, citeCount, warning: '', _mock: true }
     }),
 
   // §1.6 chat（SSE async generator）

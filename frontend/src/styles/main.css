@@ -270,6 +270,9 @@ button{font:inherit;color:inherit;cursor:pointer}
 .chip:hover{border-color:var(--acc-2);color:var(--acc-2);background:var(--acc-wash)}
 .chip .lead{color:var(--acc-2);font-size:11px}
 .chip.ghost{border-style:dashed;color:var(--muted)}
+.chip.disabled{color:var(--faint);border-style:dashed;cursor:not-allowed;opacity:.7}
+.chip.disabled:hover{border-color:var(--line);color:var(--faint);background:var(--ground)}
+.chip .chip-hint{color:var(--faint);font-size:10.5px;margin-left:2px}
 
 .composer{border:1px solid var(--line);border-radius:var(--r);background:var(--ground);box-shadow:var(--shadow);position:relative}
 .composer:focus-within{border-color:var(--acc-2)}
@@ -340,6 +343,7 @@ button{font:inherit;color:inherit;cursor:pointer}
 .fitem:hover .rm{opacity:1}
 .fitem .rm:hover{color:var(--alert)}
 .fempty{font-size:11.5px;color:var(--faint);padding:8px 8px 10px;text-align:center;line-height:1.6}
+.gnote{font-size:11px;color:var(--faint);padding:2px 8px 6px}
 
 /* 新增項目發光提示 */
 @keyframes flashHead{0%{background:var(--brand-wash)}100%{background:var(--panel-2)}}

@@ -50,10 +50,11 @@ function headAdd(g) {
           </button>
         </div>
         <div class="fgroup-body">
+          <div v-if="g.key === 'cases' && active().docs[g.key].length" class="gnote">參考資料，不影響草稿生成</div>
           <div v-if="!active().docs[g.key].length" class="fempty">{{ g.empty }}</div>
           <div v-for="(it, i) in active().docs[g.key]" :key="i" class="fitem" :class="{ 'fitem-new': it._new }">
             <span class="ic">{{ it.ext || g.abbr }}</span>
-            <button v-if="it.full || it.graph || g.key === 'evidence'" class="ft" @click="emit('view-doc', withDetail(it, g))">
+            <button v-if="it.full || it.graph || it._libId || it._artifactId || g.key === 'evidence'" class="ft" @click="emit('view-doc', withDetail(it, g))">
               {{ it.name }}<small v-if="it.note">{{ it.note }}</small>
             </button>
             <div v-else class="ft">{{ it.name }}<small v-if="it.note">{{ it.note }}</small></div>
