@@ -22,11 +22,10 @@
 """
 from __future__ import annotations
 
-import json
 import pathlib
 from typing import Any, Callable
 
-from backend.config.settings import OUTPUT_DIR
+from backend.dossier import store
 from backend.orchestrator.graph import build_payload, run_case
 from backend.orchestrator.runstore import load_run
 
@@ -36,28 +35,34 @@ from backend.orchestrator.runstore import load_run
 #: `test_payload_sections_match_the_chat_layer_case_sections` 釘住。
 PAYLOAD_SECTIONS = ("intake", "facts_excerpt", "screen", "laws", "cases")
 
-#: 一案一份卷宗清單（契約 v2 §4.0）。**這一層只讀不寫**——寫入屬於案件資源層。
-CASES_DIR = OUTPUT_DIR / "cases"
-
-
 def load_case_manifest(case_id: str, cases_dir: pathlib.Path | None = None
                        ) -> dict[str, Any]:
-    """讀本案的 `manifest.json`。讀不到就回空 dict。
+    """讀本案的卷宗清單。讀不到就回空 dict。
+
+    **走 `store.load()`，不自己拼路徑也不自己 parse**（2026-09-12 改）。原本是自己
+    `(CASES_DIR / case_id / "manifest.json").read_text()`，那讓讀寫兩端各有一份
+    「檔案在哪、鍵叫什麼、值是什麼型別」的假設——而這種漂掉**完全沒有症狀**：
+    讀端只會回空 dict，看起來就像「使用者還沒挑法規」。走同一支之後，路徑組法
+    （`manifest_path` 含 `CASE_ID_RE` 白名單）與 `_normalise`（保證四個群組一定是 list）
+    兩邊共用，寫端改形狀讀端跟著動。
 
     空 dict 的意思是「這個案子的卷宗清單是空的」，而 `generate_decision_draft`
     會據此擋下前置條件 3（契約 v2 §3.5.1）。**這個方向是刻意的**：寧可擋下來要
     使用者先查法規與案例，也不要生一份通篇引用都被清空的草稿——那個失敗看起來
-    很像成功。壞掉的 JSON 也當成空：半份清單比沒有清單更難查。
+    很像成功。
+
+    **用 `load` 不用 `ensure`**：`ensure` 讀不到會**建一份檔**，而這是讀路徑——
+    一次聊天追問不該在磁碟上長出東西。壞掉的 JSON、不合法的 case_id、頂層不是物件，
+    全部當成空：半份清單比沒有清單更難查。
     """
-    f = (cases_dir or CASES_DIR) / case_id / "manifest.json"
     try:
-        data = json.loads(f.read_text(encoding="utf-8"))
-    except (FileNotFoundError, NotADirectoryError, json.JSONDecodeError, OSError):
+        return store.load(case_id, cases_dir)
+    except Exception:  # noqa: BLE001 — 見 docstring：讀不到一律當成「清單是空的」
         return {}
-    return data if isinstance(data, dict) else {}
 
 
-def pipeline_adapter(case_id: str, **run_kwargs: Any) -> Callable[..., dict[str, Any]]:
+def pipeline_adapter(case_id: str, cases_dir: pathlib.Path | None = None,
+                     **run_kwargs: Any) -> Callable[..., dict[str, Any]]:
     """把 `run_case()` 包成聊天層看得懂的 callable。
 
     回傳的 callable 的簽章就是 `backend/llm/chat.py` 的 `ChatTools.run_pipeline` 契約：
@@ -87,14 +92,21 @@ def pipeline_adapter(case_id: str, **run_kwargs: Any) -> Callable[..., dict[str,
         )
         payload = build_payload(state)
         run_meta = payload.get("run_meta") or {}
+        # 把這次 run 登記進卷宗（`latest_run_id` ＋ 有句子時一筆 artifact）。
+        # **呼叫的是 `POST /runs` 用的同一支**，不是 chat 自己寫一份——
+        # 2026-09-12 整合時發現登記只接在 HTTP 那條路上，而契約 §0.1 說前端只打 chat，
+        # 於是唯一會登記的路徑正好是前端不會走的那一條：右欄「答辯書與產出」永遠空的、
+        # 下一輪 chat 也沒有 `latest_run_id` 可帶。
+        # 登記失敗不影響這次執行（`record_run` 自己吞掉並印警告），所以不包 try。
+        artifact_id = store.record_run(case_id, payload, cases_dir=cases_dir)
         return {
             "run_id": payload.get("run_id"),
             "state": run_meta.get("final_state") or payload.get("state"),
             "node_timings": dict(run_meta.get("node_timings") or {}),
             "cite_count": len(payload.get("citations") or []),
-            # 產出 id 由案件資源層配（契約 v2 §1.5）。這一層還不知道，如實回 None——
+            # 真值：登記到的那一筆。沒有草稿可登記就是 None——
             # 隨手編一個 `art-…` 會讓前端拿去打一支查不到的端點。
-            "artifact_id": None,
+            "artifact_id": artifact_id,
             "has_draft": bool(payload.get("doc")),
             "sections": {k: payload.get(k) for k in PAYLOAD_SECTIONS},
         }
@@ -102,4 +114,4 @@ def pipeline_adapter(case_id: str, **run_kwargs: Any) -> Callable[..., dict[str,
     return run_pipeline
 
 
-__all__ = ["PAYLOAD_SECTIONS", "CASES_DIR", "load_case_manifest", "pipeline_adapter"]
+__all__ = ["PAYLOAD_SECTIONS", "load_case_manifest", "pipeline_adapter"]
