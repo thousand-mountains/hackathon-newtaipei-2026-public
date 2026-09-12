@@ -27,7 +27,22 @@ from backend.llm import client as llm_client
 from backend.orchestrator.state import CaseState, NodeCtx, NodeResult
 
 # 必填欄位與信心門檻（architecture §3.1）。門檻 0.80 是假設值，待真實資料實測校準。
-REQUIRED_FIELDS = ("no", "type", "d2", "service_method")
+#
+# ⚠️ **`no`（收文案號）2026-09-13 由 Ci 拍板移出必填**，理由與 `respondent_name`
+# 同一條（見 `backend/config/settings.py` 的 `CONFIRMABLE_INTAKE_FIELDS` 註解）：
+#
+# 1. **它不進任何規則運算。** `settings.DEADLINE_INPUT_FIELDS` 是
+#    `("d2","d3","service_method","transit_days","interested_party")`，沒有 `no`；
+#    §77-2、§77-3、事實爭點偵測也都不看它。它只是識別碼。
+# 2. **正常情況下就是抽不到。** `backend/llm/prompts/n1_extract.md` 自己寫著
+#    「訴願書內文通常沒有這個號（那是訴願機關收到後才編的）」，而且明文禁止拿
+#    原處分字號充數。所以**任何只有訴願書＋裁處書的上傳案都必然停在 NEEDS_INPUT**
+#    ——擋住的不是錯的東西，是正常的東西。實跑驗過兩次，兩次都是 `["no"]`。
+#
+# **移出必填 ≠ 不抽它，也 ≠ 抽不到可以編一個。** N1 照樣抽，抽不到就是
+# `intake["no"] = None`（**鍵要在**，前端靠鍵在不在決定畫不畫那一列，
+# 沒有值時顯示「未取得」）。要的是照實標「案號未取得」，不是靜默丟棄。
+REQUIRED_FIELDS = ("type", "d2", "service_method")
 CONF_THRESHOLD = 0.80
 
 #: 中文標籤在 `backend/intake/fields.py`（零依賴，N3 也要用——它不能 import 這個檔，

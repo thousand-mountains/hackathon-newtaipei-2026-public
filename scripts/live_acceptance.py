@@ -388,11 +388,12 @@ def check_ac15(pu: dict, want: dict) -> tuple[bool, str]:
     所以 N1 回 null 是**照規則做對**，不是抽漏。
 
     fixture 的 `extraction.intake.no` 仍留著舊值，那是 fixture 檔位的**重播資料**，
-    不是「live 抽取的正確答案」；而且 `no` 在 `n1_extract.REQUIRED_FIELDS` 裡，
-    改成 null 會讓合成案停在 NEEDS_INPUT，改變 demo 動線。
+    不是「live 抽取的正確答案」。
 
-    抽不到收文案號時停下來請承辦人補，正是這個系統要的行為——
-    所以這裡改成**斷言它是 null**，把「不得拿原處分字號充數」這條規則釘住。
+    2026-09-13 更新：`no` 已由 Ci 拍板移出 `n1_extract.REQUIRED_FIELDS`
+    （它不進任何規則運算，而訴願書本來就沒有這個號，留著會讓**每一件**上傳案
+    都停在 NEEDS_INPUT）。所以現在抽不到它**不會**改變 demo 動線，
+    這條斷言的意義只剩下原本那一半——**不得拿原處分字號充數**——那一半照樣要釘。
     """
     keys = ("d2", "d3", "service_method")
     got = {k: pu["intake"].get(k) for k in keys}

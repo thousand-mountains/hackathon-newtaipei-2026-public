@@ -856,6 +856,85 @@ def test_extract_runs_only_to_n3_and_reports_that_this_run_has_no_draft():
     assert "沒有草稿" in out, "回給模型的話要講明這個 run 沒有草稿，否則它會去描述一份不存在的草稿"
 
 
+#: 畫面方位詞。**只收「螢幕上的位置」，不收「文件裡的位置」**——
+#: prompt 自己會寫「上面那五個工具」「見下方規則」，那是在指這份文件，不是畫面。
+#: 這個分界靠語感，沒有辦法機械判定，所以清單保守：寧可漏抓，不要抓錯讓人去改措辭
+#: （改措辭避開關鍵字會讓資訊失真，那比漏抓更糟）。
+_SCREEN_WORDS = ("左欄", "右欄", "左邊", "右邊", "左側", "右側", "左上", "右上",
+                 "按鈕", "分頁", "頁籤")
+
+#: 反例標記。`❌` 那幾行寫的正是「不准講的話」，掃描要跳過它們，
+#: 否則規則本身會把自己判違規。用一個顯眼的符號當標記，比「跳過含『不是』的行」
+#: 這種靠語意的判斷可靠。
+_COUNTEREXAMPLE = "❌"
+
+
+def _chat_prompt() -> str:
+    return chat_mod._prompt("chat_ask")
+
+
+def test_the_chat_prompt_forbids_leaking_tool_and_field_identifiers():
+    """承辦人面前不得出現 `read_case` 這種程式名（2026-09-13 實跑抓到）。
+
+    實例：「如果你想先看目前抽到的內容，跟我說一聲，我可以用 `read_case` 幫你讀出來。」
+    這是這個專案第三個同類——前兩個是欄位鍵名 `no`、以及
+    `art77.not_auto_screened_reason` 裡的「見 `screen.party_standing`」。
+
+    **這條測試只驗得到「約束寫進 prompt 了」**，驗不到模型會不會照做。
+    見 `test_what_these_two_prompt_rules_can_and_cannot_be_verified_offline`。
+    """
+    prompt = _chat_prompt()
+    assert "不要把程式名講給承辦人聽" in prompt, "prompt 沒有這條約束"
+    # 要有正反例，光寫一句禁令模型會照自己的理解發揮
+    assert _COUNTEREXAMPLE in prompt and "read_case" in prompt, "這條禁令沒有給反例"
+    assert "中文名" in prompt, "沒說清楚該講什麼（只說不准講什麼，模型會不敢提）"
+
+
+def test_the_chat_prompt_forbids_describing_a_screen_it_cannot_see():
+    """模型不得說「請在左邊的人工表單裡補」——它看不到 UI（2026-09-13 實跑抓到）。
+
+    這句沒有捏造事實，但它在陳述一件自己不知道的事，跟編造同一個家族。
+
+    **順便釘住 prompt 自己不犯這條**：2026-09-13 之前紅線 2 寫的是
+    「期間計算由**左欄的**程序審查負責」——**prompt 自己在教模型描述畫面**，
+    一邊禁止一邊示範。這種自我矛盾沒有任何 grep 會抓，因為兩句話各自都合理。
+    """
+    prompt = _chat_prompt()
+    assert "不要描述畫面" in prompt, "prompt 沒有這條約束"
+    assert "看不到承辦人的螢幕" in prompt, "沒說清楚為什麼不能講（模型需要理由才守得住）"
+
+    strays = [(i, line, w)
+              for i, line in enumerate(prompt.splitlines(), 1)
+              if _COUNTEREXAMPLE not in line
+              for w in _SCREEN_WORDS if w in line]
+    if strays:
+        raise AssertionError(
+            "chat_ask.md 自己在描述畫面，一邊禁止一邊示範："
+            + "、".join(f"第 {i} 行「{w}」：{line.strip()}" for i, line, w in strays))
+
+
+def test_what_these_two_prompt_rules_can_and_cannot_be_verified_offline():
+    """**這條測試的內容就是它的限制說明。** 故意留在測試裡讓人讀到。
+
+    驗得到（上面兩條測試）：
+    - 兩條約束確實在 `chat_ask.md` 裡，而且各自附了反例與理由。
+    - prompt **自己**沒有在示範「描述畫面」。
+
+    驗不到（離線測試路徑沒有模型，一行模型輸出都拿不到）：
+    - 模型會不會照做。
+    - 寫成「輸出不得含 `read_case`」那種字串檢查**擋不住變形**——
+      `read_case_document`、「讀卷工具」、「那個讀卷的函式」都繞得過去；
+      方位那條更沒有 pattern 可寫（「在你畫面比較靠上的那一區」）。
+    - 所以**不要**在別處補一條「模型輸出不得含 X」然後當成驗過了。
+      那種檢查會給出安全感而擋不住實際發生過的那兩句。
+
+    要真的驗，只有一條路：live 聊天實跑 + 人或模型照 rubric 判讀輸出
+    （`test_live_chat_*` 那組的位置），而那需要 `CHAT_LIVE_BASE`。
+    **這一條目前是紅的，原因就是上面這句。**
+    """
+    assert "read_case" in _chat_prompt(), "連 prompt 都沒提到工具名的話，上面的推論要重寫"
+
+
 #: N1 實際寫出來的降級原因（`backend/nodes/n1_extract.py` 的 `reason`）。
 #: 這裡刻意抄一份**實際字串**而不是 import 過來組：這幾支測的是「聊天層把拿到的
 #: 原因原樣講出去」，用 n1 的程式去生它就變成兩邊用同一個 bug 互相佐證。
