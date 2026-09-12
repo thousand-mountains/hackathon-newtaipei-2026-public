@@ -300,13 +300,116 @@ def test_blocked_run_flags_all_three_substantive_citations() -> None:
 
 
 def test_retrieved_but_never_cited_laws_go_to_unlinked() -> None:
-    """「查到了但沒用上」是真實且有意義的資訊，不要靜默丟掉（契約 §3.7）。"""
+    """「查到了但沒用上」是真實且有意義的資訊，不要靜默丟掉（契約 §3.7）。
+
+    **`_nodes_of(graph, "law")` 含相似案**（兩種東西同一個 `k`），所以這裡要
+    照 `origin` 濾掉——不濾的話這條在有相似案的 run 上會紅，而它紅的原因
+    會是「測試自己把相似案當法規」，不是實作壞了。
+    """
     graph = _graph(ORDINARY)
     cited = {e["to"] for e in graph["edges"] if e["rel"] == "cite"}
-    all_laws = {n["id"] for n in _nodes_of(graph, "law")}
+    all_laws = {n["id"] for n in _nodes_of(graph, "law") if n["origin"] == "retrieval"}
     assert_eq(sorted(graph["unlinked"]["laws"]), sorted(all_laws - cited),
               "unlinked.laws 跟實際沒被引用的法規對不上")
     assert_true(graph["unlinked"]["laws"], "這份 fixture 本來就有沒被引用的法規，結果是空的")
+
+
+# ── 相似案不是法規（2026-09-13 雲上實打抓到的誤導）────────────────
+#
+# 三份 fixture **一份都沒有 `cases[]`**，這正是這個 bug 活下來的原因：
+# 沒有任何測資走過相似案那條路。所以這裡把相似案加進去——加的是合成資料
+# （CONSTITUTION §3：`synthetic-` 前綴、不暗示為真實案件），**不是把雲上那份
+# 含資料集內容的 run 搬進 git**。
+
+
+#: 合成相似案。`verified: False` 照 `backend/retrieval/kb.py:392` 的實況寫死：
+#: KB 命中一律 `False`，意思是「還沒對回資料集實檔」，不是「查證過是假的」。
+SYNTHETIC_CASES = [
+    {"id": "C1", "t": "synthetic-相似案-甲-駁回", "verified": False,
+     "provenance": "synthetic", "sim": 0.81},
+    {"id": "C2", "t": "synthetic-相似案-乙-撤銷", "verified": False,
+     "provenance": "synthetic", "sim": 0.74},
+]
+
+
+def _payload_with_cases(path: pathlib.Path = ORDINARY) -> dict:
+    """把合成相似案塞進一份既有 fixture 的 `retrieval.cases`。"""
+    payload = _payload(path)
+    payload.setdefault("retrieval", {})["cases"] = copy.deepcopy(SYNTHETIC_CASES)
+    payload.pop("cases", None)          # 扁平鍵優先，這裡要走巢狀那條
+    return payload
+
+
+def test_unlinked_never_calls_a_similar_case_a_law() -> None:
+    """**這條釘住那句假話。**
+
+    2026-09-13 QA 在雲上實打拿到 `unlinked.laws = [C1…C5, L1, L2, L3, L6]` 與
+    `note = "9 條檢索到的法規沒有被任何結論句引用"`——其中 5 條是相似訴願決定。
+    承辦人會照那句話去找五條不存在的法規。
+
+    相似案沒被引用**仍然要報**（不靜默丟棄），只是要報在 `cases` 那一鍵。
+    """
+    graph = build_relation_graph(_payload_with_cases())
+    assert_true(graph["unlinked"]["laws"], "法規那一鍵空了，這條等於沒驗")
+    for lid in graph["unlinked"]["laws"]:
+        assert_true(not lid.startswith("C"), f"{lid} 是相似案，卻被放進 unlinked.laws")
+    assert_eq(sorted(graph["unlinked"]["cases"]), ["C1", "C2"],
+              "沒被引用的相似案沒有被報出來——那是靜默丟棄")
+    assert_true("相似" in graph["unlinked"]["note"],
+                f"note 沒講出相似案這一種：{graph['unlinked']['note']}")
+
+
+def test_unlinked_note_counts_each_kind_with_its_own_number() -> None:
+    """`note` 的每個數字都要對得上它所稱呼的那一種的長度。
+
+    **數字用程式算、量詞也要對**：法規論「條」、訴願決定論「件」。
+    合併計數時「9 條法規」這種話就是這樣長出來的。
+    """
+    graph = build_relation_graph(_payload_with_cases())
+    note = graph["unlinked"]["note"]
+    n_laws, n_cases = len(graph["unlinked"]["laws"]), len(graph["unlinked"]["cases"])
+    assert_in(f"{n_laws} 條檢索到的法規", note, f"法規的數字對不上：{note}")
+    assert_in(f"{n_cases} 件檢索到的相似訴願決定", note, f"相似案的數字對不上：{note}")
+    assert_true(str(n_laws + n_cases) + " 條" not in note,
+                f"note 把兩種東西加總成一個數字了：{note}")
+
+
+def test_similar_case_is_not_labelled_suspect() -> None:
+    """相似案的 `verified=False` 是「還沒查」，不是「查了是假的」。
+
+    `backend/retrieval/kb.py:392`：KB 命中**一律** `verified=False`，對回資料集
+    實檔是 N6 的事。照法規那把尺讀，畫面上每一件相似訴願決定都會被標成
+    `suspect`——那是這支程式自己講出來的假話。
+
+    同一份圖裡，法規的 `verified=False` **仍然**要是 `suspect`（否則這條
+    就變成「把驗證狀態全部調寬」，那是另一個方向的假話）。
+    """
+    payload = _payload_with_cases()
+    payload["retrieval"]["laws"] = copy.deepcopy(payload["retrieval"]["laws"])
+    payload["retrieval"]["laws"][0]["verified"] = False
+    graph = build_relation_graph(payload)
+    verify = {n["id"]: (n["origin"], n["verify"]) for n in _nodes_of(graph, "law")}
+    assert_eq(verify["C1"], ("similar_case", "unverifiable"), "相似案被講成查證過是假的")
+    assert_eq(verify["C2"], ("similar_case", "unverifiable"), "相似案被講成查證過是假的")
+    suspect = [i for i, (o, v) in verify.items() if o == "retrieval" and v == "suspect"]
+    assert_eq(len(suspect), 1, "法規那邊的 suspect 被一起放寬了")
+
+
+def test_cite_basis_names_the_table_it_actually_matched() -> None:
+    """`basis` 是寫給人核對的：對到 `cases[].t` 就不能寫 `laws[].t`。"""
+    payload = _payload_with_cases()
+    citations = payload["gate"]["citations"]
+    assert_true(citations, "fixture 沒有 citations，這條等於沒驗")
+    hijacked = copy.deepcopy(citations[0])
+    hijacked["raw"] = "synthetic-相似案-甲-駁回"
+    payload["gate"]["citations"] = citations + [hijacked]
+    graph = build_relation_graph(payload)
+    to_case = [e for e in graph["edges"] if e["rel"] == "cite" and e["to"] == "C1"]
+    assert_eq(len(to_case), 1, "對到相似案的引用不見了")
+    assert_in("cases[].t", to_case[0]["basis"], f"basis 講錯是跟哪張表對上的：{to_case[0]}")
+    for e in graph["edges"]:
+        if e["rel"] == "cite" and e["to"] != "C1":
+            assert_in("laws[].t", e["basis"], f"法規的 basis 被一起改掉了：{e}")
 
 
 # ── AC6：stats 是算出來的 ─────────────────────────────────────────

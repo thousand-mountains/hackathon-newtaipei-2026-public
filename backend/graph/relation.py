@@ -130,12 +130,22 @@ def _sections(doc: list[dict[str, Any]]) -> dict[str, tuple[str, int]]:
     return out
 
 
-def _verify_of(law: dict[str, Any]) -> str:
-    """法規節點的驗證三態。**布林不夠用**：「查證過是假的」與「沒查證」是兩件事。"""
-    verified = law.get("verified")
+def _verify_of(item: dict[str, Any], origin: str) -> str:
+    """節點的驗證三態。**布林不夠用**：「查證過是假的」與「沒查證」是兩件事。
+
+    **`origin` 不是裝飾，兩種東西的 `verified=False` 意思相反**：
+
+    - 法規（`retrieval`）：`verified` 是「條號在 `laws-snapshot.json` 查得到嗎」
+      （`n4_retrieval.py:6`）。`False` ＝ 查了、查不到 ＝ `suspect`。
+    - 相似案（`similar_case`）：KB 命中**一律** `verified=False`，因為「對回資料集
+      實檔是 N6 的事」（`backend/retrieval/kb.py:392`、`:626`）。`False` ＝ **還沒查**
+      ＝ `unverifiable`。照法規那把尺讀，畫面上每一件相似訴願決定都會被標成可疑——
+      那是一句假話，而且是這支程式自己講的，不是資料講的。
+    """
+    verified = item.get("verified")
     if verified is True:
         return "ok"
-    if verified is False:
+    if verified is False and origin != "similar_case":
         return "suspect"
     return "unverifiable"
 
@@ -149,6 +159,10 @@ def build_relation_graph(payload: dict[str, Any]) -> dict[str, Any]:
     - `note`：`status == "empty"` 時說明為什麼；`"ok"` 時為空字串。
     - `flagged`：草稿引用了、但檢索結果裡查無的法條。**這是紅線不是功能**——
       「AI 引了一條我們沒檢索到的法條」正是承辦人最需要知道的事。
+    - `unlinked.laws` ／ `unlinked.cases`：查到但沒被引用的**法規**與**相似訴願決定**，
+      **分兩鍵**。2026-09-13 之前兩者合在 `laws` 一鍵裡，`note` 於是講出
+      「9 條檢索到的法規沒有被引用」——其中 5 條是相似案。**這是假話，不是措辭問題**：
+      承辦人會照它去找五條不存在的法規。
     """
     facts = list(payload.get("facts_excerpt") or [])
     issues = list((payload.get("screen") or {}).get("fact_issues") or [])
@@ -171,7 +185,7 @@ def build_relation_graph(payload: dict[str, Any]) -> dict[str, Any]:
         "nodes": [],
         "edges": [],
         "flagged": [],
-        "unlinked": {"laws": [], "issues": [], "note": ""},
+        "unlinked": {"laws": [], "cases": [], "issues": [], "note": ""},
     }
 
     sentences = [s for block in doc for s in (block.get("ss") or []) if s.get("id")]
@@ -259,18 +273,39 @@ def build_relation_graph(payload: dict[str, Any]) -> dict[str, Any]:
     # ── 法規／案例節點 ───────────────────────────────────────────────
     # 相似案與法規同一欄（契約 §3.7 的 `cols` 只有五欄）。`k` 都是 `law`，
     # 但 `origin` 分得開（`retrieval` vs `similar_case`），前端要分色分得出來。
-    law_ids: set[str] = set()
-    by_raw: dict[str, str] = {}
+    #
+    # **兩種東西同一欄，但不進同一個集合。** 合起來數、再用其中一種的名字稱呼它，
+    # 就會得出「9 條檢索到的法規沒有被引用」這種話——而其中 5 條是相似訴願決定，
+    # 不是法規（2026-09-13 QA 在雲上實打抓到）。分得開的依據本來就在資料裡
+    # （`origin`），不需要新的判斷邏輯，也不需要猜。
+    #
+    # ⚠️ **`k` 仍然是 `"law"`，相似案也是——這是刻意留著的，不要「順手修好」**
+    # （2026-09-13 Ci 拍板）。它跟上面那句假話**性質不同**：`k` 不是端到承辦人
+    # 面前的一句話，只是前端拿來決定節點形狀的鍵，而要分色分類的地方前端讀的是
+    # `origin`（`RelationGraph.vue`）。改 `k` 要同時動契約 §3.7 的節點定義與前端，
+    # 換來的只是一個好看的名字。
+    #
+    # **會想修它是很自然的反應，而那正是危險的地方**：今晚這個專案已經有過一次
+    # 教訓——把某個名詞機械地全部替換，會把一句本來正確的話一起改錯，而**改完
+    # grep 歸零、看起來很乾淨**，比漏改難發現得多。這裡要改的從來不是「law 這個
+    # 字出現在哪」，而是「哪一句話把相似案講成了法規」。那三處（`unlinked` 的計數、
+    # `_verify_of` 的驗證用語、`cite` 邊的 `basis`）已經修了，這一處不在其中。
+    law_ids: set[str] = set()          # 只有 retrieval.laws
+    case_ids: set[str] = set()         # 只有 retrieval.cases（相似訴願決定）
+    by_raw_law: dict[str, str] = {}
+    by_raw_case: dict[str, str] = {}
     for item, origin in [(x, "retrieval") for x in laws] + [(x, "similar_case") for x in cases]:
         lid = item.get("id")
         if not lid:
             continue
-        law_ids.add(lid)
+        is_case = origin == "similar_case"
+        (case_ids if is_case else law_ids).add(lid)
+        by_raw = by_raw_case if is_case else by_raw_law
         if item.get("t") and item["t"] not in by_raw:
             by_raw[item["t"]] = lid
         nodes.append({
             "id": lid, "k": "law", "c": COL_LAW, "t": item.get("t") or lid,
-            "verify": _verify_of(item), "origin": origin,
+            "verify": _verify_of(item, origin), "origin": origin,
         })
 
     # ── 結論句節點 ───────────────────────────────────────────────────
@@ -314,18 +349,23 @@ def build_relation_graph(payload: dict[str, Any]) -> dict[str, Any]:
     # 一筆 citation 一條邊，**不去重**：邊數要能跟 `citations[]` 對得起來
     # （plan AC4 把邊數釘成「`raw` 能在 `laws[].t` 找到的筆數」，寫 `> 0`
     # 的話用錯 join key 也可能因為別的原因湊出幾條）。
-    cited_laws: set[str] = set()
+    # 查法規優先、相似案其次（順序不影響命中，兩張表的 key 不會撞：一個是條號文字、
+    # 一個是決定書字號）。**`basis` 要寫出是跟哪一種對上的**——`basis` 是寫給人核對的，
+    # 寫 `laws[].t` 卻其實對到 `cases[].t`，人就核不出來。
+    cited: set[str] = set()
     for c in citations:
         raw, sid = c.get("raw"), str(c.get("sentence_id") or "")
-        lid = by_raw.get(raw)
+        lid, src_key = by_raw_law.get(raw), "laws"
+        if lid is None:
+            lid, src_key = by_raw_case.get(raw), "cases"
         if lid and sid in out_nodes:
             edges.append({
                 "from": sid, "to": lid, "rel": "cite",
-                "basis": "citations[].raw ↔ laws[].t 字串相等",
+                "basis": f"citations[].raw ↔ {src_key}[].t 字串相等",
                 "state": c.get("state"), "lamp": c.get("lamp"),
             })
             linked_out.add(sid)
-            cited_laws.add(lid)
+            cited.add(lid)
             continue
         # 沒命中不是 bug 是訊號。兩種沒命中要分得開：查無法條 vs 句子不在草稿裡。
         flagged.append({
@@ -333,7 +373,7 @@ def build_relation_graph(payload: dict[str, Any]) -> dict[str, Any]:
             "raw": raw,
             "state": c.get("state"),
             "lamp": c.get("lamp"),
-            "basis": ("citations[].raw 在 laws[] 查無"
+            "basis": ("citations[].raw 在 laws[] 查無（相似案 cases[] 也沒有）"
                       if lid is None else
                       "citations[].sentence_id 不在 doc[] 的句子裡"),
         })
@@ -342,11 +382,16 @@ def build_relation_graph(payload: dict[str, Any]) -> dict[str, Any]:
     nodes.extend(out_nodes[sid] for sid in out_nodes if sid in linked_out)
 
     # ── 斷掉的地方 ───────────────────────────────────────────────────
-    unlinked_laws = sorted(law_ids - cited_laws)
+    unlinked_laws = sorted(law_ids - cited)
+    unlinked_cases = sorted(case_ids - cited)
     unlinked_issues = sorted(issue_ids - triggered)
+    # 每一句只數自己那一種，數字一律 len() 算（`judgment-externalization.md` L1：
+    # 衍生值用程式算不用眼睛核）。**量詞也是承諾**：法規論「條」、訴願決定論「件」。
     notes = []
     if unlinked_laws:
         notes.append(f"{len(unlinked_laws)} 條檢索到的法規沒有被任何結論句引用")
+    if unlinked_cases:
+        notes.append(f"{len(unlinked_cases)} 件檢索到的相似訴願決定沒有被任何結論句引用")
     if unlinked_issues:
         notes.append(
             f"{len(unlinked_issues)} 個爭點的關鍵詞不在任何一段卷證摘錄裡"
@@ -355,6 +400,7 @@ def build_relation_graph(payload: dict[str, Any]) -> dict[str, Any]:
         )
     base["unlinked"] = {
         "laws": unlinked_laws,
+        "cases": unlinked_cases,
         "issues": unlinked_issues,
         "note": "；".join(notes),
     }
@@ -362,6 +408,17 @@ def build_relation_graph(payload: dict[str, Any]) -> dict[str, Any]:
     base["edges"] = edges
     base["flagged"] = flagged
     # 加總一律用 len() 算，不手寫（`judgment-externalization.md` L1：衍生值用程式算）。
+    #
+    # ⚠️ **`edges_flagged` 是誤稱，但不改名**（2026-09-13 Ci 拍板）。它數的是
+    # `flagged` 的長度，而 `flagged` 裡的東西**不是邊**——正好相反，是「沒能變成
+    # 邊的引用」（`citations[]` 裡 `raw` 在 `laws[]`／`cases[]` 查無、或 `sentence_id`
+    # 不在 `doc[]` 裡的那幾筆）。契約 §3.7 已經照這個語意載明，改名要動契約與前端，
+    # demo 前不值得。**看到這個名字不要照字面理解成「被標記的邊數」。**
+    #
+    # 另外記一筆給前端：`frontend/src/api/mock.js:440` 的 mock 算的是
+    # **`lamp !== "g"` 的邊數**，跟這裡的 `len(flagged)` 是兩件不同的事。
+    # 開發時看到的數字與上線後不一樣，而兩邊各自都跑得起來——這條前端那邊排隊處理，
+    # **不要為了對齊 mock 而改這裡**：這裡是契約定義的那一邊。
     base["stats"] = {
         "nodes": len(nodes),
         "edges": len(edges),
