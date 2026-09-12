@@ -114,11 +114,75 @@ DATA_NOTES = {
 }
 UNKNOWN_DATA_NOTE = "本次案例的資料性質未標示（kind={kind}），本系統無法判定它是合成測資或真實卷證。"
 
+# 第三個維度：檢索來源（法規查表 vs Managed KB）。與執行模式、資料性質都無關——
+# fixture 也可能接 KB、bedrock 也可能只有查表，混在同一句講就會有一邊失真。
+# 筆數不寫死：一律從 `data/manifest.json`（入庫清單，只記路徑與 hash，不含內容）現算，
+# 換賽方帳號重建 KB 後數字會跟著動，不用回頭改字串。manifest 讀不到就不報數字。
+MANIFEST_PATH = BACKEND_DIR.parent / "data" / "manifest.json"
+# KB 入庫清單的分類標籤：manifest 的 `path` 前三段（kb/{official|public}/{目錄}）→ 人話
+KB_CORPUS_LABELS = {
+    "kb/official/歷史訴願決定書": "賽方資料集・歷史訴願決定書",
+    "kb/public/新北訴願決定書_全量": "市府公開全量爬蟲・新北訴願決定書",
+    "kb/official/司法院釋字及行政判解": "司法院釋字及行政判解",
+    "kb/official/行政函釋": "行政函釋",
+}
+_manifest_cache: dict[str, Any] = {}
+
+
+def kb_corpus_counts() -> dict[str, int] | None:
+    """入庫清單各類別的筆數。manifest 不存在或壞掉 → None（不猜、不報估計值）。"""
+    try:
+        stat = MANIFEST_PATH.stat()
+    except OSError:
+        return None
+    key = (str(MANIFEST_PATH), stat.st_mtime_ns, stat.st_size)
+    if _manifest_cache.get("key") != key:
+        try:
+            entries = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))["entries"]
+        except (OSError, ValueError, KeyError):
+            return None
+        counts: dict[str, int] = {}
+        for e in entries:
+            group = "/".join(str(e.get("path", "")).split("/")[:3])
+            counts[group] = counts.get(group, 0) + 1
+        _manifest_cache.clear()
+        _manifest_cache.update({"key": key, "counts": counts})
+    return dict(_manifest_cache["counts"])
+
+
+def retrieval_note(kind: str | None = None) -> str:
+    """檢索來源那句：相似案通道接了什麼、法規通道是什麼、庫裡各有多少筆。"""
+    k = kind or retriever_kind()
+    if k != "kb":
+        return (
+            f"檢索來源：法規條文走 laws-snapshot.json 查表；相似案通道未接上"
+            f"（RETRIEVER={k}），一律回空並標「庫外，未驗證」——那是本系統查不到，不是查無相似案。"
+        )
+    counts = kb_corpus_counts()
+    if not counts:
+        return (
+            "檢索來源：法規條文走 laws-snapshot.json 查表；相似案通道走 Bedrock Managed "
+            "Knowledge Base。入庫清單（data/manifest.json）本機讀不到，故不報各批筆數。"
+        )
+    named = [(KB_CORPUS_LABELS[g], counts[g]) for g in KB_CORPUS_LABELS if g in counts]
+    other = sum(v for g, v in counts.items() if g not in KB_CORPUS_LABELS)
+    breakdown = "、".join(f"{label} {n} 筆" for label, n in named)
+    if other:
+        breakdown += f"、其餘 {other} 筆"
+    return (
+        "檢索來源：法規條文走 laws-snapshot.json 查表（法規不進 KB）；相似案通道走 Bedrock "
+        f"Managed Knowledge Base，入庫清單（data/manifest.json）計 {sum(counts.values())} 筆——{breakdown}。"
+        "相似案只收兩批訴願決定書，函釋與釋字判解不進這條通道。"
+    )
+
+
 PROVENANCE = {
     "kind": "synthetic",
     "banner": "合成測資：案情自公開決定書之結構反推改寫，人名、地址、案號均為虛構，不對應任何真實案件。",
     "constitution": "分層誠實：可驗算（規則引擎，攤開算式）／有出處（檢索，標明字號）／請人工判斷（拒絕生成，只給風險提示）。",
-    "dataset_scope": "引用驗證的範圍即 laws-snapshot.json 的涵蓋範圍（11 部法規、17 筆判解、2 則釋字）。標「庫外，未驗證」代表本系統無法驗證，不代表該字號不存在。",
+    # 這句只管**引用驗證**的範圍，不是「整個系統的庫有多大」——檢索範圍在 `retrieval_note`。
+    # 兩者混為一談會讓人以為相似案也只有 17 筆判解可查（KB 上線後差了兩個數量級）。
+    "dataset_scope": "引用驗證的範圍即 laws-snapshot.json 的涵蓋範圍（11 部法規、17 筆判解、2 則釋字）：草稿裡的法條與字號只對得回這個快照才算已驗證。標「庫外，未驗證」代表本系統無法驗證，不代表該字號不存在。相似案的檢索範圍是另一個庫，見 retrieval_note。",
 }
 
 
@@ -132,21 +196,25 @@ def data_note(kind: str | None) -> str:
 
 
 def provenance(case_provenance: dict[str, Any] | None = None, mode: str | None = None) -> dict[str, Any]:
-    """服務層聲明打底，案件層（合成案例檔／上傳案 case.json）覆蓋，再補上兩個維度的描述。
+    """服務層聲明打底，案件層（合成案例檔／上傳案 case.json）覆蓋，再補上三個維度的描述。
 
-    `note` 是兩句合併後的人話版本（前端 tooltip 與 CLI 讀它）；要分開取用的
-    呼叫端讀 `execution_note` / `data_note`。案件層**不得**覆蓋這三個鍵——
-    它們是依當下 RUN_MODE 算出來的，寫死在檔案裡就會再度失真。
+    三個維度各自獨立、分開講：`execution_note`（執行模式，看 RUN_MODE）、
+    `data_note`（資料性質，看 kind）、`retrieval_note`（檢索來源，看 RETRIEVER）。
+    `note` 是前兩句加案件層 caveat 合併的人話版本（前端 tooltip 與 CLI 讀它）；
+    檢索來源不併進 `note`——那句太長，且它講的是系統能查到什麼，不是這份卷證從哪來。
+    案件層**不得**覆蓋這幾個算出來的鍵，寫死在檔案裡就會再度失真。
     """
     merged: dict[str, Any] = {**PROVENANCE, **(case_provenance or {})}
-    for k in ("note", "execution_note", "data_note"):
+    for k in ("note", "execution_note", "data_note", "retrieval_note", "retriever"):
         merged.pop(k, None)
     exec_note = execution_note(mode)
     dat_note = data_note(merged.get("kind"))
     caveat = merged.get("caveat")
     merged["run_mode"] = mode or run_mode()
+    merged["retriever"] = retriever_kind()
     merged["execution_note"] = exec_note
     merged["data_note"] = dat_note
+    merged["retrieval_note"] = retrieval_note()
     merged["note"] = "".join(x for x in (exec_note, dat_note, caveat) if x)
     return merged
 

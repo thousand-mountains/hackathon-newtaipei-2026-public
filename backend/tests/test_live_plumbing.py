@@ -1921,6 +1921,48 @@ def test_case_file_cannot_freeze_a_stale_note_into_provenance():
     assert_true("離線重播" not in prov["note"], "案件層寫死的過時 note 不得覆蓋算出來的版本")
 
 
+def test_retrieval_note_is_a_separate_dimension_from_run_mode_and_data_kind():
+    """檢索來源是第三個維度：換 RETRIEVER 只動 retrieval_note，另外兩句不動。"""
+    with env(RETRIEVER="kb"):
+        kb_prov = settings.provenance(mode="bedrock")
+    with env(RETRIEVER="lawtable_only"):
+        lt_prov = settings.provenance(mode="bedrock")
+    assert_eq(kb_prov["execution_note"], lt_prov["execution_note"], "換檢索器不該動到執行模式那句")
+    assert_eq(kb_prov["data_note"], lt_prov["data_note"], "換檢索器不該動到資料性質那句")
+    assert_true(kb_prov["retrieval_note"] != lt_prov["retrieval_note"], "檢索來源那句必須跟著 RETRIEVER 走")
+    assert_eq(kb_prov["retriever"], "kb")
+    assert_in("Knowledge Base", kb_prov["retrieval_note"])
+    assert_in("未接上", lt_prov["retrieval_note"], "沒接 KB 就要說自己查不到，不是查無相似案")
+
+
+def test_retrieval_note_counts_come_from_the_manifest_not_a_hardcoded_string():
+    """筆數現算自 data/manifest.json，兩批分開講；manifest 讀不到就不報數字。"""
+    counts = settings.kb_corpus_counts()
+    assert_true(counts, "前提不成立：data/manifest.json 讀不到")
+    note = settings.retrieval_note("kb")
+    assert_in(str(sum(counts.values())), note, "總筆數要跟 manifest 對得起來")
+    assert_in(str(counts["kb/official/歷史訴願決定書"]), note, "賽方資料集那批要單獨報筆數")
+    assert_in(str(counts["kb/public/新北訴願決定書_全量"]), note, "公開爬蟲那批要單獨報筆數")
+    assert_in("賽方資料集", note)
+    assert_in("公開全量爬蟲", note)
+
+    missing = settings.MANIFEST_PATH.parent / "manifest-does-not-exist.json"
+    orig = settings.MANIFEST_PATH
+    settings.MANIFEST_PATH = missing
+    try:
+        assert_true(settings.kb_corpus_counts() is None, "manifest 不存在不得回估計值")
+        assert_in("不報各批筆數", settings.retrieval_note("kb"), "讀不到就明說讀不到，不猜")
+    finally:
+        settings.MANIFEST_PATH = orig
+
+
+def test_dataset_scope_no_longer_claims_to_bound_similar_case_retrieval():
+    """dataset_scope 只管引用驗證；相似案的庫另算，必須指向 retrieval_note。"""
+    scope = settings.PROVENANCE["dataset_scope"]
+    assert_in("引用驗證", scope)
+    assert_in("retrieval_note", scope, "要指出相似案的檢索範圍在另一個欄位")
+
+
 def test_unknown_data_kind_is_not_guessed():
     """分不出資料性質就中性描述，不得預設當成合成測資（CONSTITUTION §3 不編造）。"""
     prov = settings.provenance({"kind": "something-else"}, mode="fixture")
