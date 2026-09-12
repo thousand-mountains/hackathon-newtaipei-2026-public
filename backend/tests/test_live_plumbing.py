@@ -3243,3 +3243,55 @@ def test_eval_still_reports_the_four_verdicts_for_ordinary_fields():
     assert_eq(ev.judge_field("d2", "2024-06-13", "2024-06-14"), "wrong")
     assert_eq(ev.judge_field("d2", "2024-06-13", None), "missed")
     assert_eq(ev.judge_field("d2", None, None), "ok")
+
+
+def _n4_card(payload_extra: dict) -> dict:
+    """跑一次 N4，回第一張相似案卡。`payload_extra` 併進檢索器回傳的 Hit payload。"""
+    class _KB:
+        name = "bedrock_kb"
+
+        def search(self, query, filters=None, top_k=5):
+            return [Hit(id="kb-1", title="1141050994_駁回", score=0.92,
+                        source="新北訴願決定書_全量/1141050994_駁回.txt",
+                        payload={"outcome": "駁回", "provenance": "public_crawl",
+                                 "text": "主文：訴願駁回。", **payload_extra})]
+
+        def meta(self):
+            return {"backend": "bedrock_kb", "available": True}
+
+    st = CaseState(case_id="synthetic-ordinary-01", run_mode="bedrock")
+    st.intake = {"type": "違反空氣污染防制法事件"}
+    st.facts_excerpt = [{"text": "訴願人於農地露天燃燒稻稈。", "page": 1}]
+    st.classification = {"class": {"case_type": "違反空氣污染防制法事件",
+                                   "law_hits": ["空氣污染防制法"]}}
+    st.screen = {"art77": {"clause": "77-2"}, "deadline": {"steps": []}}
+    n4_retrieval.run(st, NodeCtx(run_mode="bedrock", snapshot=load_snapshot(), retriever=_KB()))
+    return st.retrieval["cases"][0]
+
+
+def test_similar_case_card_says_which_ranker_produced_the_number():
+    """卡片上的 `sim` 是誰算的，要跟著卡片走。
+
+    開了重排，那個百分比是 cross-encoder 判的語意相關性；沒開才是 embedding 的
+    向量距離。兩者都是 0–100、長得一模一樣，意思不同——畫面要據此換文案，
+    而換文案的前提是這個欄位有被帶出來（CONSTITUTION §1）。
+    """
+    assert_eq(_n4_card({"ranked_by": "rerank"})["ranked_by"], "rerank")
+    # 沒重排時檢索器不標 ranked_by，卡片要說得出那就是 embedding，不是留白讓前端猜
+    assert_eq(_n4_card({})["ranked_by"], "embedding")
+
+
+def test_frontend_similarity_caption_follows_the_ranker():
+    """前端的相似度文案不得寫死「向量比對」。
+
+    這條測試的存在理由跟 `test_frontend_case_type_options_are_all_matchable` 一樣：
+    前後端各自維護一份字串，漂移只是時間問題。而這一份字串是**對承辦人解釋畫面上
+    那個數字是什麼**——開了重排之後還寫「向量比對」就是不實陳述，而且它就在 demo
+    主畫面上。用 Python 測試讀前端原始碼（frontend 沒有 JS test runner）。
+    """
+    src = (pathlib.Path(__file__).resolve().parents[2]
+           / "frontend" / "src" / "api" / "adapt.js").read_text(encoding="utf-8")
+    block = src.split("export function toCaseCards", 1)[1].split("\n}", 1)[0]
+    assert_in("ranked_by", block, "相似度文案沒有依 ranked_by 切換，等於對數字的來歷說死話")
+    assert_in("重排模型判定", block, "缺開了重排時的文案")
+    assert_in("向量比對", block, "缺沒開重排時的文案（那一種仍然存在，不能整段換掉）")

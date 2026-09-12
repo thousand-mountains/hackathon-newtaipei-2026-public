@@ -270,6 +270,12 @@ def run(
                 "note": h.note or "KB 命中，未對資料集實檔驗證（manifest 對檔為加值層 Task 9）",
                 "outcome": p.get("outcome"),
                 "provenance": p.get("provenance"),
+                # **`sim` 這個數字是誰算的**。開了重排就是 cross-encoder 判的語意相關性，
+                # 沒開就是 embedding 的向量距離——兩者不是同一回事，畫面上的文案要跟著換
+                # （CONSTITUTION §1：顯示的數字必須說得出它是什麼）。
+                # 檢索器已經在 payload 標了 `ranked_by`，這裡只是把它帶到卡片上；
+                # 沒有標的（沒開重排、或非 KB 檢索器）就是 embedding。
+                "ranked_by": p.get("ranked_by") or "embedding",
                 # 案型：公開爬蟲那批的檔名只有「案號_結果」，卡片標題看不出是什麼案子，
                 # 這個欄位是唯一的來源（來自 KB 側檔）。沒有就 None，不猜。
                 "category": p.get("category"),

@@ -102,6 +102,10 @@ ORIGIN = {
     "laws[].gate_note": "rule",     # 這張卡為什麼是這個狀態
     "laws[].gate_ref_key": "rule",  # 跨模組比對用的穩定鍵（法規名｜條號）
     "cases[]": "retrieval",
+    # `sim` 是誰算的：`rerank`（cross-encoder 語意相關性）或 `embedding`（向量距離）。
+    # 前端的相似度文案依它切換——同一個百分比在兩種情況下意思不同，
+    # 不說明白就是對「這個數字是什麼」說謊（CONSTITUTION §1）。
+    "cases[].ranked_by": "rule",
     # N5 `retrieve_refs` 工具當次撈到的函釋／判解。origin 是 retrieval 而不是 llm——
     # 這些是檢索器回來的文件，模型只是在句子裡引用它們的編號，沒有生成它們的內容。
     # 2026-09-12 補上輸出：在那之前這些依據完全沒進 payload，草稿引用了 R2、
