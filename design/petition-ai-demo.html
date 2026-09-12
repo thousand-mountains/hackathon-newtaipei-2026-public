@@ -391,7 +391,12 @@ textarea{resize:vertical;line-height:1.7}
         <input type="file" id="filein" multiple hidden>
       </div>
       <ul class="files" id="filelist"></ul>
-      <div class="actions"><button class="btn ghost sm" id="demoload">載入示範案件（洗錢防制法 書面告誡）</button></div>
+      <div class="actions">
+        <button class="btn ghost sm" id="demoload">載入示範案件</button>
+        <div class="gap"></div>
+        <span id="parsehint" style="font-size:12.5px;color:var(--ink-3)"></span>
+        <button class="btn" id="parsebtn" disabled><span class="mi" style="font-size:16px;vertical-align:-3px">document_scanner</span> 解析卷證</button>
+      </div>
     </div></div>
     <div class="card"><h2><span class="bar"></span>案件資訊<span class="mi tip" tabindex="0" data-tip="標示「自動擷取」者由卷證解析取得，可直接覆寫更正。">info</span></h2><div class="body">
       <div class="row2">
@@ -687,20 +692,34 @@ function addFile(f,i){
   const li=document.createElement('li');li.style.animationDelay=(i*90)+'ms';
   li.innerHTML='<span class="mi doc">description</span><span class="meta"><b>'+f.n+'</b><span>'+f.s+'　·　'+f.x+
     '</span></span><span class="ok">✓ 已解析</span><button aria-label="移除">×</button>';
-  li.querySelector('button').onclick=()=>{li.remove();updateGo1()};
-  $('#filelist').appendChild(li);updateGo1();
+  li.querySelector('button').onclick=()=>{li.remove();syncParse();updateGo1()};
+  $('#filelist').appendChild(li);syncParse();updateGo1();
 }
 function loadDemo(){
   $('#filelist').innerHTML='';DEMO_FILES.forEach(addFile);
+  toast('已載入 4 份卷證，請按「解析卷證」');
+}
+let parsed=false;
+function parseFiles(){
+  const n=$('#filelist').children.length;if(!n)return;
+  parsed=false;updateGo1();
+  const b=$('#parsebtn');b.disabled=true;
+  b.innerHTML='<span class="spin" style="display:inline-block;vertical-align:-1px;margin-right:7px"></span>解析中';
+  $('#parsehint').textContent='正在讀取 '+n+' 份卷證並擷取欄位…';
   setTimeout(()=>{
     $('#f_no').value='1147061268';$('#f_type').value='違反洗錢防制法事件';$('#f_person').value='胡○倫';
     $('#f_org').value='新北市政府警察局新店分局';$('#f_d1').value='2025-07-13';$('#f_d2').value='2025-07-13';
     $('#f_d3').value='2025-08-01';$('#f_agent').value='有（律師）';
     $('#f_note').value='答辯書未具體記載違規事實過程，亦未檢附證據資料，已二次函請補充答辯。';
     ['a_type','a_p','a_org','a_d1','a_d2','a_d3'].forEach(id=>$('#'+id).textContent='自動擷取');
-    updateGo1();toast('已由卷證擷取 8 個欄位，請確認');
-  },700);
+    parsed=true;
+    b.innerHTML='<span class="mi" style="font-size:16px;vertical-align:-3px">refresh</span> 重新解析';
+    b.disabled=false;b.classList.add('ghost');
+    $('#parsehint').innerHTML='<span style="color:var(--green)">✓ 已擷取 8 個欄位</span>';
+    updateGo1();toast('卷證解析完成，請確認右側案件資訊');
+  },1800);
 }
+$('#parsebtn').onclick=parseFiles;
 $('#demoload').onclick=loadDemo;
 const drop=$('#drop');
 drop.onclick=()=>$('#filein').click();
@@ -710,9 +729,15 @@ drop.onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();loadDemo(
 drop.addEventListener('drop',e=>{const fs=[...(e.dataTransfer?.files||[])];
   if(fs.length)fs.forEach((f,i)=>addFile({n:f.name,s:Math.round(f.size/1024)+' KB',x:'已上傳'},i));else loadDemo()});
 $('#filein').onchange=e=>[...e.target.files].forEach((f,i)=>addFile({n:f.name,s:Math.round(f.size/1024)+' KB',x:'已上傳'},i));
+function syncParse(){
+  const n=$('#filelist').children.length;
+  $('#parsebtn').disabled=!n;
+  if(!n){parsed=false;$('#parsehint').textContent='';
+    $('#parsebtn').innerHTML='<span class="mi" style="font-size:16px;vertical-align:-3px">document_scanner</span> 解析卷證';}
+}
 function buildSummary(){
   const ok=$('#filelist').children.length&&$('#f_no').value.trim()&&$('#f_type').value;
-  if(!ok){$('#sumtx').innerHTML='<p class="ph">上傳卷證後，系統會在此讀取訴願書、原處分書與答辯書，產生本案摘要。</p>';return}
+  if(!ok||!parsed){$('#sumtx').innerHTML='<p class="ph">上傳卷證後，系統會在此讀取訴願書、原處分書與答辯書，產生本案摘要。</p>';return}
   const roc=s=>s?(+s.slice(0,4)-1911)+'年'+(+s.slice(5,7))+'月'+(+s.slice(8,10))+'日':'—';
   const d2=$('#f_d2').value,d3=$('#f_d3').value;
   const days=(d2&&d3)?Math.round((new Date(d3)-new Date(d2))/864e5):null;
@@ -725,8 +750,8 @@ function buildSummary(){
 }
 function updateGo1(){
   const files=$('#filelist').children.length,no=$('#f_no').value.trim(),ty=$('#f_type').value;
-  const ok=files>0&&no&&ty;$('#go1').disabled=!ok;
-  $('#go1hint').textContent=!files?'請先上傳卷證':(!no||!ty)?'請填寫收文案號與案件類型':'';
+  const ok=files>0&&parsed&&no&&ty;$('#go1').disabled=!ok;
+  $('#go1hint').textContent=!files?'請先上傳卷證':!parsed?'請先按「解析卷證」':(!no||!ty)?'請填寫收文案號與案件類型':'';
   buildSummary();
 }
 ['#f_person','#f_org','#f_d1','#f_d2','#f_d3','#f_agent','#f_note'].forEach(s=>{
@@ -1468,7 +1493,7 @@ $('#dlword').onclick=()=>{
   URL.revokeObjectURL(a.href);toast('已下載 Word 檔');
 };
 $('#dlpdf').onclick=()=>{toast('已開啟列印視窗，請選擇「另存為 PDF」');setTimeout(()=>window.print(),300)};
-renderResults();updateGo1();
+renderResults();syncParse();updateGo1();
 </script>
 </body>
 </html>
