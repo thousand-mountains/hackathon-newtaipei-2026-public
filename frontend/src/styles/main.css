@@ -468,3 +468,5 @@ button{font:inherit;color:inherit;cursor:pointer}
   .toolgrid{grid-template-columns:1fr}
   .kv{grid-template-columns:74px 1fr}
 }
+.step.degraded{color:var(--warn)}
+.step.degraded .tick{color:var(--warn)}

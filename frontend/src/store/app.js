@@ -314,7 +314,13 @@ function push(c, msg) {
   msg.id = nid('m')
   c.stream.push(msg)
   scrollSoon()
-  return msg
+  // **回傳陣列裡那個 reactive proxy，不是傳進來的原始物件。**
+  // `c.stream` 是 reactive 陣列，改原始物件雖然值會變，但不會通知 Vue 重繪。
+  // 症狀很隱蔽：extract／查法規那幾條路徑因為順便改了 `c.flags`／`c.docs`（走 proxy）
+  // 而附帶觸發重繪，看起來一切正常；只有 build_relation_graph 回 empty 這種
+  // 「只改工具卡、不動其他狀態」的情況會露餡——卡片永遠停在「執行中」，
+  // 而 SSE 四個事件其實都收到了、busy 也解開了。
+  return c.stream[c.stream.length - 1]
 }
 export function scrollSoon() {
   requestAnimationFrame(() => {

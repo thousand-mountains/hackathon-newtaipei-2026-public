@@ -94,8 +94,12 @@ const caseMeta = computed(() =>
                     </span>
                   </div>
                   <div class="tool-steps">
-                    <div v-for="(s, i) in m.steps" :key="i" class="step">
-                      <span class="tick">✓</span><span>{{ s.label }}</span><span class="t">{{ s.t }}s</span>
+                    <!-- elapsed_ms 只有 status=done 才有；沒有就整個不顯示，
+                         不要印一個孤零零的「s」（實測案件分類／程序審查兩節點就是這樣）。
+                         degraded=true 是後端說「這一節點降級跑完」，標黃。 -->
+                    <div v-for="(s, i) in m.steps" :key="i" class="step" :class="{ degraded: s.degraded }">
+                      <span class="tick">✓</span><span>{{ s.label }}<template v-if="s.degraded">（降級）</template></span>
+                      <span v-if="s.t" class="t">{{ s.t }}s</span>
                     </div>
                   </div>
                   <div class="tool-out">
