@@ -51,7 +51,17 @@ uv run --with fastapi --with "uvicorn[standard]" --with pydantic --with python-m
 ```
 
 `GET /api/health` 的 `live_settings` 檢查會告訴你缺哪個變數或哪個套件（`boto3`／`strands`）。
-**這條指令至今沒有在真的能打 Bedrock 的帳號上跑過**（見上方 2026-09-07 更新）。
+
+**這條指令已在真的能打 Bedrock 的帳號上跑過**（2026-09-12，取代原本「至今沒跑過」的註記）。
+實測：`live_settings` 齊全、四項檔位檢查全對（`run_mode=bedrock`／`fixture_only=false`／
+`kb_backend=kb`／`similar_case_backend=kb`）、六節點跑完 `provider=bedrock`、聊天端點收得到
+`event: done`、`infra/cdk/verify.sh` 對它五段全綠。
+
+> ⚠️ **`--with strands-agents --with boto3` 只在這條 bedrock 指令上，§0.0 的 fixture 指令沒有，
+> 那是對的**——fixture 檔位不打模型。但**拿 fixture 那條指令去跑 bedrock 檔位會失敗**，症狀是
+> 聊天回 `event: error` 說「strands 未安裝」，很容易被誤讀成「這台機器沒有模型額度」。
+> （2026-09-12 實際誤判過一次：憑證與額度都好好的，缺的只是兩個套件。）
+> **要打模型就用這一條，不要從 §0.0 複製。**
 
 前端在打不到 `/api/health` 時（例如直接 `file://` 開 `prototype/dist/index.html`）
 會自動退回**離線 fixture 模式**，頁首徽章會改成「離線 fixture（未接後端）」——
