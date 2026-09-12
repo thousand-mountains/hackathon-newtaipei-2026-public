@@ -72,6 +72,12 @@ N5 的函釋通道設 `REF_OVERFETCH = 10`（5×10=50，Bedrock retrieve 的硬�
 
 相似案通道維持 3——它查的決定書佔 98.8%，不需要撒大網。
 
+**後記（同日稍晚）**：`filters["overfetch"]` 這個介面後來沒有留下。撈取深度改由
+`kb.py` 的兩個常數決定——`REF_FETCH_DEPTH = 50`（判解／函釋）與
+`QUOTA_FETCH_DEPTH = 50`（相似案配額查詢），`search()` 不再讀 `overfetch`。
+兩條通道各有各的深度，per-channel 的意思不變，只是不走 `filters` 傳。
+N5 那端殘留的 `REF_OVERFETCH` 參數（值相同、已無作用）一併刪除。
+
 ## 做法 2：metadata 側檔
 
 spec §6.3 第 4 點本來就規劃了，一直沒實作。
