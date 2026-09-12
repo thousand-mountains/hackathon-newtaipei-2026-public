@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32" fill="none" stroke-width="2.4">
+  <!-- 四格品牌標記（空心框）：左上黃、右上紅、左下綠、右下藍（對齊 TopBar 的 .mark） -->
+  <rect x="3"  y="3"  width="12" height="12" rx="2" stroke="#ffd400"/>
+  <rect x="17" y="3"  width="12" height="12" rx="2" stroke="#e5312b"/>
+  <rect x="3"  y="17" width="12" height="12" rx="2" stroke="#5aa84f"/>
+  <rect x="17" y="17" width="12" height="12" rx="2" stroke="#2f7fbf"/>
+</svg>

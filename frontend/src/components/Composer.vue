@@ -65,6 +65,7 @@ async function doSend() {
   await send(v)
 }
 function onChip(chip) {
+  if (chip.disabled) return
   const a = chip.action
   if (a.t === 'tool') runTool(a.id, a.arg)
   else if (a.t === 'attach') emit('sheet', { kind: 'attach' })
@@ -79,8 +80,16 @@ function onChip(chip) {
       <div class="chips">
         <template v-for="(chip, i) in chips" :key="i">
           <span v-if="chip.ghost" class="chip ghost">{{ chip.label }}</span>
-          <button v-else class="chip" @click="onChip(chip)">
+          <button
+            v-else
+            class="chip"
+            :class="{ disabled: chip.disabled }"
+            :disabled="chip.disabled"
+            :title="chip.hint || ''"
+            @click="onChip(chip)"
+          >
             <span v-if="chip.lead" class="lead">{{ chip.lead }}</span>{{ chip.label }}
+            <small v-if="chip.disabled && chip.hint" class="chip-hint">（{{ chip.hint }}）</small>
           </button>
         </template>
       </div>

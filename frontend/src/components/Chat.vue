@@ -1,7 +1,8 @@
 <script setup>
 import { computed } from 'vue'
-import { state, active, stages, TOOLS, runTool } from '../store/app.js'
+import { state, active, stages, TOOLS, runTool, gotoProcedureCheck } from '../store/app.js'
 import ToolOut from './ToolOut.vue'
+import ProcedureCheck from './ProcedureCheck.vue'
 import Composer from './Composer.vue'
 
 const emit = defineEmits(['view-case', 'view-graph', 'preview-paper', 'export-download', 'sheet'])
@@ -12,8 +13,10 @@ const greeting = computed(() => {
 })
 const c = computed(() => active())
 const empty = computed(() => !c.value.stream.length)
+// 案件識別碼用後端的 caseId 真值。之前這裡寫死「案號 1143062584」，
+// 載入 synthetic-blocked-01 時畫面照樣顯示那個號，等於對承辦人報了一個不存在的案號。
 const caseMeta = computed(() =>
-  c.value.docs.evidence.length ? `案號 1143062584．卷證 ${c.value.docs.evidence.length} 份` : '尚未載入卷證',
+  c.value.docs.evidence.length ? `${c.value.caseId}．卷證 ${c.value.docs.evidence.length} 份` : '尚未載入卷證',
 )
 </script>
 
@@ -34,7 +37,7 @@ const caseMeta = computed(() =>
         <p class="es">你的訴願小助手。從下面的 <span class="kbd">＋</span> 開始，把卷證丟進來吧。</p>
       </div>
       <div v-else class="stream-inner">
-        <div v-for="m in c.stream" :key="m.id" class="msg" :class="{ me: m.who === 'me' }">
+        <div v-for="m in c.stream" :key="m.id" :data-msg="m.id" class="msg" :class="{ me: m.who === 'me' }">
           <!-- 使用者訊息 -->
           <template v-if="m.who === 'me'">
             <div class="body">
@@ -48,8 +51,36 @@ const caseMeta = computed(() =>
           <template v-else>
             <div class="av ai">小願</div>
             <div class="body">
+              <!-- 思考中（loading）：純問答／等待首個事件時的打字點點 -->
+              <div v-if="m.kind === 'thinking'" class="typing" aria-label="小願正在思考">
+                <span></span><span></span><span></span>
+              </div>
               <!-- 純 HTML 回覆 -->
-              <div v-if="m.kind === 'html'" v-html="m.html"></div>
+              <div v-else-if="m.kind === 'html'" v-html="m.html"></div>
+              <!-- 程序審查卡（redirect 的 CTA 目標）。對話紀錄只存在記憶體，
+                   重新整理之後串流是空的，但 screen 來自 manifest 一直都在——
+                   所以 CTA 找不到既有卡片時會補一張，就是這個 kind。 -->
+              <template v-else-if="m.kind === 'screen'">
+                <p>以下是規則引擎算出來的程序審查結果，每一步都附法條依據，可逐步核對。</p>
+                <div class="tool">
+                  <div class="tool-head">
+                    <span class="api">程序審查</span>
+                    <span class="nm">規則引擎．零 LLM</span>
+                    <span class="st"><span style="color: var(--ok)">✓</span> 完成</span>
+                  </div>
+                  <div class="tool-out">
+                    <ProcedureCheck v-if="c.screen" :screen="c.screen" />
+                  </div>
+                </div>
+              </template>
+              <!-- 期限／天數類問題：規則引擎接手（契約 §2.4.1 一）。
+                   **這一則刻意不顯示任何天數**——agent 算出來的天數在 done.answer 裡，
+                   期間算錯在訴願案有實質後果，所以整段不落地，只給理由與一顆 CTA。 -->
+              <template v-else-if="m.kind === 'redirect'">
+                <p>{{ m.reason }}</p>
+                <p style="color: var(--muted); font-size: 12px; margin-top: 6px">期限請以「程序審查」的規則引擎算式為準；本則不顯示聊天推算的天數。</p>
+                <button class="btn pri" style="margin-top: 8px" @click="gotoProcedureCheck()">{{ m.cta }}</button>
+              </template>
               <!-- 工具清單卡 -->
               <template v-else-if="m.kind === 'tools-help'">
                 <p>我是訴願案件的辦案助理。目前開放 7 支工具（API），可用「/」呼叫，也可以直接用中文描述需求：</p>
@@ -70,18 +101,25 @@ const caseMeta = computed(() =>
                   <div class="tool-head">
                     <span class="api">{{ m.api }}()</span>
                     <span class="nm">{{ m.name }}</span>
+                    <!-- 契約 §2.3：ok／empty／failed 三種在畫面上要分得出來，
+                         不能三種都畫成綠勾「完成」——那會把「查詢來源壞了」說成「查完了」。 -->
                     <span class="st">
                       <template v-if="m.running"><span class="spin"></span>執行中</template>
+                      <template v-else-if="m.status === 'failed'"><span style="color: var(--alert)">✕</span> 失敗</template>
+                      <template v-else-if="m.status === 'empty'"><span style="color: var(--warn)">○</span> 查無結果</template>
                       <template v-else><span style="color: var(--ok)">✓</span> 完成</template>
                     </span>
                   </div>
                   <div class="tool-steps">
-                    <div v-for="(s, i) in m.steps" :key="i" class="step">
-                      <span class="tick">✓</span><span>{{ s.label }}</span><span class="t">{{ s.t }}s</span>
+                    <!-- elapsed_ms 只有 status=done 才有；沒有就整個不顯示，
+                         不要印一個孤零零的「s」（實測案件分類／程序審查兩節點就是這樣）。
+                         degraded=true 是後端說「這一節點降級跑完」，標黃。 -->
+                    <div v-for="(s, i) in m.steps" :key="i" class="step" :class="{ degraded: s.degraded }">
+                      <span class="tick">✓</span><span>{{ s.label }}<template v-if="s.degraded">（降級）</template></span>
+                      <span v-if="s.t" class="t">{{ s.t }}s</span>
                     </div>
                   </div>
                   <div class="tool-out">
-                    <p v-if="m.out && m.out.type === 'refine' && m.dir">修潤方向：<b>{{ m.dir }}</b></p>
                     <ToolOut
                       v-if="m.out"
                       :out="m.out"

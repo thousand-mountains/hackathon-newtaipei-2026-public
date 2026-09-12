@@ -89,7 +89,7 @@ button{font:inherit;color:inherit;cursor:pointer}
   background:var(--ground);color:var(--ink);border-bottom:1px solid var(--line)}
 .brand{display:flex;align-items:center;gap:12px;min-width:0}
 .brand .mark{display:grid;grid-template-columns:6px 6px;grid-template-rows:6px 6px;gap:2px;flex:0 0 auto}
-.brand .mark i{display:block;border-radius:1px}
+.brand .mark i{display:block;border-radius:1px;border:1.4px solid;background:transparent}
 .brand .seal{font-family:var(--serif);font-weight:700;font-size:15.5px;letter-spacing:.08em;white-space:nowrap}
 .brand .sys{font-size:12px;letter-spacing:.1em;white-space:nowrap;color:var(--ink-2);
   box-shadow:inset 0 -4px 0 var(--brand);padding:0 2px 1px}
@@ -159,9 +159,10 @@ button{font:inherit;color:inherit;cursor:pointer}
 /* ── chat ──────────────────────────────── */
 .chat{flex:1;display:flex;flex-direction:column;min-width:0;background:var(--ground)}
 .chat-head{flex:0 0 auto;display:flex;align-items:center;gap:10px;padding:10px 20px;border-bottom:1px solid var(--line-soft)}
-.chat-head h1{margin:0;font-family:var(--serif);font-size:16px;font-weight:600;letter-spacing:.01em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.chat-head .meta{font-family:var(--mono);font-size:11px;color:var(--faint)}
-.chat-head .spacer{flex:1}
+.chat-head h1{margin:0;font-family:var(--serif);font-size:16px;font-weight:600;letter-spacing:.01em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1 1 0;min-width:140px}
+/* 案件 id 是後端給的長字串（例 synthetic-blocked-01），不設 nowrap 會折成四行把版面擠壞 */
+.chat-head .meta{font-family:var(--mono);font-size:11px;color:var(--faint);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:0 0 auto;max-width:170px}
+.chat-head .spacer{flex:0 1 10px}
 .stage-strip{display:flex;gap:3px;align-items:center}
 .stage-pip{width:22px;height:3px;border-radius:2px;background:var(--line)}
 .stage-pip.on{background:var(--brand-edge)}
@@ -182,6 +183,13 @@ button{font:inherit;color:inherit;cursor:pointer}
 .body p{margin:0 0 .7em}
 .body p:last-child{margin-bottom:0}
 .body strong{font-weight:700}
+
+/* 思考中：三顆跳動的點（chat loading 指示） */
+.typing{display:inline-flex;gap:4px;align-items:center;padding:4px 2px}
+.typing span{width:6px;height:6px;border-radius:50%;background:var(--faint);animation:typing 1.2s infinite ease-in-out}
+.typing span:nth-child(2){animation-delay:.18s}
+.typing span:nth-child(3){animation-delay:.36s}
+@keyframes typing{0%,60%,100%{opacity:.25;transform:translateY(0)}30%{opacity:1;transform:translateY(-3px)}}
 
 .attach-line{display:flex;flex-wrap:wrap;gap:6px;margin-top:7px}
 .file-chip{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--line);background:var(--panel);border-radius:3px;padding:3px 9px;font-size:12px;color:var(--ink-2)}
@@ -263,6 +271,9 @@ button{font:inherit;color:inherit;cursor:pointer}
 .chip:hover{border-color:var(--acc-2);color:var(--acc-2);background:var(--acc-wash)}
 .chip .lead{color:var(--acc-2);font-size:11px}
 .chip.ghost{border-style:dashed;color:var(--muted)}
+.chip.disabled{color:var(--faint);border-style:dashed;cursor:not-allowed;opacity:.7}
+.chip.disabled:hover{border-color:var(--line);color:var(--faint);background:var(--ground)}
+.chip .chip-hint{color:var(--faint);font-size:10.5px;margin-left:2px}
 
 .composer{border:1px solid var(--line);border-radius:var(--r);background:var(--ground);box-shadow:var(--shadow);position:relative}
 .composer:focus-within{border-color:var(--acc-2)}
@@ -333,6 +344,7 @@ button{font:inherit;color:inherit;cursor:pointer}
 .fitem:hover .rm{opacity:1}
 .fitem .rm:hover{color:var(--alert)}
 .fempty{font-size:11.5px;color:var(--faint);padding:8px 8px 10px;text-align:center;line-height:1.6}
+.gnote{font-size:11px;color:var(--faint);padding:2px 8px 6px}
 
 /* 新增項目發光提示 */
 @keyframes flashHead{0%{background:var(--brand-wash)}100%{background:var(--panel-2)}}
@@ -457,3 +469,38 @@ button{font:inherit;color:inherit;cursor:pointer}
   .toolgrid{grid-template-columns:1fr}
   .kv{grid-template-columns:74px 1fr}
 }
+.step.degraded{color:var(--warn)}
+.step.degraded .tick{color:var(--warn)}
+/* 右欄項目的三態標籤（picked_laws）：與後端 retrieval_note 同行時要有間距，
+   否則「僅用於相似案檢索已用於相似案檢索；…」會黏成一句讀不了 */
+.fitem .ft small .tag{margin-right:6px}
+
+/* 案件標題與案件 id 都是後端給的長字串（例「對抗案例：C 型結論封鎖 + 引用查無此號…」
+   與 synthetic-blocked-01）。窄桌機下三者搶同一行，實測標題被擠成 0px——
+   進度點條最不重要，先讓它退場，標題保住 140px 下限。 */
+@media (max-width:1400px){
+  .chat-head .stage-strip{display:none}
+}
+
+/* agent 回覆裡的 markdown 表格（refine_text 的「原句／建議／說明」三欄修改建議、
+   查相似案例的命中表）。窄欄位下靠外層 overflow-x 捲，不要把整個對話撐寬。 */
+.mdtable-wrap{overflow-x:auto;margin:8px 0;border:1px solid var(--line-soft);border-radius:var(--r)}
+.mdtable{border-collapse:collapse;width:100%;font-size:12.5px;line-height:1.6}
+.mdtable th,.mdtable td{padding:7px 10px;text-align:left;vertical-align:top;border-bottom:1px solid var(--line-soft)}
+.mdtable th{background:var(--panel);font-weight:500;color:var(--muted);font-size:11.5px;letter-spacing:.04em;white-space:nowrap}
+.mdtable tbody tr:last-child td{border-bottom:0}
+.mdtable td{min-width:96px}
+.msg blockquote{margin:6px 0;padding:2px 0 2px 10px;border-left:2px solid var(--line);color:var(--ink-2);font-size:13px}
+.msg .mdrule{border:0;border-top:1px solid var(--line-soft);margin:10px 0}
+.msg code{font-family:var(--mono);font-size:11.5px;background:var(--panel);padding:1px 4px;border-radius:2px}
+
+/* 期間計算的逐步算式（程序審查卡）。每一步三行：規則、值、法條依據——
+   依據那行不能省，那正是「可驗算」與「相信它」的差別。 */
+.calc{margin:0;padding:0;list-style:none;counter-reset:calc}
+.calc li{counter-increment:calc;position:relative;padding:7px 0 7px 26px;border-bottom:1px solid var(--line-soft)}
+.calc li:last-child{border-bottom:0}
+.calc li::before{content:counter(calc);position:absolute;left:0;top:8px;width:17px;height:17px;border-radius:50%;background:var(--panel);color:var(--muted);font-family:var(--mono);font-size:10px;line-height:17px;text-align:center}
+.calc .cr{display:block;font-size:13px;color:var(--ink)}
+.calc .cv{display:block;font-size:12.5px;color:var(--acc-2);margin-top:2px}
+.calc .cb{display:block;font-size:11.5px;color:var(--faint);margin-top:2px}
+.caveat{margin:8px 0 0;font-size:11.5px;color:var(--warn);line-height:1.65}
