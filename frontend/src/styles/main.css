@@ -159,10 +159,10 @@ button{font:inherit;color:inherit;cursor:pointer}
 /* ── chat ──────────────────────────────── */
 .chat{flex:1;display:flex;flex-direction:column;min-width:0;background:var(--ground)}
 .chat-head{flex:0 0 auto;display:flex;align-items:center;gap:10px;padding:10px 20px;border-bottom:1px solid var(--line-soft)}
-.chat-head h1{margin:0;font-family:var(--serif);font-size:16px;font-weight:600;letter-spacing:.01em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1 1 auto;min-width:80px}
+.chat-head h1{margin:0;font-family:var(--serif);font-size:16px;font-weight:600;letter-spacing:.01em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1 1 0;min-width:140px}
 /* 案件 id 是後端給的長字串（例 synthetic-blocked-01），不設 nowrap 會折成四行把版面擠壞 */
-.chat-head .meta{font-family:var(--mono);font-size:11px;color:var(--faint);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:0 1 auto;min-width:0;max-width:40%}
-.chat-head .spacer{flex:1}
+.chat-head .meta{font-family:var(--mono);font-size:11px;color:var(--faint);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:0 0 auto;max-width:170px}
+.chat-head .spacer{flex:0 1 10px}
 .stage-strip{display:flex;gap:3px;align-items:center}
 .stage-pip{width:22px;height:3px;border-radius:2px;background:var(--line)}
 .stage-pip.on{background:var(--brand-edge)}
@@ -474,3 +474,10 @@ button{font:inherit;color:inherit;cursor:pointer}
 /* 右欄項目的三態標籤（picked_laws）：與後端 retrieval_note 同行時要有間距，
    否則「僅用於相似案檢索已用於相似案檢索；…」會黏成一句讀不了 */
 .fitem .ft small .tag{margin-right:6px}
+
+/* 案件標題與案件 id 都是後端給的長字串（例「對抗案例：C 型結論封鎖 + 引用查無此號…」
+   與 synthetic-blocked-01）。窄桌機下三者搶同一行，實測標題被擠成 0px——
+   進度點條最不重要，先讓它退場，標題保住 140px 下限。 */
+@media (max-width:1400px){
+  .chat-head .stage-strip{display:none}
+}
