@@ -249,7 +249,7 @@ def run(
     kb_error: str | None = None
     if case_query or query_text:
         try:
-            # 不傳 prefix：收哪些前綴由 `retrieval.kb.DEFAULT_PREFIXES` 單點決定
+            # 不傳 prefix：收哪些前綴由 `settings.similar_case_quota()` 單點決定
             # （這裡再寫一份就會與它漂移）。N4 只說「我要相似案」，不說去哪撈。
             case_hits = similar.search(case_query or query_text, top_k=5)
         except Exception as e:  # noqa: BLE001 — 檢索器可能是 boto3，例外型別由 SDK 決定

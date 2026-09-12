@@ -43,6 +43,97 @@ DEFAULT_RETRIEVER = "lawtable_only"
 # 設太高會**靜默回 0 筆**——畫面上「相似案：無」，跟 KB 掛掉、權限不足長得一模一樣，
 # 承辦人與我們都分不出是哪一種。寧可寬鬆，不要假裝沒東西可撈。
 DEFAULT_KB_MIN_SCORE = 0.15
+
+# ── 重排（rerank）─────────────────────────────────────────────────
+#
+# **這是今天量到最重要的一件事**（2026-09-12，見 docs/evidence/…/rerank.md）。
+# embedding 是 bi-encoder：查詢與文件各自變成向量再比距離，模型從來沒有「同時看過」
+# 兩者。rerank 是 cross-encoder：兩者一起餵進去，直接判斷「這份文件回答了這個查詢嗎」。
+#
+# 實測（ntpc-petition-kb，就是那個 embedding 分數完全沒有鑑別力的 KB）：
+#
+#              embedding top1      rerank top1
+#   真實案件     0.42–0.79          0.809–1.000      ← 生產形態的 case_digest 查詢
+#   負控制       0.44–0.48          0.000–0.057      ← 商標／海關／專利／閒聊
+#
+# embedding 的訊號與雜訊**重疊**（真實命中 median 0.213 低於閒聊句的 0.485）；
+# rerank 之後空帶寬 0.75，門檻擺在中間兩邊都有 9 倍以上餘裕。
+# 這解決了三個 KB 的門檻量測都解不掉的問題——**分數門檻本來就不該承擔這個任務**。
+#
+# 所以兩個門檻的分工是：
+#   KB_MIN_SCORE      放寬，只負責 recall（把對的文件撈進候選池）
+#   RERANK_MIN_SCORE  真正的相關性關卡，負責 precision
+DEFAULT_RERANK_MIN_SCORE = 0.5
+
+# 相似案通道收哪些前綴、各給幾個席次。格式 `前綴:席次`，逗號分隔。
+#
+# **為什麼要可設定**：目錄名跟著 corpus 走，不是我們能決定的常數（2026-09-12 踩到）。
+# 舊 corpus 是 `新北訴願決定書_全量/`（2,347 筆），第三方整理的那份叫
+# `新北訴願決定書_環保局全量/`（8,486 筆）——同樣是新北訴願決定書，只差三個字，
+# 但寫死的前綴一個都比不中，整條相似案通道**靜默回 0 筆**（不報錯，比報錯難查）。
+# KB id、門檻、前綴這三樣都跟著 corpus 綁在一起，所以一律由 .env 帶。
+DEFAULT_SIMILAR_CASE_QUOTA = "歷史訴願決定書/:2,新北訴願決定書_全量/:3"
+
+
+def similar_case_quota() -> dict[str, int]:
+    """相似案通道的 {前綴: 席次}。格式壞掉就 raise，不默默退回預設。
+
+    默默退回預設等於「設定看起來生效了但其實沒有」，那比明確失敗難查得多。
+    """
+    raw = os.environ.get("SIMILAR_CASE_QUOTA") or DEFAULT_SIMILAR_CASE_QUOTA
+    out: dict[str, int] = {}
+    for part in raw.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        prefix, sep, seats = part.rpartition(":")
+        if not sep or not prefix or not seats.strip().isdigit():
+            raise ValueError(
+                f"SIMILAR_CASE_QUOTA 格式錯誤：{part!r}。應為 `前綴/:席次`，逗號分隔，"
+                f"例 {DEFAULT_SIMILAR_CASE_QUOTA!r}")
+        out[prefix.strip()] = int(seats)
+    if not out:
+        raise ValueError("SIMILAR_CASE_QUOTA 解不出任何前綴")
+    return out
+
+
+def similar_case_prefixes() -> list[str]:
+    """相似案通道收哪些前綴——**唯一的事實來源**，N4 不自己再寫一份。"""
+    return list(similar_case_quota())
+
+
+# N5 `retrieve_refs` 工具准查哪些前綴＝**可以被引用的來源白名單**。
+#
+# 這不只是設定，是法律上的界線：只有函釋與判解是 N5 可以拿來當依據的材料，
+# 決定書是相似案（參考），法規是規則引擎查表的事。放寬這個清單等於放寬
+# 「系統可以引用什麼」，**要 qa-legal 同意才能動**（CONSTITUTION §2）。
+#
+# 之所以改成可設定，跟 SIMILAR_CASE_QUOTA 同一個原因：目錄名跟著 corpus 走。
+# 第三方 corpus 的函釋放在 `行政函釋_全量/`（4,520 筆），與我們自己整理的
+# `行政函釋/`（10 筆）是同一種材料、不同目錄——寫死就只看得到 29 份。
+DEFAULT_REF_PREFIXES = "行政函釋/,司法院釋字及行政判解/"
+
+
+def ref_prefixes() -> list[str]:
+    """N5 可引用來源的前綴白名單。"""
+    raw = os.environ.get("REF_PREFIXES") or DEFAULT_REF_PREFIXES
+    out = [p.strip() for p in raw.split(",") if p.strip()]
+    if not out:
+        raise ValueError("REF_PREFIXES 解不出任何前綴")
+    return out
+
+
+def rerank_model_id() -> str | None:
+    """重排模型的 arn。**沒設就不重排**，行為與加這個功能之前完全相同。
+
+    值只從環境變數來（CONSTITUTION §7：model id 的實際值不進程式碼）。
+    """
+    return os.environ.get("BEDROCK_RERANK_MODEL_ID") or None
+
+
+def rerank_min_score() -> float:
+    """重排後的相關性門檻。低於這個值的命中不回——那是「撈到了但不相關」。"""
+    return float(os.environ.get("RERANK_MIN_SCORE", DEFAULT_RERANK_MIN_SCORE))
 # 賽方規範要求 Bedrock 請求壓在 1 RPS 以下。1.1 留一點餘裕，與
 # `backend/retrieval/kb.py` 的 RETRIEVE_INTERVAL_S 取同一個值。
 DEFAULT_BEDROCK_MIN_INTERVAL_S = 1.1

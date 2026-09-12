@@ -961,7 +961,7 @@ def test_default_prefixes_take_both_batches_of_appeal_decisions():
         _kb_result("歷史訴願決定書/113年/16.113年-違反空氣污染防制法事件-駁回.txt", 0.8, "主文：訴願駁回。"),
     ])
     r = KBRetriever(kb_id="k", region="r", min_score=0.25, client=fake)
-    hits = r.search("露天燃燒")  # 不傳 filters → 走 DEFAULT_PREFIXES
+    hits = r.search("露天燃燒")  # 不傳 filters → 走 settings.similar_case_quota()
     assert_eq(len(hits), 2, "public 批的命中不得被前綴過濾掉")
     assert_eq([h.payload["provenance"] for h in hits], ["public_crawl", "official"])
     assert_eq(hits[0].payload["outcome"], "不受理", "結果仍照檔名，不由模型推測")
@@ -1364,7 +1364,7 @@ def test_n4_uses_injected_retriever_for_similar_cases():
     assert_in("露天燃燒稻稈", kb.queries[0][0], "查詢句必須含事實段原文")
     assert_true(
         not (kb.queries[0][1] or {}).get("prefix"),
-        "N4 不得自己寫一份 prefix——收哪些前綴由 retrieval.kb.DEFAULT_PREFIXES 單點決定",
+        "N4 不得自己寫一份 prefix——收哪些前綴由 settings.similar_case_quota() 單點決定",
     )
     assert_eq(st.retrieval["retrieval_meta"]["backend"], "lawtable+bedrock_kb")
     assert_true(r.degraded is False, "兩條通道都有結果就不是降級")
@@ -2582,3 +2582,99 @@ def test_non_validation_errors_are_not_swallowed_by_the_probe():
     assert_eq(fake.calls, 1, "非 ValidationException 不得觸發第二個鍵的重試")
     assert_true(kb_module.search_key_for("kb-throttle") is None, "失敗的呼叫不得寫進快取")
     kb_module.reset_search_key_cache()
+
+
+class _RerankFakeRuntime(_FakeBedrockAgentRuntime):
+    """假 client：retrieve 照舊，rerank 依 `by_index` 指定的分數回傳。"""
+
+    def __init__(self, results, by_index):
+        super().__init__(results)
+        self.by_index = by_index          # {來源索引: relevanceScore}
+        self.rerank_calls = []
+
+    def rerank(self, **kw):
+        self.rerank_calls.append(kw)
+        n = kw["rerankingConfiguration"]["bedrockRerankingConfiguration"]["numberOfResults"]
+        ranked = sorted(self.by_index.items(), key=lambda kv: kv[1], reverse=True)[:n]
+        return {"results": [{"index": i, "relevanceScore": s} for i, s in ranked]}
+
+
+def _three_cases():
+    return [_kb_result("新北訴願決定書_環保局全量/a_駁回.txt", 0.60, "甲案內文"),
+            _kb_result("新北訴願決定書_環保局全量/b_駁回.txt", 0.40, "乙案內文"),
+            _kb_result("新北訴願決定書_環保局全量/c_駁回.txt", 0.20, "丙案內文")]
+
+
+def test_rerank_off_by_default_keeps_embedding_order():
+    """沒設重排模型時，行為必須與加這個功能之前完全相同。"""
+    with env(BEDROCK_RERANK_MODEL_ID=None):
+        fake = _RerankFakeRuntime(_three_cases(), {})
+        r = KBRetriever(kb_id="k", region="r", min_score=0.15, client=fake)
+        with _no_retrieve_interval():
+            hits = r.search("q", filters={"prefix": ["新北訴願決定書_環保局全量/"]}, top_k=3)
+    assert_eq(fake.rerank_calls, [], "沒設模型就不得呼叫 rerank")
+    assert_eq([h.score for h in hits], [0.6, 0.4, 0.2], "維持 embedding 排序")
+    assert_true("ranked_by" not in (hits[0].payload or {}), "沒重排就不該標 ranked_by")
+
+
+def test_rerank_reorders_and_reports_which_score_ranked_them():
+    """重排要真的改變順序，而且畫面上的分數必須是決定排序的那一個。
+
+    embedding 排序是 甲(0.60) > 乙(0.40) > 丙(0.20)；rerank 判定丙最相關。
+    若回傳的 `score` 還是 embedding 分數，看板就會出現「第一名 0.20、第三名 0.60」
+    ——那是對「為什麼這幾筆排在前面」說謊（CONSTITUTION §1）。
+    """
+    with env(BEDROCK_RERANK_MODEL_ID="arn:fake:rerank", RERANK_MIN_SCORE="0.5"):
+        fake = _RerankFakeRuntime(_three_cases(), {0: 0.55, 1: 0.70, 2: 0.99})
+        r = KBRetriever(kb_id="k", region="r", min_score=0.15, client=fake)
+        with _no_retrieve_interval():
+            hits = r.search("q", filters={"prefix": ["新北訴願決定書_環保局全量/"]}, top_k=3)
+    assert_eq([h.source.rsplit("/", 1)[-1] for h in hits], ["c_駁回.txt", "b_駁回.txt", "a_駁回.txt"],
+              "順序要照 rerank 分數")
+    assert_eq([round(h.score, 2) for h in hits], [0.99, 0.7, 0.55], "score 換成 rerank 分數")
+    assert_eq([h.id for h in hits], ["kb-1", "kb-2", "kb-3"], "編號照重排後的順序")
+    p = hits[0].payload
+    assert_eq(p["ranked_by"], "rerank", "要說得出是誰排的")
+    assert_eq(round(p["embedding_score"], 2), 0.2, "原本的 embedding 分數要留著，不是丟掉")
+    assert_eq(round(p["rerank_score"], 2), 0.99)
+
+
+def test_rerank_drops_hits_below_the_relevance_floor():
+    """撈到了但不相關的要丟掉——寧可少一筆，不要拿低相關的塞滿版面。
+
+    2026-09-12 實測：語意無關的查詢（商標／海關／專利／閒聊）rerank 分數是
+    0.000–0.057，而真實案件的生產形態查詢是 0.809–1.000。門檻 0.5 在中間，
+    兩邊各有 9 倍以上餘裕。
+    """
+    with env(BEDROCK_RERANK_MODEL_ID="arn:fake:rerank", RERANK_MIN_SCORE="0.5"):
+        fake = _RerankFakeRuntime(_three_cases(), {0: 0.90, 1: 0.06, 2: 0.001})
+        r = KBRetriever(kb_id="k", region="r", min_score=0.15, client=fake)
+        with _no_retrieve_interval():
+            hits = r.search("q", filters={"prefix": ["新北訴願決定書_環保局全量/"]}, top_k=3)
+    assert_eq([h.source.rsplit("/", 1)[-1] for h in hits], ["a_駁回.txt"],
+              "只有過門檻的那筆能留下")
+
+
+def test_rerank_never_asks_for_more_results_than_sources():
+    """`numberOfResults` 超過來源數會 ValidationException（2026-09-12 實測踩過）。
+
+    候選少於 top_k 是常態——負控制查詢在後過濾之後常常只剩兩三筆。
+    """
+    with env(BEDROCK_RERANK_MODEL_ID="arn:fake:rerank", RERANK_MIN_SCORE="0.0"):
+        fake = _RerankFakeRuntime(_three_cases()[:2], {0: 0.9, 1: 0.8})
+        r = KBRetriever(kb_id="k", region="r", min_score=0.15, client=fake)
+        with _no_retrieve_interval():
+            r.search("q", filters={"prefix": ["新北訴願決定書_環保局全量/"]}, top_k=5)
+    n = fake.rerank_calls[0]["rerankingConfiguration"]["bedrockRerankingConfiguration"]["numberOfResults"]
+    assert_eq(n, 2, "要取 min(top_k, 來源數)")
+
+
+def test_rerank_skips_when_hits_have_no_text():
+    """沒有可讀內文就不重排——送空字串進去只會得到無意義的分數。"""
+    with env(BEDROCK_RERANK_MODEL_ID="arn:fake:rerank"):
+        fake = _RerankFakeRuntime([_kb_result("新北訴願決定書_環保局全量/a_駁回.txt", 0.6, "  ")], {0: 0.9})
+        r = KBRetriever(kb_id="k", region="r", min_score=0.15, client=fake)
+        with _no_retrieve_interval():
+            hits = r.search("q", filters={"prefix": ["新北訴願決定書_環保局全量/"]}, top_k=3)
+    assert_eq(fake.rerank_calls, [], "沒有內文就不得呼叫 rerank")
+    assert_eq(len(hits), 1, "命中照樣回傳，只是沒有重排")

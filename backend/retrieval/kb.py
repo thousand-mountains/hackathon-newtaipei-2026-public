@@ -35,7 +35,9 @@ except ImportError:  # pragma: no cover - 有裝 boto3 的環境走不到
 # 來源差異由 `_provenance()` 標出來，UI 看得到，不靠「只收一批」來維持誠實。
 # 刻意**不收** 行政函釋/ 與 司法院釋字及行政判解/：那兩類是法條通道（通道 A）與
 # N5 `REF_PREFIXES` 的材料，不是「相似案」。放寬不等於全收。
-DEFAULT_PREFIXES = ["歷史訴願決定書/", "新北訴願決定書_全量/"]
+# 收哪些前綴、各幾席，**唯一的事實來源是 settings.similar_case_quota()**。
+# 這裡刻意不留模組層常數：目錄名跟著 corpus 走（`新北訴願決定書_全量/` vs
+# `新北訴願決定書_環保局全量/`），留一份常數在這裡，遲早會有人拿它當真。
 
 # `retrieve_refs` 工具只准查這兩個前綴：函釋與判解是「可以引用的來源」，
 # 決定書、卷證等不在此列（那些走 N4 的檢索通道，並且要另外做引用驗證）。
@@ -56,7 +58,6 @@ REF_PREFIXES = ["行政函釋/", "司法院釋字及行政判解/"]
 # 分數落在同一條線（實測 0.77–0.80）——**若哪天 official 的最佳命中掉到跟 public 差一截，
 # 這個配額就該回頭重議**，因為那時保席次等於犧牲相關性。
 # 某一批不足時由另一批補滿（不留空位），但一律仍受 KB_MIN_SCORE 門檻約束：寧可少一筆。
-SIMILAR_CASE_QUOTA = {"歷史訴願決定書/": 2, "新北訴願決定書_全量/": 3}
 # 兩次 retrieve 之間的間隔。賽方規範要求 Bedrock 壓在 1 RPS 以下；retrieve 不是
 # InvokeModel，但保守做——評審面前吃 throttle 的代價遠大於多等一秒。
 RETRIEVE_INTERVAL_S = 1.1
@@ -78,6 +79,16 @@ QUOTA_FETCH_DEPTH = 50
 REF_FETCH_DEPTH = 50
 OUTCOME_RE = re.compile(r"(駁回|撤銷|不受理)")
 
+# 重排要看幾筆候選。embedding 只負責把對的文件撈進這個池子（recall），
+# 排序交給 rerank（precision）。30 是實測時用的值：ordinary-01 的候選池剛好 30 筆，
+# 而 rerank 選出來的前五名 embedding 分數只有 0.26–0.36——**排在 embedding 第一的
+# 那筆（0.616）根本沒進前五**。池子太小就等於讓 embedding 的爛排序決定結果。
+RERANK_CANDIDATES = 30
+# 送進 rerank 的截斷長度。查詢是卷證摘要（實測 101–107 字），文件是 chunk 內文。
+# 截斷是為了控制延遲與費用，不是品質考量——實測 1500 字已涵蓋決定書的主文與事實段。
+RERANK_QUERY_CHARS = 1000
+RERANK_DOC_CHARS = 1500
+
 # `retrieve` 的搜尋設定鍵**依 KB 型態而異，兩者互斥**（2026-09-12 對兩個真 KB 各實測）：
 #   MANAGED KB           → managedSearchConfiguration
 #   VECTOR（S3 Vectors） → vectorSearchConfiguration
@@ -93,6 +104,7 @@ MANAGED_SEARCH_KEY = "managedSearchConfiguration"
 VECTOR_SEARCH_KEY = "vectorSearchConfiguration"
 SEARCH_KEYS = (MANAGED_SEARCH_KEY, VECTOR_SEARCH_KEY)
 _SEARCH_KEY_CACHE: dict[str, str] = {}
+
 
 
 def search_key_for(kb_id: str) -> str | None:
@@ -195,23 +207,27 @@ class KBRetriever:
     def search(self, query: str, filters: dict[str, Any] | None = None, top_k: int = 5) -> list[Hit]:
         """明確指定 `filters["prefix"]`（N5 的 retrieve_refs）→ 單次查詢，行為不變。
 
-        沒指定 prefix ＝ 相似案通道 → 依 `SIMILAR_CASE_QUOTA` 兩批分開查再合併。
+        沒指定 prefix ＝ 相似案通道 → 依 `settings.similar_case_quota()` 分批查再合併。
         """
         filters = filters or {}
         exclude = filters.get("exclude_case") or self.exclude_case
         explicit = list(filters.get("prefix") or [])
+        # 有重排時先多留候選給它排；沒有重排就維持原本「撈幾筆回幾筆」的行為。
+        want_hits = RERANK_CANDIDATES if settings.rerank_model_id() else top_k
         if explicit:
             hits = self._retrieve(query, explicit, exclude, want=REF_FETCH_DEPTH,
-                                  limit=top_k, dedupe_by_source=True)
+                                  limit=want_hits, dedupe_by_source=True)
         else:
-            hits = self._quota_search(query, exclude, top_k)
-        # 編號在排序之後才給，`kb-1` 永遠是分數最高的那筆
+            hits = self._quota_search(query, exclude, want_hits)
+        hits = self._rerank(query, hits, top_k)
+        # 編號在排序之後才給：有重排時 `kb-1` 是 rerank 最相關的那筆，
+        # 沒有重排時仍是 embedding 分數最高的那筆（`payload.ranked_by` 說得出是哪一種）
         return [dataclasses.replace(h, id=f"kb-{i}") for i, h in enumerate(hits, start=1)]
 
     def _quota_search(self, query: str, exclude: str | None, top_k: int) -> list[Hit]:
         """兩批各自查、各自取配額席次，不足由另一批補滿，最後按分數排序。"""
         batches: list[tuple[int, list[Hit]]] = []
-        for i, (prefix, quota) in enumerate(SIMILAR_CASE_QUOTA.items()):
+        for i, (prefix, quota) in enumerate(settings.similar_case_quota().items()):
             if i:
                 time.sleep(RETRIEVE_INTERVAL_S)
             batches.append(
@@ -230,6 +246,53 @@ class KBRetriever:
                     picked.append(h)
         picked.sort(key=lambda h: h.score, reverse=True)
         return picked[:top_k]
+
+    def _rerank(self, query: str, hits: list[Hit], top_k: int) -> list[Hit]:
+        """用 cross-encoder 重排並砍掉不相關的。沒設模型就原樣回傳。
+
+        回傳的 `score` 換成 rerank 分數，原本的 embedding 分數移到
+        `payload["embedding_score"]`，並以 `payload["ranked_by"]` 標明是誰排的。
+        **畫面上顯示的數字必須是真的決定了排序的那個** ——留著 embedding 分數當
+        顯示值會讓看板出現「第一名 35 分、第二名 62 分」這種看不懂的順序，
+        那是對「為什麼這幾筆排在前面」說謊（CONSTITUTION §1）。
+        """
+        model = settings.rerank_model_id()
+        if not model or not hits:
+            return hits[:top_k]
+        docs = [(h, (h.payload or {}).get("text") or "") for h in hits]
+        docs = [(h, t) for h, t in docs if t.strip()]
+        if not docs:
+            # 沒有可讀的內文就不重排——硬送空字串進去只會得到無意義的分數
+            return hits[:top_k]
+        time.sleep(RETRIEVE_INTERVAL_S)      # rerank 也是一次 Bedrock 呼叫（賽方 1 RPS）
+        resp = self._c().rerank(
+            queries=[{"type": "TEXT", "textQuery": {"text": query[:RERANK_QUERY_CHARS]}}],
+            sources=[{"type": "INLINE",
+                      "inlineDocumentSource": {"type": "TEXT",
+                                               "textDocument": {"text": t[:RERANK_DOC_CHARS]}}}
+                     for _, t in docs],
+            rerankingConfiguration={
+                "type": "BEDROCK_RERANKING_MODEL",
+                "bedrockRerankingConfiguration": {
+                    # numberOfResults 不得超過來源數，否則 ValidationException
+                    "numberOfResults": min(top_k, len(docs)),
+                    "modelConfiguration": {"modelArn": model},
+                },
+            },
+        )
+        floor = settings.rerank_min_score()
+        out: list[Hit] = []
+        for r in resp.get("results", []):
+            rs = float(r.get("relevanceScore", 0.0))
+            if rs < floor:
+                continue            # 撈到了但不相關——寧可少一筆，不要塞
+            h, _ = docs[int(r["index"])]
+            payload = dict(h.payload or {})
+            payload["embedding_score"] = h.score
+            payload["rerank_score"] = rs
+            payload["ranked_by"] = "rerank"
+            out.append(dataclasses.replace(h, score=rs, payload=payload))
+        return out
 
     def _retrieve_raw(self, query: str, want: int) -> dict:
         return retrieve_raw(self._c(), self.kb_id, query, want)

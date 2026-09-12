@@ -33,15 +33,26 @@ from __future__ import annotations
 import time
 from typing import Any
 
+from backend.config import settings
 from backend.llm import client as llm_client
 from backend.orchestrator.narrative import build_doc_skeleton
 from backend.orchestrator.state import CaseState, NodeCtx, NodeResult
-# REF_PREFIXES 的賦值在 kb.py，不在這裡——聊天層（backend/llm/chat.py）不得
-# import backend.nodes.*，但要用同一份前綴。**不要在這裡複製一份字面值。**
-from backend.retrieval.kb import REF_PREFIXES
 
 MAX_SENTENCES_PER_SLOT = 12
 
+# retrieve_refs 工具只准查函釋與判解兩類前綴：它們是「可以引用的來源」，
+# 決定書、卷證等不在此列（那些走 N4 的檢索通道，並且要另外做引用驗證）。
+#
+# 白名單的**唯一事實來源是 `settings.ref_prefixes()`**（目錄名跟著 corpus 走：
+# 第三方 corpus 的函釋在 `行政函釋_全量/`，寫死 `行政函釋/` 只看得到 29 份）。
+# 這裡與 `retrieval/kb.py` 都**不留模組層常數**：留一份就會有人拿它當真。
+#
+# 聊天層（`backend/llm/chat.py`）不得 import `backend.nodes.*`，但要用同一份前綴
+# ——它直接叫 `settings.ref_prefixes()`。`backend.config.settings` 比兩者都底層，
+# 誰都可以依賴它，不必為了共用而把常數留在檢索層。
+#
+# 這條通道要抓多深**不在這裡設**：撈取深度是檢索器的事，由 `retrieval/kb.py` 的
+# `REF_FETCH_DEPTH` 決定（那裡有為什麼是 50 的實測依據）。節點層不再傳倍數。
 
 
 def resolve_slots(requires_human_conclusion: bool) -> list[str]:
@@ -87,7 +98,7 @@ def run(state: CaseState, ctx: NodeCtx, case_fixture: dict[str, Any] | None = No
         if ctx.retriever is not None:
 
             def retrieve_fn(query: str) -> list[dict[str, Any]]:
-                hits = ctx.retriever.search(query, filters={"prefix": list(REF_PREFIXES)}, top_k=5)
+                hits = ctx.retriever.search(query, filters={"prefix": settings.ref_prefixes()}, top_k=5)
                 out: list[dict[str, Any]] = []
                 for h in hits:
                     # id **一律由 N5 重新編號**，跨多次工具呼叫連續遞增。沿用檢索器的 id 會撞：
