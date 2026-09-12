@@ -160,6 +160,7 @@ function newCaseObj(name, folderId) {
     folderId: folderId || null,
     started: false,
     _loaded: false, // 是否已從後端載入彙整版（getCase）
+    _loadTask: null, // 該次 getCase 的 Promise；chat 送出前要等它（見 ensureServerCase）
     _serverCreated: false, // 是否已在後端建案（第一次上傳走 createCase，之後走 uploadFiles）
     stream: [], // 對話串訊息陣列
     flags: { extract: false, cases: false, laws: false, graph: false, draft: false, out: false },
@@ -235,17 +236,20 @@ export function selectCase(id) {
 
 // 從後端載入單一案件的彙整版（getCase #4），填四群組。已載過就不重打。
 // 只有「已在後端建案」的案子才載；純本地空案（還沒上傳）沒得載。
-async function loadCase(c) {
-  if (c._loaded || !c._serverCreated) return
-  try {
-    const r = await api.getCase(c.caseId)
-    c._loaded = true
-    if (r.case && r.case.name) c.name = r.case.name
-    if (r.case && r.case.latest_run_id) c.runId = r.case.latest_run_id
-    fillDocsFromServer(c, r)
-  } catch {
-    /* 載入失敗維持現狀，不阻斷操作 */
-  }
+function loadCase(c) {
+  if (c._loaded || !c._serverCreated) return c._loadTask
+  c._loadTask = (async () => {
+    try {
+      const r = await api.getCase(c.caseId)
+      c._loaded = true
+      if (r.case && r.case.name) c.name = r.case.name
+      if (r.case && r.case.latest_run_id) c.runId = r.case.latest_run_id
+      fillDocsFromServer(c, r)
+    } catch {
+      /* 載入失敗維持現狀，不阻斷操作 */
+    }
+  })()
+  return c._loadTask
 }
 
 // 強制重載彙整版（解析卷證跑完之後要用——那一輪之後 intake／facts_excerpt／
@@ -282,15 +286,33 @@ function fillDocsFromServer(c, r) {
         : '',
     }))
   if (Array.isArray(r.references))
-    c.docs.cases = r.references.map((d) => ({ name: d.t, note: d.note || '', ext: '例', _libId: d.id, full: d.full_cached || '' }))
-  if (Array.isArray(r.artifacts))
-    c.docs.out = r.artifacts.map((a) => ({
-      name: a.name,
-      note: a.note || '',
-      ext: a.kind === 'graph' ? '圖' : a.kind === 'draft' ? '稿' : '檔',
-      _artifactId: a.id,
-      graph: a.kind === 'graph',
+    // 後端存的 `note` 是空字串（`backend/api/dossier.py:355`），判決結果與分類存在
+    // `verdict`／`category` 兩個鍵。只讀 note 的話，重新整理之後右欄的說明整排消失
+    // ——剛加進去時有「違章建築．駁回．…」，reload 就只剩標題。
+    c.docs.cases = r.references.map((d) => ({
+      name: d.t,
+      note: d.note || decisionNote({ category: d.category, verdict: d.verdict }),
+      ext: '例',
+      _libId: d.id,
+      full: d.full_cached || '',
     }))
+  if (Array.isArray(r.artifacts)) {
+    // 匯出的 PDF／DOCX **不是 artifact**：後端只把草稿寫進 manifest
+    //（`backend/dossier/store.py:524` 的 kind 只有 "draft"），匯出走的是下載端點。
+    // 所以彙整版回來時直接整包覆蓋，會把這個 session 剛匯出的那幾筆從右欄抹掉，
+    // 連帶把 `flags.out` 打回 false（「重新生成 PDF」變回「生成 PDF」）。
+    // 本地那幾筆沒有 `_artifactId`，用這個分辨並保留。
+    const sessionExports = (c.docs.out || []).filter((x) => !x._artifactId && EXPORT_EXTS.includes(x.ext))
+    c.docs.out = r.artifacts
+      .map((a) => ({
+        name: a.name,
+        note: a.note || '',
+        ext: a.kind === 'graph' ? '圖' : a.kind === 'draft' ? '稿' : '檔',
+        _artifactId: a.id,
+        graph: a.kind === 'graph',
+      }))
+      .concat(sessionExports)
+  }
   // 四塊（契約 §3.3）。`latest_run_id` 是 null ＝ 還沒跑過（正常，四塊本來就該是 null）；
   // 有值而四塊是 null ＝ run 讀不回來（異常）。這個區分推導得出來，後端沒有為它加新鍵。
   c.intake = r.intake || null
@@ -306,7 +328,10 @@ function fillDocsFromServer(c, r) {
   c.flags.laws = (c.docs.laws || []).length > 0
   c.flags.cases = (c.docs.cases || []).length > 0
   c.flags.draft = (c.docs.out || []).some((x) => x.ext === '稿')
-  c.flags.out = (c.docs.out || []).some((x) => x.ext === 'pdf' || x.ext === 'docx')
+  // 匯出項的 ext 是 'pdf'／'docx'（`runTool` 的 export 分支那樣寫進去的），
+  // 不是彙整版那三種（圖／稿／檔）——`EXPORT_EXTS` 是這兩處唯一的共同定義。
+  // 重新整理之後這一格必然是 false，因為匯出沒有落地在後端，**這是真的，不要假裝有**。
+  c.flags.out = (c.docs.out || []).some((x) => EXPORT_EXTS.includes(x.ext))
 }
 
 export function moveCase(c, folderId, folderName) {
@@ -356,7 +381,33 @@ export function newCaseInFolder(f) {
 }
 
 // ── 右欄卷宗 ──
+//: 工具結果狀態 → 畫面文字。**全前端唯一一份**，工具卡頭（Chat.vue）與結果區
+//: （ToolOut.vue）共用。
+//:
+//: **`empty` 刻意不說「查無」。** 契約 §2.3 把 `empty` 定義成「查無，hits[] 為空」，
+//: 但後端同一個值也拿來表示「這次**根本還沒查**」——查詢詞導不出來時
+//: （`backend/llm/chat.py:1424`），而它在同一段還特地叫模型
+//: 「不要說查無相似案例——這次根本還沒查」。前端把徽章寫死成「查無結果」，
+//: 等於在大標把後端的實話原地推翻，而承辦人先看到的是大標。
+//:
+//: 兩者**在 `status` 上分不出來，靠 `note` 也分不出來**：真的查無時後端的 note
+//: 就是「…查無結果。」（`chat.py:947`），兩種情況的 note 都非空。唯一的區分方式
+//: 是比對後端那串中文，下次改字就悄悄失效——那種比對不做。
+//: 所以這裡用一句**兩種情況都成立**的話，具體原因交給後端的 note 逐字講
+//: （它本來就每種情況都寫得很具體，而且就顯示在正下方）。
+//:
+//: 真正的修法是契約多一個態（例如 `not_attempted`），要動後端與契約，已回報。
+export const TOOL_STATUS = {
+  failed: { head: '工具執行失敗', chip: '失敗' },
+  empty: { head: '未取得結果', chip: '未取得結果' },
+  ok: { head: '完成', chip: '完成' },
+}
+export const toolStatusText = (status, where) => (TOOL_STATUS[status] || TOOL_STATUS.ok)[where]
+
 export { GROUPS }
+//: 匯出產出在右欄用的 ext。寫在一處，`fillDocsFromServer` 與 `flags.out` 共用——
+//: 分開寫的結果是 `flags.out` 拿彙整版的「檔／稿／圖」去比 'pdf'／'docx'，恆為 false。
+const EXPORT_EXTS = ['pdf', 'docx']
 let touched = []
 export function addOne(c, key, item) {
   item = { ...item, _new: true }
@@ -530,7 +581,13 @@ async function driveChat(c, payload, uiTool) {
         if (data.status === 'running' && stepIdx[key] == null) {
           stepIdx[key] = card.steps.push({ label: data.label, t: '', degraded: !!data.degraded }) - 1
         } else if (data.status === 'done') {
-          const row = { label: data.label, t: data.elapsed_ms ? (data.elapsed_ms / 1000).toFixed(1) : '', degraded: !!data.degraded }
+          // **`0` 是一個真的值，不是「沒有值」。** n2（案件分類）與 n3（程序審查）
+          // 是純規則運算，後端實測回的就是 `elapsed_ms: 0`（QA 雲上存檔 r05）。
+          // 用 falsy 判斷會把那兩行的秒數吃成空白，看起來像「這一步沒跑」——
+          // 而那正是這個產品要秀的東西：規則層零毫秒、零模型。
+          // 真的沒有這個鍵時（running 事件）才留白，用 `== null` 分。
+          const ms = data.elapsed_ms
+          const row = { label: data.label, t: ms == null ? '' : (ms / 1000).toFixed(1), degraded: !!data.degraded }
           if (stepIdx[key] != null) card.steps[stepIdx[key]] = row
           else card.steps.push(row)
         }
@@ -1165,13 +1222,19 @@ export async function reconcileFiles(c) {
   }
 }
 
-// chat/工具打後端前呼叫：若正在建案就等它完成，確保用的是真 caseId。
+// chat/工具打後端前呼叫：等建案與開案首載都完成，確保 caseId 與 runId 都是真的。
+//
+// **為什麼要等 `_loadTask`**：`GET /api/cases`（開機那次）沒有 `latest_run_id`，
+// `runId` 是 `loadCase` 打 `getCase` 補上的，而 `selectCase` 呼叫它時不等回來。
+// 選完案子立刻送出的 chat 會帶 `run_id: undefined`，後端就少了 run context。
+// 平常看不出來是因為 getCase 通常比人打字快——**那是碰運氣，不是正確**。
 async function ensureServerCase(c) {
-  if (c._createTask) {
+  for (const task of [c._createTask, c._loadTask]) {
+    if (!task) continue
     try {
-      await c._createTask
+      await task
     } catch {
-      /* 已在 syncUploadFiles 內提示 */
+      /* 建案失敗已在 syncUploadFiles 提示；載入失敗本來就不阻斷操作 */
     }
   }
 }
@@ -1236,9 +1299,11 @@ export async function searchLibrary(groupKey, q) {
         // 去重、截 limit，見 backend/retrieval/kb.py:334 的 docstring），
         // 所以分數確實是向量距離。即使如此也不在這裡自己寫一句文案——
         // 全前端只有 api/ranker.js 那一份，改了一處才不會漏掉另一處。
-        note: [x.category, x.verdict, x.score != null ? corpusScoreCaption(x.score) : '']
-          .filter(Boolean)
-          .join('．'),
+        note: decisionNote({
+          category: x.category,
+          verdict: x.verdict,
+          scoreCaption: x.score != null ? corpusScoreCaption(x.score) : '',
+        }),
         ext: '例',
       }))
     }
@@ -1247,6 +1312,17 @@ export async function searchLibrary(groupKey, q) {
     return []
   }
 }
+//: 相似案例說明欄的**唯一**組法。兩個地方要它：剛搜尋加入時（帶那一次查詢的相似度）
+//: 與重新整理後從後端還原時（沒有分數）。原本分開寫，結果是 reload 之後說明整排消失。
+//:
+//: **還原時不補分數。** `backend/api/dossier.py:329` 說明得很清楚：score 是某一次查詢
+//: 的相似度、不是這份決定書的屬性，加進卷宗之後就沒有對應的查詢了，所以後端刻意存 null。
+//: 為了版面好看補一個舊分數回去，會讓人以為那是「這份跟本案的相似度」——
+//: 少一段是誠實的，補回去不是。
+function decisionNote({ category, verdict, scoreCaption } = {}) {
+  return [category, verdict, scoreCaption].filter(Boolean).join('．')
+}
+
 export function addSearched(groupKey, items) {
   const c = active()
   let n = 0

@@ -1,6 +1,6 @@
 <script setup>
 import { computed } from 'vue'
-import { state, active, stages, TOOLS, runTool, gotoProcedureCheck } from '../store/app.js'
+import { state, active, stages, TOOLS, runTool, gotoProcedureCheck, toolStatusText } from '../store/app.js'
 import ToolOut from './ToolOut.vue'
 import ProcedureCheck from './ProcedureCheck.vue'
 import Composer from './Composer.vue'
@@ -105,18 +105,21 @@ const caseMeta = computed(() =>
                          不能三種都畫成綠勾「完成」——那會把「查詢來源壞了」說成「查完了」。 -->
                     <span class="st">
                       <template v-if="m.running"><span class="spin"></span>執行中</template>
-                      <template v-else-if="m.status === 'failed'"><span style="color: var(--alert)">✕</span> 失敗</template>
-                      <template v-else-if="m.status === 'empty'"><span style="color: var(--warn)">○</span> 查無結果</template>
-                      <template v-else><span style="color: var(--ok)">✓</span> 完成</template>
+                      <template v-else-if="m.status === 'failed'"><span style="color: var(--alert)">✕</span> {{ toolStatusText('failed', 'chip') }}</template>
+                      <template v-else-if="m.status === 'empty'"><span style="color: var(--warn)">○</span> {{ toolStatusText('empty', 'chip') }}</template>
+                      <template v-else><span style="color: var(--ok)">✓</span> {{ toolStatusText('ok', 'chip') }}</template>
                     </span>
                   </div>
                   <div class="tool-steps">
-                    <!-- elapsed_ms 只有 status=done 才有；沒有就整個不顯示，
-                         不要印一個孤零零的「s」（實測案件分類／程序審查兩節點就是這樣）。
+                    <!-- elapsed_ms 只有 status=done 才有；**沒有**這個鍵才留白，
+                         不要印一個孤零零的「s」。但 `0` 是一個真的值：n2／n3 是純規則
+                         運算，後端回的就是 0 ms（QA 雲上存檔 r05），用 falsy 判斷會把
+                         那兩行吃成空白、看起來像沒跑。store 已改用 `== null` 區分，
+                         這裡也用 `!== ''` 而不是 truthy。
                          degraded=true 是後端說「這一節點降級跑完」，標黃。 -->
                     <div v-for="(s, i) in m.steps" :key="i" class="step" :class="{ degraded: s.degraded }">
                       <span class="tick">✓</span><span>{{ s.label }}<template v-if="s.degraded">（降級）</template></span>
-                      <span v-if="s.t" class="t">{{ s.t }}s</span>
+                      <span v-if="s.t !== ''" class="t">{{ s.t }}s</span>
                     </div>
                   </div>
                   <div class="tool-out">
