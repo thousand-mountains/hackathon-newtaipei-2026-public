@@ -15,6 +15,12 @@ export interface AppealBackendStackProps extends cdk.StackProps {
   readonly modelIdDraft: string;
   /** Bedrock Managed Knowledge Base id */
   readonly knowledgeBaseId: string;
+  /**
+   * KB 語料所在的 S3 bucket。母庫查的**全文**走 `s3:GetObject` 直接讀原始 `.txt`
+   * ——KB retrieve 回的是 chunk，拼片段會拼出一份殘缺卻看起來完整的文件。
+   * 缺這一項，`GET /api/laws/{id}` 與 `GET /api/decisions/{id}` 在雲上會 503。
+   */
+  readonly s3KbBucket: string;
   /** 檢索分數下限（字串原樣傳給後端，由後端解析） */
   readonly kbMinScore: string;
   /**
@@ -169,6 +175,17 @@ export class AppealBackendStack extends cdk.Stack {
       }),
     );
 
+    // 母庫查的全文通道：只准讀 KB 語料那個 bucket 的 `kb/` 前綴，且只有 GetObject。
+    // **不給 ListBucket**——端點是拿明確的 key 去讀，不需要列目錄；給了就等於
+    // 把整個語料的檔名清單開放給任何能打到這支端點的人。
+    taskRole.addToPolicy(
+      new iam.PolicyStatement({
+        sid: 'ReadCorpusObjectsOnly',
+        actions: ['s3:GetObject'],
+        resources: [`arn:aws:s3:::${props.s3KbBucket}/kb/*`],
+      }),
+    );
+
     // ── 叢集 ──────────────────────────────────────────────────────────────
     const cluster = new ecs.Cluster(this, 'Cluster', {
       clusterName: `${PREFIX}-cluster`,
@@ -265,6 +282,7 @@ export class AppealBackendStack extends cdk.Stack {
             BEDROCK_MODEL_ID_EXTRACT: props.modelIdExtract,
             BEDROCK_MODEL_ID_DRAFT: props.modelIdDraft,
             BEDROCK_KB_ID: props.knowledgeBaseId,
+            S3_KB_BUCKET: props.s3KbBucket,
             KB_MIN_SCORE: props.kbMinScore,
             // 檢索品質的四個旋鈕。**它們與 KB_MIN_SCORE 是一組的，不能只帶一半**
             // （2026-09-12 部署前實際攔下來）：只帶 KB_MIN_SCORE=0.15 而不帶重排，

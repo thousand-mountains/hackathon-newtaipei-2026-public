@@ -43,6 +43,7 @@ new AppealBackendStack(app, 'HackNtpcAppealBackend', {
   modelIdExtract: required('BEDROCK_MODEL_ID_EXTRACT'),
   modelIdDraft: required('BEDROCK_MODEL_ID_DRAFT'),
   knowledgeBaseId: required('BEDROCK_KB_ID'),
+  s3KbBucket: required('S3_KB_BUCKET'),
   kbMinScore: required('KB_MIN_SCORE'),
   // 這四項與 KB_MIN_SCORE 是一組的（見 stack 的 rerankModelId 說明）：
   // 少帶任何一項，服務都會**安靜地**退化——不報錯、畫面照樣演完，
