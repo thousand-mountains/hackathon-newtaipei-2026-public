@@ -127,14 +127,14 @@ def test_manifest_survives_a_new_python_process():
     store.rename(m["case_id"], "跨 process 的名字", d)
     store.add_items(m["case_id"], "laws",
                     [{"id": "kb/public/相關法規_全量/廢棄物清理法.txt", "t": "廢棄物清理法"}], d)
-    code = (
-        "import sys; sys.path.insert(0, %r)\n"
-        "from backend.dossier import store\n"
-        "import pathlib, json\n"
-        "m = store.load(%r, pathlib.Path(%r))\n"
-        "print(json.dumps({'name': m['name'], 'laws': [x['id'] for x in m['laws']]}, ensure_ascii=False))\n"
-        % (str(ROOT), m["case_id"], str(d))
-    )
+    code = "\n".join([
+        f"import sys; sys.path.insert(0, {str(ROOT)!r})",
+        "import json, pathlib",
+        "from backend.dossier import store",
+        f"m = store.load({m['case_id']!r}, pathlib.Path({str(d)!r}))",
+        "print(json.dumps({'name': m['name'], 'laws': [x['id'] for x in m['laws']]},"
+        " ensure_ascii=False))",
+    ])
     out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True)
     got = json.loads(out.stdout.strip())
     assert_eq(got["name"], "跨 process 的名字")
