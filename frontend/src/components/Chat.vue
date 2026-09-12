@@ -1,6 +1,6 @@
 <script setup>
 import { computed } from 'vue'
-import { state, active, stages, TOOLS, runTool } from '../store/app.js'
+import { state, active, stages, TOOLS, runTool, gotoProcedureCheck } from '../store/app.js'
 import ToolOut from './ToolOut.vue'
 import Composer from './Composer.vue'
 
@@ -12,8 +12,10 @@ const greeting = computed(() => {
 })
 const c = computed(() => active())
 const empty = computed(() => !c.value.stream.length)
+// 案件識別碼用後端的 caseId 真值。之前這裡寫死「案號 1143062584」，
+// 載入 synthetic-blocked-01 時畫面照樣顯示那個號，等於對承辦人報了一個不存在的案號。
 const caseMeta = computed(() =>
-  c.value.docs.evidence.length ? `案號 1143062584．卷證 ${c.value.docs.evidence.length} 份` : '尚未載入卷證',
+  c.value.docs.evidence.length ? `${c.value.caseId}．卷證 ${c.value.docs.evidence.length} 份` : '尚未載入卷證',
 )
 </script>
 
@@ -34,7 +36,7 @@ const caseMeta = computed(() =>
         <p class="es">你的訴願小助手。從下面的 <span class="kbd">＋</span> 開始，把卷證丟進來吧。</p>
       </div>
       <div v-else class="stream-inner">
-        <div v-for="m in c.stream" :key="m.id" class="msg" :class="{ me: m.who === 'me' }">
+        <div v-for="m in c.stream" :key="m.id" :data-msg="m.id" class="msg" :class="{ me: m.who === 'me' }">
           <!-- 使用者訊息 -->
           <template v-if="m.who === 'me'">
             <div class="body">
@@ -54,6 +56,14 @@ const caseMeta = computed(() =>
               </div>
               <!-- 純 HTML 回覆 -->
               <div v-else-if="m.kind === 'html'" v-html="m.html"></div>
+              <!-- 期限／天數類問題：規則引擎接手（契約 §2.4.1 一）。
+                   **這一則刻意不顯示任何天數**——agent 算出來的天數在 done.answer 裡，
+                   期間算錯在訴願案有實質後果，所以整段不落地，只給理由與一顆 CTA。 -->
+              <template v-else-if="m.kind === 'redirect'">
+                <p>{{ m.reason }}</p>
+                <p style="color: var(--muted); font-size: 12px; margin-top: 6px">期限請以「程序審查」的規則引擎算式為準；本則不顯示聊天推算的天數。</p>
+                <button class="btn pri" style="margin-top: 8px" @click="gotoProcedureCheck()">{{ m.cta }}</button>
+              </template>
               <!-- 工具清單卡 -->
               <template v-else-if="m.kind === 'tools-help'">
                 <p>我是訴願案件的辦案助理。目前開放 7 支工具（API），可用「/」呼叫，也可以直接用中文描述需求：</p>
@@ -74,8 +84,12 @@ const caseMeta = computed(() =>
                   <div class="tool-head">
                     <span class="api">{{ m.api }}()</span>
                     <span class="nm">{{ m.name }}</span>
+                    <!-- 契約 §2.3：ok／empty／failed 三種在畫面上要分得出來，
+                         不能三種都畫成綠勾「完成」——那會把「查詢來源壞了」說成「查完了」。 -->
                     <span class="st">
                       <template v-if="m.running"><span class="spin"></span>執行中</template>
+                      <template v-else-if="m.status === 'failed'"><span style="color: var(--alert)">✕</span> 失敗</template>
+                      <template v-else-if="m.status === 'empty'"><span style="color: var(--warn)">○</span> 查無結果</template>
                       <template v-else><span style="color: var(--ok)">✓</span> 完成</template>
                     </span>
                   </div>

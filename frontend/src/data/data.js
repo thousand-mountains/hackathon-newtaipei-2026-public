@@ -53,7 +53,7 @@ export const TOOLS = [
    kw:["法規","法條","條文","函釋","依據","基準","適用哪"]},
   {id:"graph",cmd:"/生成關聯圖",name:"生成關聯圖",api:"build_relation_graph",
    param:"case_id, scope=[卷證,事實,爭點,法規,結論]",
-   desc:"將卷證、事實、爭點、法規與結論繪成心智圖，標示支持、關聯與矛盾三種關係",
+   desc:"將卷證、事實、爭點、法規與結論繪成關聯圖，標示引錄、觸發、回應與引用四種關係，並標出引用有疑慮之處",
    kw:["關聯圖","心智圖","圖","關係圖","脈絡","視覺化","graph","架構圖"]},
   {id:"draft",cmd:"/生成草稿",name:"草稿生成",api:"generate_decision_draft",
    param:"case_id, run_id",

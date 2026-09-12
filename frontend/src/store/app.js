@@ -1,8 +1,7 @@
 // 訴願智慧輔助平台 — 應用狀態與辦案流程（單例 reactive store）
 // 移植自 design/訴願智慧輔助平台.html 的命令式 JS，改為 Vue 響應式模型。
 import { reactive, computed } from 'vue'
-import { CASE_NO, EVIDENCE_POOL, LAW_POOL, CASE_POOL, TOOLS, GROUPS, ACKS } from '../data/data.js'
-import { GNODES, GEDGES, DRAFT_HTML } from '../data/graph.js'
+import { CASE_NO, EVIDENCE_POOL, TOOLS, GROUPS, ACKS } from '../data/data.js'
 import { api } from '../api/index.js'
 import { ApiError } from '../api/http.js'
 import { diffToHtml } from '../api/diff.js'
@@ -176,7 +175,11 @@ function fillDocsFromServer(c, r) {
   if (Array.isArray(r.laws))
     c.docs.laws = r.laws.map((l) => ({
       name: l.t,
-      note: l.note || '',
+      // 契約 §3.5.2：手動挑進來的法規要**持續**標著它走到哪（matched／query_only／unused）。
+      // 文案用後端的 retrieval_note，**不在前端另寫一份**——兩份比對規則遲早會兜不起來，
+      // 出現「chat 說這條沒進查表、右欄卻標著進了」，使用者無從判斷哪個是真的。
+      note: l.retrieval_note || l.note || '',
+      status: l.retrieval_status || 'unknown',
       ext: '法',
       _libId: l.id,
       full: l.body_cached
@@ -340,7 +343,8 @@ function aiMsg(html) {
 //   error      → stage=transport 走「連線中斷可重問」，不當模型錯誤
 async function driveChat(c, payload, uiTool) {
   await ensureServerCase(c) // 確保建案已完成、caseId 是真的
-  let toolMsg = null
+  let toolMsg = null // 最後一張工具卡（refine 的 diff、done 收尾用）
+  const cards = {} // call_id -> 工具卡
   let tokenMsg = null
   const stepIdx = {} // call_id:step -> steps[] 索引
 
@@ -393,21 +397,36 @@ async function driveChat(c, payload, uiTool) {
         }
       } else if (event === 'tool_call') {
         clearThinking()
-        if (!toolMsg) toolMsg = push(c, { who: 'ai', kind: 'tool', ack: null, api: data.tool, name: data.label || '', steps: [], running: true, out: null })
-        else toolMsg.api = data.tool
+        // **一回合可能呼叫同一支工具兩次以上**（契約 §2.3 ②，實測「查建築法25條和訴願法14條」
+        // 就會發 tc-1／tc-2 兩組）。以前這裡只有一張 toolMsg，第二組結果會把第一組蓋掉，
+        // 使用者看到的命中數比實際少。改成依 call_id 一組一張卡。
+        if (toolMsg && !toolMsg.callId) {
+          // ack 先開的那張卡還沒認領 → 給第一個 call_id 用
+          toolMsg.callId = data.call_id
+          toolMsg.api = data.tool
+          if (data.label) toolMsg.name = data.label
+          cards[data.call_id] = toolMsg
+        } else {
+          cards[data.call_id] = push(c, {
+            who: 'ai', kind: 'tool', ack: null, callId: data.call_id,
+            api: data.tool, name: data.label || '', steps: [], running: true, out: null,
+          })
+          toolMsg = cards[data.call_id]
+        }
       } else if (event === 'tool_step') {
-        if (!toolMsg) continue
+        const card = cards[data.call_id] || toolMsg
+        if (!card) continue
         const key = data.call_id + ':' + data.step
         if (data.status === 'running' && stepIdx[key] == null) {
-          stepIdx[key] = toolMsg.steps.push({ label: data.label, t: '', degraded: !!data.degraded }) - 1
+          stepIdx[key] = card.steps.push({ label: data.label, t: '', degraded: !!data.degraded }) - 1
         } else if (data.status === 'done') {
           const row = { label: data.label, t: data.elapsed_ms ? (data.elapsed_ms / 1000).toFixed(1) : '', degraded: !!data.degraded }
-          if (stepIdx[key] != null) toolMsg.steps[stepIdx[key]] = row
-          else toolMsg.steps.push(row)
+          if (stepIdx[key] != null) card.steps[stepIdx[key]] = row
+          else card.steps.push(row)
         }
         scrollSoon()
       } else if (event === 'tool_result') {
-        applyToolResult(c, toolMsg, data)
+        applyToolResult(c, cards[data.call_id] || toolMsg, data)
       } else if (event === 'token') {
         appendToken(data.text || '')
       } else if (event === 'done') {
@@ -435,14 +454,16 @@ async function driveChat(c, payload, uiTool) {
             }
           }
         }
-        // 紅線一（交接文件第一件）：redirect 非 null → 期限／天數這類問題交給規則引擎，
-        // **不得顯示 AI 算的天數**。改顯示 redirect.reason，不做捲動（顯示提示即可）。
+        // 紅線一（契約 §2.4.1 一、CONSTITUTION §4）：redirect 非 null →
+        // 期限／天數這類問題交給規則引擎，**不得顯示 agent 講的任何天數**。
+        // 這裡刻意**不寫 data.answer**（answer 裡就是 LLM 算的天數），只放 reason + CTA。
         if (data.redirect) {
           if (!tokenMsg) tokenMsg = push(c, { who: 'ai', kind: 'html', html: '' })
           const reason = data.redirect.reason || '期間計算由程序審查的規則引擎負責，聊天不計算期限。'
-          tokenMsg.html =
-            '<p>' + esc(reason) + '</p>' +
-            '<p style="color:var(--muted);font-size:12px;margin-top:6px">期限請以「程序審查」的規則引擎算式為準；本則不顯示聊天推算的天數。</p>'
+          tokenMsg.kind = 'redirect'
+          tokenMsg.reason = reason
+          tokenMsg.cta = data.redirect.cta || '查看程序審查的算式'
+          Object.values(cards).forEach((k) => (k.running = false))
           if (toolMsg) toolMsg.running = false
           return
         }
@@ -457,10 +478,12 @@ async function driveChat(c, payload, uiTool) {
         // 紅線二（第二件）：dropped_refs 非空 → 標「引用有問題」。
         if (data.dropped_refs && data.dropped_refs.length && tokenMsg)
           tokenMsg.html += '<p style="color:var(--muted);font-size:12px;margin-top:6px">此則含無法對應的引用，請勿直接採用。</p>'
+        Object.values(cards).forEach((k) => (k.running = false))
         if (toolMsg) toolMsg.running = false
         return
       } else if (event === 'error') {
         clearThinking()
+        Object.values(cards).forEach((k) => (k.running = false))
         if (toolMsg) toolMsg.running = false
         // 契約 §2.3：error.stage ∈ tool|model|transport|internal。transport 不當模型錯誤。
         aiMsg('<p>' + (data.stage === 'transport' ? '連線中斷，可重問。' : '執行時發生問題：' + esc(data.error || '未知錯誤')) + '</p>')
@@ -470,6 +493,7 @@ async function driveChat(c, payload, uiTool) {
     }
   } catch (e) {
     clearThinking()
+    Object.values(cards).forEach((k) => (k.running = false))
     if (toolMsg) toolMsg.running = false
     // 開串流前的 JSON 錯誤（契約 §2.2）：503 非 live 檔位 / 404 案件不存在 / 400 訊息空。
     // 顯示後端給的 detail，不要一律說「連線中斷」——尤其 fixture 檔位要說「聊天需要即時模型」。
@@ -492,22 +516,68 @@ async function driveChat(c, payload, uiTool) {
   }
 }
 
+// redirect 的 CTA：捲到本案最近一次「解析卷證檔案」的工具卡並標記——
+// 程序審查（期限與算式）是那一次 run（n3）算出來的，規則引擎的結果在那條路徑上。
+// ⚠️ 目前**畫面上還看不到算式本身**：契約 §3.3 說跑完之後打 #4 彙整版取
+// intake／facts_excerpt／issues／screen，但後端的 GET /api/cases/{id} 只回
+// {case,files,laws,references,artifacts}，沒有那四塊。這是契約與後端對不上，已回報。
+export function gotoProcedureCheck() {
+  const c = active()
+  if (!c) return
+  const idx = [...c.stream].reverse().find((m) => m.kind === 'tool' && m.api === 'extract_case_document')
+  if (!idx) {
+    toast('這件案子還沒有解析過卷證，先跑一次「解析卷證檔案」')
+    return
+  }
+  requestAnimationFrame(() => {
+    const el = document.querySelector(`[data-msg="${idx.id}"]`)
+    if (!el) return
+    el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    el.classList.add('glow')
+    setTimeout(() => el.classList.remove('glow'), 1600)
+  })
+}
+
 // tool_result → 設定工具卡 out（ToolOut.vue 依 type 呈現）＋依 §3 歸檔到右欄卷宗
+//
+// **工具卡只畫 tool_result 真的帶回來的東西。** 2026-09-13 前這裡把 out 設成
+// `{type:'laws'}` 這種「只有型別、沒有資料」的物件，ToolOut.vue 就去讀 data.js 的
+// LAW_POOL／CASE_POOL／寫死的解析結果——畫面上出現的是一件**跟本案無關的廢清法案子**
+// （實際載入的是建築法案），而且看起來完全像真的。這比少一塊功能嚴重得多。
 function applyToolResult(c, toolMsg, data) {
   const tool = data.tool
   if (data.status === 'failed' || data.status === 'empty') {
     if (toolMsg) {
       toolMsg.running = false
+      // 契約 §2.3：empty 是「查無」、failed 是「工具本身壞了」，畫面上要分得出來。
+      // 卡頭的狀態也跟著改，不能兩種都顯示綠勾「完成」。
+      toolMsg.status = data.status
       const fb = data.status === 'failed' ? '查詢來源失敗，可重試。' : '這個條件下沒有找到。'
-      toolMsg.out = { type: 'html', html: '<p>' + esc(data.note || fb) + '</p>' }
+      toolMsg.out = { type: 'status', status: data.status, note: data.note || fb }
     }
     return
   }
 
-  // ok：設定 out.type（內容用既有 demo 資料，畫面形狀不變）
+  // ok：把 tool_result 的真值放進 out，ToolOut.vue 只認 out 裡的東西。
   if (toolMsg) {
-    if (tool === 'generate_decision_draft') toolMsg.out = { type: 'html', html: data.html || DRAFT_HTML }
-    else if (OUT_TYPE[tool]) toolMsg.out = { type: OUT_TYPE[tool] }
+    toolMsg.status = 'ok'
+    if (tool === 'search_regulations' || tool === 'search_similar_decisions' || tool === 'retrieve_refs') {
+      toolMsg.out = { type: OUT_TYPE[tool] || 'hits', hits: data.hits || [], pickedLaws: data.picked_laws || null }
+    } else if (tool === 'build_relation_graph') {
+      toolMsg.out = { type: 'graph', graph: data.graph || null }
+    } else if (tool === 'extract_case_document') {
+      toolMsg.out = { type: 'extract', runId: data.run_id || null, state: data.state || '' }
+    } else if (tool === 'generate_decision_draft') {
+      toolMsg.out = {
+        type: 'draft',
+        artifactId: data.artifact_id || null,
+        runId: data.run_id || null,
+        citeCount: typeof data.cite_count === 'number' ? data.cite_count : null,
+        state: data.state || '',
+        sections: null, // 全文走 #21 getArtifact 取，見下方 loadDraftSections
+      }
+      loadDraftSections(c, toolMsg.out)
+    }
     toolMsg.running = false
   }
 
@@ -533,16 +603,22 @@ function applyToolResult(c, toolMsg, data) {
     refreshGroupIds(c, 'laws') // 同上（listCaseLaws #12）
   } else if (tool === 'build_relation_graph') {
     c.flags.graph = true
-    if (!c.docs.out.some((x) => x.name === '案件關聯圖'))
-      addOne(c, 'out', { name: '案件關聯圖', note: GNODES.length + ' 節點．' + GEDGES.length + ' 條關聯', ext: '圖', graph: true })
+    // 關聯圖**不歸檔**（契約 §3.0）：它是同一份 run 的視圖，不是新的產出物，
+    // 每次呼叫都從當下 payload 重算。之前這裡往「答辯書與產出」塞一筆，
+    // 而且節點／關聯數是 data/graph.js 假資料的長度，不是這張圖的 stats。
+    const st = (data.graph && data.graph.stats) || null
+    const gi = c.docs.out.find((x) => x.graph)
+    if (gi && st) gi.note = `${st.nodes} 節點．${st.edges} 條關聯`
   } else if (tool === 'generate_decision_draft') {
     if (data.run_id) c.runId = data.run_id
     c.flags.draft = true
+    // 引註數用 cite_count 真值（契約 §3.5）。拿不到就不講數字，**不要沿用設計稿的「14 處」**。
+    const citeNote = typeof data.cite_count === 'number' ? `引註 ${data.cite_count} 處．` : ''
     if (!c.docs.out.some((x) => x.name === '訴願決定書草稿 v1'))
-      addOne(c, 'out', { name: '訴願決定書草稿 v1', note: `AI 生成．引註 ${data.cite_count || 14} 處．待承辦人審核`, ext: '稿', full: data.html || DRAFT_HTML, _artifactId: data.artifact_id })
-    // 重新生成草稿＝新的一版，先清掉舊基準再存新版，避免優化文案跨版本誤比。
+      addOne(c, 'out', { name: '訴願決定書草稿 v1', note: `AI 生成．${citeNote}待承辦人審核`, ext: '稿', full: '', _artifactId: data.artifact_id })
+    // 重新生成草稿＝新的一版，舊基準先清掉，避免優化文案跨版本誤比。
+    // 新基準等 #21 取回 sections[] 再存（見 loadDraftSections），這裡不塞假草稿。
     clearDraftText(c.caseId)
-    saveDraftText(c.caseId, draftHtmlToText(data.html || DRAFT_HTML))
   } else if (tool === 'refine_text') {
     // 優化文案：拿上一版（localStorage）與後端回傳新版做 diff，畫成前後對照。
     const prev = loadDraftText(c.caseId)
@@ -552,6 +628,52 @@ function applyToolResult(c, toolMsg, data) {
       saveDraftText(c.caseId, next) // 新版成為下次 diff 的基準
     }
   }
+}
+
+// 草稿全文：`tool_result` 只帶 artifact_id／cite_count，**全文在 #21**（契約 §4.4）。
+// 取回 sections[] 放進工具卡，同時當成優化文案 diff 的新基準。
+// 取不到就留 null——工具卡會說「草稿已產出，展開右欄可看全文」，而不是畫一份寫死的草稿。
+async function loadDraftSections(c, out) {
+  if (!out.artifactId) return
+  try {
+    const a = await api.getArtifact(c.caseId, out.artifactId)
+    if (Array.isArray(a.sections)) {
+      out.sections = a.sections
+      out.title = a.title || ''
+      if (typeof a.cite_count === 'number') out.citeCount = a.cite_count
+      const item = c.docs.out.find((x) => x._artifactId === out.artifactId)
+      if (item) item.full = sectionsToHtml(a)
+      saveDraftText(c.caseId, sectionsToText(a.sections))
+    }
+  } catch {
+    /* 取不到全文不影響工具卡其餘資訊；不要用假草稿補 */
+  }
+}
+
+// sections[] → 顯示用 HTML。`title`／`meta` 是文件抬頭，與 sections[] 平行，不是 section（契約 §4.4）。
+export function sectionsToHtml(a) {
+  const head = a && a.title ? `<h4>${esc(a.title)}</h4>` : ''
+  return (
+    head +
+    ((a && a.sections) || [])
+      .map(
+        (s) =>
+          `<h4>${esc(s.h || '')}</h4>` +
+          (s.blocks || [])
+            .map((b) => {
+              const cites = (b.cites || []).map((x) => `<span class="cite">${esc(x.label || x.id || '')}</span>`).join('')
+              return `<p>${esc(b.text || '')}${cites}</p>`
+            })
+            .join(''),
+      )
+      .join('')
+  )
+}
+function sectionsToText(sections) {
+  return (sections || [])
+    .map((s) => (s.blocks || []).map((b) => b.text || '').join('\n'))
+    .join('\n\n')
+    .trim()
 }
 
 function archiveHits(c, key, hits, mapper) {
@@ -641,9 +763,20 @@ async function runExport(c, tool, id) {
   const card = push(c, { who: 'ai', kind: 'tool', ack: pick(ACKS[id] || ['好的。']), api: tool.api, name: tool.name, steps: [], running: true, out: null })
   try {
     const res = await api.exportArtifact(c.caseId, artifactId, format)
-    const fname = res.filename || `新北府訴決字第1141234567號_訴願決定書草稿.${format}`
+    // 檔名用後端 Content-Disposition 的真值；拿不到就用中性檔名，**不要編一個假案號**。
+    const fname = res.filename || `訴願決定書草稿.${format}`
     card.running = false
-    card.out = { type: 'export', isPdf, fname }
+    card.status = 'ok'
+    card.out = {
+      type: 'export',
+      isPdf,
+      fname,
+      // 大小、引註數、對不回來的引註數都取自實際回應（X-Cite-Count／X-Unresolved-Cites），
+      // 不是設計稿寫死的「A4 直式．4 頁．約 268 KB」。
+      kb: res.blob && res.blob.size ? Math.max(1, Math.round(res.blob.size / 1024)) : null,
+      citeCount: typeof res.citeCount === 'number' ? res.citeCount : null,
+      unresolved: res.unresolved || 0,
+    }
     if (res.blob && !res._mock) triggerDownload(res.blob, fname)
     if (!c.docs.out.some((x) => x.name === fname))
       addOne(c, 'out', { name: fname, note: (isPdf ? 'PDF' : 'Word') + '．訴願決定書版型', ext: isPdf ? 'pdf' : 'docx' })
@@ -838,13 +971,9 @@ export async function viewDecisionFull(libId) {
 export async function viewArtifactFull(artifactId) {
   try {
     const a = await api.getArtifact(active().caseId, artifactId)
-    if (a.html) return a.html
-    // sections[] 結構 → 簡單組成 HTML（契約 §4.4）
-    if (Array.isArray(a.sections)) {
-      return a.sections
-        .map((s) => `<h4>${esc(s.h || '')}</h4>` + (s.blocks || []).map((b) => `<p>${esc(b.text || '')}</p>`).join(''))
-        .join('')
-    }
+    // sections[] 結構 → HTML（契約 §4.4）。與工具卡共用 sectionsToHtml，
+    // 兩處各寫一份轉換就會出現「同一份草稿在兩個地方長得不一樣」。
+    if (Array.isArray(a.sections)) return sectionsToHtml(a)
     return ''
   } catch {
     toast('取產出全文失敗')

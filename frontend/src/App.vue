@@ -1,7 +1,7 @@
 <script setup>
 import { ref, reactive, computed, watch, onMounted } from 'vue'
 import {
-  state, active, boot, toast, CASE_NO,
+  state, active, boot, toast, runTool,
   availableEvidence, attachToPending, uploadToFolder,
   searchHave, searchLibrary, addSearched, deleteCase, deleteFolder,
   viewLawFull, viewDecisionFull, viewArtifactFull,
@@ -170,19 +170,32 @@ async function viewDoc(it) {
     docView.loading = false
   }
 }
-function viewCase(k) {
-  // ToolOut 案例卡（工具結果）本身帶 full
-  Object.assign(docView, { name: k.no + '　' + k.title, note: k.type + '．' + k.verdict, full: k.full, graph: false, loading: false })
+// 工具卡的案例卡。chat 的 hit **只有 §3.2 那幾個欄位**：`id` 是 RefBook 本回合編號
+// （c1／c2…），不是母庫 id，所以**這裡打不到 §4.3 的全文端點**。要看全文得從右欄
+// 「相關案例」開（那筆才帶得到母庫 id）。不要用 hit 拼一份看起來像全文的東西。
+function viewCase(h) {
+  const meta = [
+    h.src ? '出處 ' + h.src : '',
+    typeof h.score === 'number' ? '向量相似度 ' + Math.round(h.score * 100) + '%（非法律相似度）' : '',
+    h.provenance ? '來源 ' + h.provenance : '來源未標示',
+  ].filter(Boolean).join('　·　')
+  Object.assign(docView, {
+    name: h.t || h.id,
+    note: meta,
+    full:
+      (h.note ? '<p>' + h.note + '</p>' : '') +
+      '<p style="color:var(--muted);font-size:12.5px">本回合檢索命中的摘要資訊。全文請從右欄「相關案例」開啟——那裡才有母庫識別碼。</p>',
+    graph: false,
+    loading: false,
+  })
   openSheet('doc', {})
 }
-function viewGraph() {
-  openSheet('graphBig', {})
+// 匯出卡的「重新下載」：重跑一次匯出端點拿檔案，不是假裝下載。
+function reExport(isPdf) {
+  runTool(isPdf ? 'pdf' : 'doc', '', true)
 }
-function previewPaper(isPdf) {
-  openSheet('paper', { isPdf })
-}
-function exportDownload() {
-  toast('原型展示：正式系統將於此下載檔案')
+function viewGraph(graph) {
+  openSheet('graphBig', { graph })
 }
 
 // Esc 關閉
@@ -204,8 +217,7 @@ const moveFolders = computed(() => state.folders)
         @sheet="onSheetRequest"
         @view-case="viewCase"
         @view-graph="viewGraph"
-        @preview-paper="previewPaper"
-        @export-download="exportDownload"
+        @export-download="reExport"
       />
       <FoldersRail @sheet="onSheetRequest" @view-doc="viewDoc" />
     </div>
@@ -321,50 +333,13 @@ const moveFolders = computed(() => state.folders)
     :actions="[{ label: '關閉', fn: closeSheet }]"
     @close="closeSheet"
   >
-    <RelationGraph v-if="docView.graph" />
-    <div v-else-if="docView.loading" class="typing" aria-label="載入全文中"><span></span><span></span><span></span></div>
+    <div v-if="docView.loading" class="typing" aria-label="載入全文中"><span></span><span></span><span></span></div>
     <div v-else v-html="docView.full"></div>
   </Sheet>
 
   <!-- graph big -->
-  <Sheet v-else-if="sheet.kind === 'graphBig'" title="案件關聯圖" :sub="'案號 ' + CASE_NO" xwide :actions="[{ label: '關閉', fn: closeSheet }]" @close="closeSheet">
-    <RelationGraph />
-  </Sheet>
-
-  <!-- paper preview -->
-  <Sheet
-    v-else-if="sheet.kind === 'paper'"
-    :title="sheet.data.isPdf ? 'PDF 版型預覽' : 'Word 版型預覽'"
-    sub="訴願決定書．標準版型"
-    wide
-    :actions="[{ label: '關閉', fn: closeSheet }, { label: '下載檔案', pri: true, fn: () => { closeSheet(); toast('原型展示：正式系統將於此下載檔案') } }]"
-    @close="closeSheet"
-  >
-    <div class="paper-scroll">
-      <div class="paper" style="min-width: 520px">
-        <div class="ph">新北市政府訴願決定書</div>
-        <div class="pno">案號：{{ CASE_NO }} 號</div>
-        <dl class="prow"><dt>訴願人</dt><dd>吉○實業有限公司</dd></dl>
-        <dl class="prow"><dt>代表人</dt><dd>陳○德</dd></dl>
-        <dl class="prow"><dt>原處分機關</dt><dd>新北市政府環境保護局</dd></dl>
-        <p style="margin-top: 12px">上列訴願人因違反廢棄物清理法事件，不服原處分機關民國 114 年 5 月 20 日新北環稽字第 1140876543 號裁處書所為之處分，提起訴願一案，本府依法決定如下：</p>
-        <div class="plabel">主文</div>
-        <p>原處分撤銷，由原處分機關於 2 個月內另為適法之處分。</p>
-        <div class="plabel">事實</div>
-        <p class="indent">緣訴願人於本市林口區○○路 88 號設廠從事塑膠製品製造，為原處分機關列管之事業。原處分機關於民國（下同）114 年 4 月 9 日派員前往稽查，查得廠區東側露天堆置未分類之廢塑膠混合物及廢木材約 12 立方公尺⋯⋯（略）</p>
-        <div class="plabel">理由</div>
-        <p class="indent">一、按廢棄物清理法第 36 條第 1 項規定：「事業廢棄物之貯存、清除或處理方法及設施，應符合中央主管機關之規定。」⋯⋯</p>
-        <p class="indent">五、惟查，遍查全卷，並無原處分機關依行政程序法第 102 條規定通知訴願人陳述意見之相關文書可稽⋯⋯</p>
-        <p class="indent">七、綜上論結，本件訴願為有理由，依訴願法第 81 條第 1 項規定，決定如主文。</p>
-        <div class="sig">
-          訴願審議委員會主任委員　蔡○榕<br />
-          委員　陳○燦　　委員　陳○夫　　委員　張○郁<br />
-          委員　蔡○良　　委員　黃○銘　　委員　劉○德<br />
-          委員　景○鳳　　委員　王○芸　　委員　李○裕
-        </div>
-        <div class="foot">如不服本決定，得於決定書送達之次日起 2 個月內向臺北高等行政法院（地址：臺北市士林區福國路 101 號）提起行政訴訟。<br /><br />中華民國 114 年 8 月 15 日</div>
-      </div>
-    </div>
+  <Sheet v-else-if="sheet.kind === 'graphBig'" title="案件關聯圖" :sub="active() ? active().name : ''" xwide :actions="[{ label: '關閉', fn: closeSheet }]" @close="closeSheet">
+    <RelationGraph v-if="sheet.data.graph" :graph="sheet.data.graph" />
   </Sheet>
 
   <div id="toast" role="status" aria-live="polite" :class="{ show: state.toastShow }">{{ state.toastMsg }}</div>

@@ -19,6 +19,14 @@ function withDetail(it, g) {
     `<p style="color:var(--muted);font-size:12.5px;border-top:1px solid var(--line-soft);padding-top:10px;margin-top:12px">原型展示：此為模擬卷證檔案，正式系統於此顯示 OCR 全文與採證影像。</p>`
   return { ...it, full }
 }
+// 契約 §3.5.2 的三態。`unknown`（還沒跑過草稿）刻意不標——
+// 「沒查過」與「查不到」是兩件事，合成一個值會讓剛加入的法規當場被標成「沒用到」。
+const PICK_LABEL = {
+  matched: '已進法條查表',
+  query_only: '僅用於相似案檢索',
+  unused: '本次未送進檢索',
+}
+
 function headAdd(g) {
   if (g.key === 'evidence') emit('sheet', { kind: 'upload' })
   else emit('sheet', { kind: 'search', group: g })
@@ -55,9 +63,9 @@ function headAdd(g) {
           <div v-for="(it, i) in active().docs[g.key]" :key="i" class="fitem" :class="{ 'fitem-new': it._new }">
             <span class="ic">{{ it.ext || g.abbr }}</span>
             <button v-if="it.full || it.graph || it._libId || it._artifactId || g.key === 'evidence'" class="ft" @click="emit('view-doc', withDetail(it, g))">
-              {{ it.name }}<small v-if="it.note">{{ it.note }}</small>
+              {{ it.name }}<small v-if="it.note || it.status"><span v-if="PICK_LABEL[it.status]" class="tag">{{ PICK_LABEL[it.status] }}</span>{{ it.note }}</small>
             </button>
-            <div v-else class="ft">{{ it.name }}<small v-if="it.note">{{ it.note }}</small></div>
+            <div v-else class="ft">{{ it.name }}<small v-if="it.note || it.status"><span v-if="PICK_LABEL[it.status]" class="tag">{{ PICK_LABEL[it.status] }}</span>{{ it.note }}</small></div>
             <button class="rm" title="移除" @click="removeDoc(g.key, i)">×</button>
           </div>
         </div>
