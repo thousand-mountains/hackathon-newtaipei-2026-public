@@ -16,16 +16,25 @@
 | # | 章節 | 改什麼 | 為什麼 |
 |---|---|---|---|
 | ① | §2.3 | `done` 恢復分層誠實燈號（`lamp`/`tier`/`origin`/`why`/`refs[]`/`dropped_refs[]`/`redirect`） | 初版漏掉，等於退掉 `CONSTITUTION` §1/§2 的實作與 AC5–AC12 |
-| ② | §2.3 | 加 `call_id`、`tool_result.status`；`session_id` 提前到 `ack`；**砍 `tool_step`** | 成對事件缺配對鍵；工具失敗會被畫成「查無」；斷線續不回 |
-| ③ | §0.1 §1.6 §3 | `extract`/`draft` **離開 chat**，改走 `POST /runs` + `GET /runs/{id}/events`。**串流 1 支 → 2 支** | chat 的 SSE 現況不是逐筆送（實跑證明），且 `run_case()` 沒有 `to_node`、卷內編號會靜默撞號 |
-| ④ | §2.1 §3 | chat 工具收斂成**既有五支**，統一用後端長名 | 原本四套命名互不相容，契約自己前後打架 |
+| ② | §2.3 | 加 `call_id`、`tool_result.status`；`session_id` 提前到 `ack`；`tool_step` **保留但改成真實來源** | 成對事件缺配對鍵；工具失敗會被畫成「查無」；斷線續不回；原本的 step 是前端 `sleep()` 假的 |
+| ③ | §0.1 §1.6 §3 | **維持「前端只打 chat 一支」**（Ci 拍板）。`extract`/`draft` 在 chat 內部觸發 pipeline，`tool_step` 轉發真實節點事件 | 介面已是「工具卡＋對話框」，統一入口對前端最省。後端要補 `to_node`、RefBook 重置、`gen()` 真串流 |
+| ④ | §2.1 §3 | chat 工具統一用後端長名，值域固定 **七支** | 原本四套命名互不相容，契約自己前後打架 |
 | ⑤ | §3.2 §3.3 §4 | `hits[]` 對齊後端實際欄位；`id` = S3 相對路徑；全文從 S3 讀 | 原本的欄位多半是設計稿假資料；KB 回的是 chunk 不是全文 |
 | ⑥ | §1.3 §1.4 §4.2 §4.3 | 母庫查**兩支都保留**，改用 `doc_kind` server-side filter | 668 部法規全文已在 KB 且實測命中；不篩就撈不到 |
 | ⑦ | §4 | 新增 §4.0：持久化＝一案一份 `manifest.json`，**不加資料庫** | 四份清單原本無處可存 |
 | ⑧ | §1.5 §6 | 匯出降級成 `html`/`md` | PDF/DOCX 要把中文字型與排版引擎塞進容器，投報率最低 |
+| ⑨ | §3.7 | **關聯圖改成後端新功能**（原本列在「建議砍」） | 邊在 payload 裡已經是現成的（`citations[].sentence_id` → `resolved_id`），零 LLM 可組 |
 
-已拍板（2026-09-12 Ci）：建案維持「上傳卷證即建案」；「相似案例」**先只收 `doc_kind=decision`**，裁判書本期不露出；
-`manifest` 與 `runs` **都接受「容器重啟即失」**，不搬 S3；AC7 在新語料下**要重跑**。
+已拍板（2026-09-12 Ci）：
+
+- **建案**維持「上傳卷證即建案」。
+- **相似案例**先只收 `doc_kind=decision`，裁判書本期不露出。
+- **持久化**：`manifest` 與 `runs` 都接受「容器重啟即失」，不搬 S3。
+- **AC7** 在新語料下要重跑（語料從 2477 長到 16970，多了整批裁判書）。
+- **前端只打 chat 一支。** 介面已改成「工具卡＋對話框」的形式，所有工具都走 chat。
+- **分層誠實燈號本期前端不渲染。** 後端照送（欄位全留，已驗綠、拿掉沒有好處），
+  前端不做燈號 UI。**見 §2.4 的兩項例外，那兩項不是裝飾。**
+- **關聯圖後端要做**，計畫見 `plans/2026-09-12-relation-graph.md`。
 
 ## 0. UI 心智模型（先懂這個，契約才看得懂）
 
@@ -40,32 +49,56 @@
 
 **關鍵差異**：工具由「使用者的訊息」觸發（打字命中關鍵字、或點 chip、或 `/` 選單），agent 端執行。所以主體是一支**聊天端點**，其餘是卷宗與案件的 CRUD。
 
-### 0.1 三條路，別混淆（③ 修訂）
+### 0.1 「前端 API」與「agent 工具」是兩層（③ 修訂：維持單一入口）
 
 ```
-① 對話（問答／查法規／查案例／讀卷／潤稿）
-   前端 ──POST /cases/{id}/chat（SSE）──▶ agent ──▶ 五支工具 ──▶ KB / 法規快照 / 卷內 payload
-
-② 慢工作（解析卷證／生成草稿）
-   前端 ──POST /cases/{id}/runs──▶ 202 + events_url
-        └─訂閱 GET /runs/{run_id}/events（SSE）──▶ node_start / node_done 逐節點進度
-
-③ 其餘（案件、卷宗、母庫查、產出）
-   前端 ──一次性 REST──▶ manifest.json / KB / S3
+前端  ──POST /cases/{id}/chat（SSE）──▶  後端 agent  ──呼叫工具──▶  解析卷證 / 查法規 / 查案例 /
+     （對話動作只認識這一支）              （自己決定用哪個）        撰稿 / 潤稿 / 讀卷 / 關聯圖
 ```
 
-- **`extract`／`draft` 不是 chat 工具。** 「解析卷證檔案」「生成草稿」兩個 chip **不發 chat**，直接打 ②。
-  - 解析卷證：`POST /cases/{id}/runs`
-  - 生成草稿：`POST /cases/{id}/runs`，body 帶 `{"from_node":"n4","base_run_id":"<上一次的 run_id>"}`（續跑，`UPSTREAM_FIELDS` 會把 n1–n3 的欄位深拷貝過來）
-  - 兩者都訂閱 `GET /runs/{run_id}/events` 拿逐節點進度。
-- **為什麼不放進 chat**（三個實跑查證的理由，別再改回去）：
-  1. `run_case()` **沒有 `to_node` 參數**，`backend/orchestrator/graph.py:200-202` 的 docstring 明寫「不能停在中間：N6 永遠最後重跑」——這是刻意的不變量（續跑產生的終態一定經過守門）。所以 `extract` 做不到「只跑 N1–N3」。
-  2. **chat 的 SSE 現況不是逐筆送的**：`backend/api/chat.py:243-266` 的 `gen()` 把事件 append 進 `pending`，`_run_turn` 跑完才一次 yield（實跑：t=0 emit 的事件 t=2.02s 才抵達）。搬進 chat 拿不到「逐步顯示」這個唯一好處。而 `GET /runs/{id}/events` 的 `BUS.stream`（`backend/api/events.py:63-74`）**現在就是真串流**。
-  3. 卷內編號會**靜默撞號**：N4 每次執行都從 `L1`/`C1` 重編（`backend/nodes/n4_retrieval.py:214-217,258-262`），而 `add_case_refs` 對既有 id 直接 `continue`（`backend/llm/chat.py:188-189`）→ 模型引新草稿的 `[L1]`，白名單查得到判成黃燈，但 `refs[]` 帶出**舊 run 的法條**。誠實層被打穿。
-- **agent 工具**：仍是**後端 agent 內部**的呼叫，對前端不可見。前端只透過 `tool_call`／`tool_result` 看到「agent 用了哪個工具、結果是什麼」（§2.3）。
-- **同一份能力、兩個入口**：agent 的「查法規」工具，跟使用者手動搜尋加入用的 `GET /api/laws`（§1.3）**指向同一個母庫**——差別只在**誰觸發**（agent 自動查並歸檔 vs 使用者手動搜尋挑選）。**後端把「查法規／查案例／讀卷／撰稿」各做一次，兩個入口共用**，不要做兩套。
-  - agent 自動查完 → 結果透過 chat 的 `tool_result` 回來，並自動寫進本案清單（`/cases/{id}/laws`、`/references`）。
-  - 使用者手動 → 走 §1.3／§1.4 的 REST 端點自己挑進來。
+- **前端契約**：使用者的每次對話動作只打 `POST /cases/{id}/chat`。**七支工具全部走這裡**，前端不直接呼叫 `/runs`、`/extract`、`/draft`。
+- **agent 工具**：工具是**後端 agent 內部**的呼叫，對前端不可見。前端只透過串流事件看到「agent 用了哪個工具、跑到哪一步、結果是什麼」（`tool_call` / `tool_step` / `tool_result`，§2.3）。
+- **同一份能力、兩個入口**：agent 的「查法規」工具，跟使用者手動搜尋加入用的 `GET /api/laws`（§1.3）**指向同一個母庫**——差別只在**誰觸發**。後端各做一次，兩個入口共用，不要做兩套。
+
+#### 長工作（解析卷證／生成草稿）在 chat 內部怎麼跑
+
+這兩支背後是六節點 pipeline。它們**不另外開端點**，由 chat 的工具層在同一回合內觸發，
+並把 pipeline 真實的節點事件轉發成 `tool_step`：
+
+```
+extract_case_document  → run_case(to_node="n3")                    約 10–11 秒
+generate_decision_draft → run_case(from_node="n4", base_run_id=…)   約 24–72 秒
+                          ↓ on_event 回呼
+                    轉發成 tool_step（node / elapsed_ms / degraded 都是真值）
+```
+
+**後端要補三小塊才成立**（缺任一項就不要照這節做）：
+
+1. **`run_case()` 加 `to_node` 參數。** 迴圈是 `for node in NODE_ORDER[start_idx:]`（`graph.py:303`），
+   加 `end_idx` 即可；`STATE_AFTER`（`graph.py:56-63`）已有 node → state 的完整映射，
+   停在 n3 自然落在 `SCREENED`，狀態機本來就模型化了部分完成。
+   **紅線：`to_node` 不得為 `n5`**——那會留下一份沒過 N6 守門的草稿。n1–n4 安全
+   （沒有草稿就沒有「草稿沒重驗引用」的問題，`graph.py:200-202` 那條不變量的目的仍然成立）。
+   另外 `backend/api/chat.py:104` 的 `_load_case_payload` 只看 BUS 狀態不看 `final_state`，
+   要一併補上「`SCREENED` 的 run 沒有草稿」的判斷。
+2. **pipeline 工具跑完後重置 RefBook 的卷內編號。** N4 每次從 `L1`/`C1` 重編
+   （`n4_retrieval.py:214-217,258-262`），而 `add_case_refs` 對既有 id 直接 `continue`
+   （`llm/chat.py:188-189`）→ 不重置的話，模型引新草稿的 `[L1]`，`refs[]` 卻帶出舊 run 的法條，
+   **誠實層被靜默打穿**。重置時機在「工具回傳之後、模型組答案之前」，順序上安全。
+   同時要更新 `case_payload`，否則 `read_case` 看不到新 run。
+3. **`gen()` 改真串流。** `backend/api/chat.py:243-266` 現在把事件 append 進 `pending`，
+   `_run_turn` 跑完才一次 yield（實跑：t=0 emit 的事件 t=2.02s 才抵達）。
+   不改的話 `tool_step` 與 `token` 都不會逐步出現，使用者會看到 10–72 秒全黑再一次跳出。
+   改的時候要顧到 `?stream=0` 與 SSE 共用同一條 `_run_turn` 的既有契約。
+
+> **層級禁令怎麼不踩**：`docs/spec/2026-09-12-chat-honesty-lamps.md` §4.0 禁止
+> `backend/llm/chat.py` import `backend.orchestrator.*`（乙案 AgentCore 容器裡沒有 runstore）。
+> 做法是**注入 callable**，比照現有的 `retriever`／`snapshot`／`emit`——
+> `ChatTools.__init__` 收一個 `run_pipeline`，由 HTTP 層（**允許** import orchestrator）綁 `run_case`。
+> 乙案下這兩支工具會缺席，要回「此檔位不可用」，不要靜默失敗。
+
+> **歸檔**：agent 自動查完 → 結果透過 `tool_result` 回來，並自動寫進本案清單
+> （`/cases/{id}/laws`、`/references`）。使用者手動 → 走 §1.3／§1.4 的 REST 端點自己挑進來。
 
 ### 0.2 資料夾＝純前端（後端不碰）
 
@@ -139,72 +172,40 @@
 > 而 2026-09-12 才剛把 build context 從 905MB 壓到 4.8MB（commit `279169b`）。demo 時「下載一個檔案」
 > 幾乎看不見，投報率最低。PDF 交給瀏覽器列印。前端 `exportDownload()`（`App.vue:169-171`）現在只是 toast。
 
-### 1.6 兩條串流（③ 修訂：原本寫「唯一串流」）
+### 1.6 辦案對話（唯一串流）
 
 | # | 方法 | 路徑 | UI 動作 | 類型 |
 |---|---|---|---|---|
-| 24 | **POST** | **`/api/cases/{id}/chat`** | 中欄送出訊息／點對話類 chip `send`＋`runTool` | **SSE 串流 ①** |
-| 25 | **POST** | **`/api/cases/{id}/runs`** | 「解析卷證檔案」／「生成草稿」chip | 一次性（回 `202` + `events_url`） |
-| 26 | **GET** | **`/api/runs/{run_id}/events`** | 承 #25，訂閱逐節點進度 | **SSE 串流 ②** |
+| 24 | **POST** | **`/api/cases/{id}/chat`** | **中欄送出訊息／點 chip／`/` 工具 `send`＋`runTool`** | **SSE 串流** |
 
-**輪詢：0 支。** 沒有「發起→拿號碼牌→反覆問好了沒」——#25 回的 `events_url` 是一條 SSE，不是輪詢端點。
-**串流：2 支**（#24 chat、#26 runs events）。
+**輪詢：0 支。** 沒有「發起→拿號碼牌→反覆問好了沒」；慢工作（解析卷證、生成草稿）
+走 #24 串流的 `tool_step` 事件逐步吐（§0.1、§2.3）。
+**串流：1 支**（#24 chat）。
 **一次性：其餘全部（含母庫查與各層 CRUD）。**
 
-#### #25／#26 怎麼用
+> **`POST /api/cases/{id}/runs` 與 `GET /api/runs/{run_id}/events` 仍然存在**（既有端點，後端內部用、
+> 也留給除錯與 `verify.sh`），但**不在前端契約裡**——前端不打它們。長工作的進度走 chat 的 `tool_step`。
 
-```jsonc
-// 解析卷證
-POST /api/cases/{id}/runs            // body 可空
-→ 202 { "run_id": "run-…", "status": "running", "events_url": "/api/runs/run-…/events" }
+> **實測耗時**（真 bedrock，n=3，全為 `synthetic-*`）：解析卷證（n1–n3）約 **10–11 秒**；
+> 生成草稿（n4–n6）約 **24／44／72 秒**（n5 跨度 3.3 倍，**上界用 72 秒抓**）；純問答回合 5–15 秒。
+> ALB `idle_timeout` 已設 900 秒，不會被切斷。**忙碌鎖要撐得住 72 秒，而且要有進度**——
+> 這正是 `tool_step` 存在的理由，不要只轉圈。
 
-// 生成草稿（續跑，沿用上一次的 n1–n3 結果）
-POST /api/cases/{id}/runs
-{ "from_node": "n4", "base_run_id": "<上一次的 run_id>" }
-→ 202 { "run_id": "run-…", "events_url": "…" }
-```
+## 2. 核心：`POST /api/cases/{id}/chat`（唯一串流端點）
 
-`GET /api/runs/{run_id}/events` 的事件（既有，`backend/api/events.py`）：
-
-| 事件 | data | 前端畫什麼 |
-|---|---|---|
-| `node_start` | `{run_id, node, agents}` | 工具卡新增一行步驟，狀態「執行中」 |
-| `node_done` | `{run_id, node, elapsed_ms, degraded, narrative}` | 該行打勾 + 顯示耗時；`degraded:true` 標黃 |
-| `run_done` | `{run_id, final_state}` | 收尾，接著打 #4 彙整版重載右欄 |
-| `run_failed` | `{run_id, node, error}` | 該行標紅，顯示 `error` |
-
-> **`node` 只有 `"n1"`…`"n6"`，沒有中文步驟名**（對比 chat 的 `tool_call` 是有 `label` 的）。
-> **前端要自備 `n1..n6` → 中文的對照表**，或請後端在轉發時補。這是小工，但要指定給人做，
-> 別假設事件裡已經有。建議文案：n1 讀卷抽取／n2 案件分類／n3 程序審查／n4 檢索法條與相似案／n5 草稿撰寫／n6 引用守門。
->
-> **實測耗時**（真 bedrock，n=3，全為 `synthetic-*`）：n1–n3 約 **10–11 秒**；n4–n6 約 **24／44／72 秒**
-> （n5 跨度 3.3 倍，**上界用 72 秒抓**）。ALB `idle_timeout` 已設 900 秒，不會被切斷。
->
-> **續跑的三道護欄**（`backend/orchestrator/graph.py:205-217, 233-238`）：`from_node != "n1"` 而沒帶
-> `base_run_id` → 400；`base_state.run_mode` 與當前 mode 不同 → 拒絕（禁止 fixture/bedrock 混血）；
-> `confirmed_intake` 只能配 `from_node ∈ {n1, n2}`。**N6 永遠最後重跑**，所以續跑產生的終態一定經過守門。
-
-> **母庫 vs 卷宗清單的分離是重點**：`GET /api/laws`（查全國法規母庫）與 `GET /api/cases/{id}/laws`（本案已挑的法規）是兩件事；案例同理（`/api/decisions` vs `/cases/{id}/references`）。母庫唯讀、卷宗清單可增刪。
-> **資料夾純前端**（§0.2）：不在上表，後端不做，`PATCH /cases/{id}` 不含 `folder_id`。
-> **U（更新）刻意不存在**：三類卷宗成員都沒有 PATCH——使用者不改母庫內容。草稿的「重新產生／優化」是 agent 透過 #24 生新 artifact，不是使用者手改。
-> **agent 工具不在上表**：工具是後端 agent 內部呼叫（§0.1），前端只打 #24 chat；工具與 §1.3／§1.4 的 REST 端點共用同一份資料源。
-
----
-
-## 2. 核心：`POST /api/cases/{id}/chat`（串流 ①）
-
-前端的**對話類**動作（送出訊息、點對話類 chip）呼叫這支（`store/app.js:runTool` / `send`）。
-**「解析卷證檔案」「生成草稿」兩個 chip 不走這裡**，見 §0.1／§1.6。後端的 agent 讀訊息、自己決定要不要呼叫工具、把過程與結果串流回來。
+前端每一次「送出訊息、點建議 chip、按 `/` 工具」最終都呼叫這支（`store/app.js:runTool` / `send`）。
+**七支工具全部走這裡**，包含解析卷證與生成草稿（它們在 chat 內部觸發 pipeline，見 §0.1）。後端的 agent 讀訊息、自己決定要不要呼叫工具、把過程與結果串流回來。
 
 ### 2.1 Request
 
 ```jsonc
 {
-  "run_id": "run-…",            // 必填。必須是一次**已完成**的 run（read_case 的 payload 來源）
+  "run_id": "run-…",            // **選填**（③ 修訂）。有的話 read_case 讀它；
+                                //   沒有的話 agent 只能先跑 extract_case_document
   "message": "這個爭點有沒有類似的前例？", // 必填，非空字串
   "session_id": "sess-…",       // 選填；省略＝開新對話，後端在 ack 就回一個新的
-  "tool_hint": "search_similar_decisions",
-                                // 選填；點對話類 chip 時帶。值域＝§3 的五支工具名
+  "tool_hint": "extract_case_document",
+                                // 選填；點 chip／`/` 選單時帶。值域＝§3.0 的七支工具名
                                 //   純打字時省略，由後端自行判斷要不要呼叫工具
   "context": {                   // 選填；承辦人在草稿上選了哪一句
     "scope": "sentence",         // "sentence" | "all"，省略視同 "all"
@@ -217,12 +218,17 @@ POST /api/cases/{id}/runs
 }
 ```
 
-> **④ `tool_hint` 的值域改了**，原本是 `extract|cases|laws|graph|draft|refine|export`。
-> `extract`／`draft` 已離開 chat（§0.1），`graph`／`export` 本來就不是 chat 工具（§6）。
-> 現在只有 §3 的五支。
+> **④ `tool_hint` 的值域改了**，原本是 `extract|cases|laws|graph|draft|refine|export`（短代號）。
+> 現在一律用後端的長名，值域＝§3.0 那張表的**七支**。`export_pdf`／`export_docx` 不在內
+> ——匯出是下載（§1.5 #23），不是 agent 工具。
 >
-> **`run_id` 是必填，這是既有契約**（`docs/spec/2026-09-12-chat-honesty-lamps.md` §4.0「payload 由呼叫端提供」）。
-> HTTP 層做 `load_run(run_id)` → `build_payload()` → 切分區，餵給 agent；`read_case(section)` 讀的就是這份 dict。
+> **`run_id` 從必填改成選填**（③ 修訂）。既有契約是「payload 由呼叫端提供」
+> （`docs/spec/2026-09-12-chat-honesty-lamps.md` §4.0），HTTP 層做 `load_run(run_id)` → `build_payload()`
+> → 切分區餵給 agent。這條**不變**；改的是「還沒有 run 的時候也要能開口」——
+> 新案子上傳完卷證，第一句話一定是「解析卷證」，那時候還沒有任何 run。
+> - **有 `run_id`** → 照舊載入 payload，七支工具全可用。
+> - **沒有 `run_id`** → `case_payload` 為空，`read_case` 回「卷內是空的」，
+>   agent 只能呼叫 `extract_case_document`（它自己會產生第一個 run）。
 > 前端在一個 case 裡沿用「最後一次成功的 run_id」即可（#4 彙整版會回 `latest_run_id`）。
 >
 > **`args.sources` 已移除。** 原本是 `["ev1","law3"]` 靠字串前綴分辨四種資源，而右欄四群組是四個不同 namespace，
@@ -240,33 +246,35 @@ POST /api/cases/{id}/runs
 
 拿到 `text/event-stream` 就保證至少收到一個 `done` 或 `error`。
 
-### 2.3 SSE 事件（六種；①② 修訂）
+### 2.3 SSE 事件（七種；②③ 修訂）
 
 wire 格式：`event: <名稱>\ndata: <一行 JSON>\n\n`。共通欄位：`seq`（本回合 0 起遞增）、`turn_id`。
 
 | 事件 | payload | 前端拿去畫什麼 |
 |---|---|---|
-| `ack` | `{seq,turn_id,text,`**`session_id`**`}` | agent 的一句口白。對應 `store` 的 `ACKS`。**`session_id` 提前到這裡**（見下） |
-| `tool_call` | `{seq,turn_id,`**`call_id`**`,tool,label,args}` | 開一個**工具區塊**卡（`Chat.vue` 的 `kind:'tool'`）。`tool` ∈ §3 五種 |
-| `tool_result` | `{seq,turn_id,`**`call_id`**`,tool,hits[],note,`**`status`**`}` | 工具卡的結果（§3 的 `hits[]` 形狀）＋歸檔到右欄卷宗 |
+| `ack` | `{seq,turn_id,text,`**`session_id`**`}` | agent 的一句口白。對應 `store` 的 `ACKS` |
+| `tool_call` | `{seq,turn_id,`**`call_id`**`,tool,label,args}` | 開一個**工具區塊**卡（`Chat.vue` 的 `kind:'tool'`）。`tool` ∈ §3.0 七種 |
+| `tool_step` | `{seq,turn_id,`**`call_id`**`,step,label,status,elapsed_ms,degraded}` | 工具卡裡逐行打勾的步驟（`toolBlock` 的 `steps[]`）。可多筆 |
+| `tool_result` | `{seq,turn_id,`**`call_id`**`,tool,`**`status`**`,note,hits[],…}` | 工具卡的結果（§3 各工具形狀）＋歸檔到右欄卷宗 |
 | `token` | `{seq,turn_id,text}` | agent 的文字回覆，逐字 append |
-| `done` | **見 §2.4（沿用既有 spec §4.4，欄位很多）** | 一回合結束，唯一終止事件，**唯一帶燈號的事件** |
+| `done` | 見 §2.4 | 一回合結束，唯一終止事件 |
 | `error` | `{seq,turn_id,stage,error}` | 失敗，發完關流，**沒有 `done`**。`stage`∈`tool\|model\|transport\|internal` |
 
-序保證：`done`／`error` 互斥且為最後一個；`tool_call`／`tool_result` 成對（用 `call_id` 配對）；`token` 可零筆；**沒有回放，斷線即斷**。斷線的處理見 §5。
+序保證：`done`／`error` 互斥且為最後一個；`tool_call`／`tool_result` 成對（用 `call_id` 配對）；
+`tool_step` 夾在兩者之間、可零筆；`token` 可零筆；**沒有回放，斷線即斷**。斷線處理見 §5。
 
-#### ② 三處新增／一處刪除
+#### ② 三處新增
 
 **`call_id`（新增，必要）**　同一回合內同一支工具可能被呼叫**兩次以上**（agent 讀完爭點常會再查一次法規），
-`tool` + `seq` 配不起來。`call_id` 是本回合內遞增的配對鍵，`tool_call` 與 `tool_result` 帶同一個值。
+`tool` + `seq` 配不起來。`call_id` 是本回合內遞增的配對鍵，`tool_call`／`tool_step`／`tool_result` 帶同一個值。
 
 **`tool_result.status`（新增，必要）**　值域 `ok | empty | failed`。
 
 | status | 意思 | 前端該說什麼 |
 |---|---|---|
-| `ok` | 查到東西，`hits[]` 非空 | 正常顯示 |
+| `ok` | 正常完成 | 顯示結果 |
 | `empty` | **查無**，`hits[]` 為空 | 「這個條件下沒有找到」 |
-| `failed` | **查詢本身失敗**（KB 打不到、快照載不動），`hits[]` 為空 | 「查詢來源失敗，可重試」 |
+| `failed` | **工具本身失敗**（KB 打不到、快照載不動、pipeline 炸了） | 「查詢來源失敗，可重試」 |
 
 > 為什麼一定要分：檢索失敗在 `ChatTools._search` 內部就被攔下轉成文字回給模型（`backend/llm/chat.py:420-427`），
 > **不會冒到 `error` 事件**。沒有 `status`，前端看到的 `empty` 與 `failed` 長得一模一樣，會把「查詢失敗」
@@ -275,154 +283,270 @@ wire 格式：`event: <名稱>\ndata: <一行 JSON>\n\n`。共通欄位：`seq`�
 **`ack.session_id`（提前）**　原本只在 `done` 送。但 §5 要求前端處理「`token` 收到一半斷了」——
 斷在中途就永遠拿不到 `session_id`，下一輪只能開新 session，前面講過的話全丟。
 
-**`tool_step`（刪除）**　原本要畫成「工具卡裡逐行打勾的步驟」。刪掉的理由：
+#### ③ `tool_step`：保留，但來源換成真的
 
-1. chat 的五支工具都是**單次** retriever 呼叫，內部沒有階段可報。硬生就是編步驟名與耗時，違反 `CONSTITUTION` §1。
-2. 就算生了也不會逐步出現——`backend/api/chat.py:243-266` 的 `gen()` 是整回合跑完才一次沖出（實跑：t=0 emit 的事件 t=2.02s 才到）。
+初版契約有這個事件，前端 mock 也有 `steps[]`——**但那些 step 是 `await sleep(900)` 寫死的**
+（`frontend/src/store/app.js:222-232`），步驟名也是手打的。現在改成**轉發 pipeline 的真實節點事件**。
 
-**逐行打勾移到 #26 的 `node_start`／`node_done`**（§1.6），那條是真串流、步驟與耗時都是真的。
-chat 的工具卡用單純的 spinner。
+```jsonc
+// event: tool_step（只有 extract_case_document / generate_decision_draft 會發）
+{ "seq": 2, "turn_id": "turn-…", "call_id": "tc-1",
+  "step": "n1",                    // 節點代號，來自 run_case 的 on_event
+  "label": "讀卷抽取",              // 後端補的中文，前端不必自己維護對照表
+  "status": "done",                // running | done | failed
+  "elapsed_ms": 11021,             // status=done 才有；真值
+  "degraded": false }              // true → 該行標黃（節點降級跑完）
+```
 
-> **後端另有一項修正（不是契約變更，但前端會感覺到）**：`gen()` 要改成真串流（emit 推 queue、邊跑邊 yield），
-> 否則 §2.3 承諾的 `token` 逐字 append 也做不到。改的時候要顧到 `?stream=0` 與 SSE 共用同一條 `_run_turn`
-> 的既有契約（`docs/spec/2026-09-12-chat-honesty-lamps.md` §2.2）。
+- **`label` 由後端帶**（`n1` 讀卷抽取／`n2` 案件分類／`n3` 程序審查／`n4` 檢索法條與相似案／
+  `n5` 草稿撰寫／`n6` 引用守門）。前端照顯示即可。
+- **其餘五支工具不發 `tool_step`**（單次檢索呼叫，內部沒有階段可報，硬生就是編）。
+  那五支的工具卡用單純的 spinner。
+- `elapsed_ms`、`degraded` 都是 `run_case()` 實際回報的值，**一行都沒有編**。
 
-### 2.4 `done` 的完整形狀（① 修訂：唯一帶燈號的事件）
+> **前提：`gen()` 必須先改成真串流**（§0.1 第 3 點）。不改的話這些事件會在整回合跑完之後
+> 一次湧出，使用者看到的是 10–72 秒全黑再一次跳出——那比沒有 `tool_step` 更糟，
+> 因為畫面會假裝剛才有過程。
 
-> **沿用 `docs/spec/2026-09-12-chat-honesty-lamps.md` §4.4，那份是契約凍結狀態、且已由 AC5–AC12 實跑驗過。**
-> 初版契約把 `done` 寫成 `{seq,turn_id,session_id,elapsed_ms,model_id}` 五個欄位，**那是漏寫，不是簡化**。
+### 2.4 `done` 的完整形狀（① 修訂）
+
+> **後端照送，本期前端不渲染燈號 UI（2026-09-12 Ci 拍板）。**
+> 欄位全部留在 payload 裡——它們已經實作、已由 AC5–AC12 驗過，拿掉沒有好處，
+> 之後要補燈號隨時能接。前端本期只讀 `answer`／`session_id`／`elapsed_ms`。
+> **但下面兩項不是燈號 UI 的一部分，是「系統會不會講假話」，見 §2.4.1。**
 
 ```jsonc
 // event: done
 {
   "seq": 17, "turn_id": "turn-…",
-  "session_id": "sess-…",        // 也在 ack 出現過，這裡是最終值
+  "session_id": "sess-…",
   "answer": "依卷內資料，…[c1]…",  // 完整回答，前端可用它校正 token 串接
-  "lamp": "y",                   // "y" | "r"，**永遠不會是 "g"**
+  "lamp": "y",                   // "y" | "r"，永遠不會是 "g"
   "tier": "有出處",               // "有出處" | "請人工判斷"
   "origin": "retrieval",         // "retrieval" | "llm" | "human_required"
-  "why": "本則回答引用了 1 筆檢索命中；命中為 KB 向量相似度結果，未對資料集實檔驗證，請覆核後採用。",
-  "refs": [
-    { "id":"c1", "t":"新北市政府 112 年訴字第 123 號", "src":"歷史訴願決定書/…",
-      "verified": false, "note":"KB 命中，未對資料集實檔驗證", "provenance":"official" }
-  ],
-  "dropped_refs": [],            // 模型引了但不在白名單的編號 → 該回合強制紅燈
-  "redirect": null,              // 見下；只在「數字類問題」時非 null
+  "why": "本則回答引用了 1 筆檢索命中；…請覆核後採用。",
+  "refs": [ {"id":"c1","t":"…","src":"…","verified":false,"note":"…","provenance":"official"} ],
+  "dropped_refs": [],            // 模型引了但不在白名單的編號
+  "redirect": null,              // 見 §2.4.1
   "refine_used": false,
-  "memory": "on",                // "on" | "off"
-  "session_truncated": false,
+  "memory": "on", "session_truncated": false,
   "model_id": "…", "elapsed_ms": 4213
 }
 ```
 
-**前端必須做的三件事：**
+#### 2.4.1 兩項前端仍然要處理（不是裝飾）
 
-1. **收到 `done` 之前不得顯示任何燈號。** 在那之前系統還不知道這則回答算哪一層。
-2. **`lamp` 只有 `y`／`r`，不必為 `g` 寫分支。** 聊天沒有 N6 守門，`g`（可驗算／字號全部已驗）在任何輸入下都不會出現，後端有測試釘住。
-3. **`redirect` 非 null 時，在該則回答下方放一顆 CTA，按下去捲到左欄的程序審查卡。**
-   **不要把 agent 講的任何天數顯示出來。**
+**一、`redirect` 非 null → 不得顯示 agent 講的任何天數。**
+
+使用者問期限／天數／金額時，機械規則會強制紅燈並帶上 `redirect`（規則對**問題**做字面比對，
+寧可誤判也不漏判）。**前端完全不處理的話，LLM 算的天數會直接出現在畫面上**——
+期間算錯在訴願案有實質後果，這是 `CONSTITUTION` §4 的紅線。
 
 ```jsonc
 "redirect": {
   "endpoint": "/api/deadline",
-  "reason": "期間計算由規則引擎負責，同輸入必同輸出、可逐步覆核；聊天不計算期限（CONSTITUTION §4）。",
+  "reason": "期間計算由規則引擎負責，同輸入必同輸出、可逐步覆核；聊天不計算期限。",
   "cta": "查看程序審查的算式"
 }
 ```
 
-> `redirect` 在使用者問期限／天數／金額時**一定**會出現（機械規則，對問題做字面比對，寧可誤判成紅燈也不漏判）。
-> `endpoint` 是**出處標示**，不是要前端去打那支 API——這一版的動作是**捲動**，不是呼叫。
->
-> ⚠️ **「那顆鈕真的會捲得到」沒有後端驗收涵蓋。** AC7 只驗 `done.redirect.endpoint` 的值，驗不到前端行為。
+最小做法：`redirect` 非 null 時，**不顯示 `answer`**，改顯示 `reason` 加一顆 CTA，
+按下去捲到程序審查卡（那裡有規則引擎算好的期限與算式）。
+
+> ⚠️ **「那顆鈕真的捲得到」沒有後端驗收涵蓋。** AC7 只驗 `redirect.endpoint` 的值。
 > **這條要前端補一條驗收**（例：點 CTA 後程序審查卡進入視窗且被 highlight）。沒人補就是沒人驗。
 
----
+**二、`dropped_refs` 非空 → 該則回答要標「引用有問題」。**
 
-## 3. 五支 chat 工具的 `hits[]` 形狀（`tool_result`；④⑤ 修訂）
+代表模型引了一個**不存在於白名單**的字號。不顯示就等於讓編造的引用直接送到承辦人眼前，
+踩 `CONSTITUTION` §2（引用必可驗）。最小做法：該則下方一行灰字
+「此則含無法對應的引用，請勿直接採用」。
 
-> **初版寫「七種工具」並給每支一個 bespoke 的 `result` 物件。兩件事都改了：**
-> 1. `extract`／`draft` **不是 chat 工具**，改走 `POST /runs`（§0.1、§1.6）。`graph`／`export` 本來就不是（§6）。
->    剩下五支——**而這五支後端全部已經實作，一支都不用新增**。
-> 2. `tool_result` 的形狀是**統一的** `{call_id, tool, hits[], note, status}`，不是每支一個形狀。
->    後端 `RefBook` 對所有檢索工具產出同一種 entry。
+> 這兩項合計大約十行 Vue。不用做三層燈、不用做 `refs[]` 展開清單。
 
-### 3.0 工具值域（`tool` 欄位；一張表，前端照這個寫死 UI 文案）
+## 3. 七支 chat 工具（`tool_result` 的形狀；④⑤⑨ 修訂）
 
-| `tool` | `label`（後端會帶） | 產生引用 | `verified` | 後端實作 | 歸檔到 |
-|---|---|---|---|---|---|
-| `search_regulations` | 查法條 | 是（**無條文原文**） | **原樣帶出，可 true 可 false** | `backend/retrieval/lawtable.py` 查表 | `laws` 群組 |
-| `search_similar_decisions` | 查相似訴願決定 | 是 | 恆 `false` | `KBRetriever.search()` | `cases` 群組 |
-| `retrieve_refs` | 查判解與函釋 | 是 | 恆 `false` | `KBRetriever.search(filters={"prefix": REF_PREFIXES})` | 不歸檔 |
-| `read_case` | 讀卷內 | 否（`hits: []`） | — | 唯讀呼叫端餵入的 payload | 不歸檔 |
-| `refine_text` | 潤稿 | 否（`hits: []`） | — | 單獨一次模型呼叫；**本回合強制紅燈** | 不歸檔 |
+> **初版寫「七種工具」但名字與形狀都對不上後端。** 現在：值域固定成下表七支、一律用後端長名、
+> `tool_result` 的共通欄位統一。**其中五支後端已經實作，兩支（解析卷證／生成草稿）是包既有 pipeline，
+> 一支（關聯圖）是新功能。**
 
-> **`search_regulations` 的 `verified` 不是恆 true。** `LawTableRetriever` 會造四種 Hit，只有「條號存在於快照」
-> 那一種是 `verified=True`；條號寫法無法無歧義解析、法規不在快照涵蓋範圍、條號在快照裡查無，**三種都是 false**。
-> 後端**原樣帶出**；前端**不得**把 `verified:false` 畫成「字號已驗」。
+### 3.0 工具值域（`tool` 欄位；前端照這張表寫死 UI 文案）
 
-### 3.1 `tool_result` 的統一形狀
+| `tool` | `label`（後端會帶） | 後端狀態 | 發 `tool_step` | 歸檔到 |
+|---|---|---|---|---|
+| `extract_case_document` | 解析卷證檔案 | **包 pipeline**（`run_case(to_node="n3")`） | ✅ n1–n3 | 不歸檔，更新 `latest_run_id` |
+| `search_regulations` | 查法條 | 已實作 | — | `laws` 群組 |
+| `search_similar_decisions` | 查相似訴願決定 | 已實作 | — | `cases` 群組 |
+| `retrieve_refs` | 查判解與函釋 | 已實作 | — | 不歸檔 |
+| `generate_decision_draft` | 生成草稿 | **包 pipeline**（`run_case(from_node="n4")`） | ✅ n4–n6 | `out` 群組 |
+| `refine_text` | 潤稿 | 已實作 | — | 不歸檔 |
+| `build_relation_graph` | 產生案件關聯圖 | **新功能**（§3.7） | — | `out` 群組 |
+| `read_case` | 讀卷內 | 已實作 | — | 不歸檔 |
+
+> 八列，因為 `read_case` 是 agent 內部的追問用工具，使用者不會主動點它——
+> **`tool_hint` 的值域是前七支**，`read_case` 由 agent 自己決定要不要用。
+>
+> `export_pdf`／`export_docx` **不在這張表**：匯出是下載（§1.5 #23），不是 agent 工具。
+
+### 3.1 `tool_result` 的共通形狀
 
 ```jsonc
 // event: tool_result
 {
-  "seq": 1, "turn_id": "turn-…",
-  "call_id": "tc-1",                     // 與 tool_call 配對
+  "seq": 9, "turn_id": "turn-…", "call_id": "tc-1",
   "tool": "search_similar_decisions",
   "status": "ok",                        // ok | empty | failed（§2.3）
   "note": "",                            // status 非 ok 時這裡有話
-  "hits": [
-    {
-      "id": "c1",                        // RefBook 配的本回合編號，前端就顯示這個
-      "t": "新北市政府 112 年訴字第 123 號",   // 標題
-      "src": "歷史訴願決定書/113年/…",       // 來源相對路徑
-      "score": 0.79,
-      "verified": false,
-      "note": "KB 命中，未對資料集實檔驗證",
-      "provenance": "official",          // official | public_crawl | unknown | **null**
-      "origin": "retrieval"
-    }
-  ]
+  "hits": [ … ],                         // 檢索類工具才有，見 §3.2
+  "run_id": null,                        // pipeline 類工具才有，見 §3.3／§3.5
+  "graph": null                          // 關聯圖工具才有，見 §3.7
 }
 ```
 
-- `hits` 可以是空陣列。**空陣列不是錯誤**，用 `status` 區分是 `empty` 還是 `failed`。
-- **`provenance` 是選填，可能是 `null`。** 它只存在於 KB hit 的 metadata；法條查表的 Hit 沒有這個鍵
-  （`backend/retrieval/base.py:30-40` 的 `as_dict()` 沒有它）。**前端要處理 `null`，不要假設一定有值。**
-- **`score` 顯示為相似度時必須標「向量相似度，非法律相似度」**（誠實紅線，§6）。
-- 引用編號用 `[c1]` 這種標號出現在回答文字裡。模型引了白名單以外的編號 → 進 `done.dropped_refs[]`，
-  **該回合強制紅燈**。
+三類工具各自只填自己那一塊，其餘為 `null`／`[]`。
 
-> **初版 §3.2／§3.3 的欄位多半拿不到。** `no`／`type`／`verdict`／`law`／`full`／`body` 是設計稿的假資料，
-> 後端的 hit 沒有這些鍵。要顯示案號、案型、結果、全文，走 §4.3 的母庫端點（那裡有側檔 metadata 與 S3 全文），
-> 不要期待 chat 的 `hits[]` 帶。
+### 3.2 檢索類（`search_regulations` / `search_similar_decisions` / `retrieve_refs`）
 
-### 3.2 `read_case` 的 `section` 值域
+```jsonc
+"hits": [
+  { "id": "c1",                        // RefBook 配的本回合編號，前端就顯示這個
+    "t": "新北市政府 112 年訴字第 123 號",
+    "src": "歷史訴願決定書/113年/…",
+    "score": 0.79,
+    "verified": false,
+    "note": "KB 命中，未對資料集實檔驗證",
+    "provenance": "official",          // official | public_crawl | unknown | **null**
+    "origin": "retrieval" }
+]
+```
 
-`intake` | `facts_excerpt` | `screen` | `laws` | `cases`。給錯的 section 會回一句說明 + `hits: []`。
+- `hits` 可以是空陣列。**空陣列不是錯誤**，用 `status` 區分 `empty` 還是 `failed`。
+- **`provenance` 可能是 `null`**——它只存在於 KB hit 的 metadata，法條查表的 Hit 沒有這個鍵
+  （`backend/retrieval/base.py:30-40`）。**前端要處理 `null`。**
+- **`score` 顯示為相似度時必標「向量相似度，非法律相似度」**（誠實紅線，§6）。
+- **`search_regulations` 的 `verified` 不是恆 true。** `LawTableRetriever` 造四種 Hit，只有
+  「條號存在於快照」那種是 `true`；條號無法無歧義解析、法規不在快照涵蓋範圍、條號查無，
+  **三種都是 `false`**。後端原樣帶出，前端**不得**把 `verified:false` 畫成「字號已驗」。
+- 模型在回答裡用 `[c1]` 引用。引了白名單以外的編號 → `done.dropped_refs[]`，該回合強制紅燈。
 
-### 3.3 `refine_text` 一定紅燈
+> **初版 §3.2／§3.3 的 `no`／`type`／`verdict`／`law`／`full`／`body` 拿不到**——那些是設計稿假資料，
+> chat 的 hit 沒有這些鍵。要案號、案型、結果、全文，走 §4.2／§4.3 的母庫端點（那裡有側檔 metadata
+> 與 S3 全文）。
 
-只要本回合用過 `refine_text`，`done.lamp` **強制 `r`**、`tier` = 「請人工判斷」、`origin` = `llm`，
-即使同回合也檢索到 refs。這是機械規則（`classify_answer` 規則 2），不是模型自評。
+### 3.3 `extract_case_document`（解析卷證檔案）
 
-> 初版 §3.5 設計的 `diff[]`（`{op:"del"|"add"|"keep"}`）與 `notes[]` **後端沒有**，`refine_text` 回的是改寫後的文字。
-> 前端要做前後對照卡的話，diff 要在前端算（拿原文與 `token` 串出來的新文字比）。**這是前端工作，不是後端契約。**
+觸發 `run_case(to_node="n3")`，跑 n1–n3（**約 10–11 秒**），逐節點發 `tool_step`。
 
-### 3.4 解析卷證與生成草稿的產物形狀
+```jsonc
+"run_id": "run-…",        // 新產生的 run，前端要記下來當之後的 run_id
+"status": "ok",
+"state": "SCREENED"       // 停在 n3，**這個 run 沒有草稿**
+```
 
-這兩支走 `POST /runs`（§1.6），產物不在 `tool_result` 裡，而是跑完之後打 **#4 彙整版**或 **#21 單一產出**取得。
+跑完之後前端打 **#4 彙整版**取內容：案由（`intake`）、事實摘錄（`facts_excerpt`）、
+爭點（`issues`）、程序審查（`screen`）。
 
-- **解析卷證** → 更新 case 的 `latest_run_id`；案由／訴願主張／爭點／程序審查燈在 run payload 裡，
-  打 `GET /api/cases/{id}` 拿（欄位沿用既有 payload：`intake`／`facts_excerpt`／`issues[]`／`screen`）。
-- **生成草稿** → 產生一個 artifact，打 `GET /api/cases/{id}/artifacts/{artifactId}` 拿 `sections[]`（§4.4）。
-
-> **`procedure_checks` 的 `lamp` 值域**：既有 payload 用 `g`／`y`／`r`（`backend/gate/lamps.py`），
-> 前端 `adapt.js:21` 已有 `{g:'ok', y:'warn', r:'bad'}` 的映射。初版契約寫的 `ok|warn|alert` 是設計稿的
-> CSS class 名，**不是後端值域**——前端自己映射，不要叫後端改。
+> **`procedure_checks` 的 `lamp` 值域是 `g`／`y`／`r`**（`backend/gate/lamps.py`），
+> 不是設計稿那組 `ok`／`warn`／`alert`——那是 CSS class 名。前端自己映射
+> （`api/adapt.js:21` 已經有 `{g:'ok', y:'warn', r:'bad'}`），不要叫後端改。
 >
-> **「分類信心 0.96」砍掉**（§6）：那是設計稿寫死的假數字，後端沒有可信的信心分數
-> （`conf` 沒有鑑別力是已知問題 S-17，未修）。
+> **「分類信心 0.96」砍掉**（§6）：設計稿寫死的假數字，後端沒有可信的信心分數
+> （`conf` 沒鑑別力是已知問題 S-17，未修）。
 
+### 3.4 `refine_text`（潤稿）
+
+`hits: []`，改寫後的文字走 `token`。**本回合強制紅燈**（`classify_answer` 規則 2，
+即使同回合也檢索到 refs）。
+
+> 初版 §3.5 設計的 `diff[]`（`{op:"del"|"add"|"keep"}`）與 `notes[]` **後端沒有**。
+> 要做前後對照卡的話 diff 在前端算（拿原文跟新文字比）。**前端工作，不是後端契約。**
+
+### 3.5 `generate_decision_draft`（生成草稿）
+
+觸發 `run_case(from_node="n4", base_run_id=<上一次的 run>)`，跑 n4–n6（**約 24–72 秒**），
+逐節點發 `tool_step`。N6 守門一定會跑，所以產出的草稿**一定經過引用四態檢查**。
+
+```jsonc
+"run_id": "run-…",
+"status": "ok",
+"state": "VERIFIED",
+"artifact_id": "art-…",
+"cite_count": 14          // **真值，從 payload 數**，不要沿用設計稿寫死的「14 處」
+```
+
+全文結構走 `GET /api/cases/{id}/artifacts/{artifactId}`（§4.4 的 `sections[]`）。
+
+> **前置條件**：要有一次 `state >= SCREENED` 的 run。沒有的話工具回
+> `status:"failed"` + `note:"還沒有解析過卷證"`，**不要自己先跑 n1**（那會讓使用者
+> 以為草稿是憑空生出來的）。
+
+### 3.6 `read_case`（讀卷內）
+
+`section` 值域：`intake` | `facts_excerpt` | `screen` | `laws` | `cases`。
+`hits: []`，內容走 `token`。給錯的 section 回一句說明。
+**沒有 `run_id` 時回「卷內是空的」**，不報錯。
+
+### 3.7 `build_relation_graph`（案件關聯圖）— 新功能 ⑨
+
+> **計畫見 `plans/2026-09-12-relation-graph.md`**（含驗收條件）。這一節只定義回傳形狀。
+>
+> 原本列在「建議砍」，理由是「後端不產關聯資料」。**重查之後那是錯的**：
+> 邊在 run payload 裡已經是現成的——`citations[]` 帶 `sentence_id` + `resolved_id` + `state`，
+> `facts_excerpt[]` 帶 `quote_ref`，`fact_issues[]` 帶 `matched_keywords`。
+> **全部零 LLM 可組。**
+
+```jsonc
+"graph": {
+  "run_id": "run-…",
+  "generated": "2026-09-12T23:40:00+08:00",
+  "cols": ["卷證", "事實", "爭點", "法規依據", "結論"],
+  "nodes": [
+    { "id":"D1", "k":"doc",   "c":0, "t":"原處分裁處書.pdf", "s":"共 6 頁",
+      "src":"卷證檔案", "origin":"record" },
+    { "id":"F1", "k":"fact",  "c":1, "t":"露天燃燒稻稈經稽查查獲",
+      "d":"訴願人於本市土城區農地露天燃燒…", "src":"原處分裁處書.pdf#p2", "origin":"record" },
+    { "id":"I1", "k":"issue", "c":2, "t":"爭點1：廢棄物性質之認定",
+      "d":"系爭堆置物是否屬廢棄物？", "severity":"high",
+      "src":"AI 不得代為認定，請承辦人核對卷證", "origin":"rule" },
+    { "id":"L3", "k":"law",   "c":3, "t":"廢棄物清理法 §2 I", "verify":"ok", "origin":"retrieval" },
+    { "id":"S7", "k":"out",   "c":4, "t":"原處分撤銷，由原處分機關另為適法之處分",
+      "d":"（主文段第 1 句）", "origin":"llm" }
+  ],
+  "edges": [
+    { "from":"D1", "to":"F1", "rel":"quote",   "basis":"facts_excerpt[].quote_ref" },
+    { "from":"F1", "to":"I1", "rel":"trigger", "basis":"fact_issues[].matched_keywords",
+      "detail":["露天燃燒","稽查"] },
+    { "from":"I1", "to":"S7", "rel":"address", "basis":"doc[].ss[].refs 含 I1" },
+    { "from":"S7", "to":"L3", "rel":"cite",    "basis":"citations[].sentence_id→resolved_id",
+      "state":"ok", "lamp":"g" }
+  ],
+  "unlinked": { "laws":["L5"], "issues":[], "note":"L5 沒有被任何句子引用" },
+  "stats": { "nodes":24, "edges":31, "edges_flagged":2 }
+}
+```
+
+**四種邊，每一種都有程式依據**（`basis` 欄位就是寫給人核對的）：
+
+| `rel` | 從 → 到 | 依據 | 檔案 |
+|---|---|---|---|
+| `quote` | 卷證 → 事實 | `facts_excerpt[].quote_ref`（`檔名#頁`） | N1 產出 |
+| `trigger` | 事實 → 爭點 | `fact_issues[].matched_keywords` 出現在該段事實文本（字串包含，與 N3 同一把尺） | `n3_procedure.py:634-645` |
+| `address` | 爭點 → 結論句 | `doc[].ss[].refs` 含該 `I*`（N6 掛的） | N6 |
+| `cite` | 結論句 → 法規／案例 | `citations[].sentence_id` → `resolved_id`（**字串相等比對**，`graph.py:605-611`） | N6 |
+
+**紅線：沒有「矛盾」這種邊。** 設計稿的三種線型裡有「爭執／矛盾」，**後端沒有任何偵測矛盾的機制**，
+畫了就是編。第三種線型改用**真的有的東西**：`cite` 邊帶 `state`（`ok`／`amended`／`out_of_scope`／
+`missing`／`unparseable`）與 `lamp`，非 `ok` 的畫成虛線或警示色——那才是承辦人真正想看到的
+「這條引用有疑慮」。
+
+**`unlinked` 也要畫。** 檢索到但沒有任何句子引用的法規，是**真實且有意義的資訊**
+（「查到了但沒用上」）。不要靜默丟掉。
+
+**前置條件**：要有一次 `state == "VERIFIED"` 的 run（需要 `doc[]` 與 `citations[]`）。
+只有 `SCREENED` 的話回 `status:"empty"` + `note:"要先生成草稿才畫得出完整關聯"`，
+或退化成只畫前三欄（卷證／事實／爭點）——**哪一種由 `plans/` 定案**。
+
+---
 
 ## 4. 各資源 CRUD 的 payload
 
@@ -555,7 +679,7 @@ backend/output/cases/{case_id}/manifest.json
   body＝`done` 物件攤平 + `events[]`（本來會逐筆發的 `tool_call`／`tool_result`）。**前端要寫這條分支。**
   它存在的理由是：賽場網路讓 SSE 斷流時切過來，**而不是**在本地用 CSS 演一段沒發生的串流。
 - **忙碌鎖**：一個工具跑的時候 `state.busy=true`，chips 換成「工具執行中…」，送出鍵 disabled（`Composer.vue canSend`）。後端不需配合，這是前端節流。
-  - ⚠️ **解析卷證 10–11 秒、生成草稿最久 72 秒**（§1.6 實測）。忙碌鎖要能撐這麼久，且要有進度（#26 的 `node_done`），不要只轉圈。
+  - ⚠️ **解析卷證 10–11 秒、生成草稿最久 72 秒**（§1.6 實測）。忙碌鎖要能撐這麼久，且要有進度（`tool_step` 事件，§2.3），不要只轉圈。
 - **檔位誠實**：`/health` 回 `run_mode`；離線重播檔位時，chat 會回 503，UI 要說「聊天需要即時模型」，**不得**演一段假對話。
 
 ---
@@ -564,21 +688,22 @@ backend/output/cases/{case_id}/manifest.json
 
 | 砍／改 | 位置 | 理由 |
 |---|---|---|
-| **關聯圖** `build_relation_graph` | `data.js TOOLS[graph]`、`RelationGraph.vue`、`graph.js GNODES/GEDGES` | 後端無此節點、不產關聯資料，整段是前端模擬。已另有獨立展示頁 `plans/kb-graph.md`（Ci 拍板「不接工作台、不動主線流程」）。**demo 想保留就明講「示意圖，非後端產物」**，否則砍 |
+| ~~關聯圖 `build_relation_graph`~~ **改成保留，後端要做** | `RelationGraph.vue`、`graph.js GNODES/GEDGES` | **⑨ 這列反轉。** 原因寫在 §3.7：邊在 payload 裡已經是現成的，零 LLM 可組。`GNODES`/`GEDGES` 的假資料換成 `tool_result.graph`，元件保留。**注意：跟 `plans/kb-graph.md` 不是同一個東西**——那份是全庫 2477 份的三層知識圖、獨立展示頁、不接工作台 |
 | `export_pdf`/`export_docx` 當成 chat 工具 | `data.js TOOLS[pdf,doc]`、`ToolOut out.type==='export'` | 匯出是**下載**（§1.5 #23），不是 agent 工具。**且本期只做 `html`／`md`**，PDF 交給瀏覽器列印 |
-| **`extract`／`draft` 當成 chat 工具** | `data.js TOOLS[extract,draft]`、`store IMPL.extract/draft` | **③ 新增此列。** 兩者改打 `POST /runs` + 訂閱 `GET /runs/{id}/events`（§1.6），不發 chat |
-| **`tool_step` 逐行打勾** | `store toolBlock` 的 `steps[]`、`Chat.vue` 工具卡 | **② 新增此列。** chat 的五支工具沒有內部階段，硬生就是編。逐行打勾改用 #26 的 `node_start`／`node_done`；chat 工具卡用單純 spinner |
-| `/` 斜線指令選單 | `Composer.vue` slash 選單 | 工具由 agent 決定並發 `tool_call`；留著會讓人以為「點了就一定跑那支」。可保留為**輸入輔助**但別暗示保證。**但「解析卷證」「生成草稿」兩項是確定會跑的**（它們不經過 agent 判斷） |
+| **`steps[]` 的假耗時** | `store/app.js:222-232` 的 `await sleep(900)` | **②③ 新增此列。** 工具卡的逐行打勾**保留**，但 step 名稱與耗時改吃 `tool_step` 事件的真值（§2.3）。其餘五支工具不發 step，用單純 spinner |
+| **分層誠實燈號 UI** | 全新，前端目前沒有 | **本期不做**（Ci 拍板）。後端照送欄位。**但 §2.4.1 的兩項要做**——那兩項是「系統會不會講假話」，不是燈號好不好看 |
+| `/` 斜線指令選單 | `Composer.vue` slash 選單 | 工具由 agent 決定並發 `tool_call`；留著會讓人以為「點了就一定跑那支」。可保留為**輸入輔助**但別暗示保證。`tool_hint` 會加速命中，但後端仍可忽略或覆寫 |
 | 多案件資料夾／拖曳 | `CaseTree.vue`、`store folders/moveCase` | **維持純前端**（§0.2，localStorage），不落地後端。此列為「保留但不接後端」，非砍 |
 | 「分類信心 0.96」 | `ToolOut.vue extract meta` | 寫死假數字，砍。後端沒有可信的信心分數（`conf` 沒鑑別力是已知問題 S-17，未修） |
 | 「相似度 94%」`sim` 寫死 | `data.js CASE_POOL.sim`、`ToolOut cases` | 真值來自 `hits[].score`，且**標「向量相似度非法律相似度」** |
 | 「引註 14 處」寫死 | `store draft note`、`ToolOut draft` | 真值從 artifact 的 `cite_count` 數（§4.4） |
 | 「已上傳，可直接改」等上傳文案 | 上傳 sheet 文案 | 目前**不做 OCR**，掃描影像回 `readable:false`＋標「無法辨讀」，不要寫成支援 |
 
-**三條不能省**（誠實紅線）：
+**四條不能省**（誠實紅線）：
 1. 法規綠燈只代表**字號對得回法規快照**，`relevance` 一律 `unknown`——不代表與本案相關。
 2. 相似度是**向量相似度**，KB 命中未對資料集實檔驗證，畫面要標明。
-3. **收到 `done` 之前不得顯示任何燈號**；`redirect` 非 null 時**不得顯示 agent 講的任何天數**（§2.4）。
+3. `redirect` 非 null 時**不得顯示 agent 講的任何天數**；`dropped_refs` 非空要標「引用有問題」（§2.4.1）。
+4. 關聯圖**沒有「矛盾」這種邊**（§3.7）。第三種線型用 `cite` 邊的 `state`，那是真的。
 
 ---
 
@@ -586,28 +711,35 @@ backend/output/cases/{case_id}/manifest.json
 
 這版前端需要：
 
-1. **兩條串流**：
-   - `POST /cases/{id}/chat`（SSE）——agent 呼叫 `search_regulations`／`search_similar_decisions`／`retrieve_refs`／`read_case`／`refine_text`
-     **五支既有工具**，事件 `ack`/`tool_call`/`tool_result`/`token`/`done`/`error`（**無 `tool_step`**）。
-     `done` 必帶分層誠實燈號（§2.4）。
-   - `POST /cases/{id}/runs` → `202` + `events_url`，訂閱 `GET /runs/{run_id}/events`（SSE）——解析卷證與生成草稿的逐節點進度。
+1. **一支串流端點** `POST /cases/{id}/chat`（SSE）——agent 在裡面呼叫**七支工具**：
+   `extract_case_document`／`search_regulations`／`search_similar_decisions`／`retrieve_refs`／
+   `generate_decision_draft`／`refine_text`／`build_relation_graph`（外加 agent 自用的 `read_case`）。
+   事件 `ack`／`tool_call`／`tool_step`／`tool_result`／`token`／`done`／`error`。
+   **前端不打 `/runs`、不打任何第二條串流。**
 2. **RESTful 一次性端點**，母庫唯讀、本案子資源 C/R/D：
    - 系統／案件：`GET /health`、`GET|POST /cases`、`GET|PATCH|DELETE /cases/{id}`
    - 卷證：`GET|POST /cases/{id}/files`、`DELETE …/files/{fileId}`
-   - 法規：`GET /laws?q=`、`GET /laws/{lawId}`（母庫唯讀，KB filter `doc_kind=statute` + S3 全文）＋ `GET|POST /cases/{id}/laws`、`DELETE …/laws/{lawId}`
-   - 案例：`GET /decisions?q=`、`GET /decisions/{decisionId}`（母庫唯讀，filter `doc_kind=decision`）＋ `GET|POST /cases/{id}/references`、`DELETE …/references/{refId}`
+   - 法規：`GET /laws?q=`、`GET /laws/{lawId}`（KB filter `doc_kind=statute` + S3 全文）
+     ＋ `GET|POST /cases/{id}/laws`、`DELETE …/laws/{lawId}`
+   - 案例：`GET /decisions?q=`、`GET /decisions/{decisionId}`（filter `doc_kind=decision`）
+     ＋ `GET|POST /cases/{id}/references`、`DELETE …/references/{refId}`
    - 產出：`GET /cases/{id}/artifacts`、`GET|DELETE …/{artifactId}`、`GET …/{artifactId}/export?format=html|md`
 3. **持久化**：一案一份 `manifest.json`（§4.0），**不加資料庫**。
 
-**沒有輪詢**；三類卷宗成員只有 C/R/D 沒有 U（不改母庫）；關聯圖與資料夾維持前端本地或砍（§6）。
+**沒有輪詢**；三類卷宗成員只有 C/R/D 沒有 U（不改母庫）；資料夾維持前端本地（§0.2）。
 
-### 後端真正的新工只有兩塊
+### 後端的工作分四塊
 
-其餘都是接線與改字——chat 的五支工具、pipeline 的續跑（`from_node`＋`base_run_id`）、
-`GET /runs/{id}/events` 的真串流、KB 檢索，**全部已經存在**。
+**已經存在、只需接線**：chat 的五支檢索／讀卷／潤稿工具、pipeline 的 `from_node`＋`base_run_id` 續跑、
+KB 檢索與 `doc_kind` filter、`load_run`／`build_payload`。
 
-1. **`gen()` 改真串流**（`backend/api/chat.py:243-266`）：emit 推 queue、邊跑邊 yield。
-   要顧到 `?stream=0` 與 SSE 共用同一條 `_run_turn` 的既有契約。
-2. **`manifest.json` 持久化 + 13 支 CRUD**（#2, #4–#9, #12–#14, #17–#19, #20–#22）。**這塊不碰對話框，可立刻開工。**
+| 塊 | 內容 | 規模 |
+|---|---|---|
+| **A. chat 串流層** | `gen()` 改真串流（emit 推 queue、邊跑邊 yield，顧到 `?stream=0` 共用 `_run_turn`）；事件加 `call_id`／`tool_result.status`／`ack.session_id` | 集中在 `backend/api/chat.py` 一個檔 |
+| **B. pipeline 包成工具** | `run_case()` 加 `to_node`（**不得為 n5**）；注入 `run_pipeline` callable 進 `ChatTools`（不踩 §4.0 層級禁令）；`on_event` 轉發成 `tool_step`（補中文 `label`）；工具跑完重置 RefBook 卷內編號並更新 `case_payload`；`_load_case_payload` 補「`SCREENED` 沒有草稿」判斷 | 三個檔，改動都不大但**彼此有序**：先 A 再 B |
+| **C. 持久化 + 13 支 CRUD** | `manifest.json` + `GET /cases/{id}` 彙整版 + files／laws／references／artifacts 的 GET/POST/DELETE | **不碰對話框，可與 A/B 並行開工** |
+| **D. 關聯圖** | `build_relation_graph` 工具（§3.7）。零 LLM，從 run payload 組節點與四種邊 | 計畫見 `plans/2026-09-12-relation-graph.md` |
 
-外加三件小的：chat 事件加 `call_id`／`status`／`ack.session_id`；母庫查四支（#10/#11/#15/#16）；#23 匯出改 html／md。
+外加兩件小的：母庫查四支（#10／#11／#15／#16）、#23 匯出改 `html`／`md`。
+
+**順序建議**：C 先發（無依賴）→ A（B 的前提）→ B → D。
