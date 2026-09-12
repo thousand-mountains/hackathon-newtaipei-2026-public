@@ -243,12 +243,20 @@ npm install
 部署前 `deploy.sh` 會自動跑 `check_context.sh`，**不一致就中止、不會推上去**。
 也可以單獨跑：`./deploy.sh check`。
 
-> **⚠️ 在 git worktree 部署，必須自己 build 前端。**
-> `frontend/dist` 被 `frontend/.gitignore` 排除，而 **git worktree 不共用未追蹤檔**——
-> 所以 rebase 完你的 worktree 裡**不會有 dist**，`COPY frontend/dist/` 會失敗。
+> **前端與 CDK 相依現在由 `deploy.sh` 自動裝**（2026-09-13）。
+> `frontend/dist` 與 `infra/cdk/node_modules` 都被 gitignore 排除，而
+> **git worktree 不共用未追蹤檔**——所以新 clone／新 worktree 第一次部署一定撞。
 > （2026-09-12 實際撞到，`check_context.sh` 在非人造情境第一次攔下來。）
 >
-> **不要從別人的工作樹複製 dist 過來**，要在自己這邊從 committed 原始碼重建：
+> `./deploy.sh deploy`（與 `check`）現在會**在 `cdk synth` 之前**自動做兩件事：
+> `frontend` 用 pnpm 建置、`infra/cdk` 跑 `npm ci`。
+> 已經在別處建好 dist 的話用 `HACK_SKIP_FRONTEND_BUILD=1` 跳過建置
+> （**仍會檢查 dist 在不在**，跳過建置不等於可以沒有產物）。
+>
+> **兩邊的套件管理器不一樣，不是筆誤**：`frontend/` 只有 `pnpm-lock.yaml`
+> （所以 `npm ci` 會報錯），`infra/cdk/` 只有 `package-lock.json`。弄反的話兩邊都會失敗。
+>
+> 要手動重建的話（**不要從別人的工作樹複製 dist 過來**，要從 committed 原始碼重建）：
 >
 > ```bash
 > cd frontend
