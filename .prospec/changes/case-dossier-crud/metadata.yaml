@@ -1,0 +1,4 @@
+name: "case-dossier-crud"
+created_at: "2026-09-12T15:01:44.364Z"
+status: story
+description: "卷宗持久化與 CRUD：backend/output/cases/{case_id}/manifest.json（tmp + os.replace 原子寫）、GET /api/cases 補 name 與 created_at、GET /api/cases/{id} 彙整版、files/laws/references/artifacts 四組 C/R/D、母庫查四支（laws 與 decisions 用 doc_kind server-side filter 並開 dedupe_by_source，全文走 S3 get_object）。不加資料庫。契約見 §1 §4"
