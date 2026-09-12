@@ -686,7 +686,10 @@ backend/output/cases/{case_id}/manifest.json
     ```
   - **filter 是必要條件不是優化**：同一查詢不篩抓 20 筆，法規只佔 **1 筆**，前面全被裁判書與決定書佔滿。
   - **要開去重**（`dedupe_by_source`，`backend/retrieval/kb.py:534`，**預設 False**）：同一部法規會回多個 chunk。
-  - `id` = **S3 相對路徑**（`_relative_path(uri)` 的 `rel`，`kb.py:529`，後端已經算出來了），穩定且可回查。
+  - `id` = **完整 S3 key**（例 `kb/public/相關法規_全量/廢棄物清理法.txt`），穩定、可回查、可直接 `get_object`。
+    > **2026-09-13 更正**：這行原本寫「`_relative_path(uri)` 的 `rel`」，**與同節 POST body 的範例矛盾**（範例是完整 key）。
+    > `rel` 不能用：它是 `kb/official/` 或 `kb/public/` **之後**的部分，**分不出 official 與 public 兩批**，
+    > 也不能直接 `get_object`。以**完整 key** 為準，範例是對的、那句話是錯的。
 - **看全文**　`GET /api/laws/{lawId}` → `{ id,t,src,body,verified:false,relevance:"unknown" }`
   - `lawId` 就是 S3 相對路徑（URL-encode）。後端 `s3.get_object` 讀該 `.txt`。**不要從 KB 片段拼**
     ——那會拼出一份殘缺卻看起來完整的法規，正是 `CONSTITUTION` §1 要防的。
