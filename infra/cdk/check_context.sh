@@ -19,7 +19,11 @@ dockerfile="$repo_root/backend/Dockerfile"
 outdir="$here/cdk.out"
 
 [[ -f "$dockerfile" ]] || { echo "找不到 $dockerfile" >&2; exit 1; }
-[[ -d "$outdir" ]] || { echo "找不到 $outdir，請先跑 cdk synth" >&2; exit 1; }
+# `${outdir}` 的大括號不是裝飾：bash 3.2（macOS 內建）會把緊接在 `$outdir` 後面的
+# 全形逗號**併進變數名**，於是這行不會印出它想印的那句話，而是
+# `outdir?: unbound variable`（`set -u`）——一個指不到真正原因的錯誤訊息，
+# 正是本檔開頭在抱怨的那種。2026-09-13 實測 bash 3.2.57 確認。
+[[ -d "$outdir" ]] || { echo "找不到 ${outdir}，請先跑 cdk synth" >&2; exit 1; }
 
 # 下面那段 python 只用到 json／sys／pathlib，**3.6 以上都跑得動**，
 # 含 macOS 內建的 /usr/bin/python3（3.9）——實測過。
@@ -115,3 +119,35 @@ if [[ "$fail" != 0 ]]; then
   exit 1
 fi
 echo "Dockerfile 的每個 COPY 來源都在 context 裡。"
+
+# ── 前端是不是真的會打後端 ────────────────────────────────────────────
+# 上面那一圈只證明「dist 在 context 裡、不是空目錄」。**它證明不了 dist 是哪一版。**
+# 2026-09-13 踩到的就是這個缺口：dist 在、檔數對、`/api/health` 綠、畫面完全正常，
+# 但整包是 mock——`src/api/config.js:12` 的預設值是 `mock`，建置時沒設
+# `VITE_API_MODE` 就靜默落到那裡，案件清單與解析卷證全由前端自己演。
+#
+# 判準是**建置產物裡實際折出來的那個物件**，不是原始碼、也不是環境變數
+# （環境變數對不對，跟「這份 dist 是用它建的」是兩件事——dist 可能是上一輪留下的）：
+#   沒設 → xc={}                        → 落回預設 "mock"
+#   設了 → xc={VITE_API_MODE:"real"}    → 走 real
+# 兩種形狀我在 2026-09-13 各建一次實測過，這條檢查在 A 不命中、在 B 命中，
+# **不是恆真的**。
+#
+# 用 `grep -r` 不寫死 bundle 檔名：vite 的檔名帶內容 hash，每次建置都不一樣。
+dist_in_ctx="$asset_dir/frontend/dist"
+if [[ -d "$dist_in_ctx" ]]; then
+  if grep -rq 'VITE_API_MODE:"real"' "$dist_in_ctx"; then
+    echo "前端建置模式：real（會打後端）"
+  else
+    {
+      echo
+      echo "✗ **前端是 mock 版**——它不會打後端，整個畫面由 src/api/mock.js 自己演。"
+      echo "   建置時沒有設 VITE_API_MODE=real。deploy.sh 會自動設；"
+      echo "   若你用了 HACK_SKIP_FRONTEND_BUILD=1，那份預先建好的 dist 是 mock 的，"
+      echo "   請用 VITE_API_MODE=real 重建，或拿掉那個環境變數讓腳本自己建。"
+    } >&2
+    exit 1
+  fi
+else
+  echo "⚠️  context 裡沒有 frontend/dist，跳過前端模式檢查" >&2
+fi

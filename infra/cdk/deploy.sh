@@ -96,7 +96,23 @@ build_frontend() {
     exit 1
   fi
 
-  echo "建置前端：$frontend_dir"
+  # **一定要設 VITE_API_MODE=real。** `frontend/src/api/config.js:12` 的預設值是
+  # `mock`，而 `frontend/` 底下只有 `.env.example` 沒有 `.env`——所以「什麼都不設」
+  # 建出來的是**整包在前端自己演的 mock**：案件清單、解析卷證、搜尋結果全是
+  # `src/api/mock.js` 生的，一次後端都不打。
+  #
+  # 這個失敗形狀特別壞：畫面完全正常、有進度條、有回話、`/api/health` 也綠
+  # （那支是 curl 打的，跟瀏覽器走的是兩條路），**只有「後端 log 一直沒有流量」
+  # 這一個症狀**，而沒人會盯著那個。2026-09-13 實際部署後才發現，雲上跑了
+  # 好幾個小時的是一份從來沒接上後端的前端。
+  #
+  # **刻意不用 `frontend/.env.production`**：root `.gitignore:3` 的 `.env.*` 會把它
+  # 擋在 git 外，於是新 clone／新 worktree 又沒有它——這正是本檔前面兩段註解
+  # 已經吃過兩次虧的同一個坑（未追蹤檔不跨 worktree）。寫在這裡才跟著 repo 走。
+  #
+  # 留一個覆寫口給「想在本機用 mock 建一版給設計看」的情形，但預設是 real。
+  export VITE_API_MODE="${VITE_API_MODE:-real}"
+  echo "建置前端：${frontend_dir}（VITE_API_MODE=${VITE_API_MODE}）"
   # **每次都重建**，不用「dist 已存在就跳過」。理由是這裡的失敗形狀特別壞：
   # 跳過的話，改了前端再部署會**默默推上舊的 dist**，畫面看起來正常、只是不是你改的那版，
   # 而且 `check_context.sh` 一樣全綠（它只看檔案在不在，不看新不新）。
