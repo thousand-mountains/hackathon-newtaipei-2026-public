@@ -174,6 +174,11 @@ def build_sections(payload: dict[str, Any], artifact_id: str | None = None) -> d
         "sections": sections,
         "cite_count": cite_count,
         "unresolved": sorted(set(unresolved)),
+        # 契約 §4.4 的 `X-Unresolved-Cites` 是「對不回本案 laws／references 的引註**數**」。
+        # **是出現次數不是相異 id 數**——跟 `cite_count`（實際帶出的引註數）同一個計法，
+        # 兩個數字要能直接相比：「14 處引註，其中 3 處對不回來」。
+        # 相異 id 數會讓同一個對不上的編號被引三次時只算 1，警示強度被稀釋。
+        "unresolved_count": len(unresolved),
         "notices": _notices(payload),
         "dataset_scope": dataset_scope(payload),
     }

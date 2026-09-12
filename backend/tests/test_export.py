@@ -34,6 +34,7 @@ import pathlib
 import shutil
 import subprocess
 import tempfile
+import urllib.parse
 import zipfile
 
 from backend.orchestrator.artifact_sections import (
@@ -393,6 +394,58 @@ def test_endpoint_exports_docx_with_attachment_headers() -> None:
         _fail("X-Cite-Count 沒帶或是 0")
     if not resp.body.startswith(b"PK"):
         _fail("body 不是 OOXML")
+
+
+def test_unresolved_cites_header_is_a_count_not_an_id_list() -> None:
+    """契約 §4.4：`X-Unresolved-Cites` 是「對不回本案 laws／references 的**引註數**」，
+    前端「非 0 要警示」。送 id 清單的話前端拿 `"L9,L12"` 去比 0 會永遠成立。
+
+    **計數單位是出現次數不是相異 id**，跟 `X-Cite-Count` 同一個計法，兩個數字要能直接比。
+    """
+    api = _endpoint()
+    rid = _persisted_run_id()
+    resp = api.export_artifact(ORDINARY, rid, format="docx")
+    raw = resp.headers["x-unresolved-cites"]
+    if not raw.isdigit():
+        _fail(f"X-Unresolved-Cites 應該是數字，實得 {raw!r}")
+    for key in ("x-cite-count", "x-unresolved-cites", "x-export-warning"):
+        if key not in resp.headers:
+            _fail(f"契約 §4.4 的 {key} 沒帶——省略鍵會讓前端拿到 undefined 而不是 0／空字串")
+    # 相異 id 數會把「同一個壞編號被引三次」算成 1，警示強度被稀釋。
+    v = _view()
+    v_ids = len(v["unresolved"])
+    if v["unresolved_count"] < v_ids:
+        _fail(f"unresolved_count（{v['unresolved_count']}）比相異 id 數（{v_ids}）還小，計數單位錯了")
+
+
+def test_export_warning_header_survives_chinese() -> None:
+    """**這條擋的是一個真的 500。**
+
+    HTTP 標頭只吃 latin-1，中文直接塞進去會在 `Response(...)` **建構時**就丟
+    `UnicodeEncodeError`——整支匯出變 500。而觸發條件是「字型缺字」或「引註對不回來」，
+    正常語料下都不會發生，所以這個 bug 在測試裡是隱形的（2026-09-12 實際踩到）。
+    """
+    api = _endpoint()
+    rid = _persisted_run_id()
+    payload = build_payload(run_case(ORDINARY, mode="fixture", persist=False))
+    payload["laws"] = []          # 讓 L* 對不回來 → 警語一定有中文
+    view = build_sections(payload, artifact_id="art-test")
+    if not view["unresolved"]:
+        _fail("測試前提沒成立：清空 laws 之後仍然沒有對不回來的引註")
+
+    original = api.build_sections
+    api.build_sections = lambda *a, **kw: view
+    try:
+        resp = api.export_artifact(ORDINARY, rid, format="docx")   # 建構標頭時就會炸
+    finally:
+        api.build_sections = original
+    warn = resp.headers["x-export-warning"]
+    decoded = urllib.parse.unquote(warn)
+    if "對不回本案卷宗" not in decoded:
+        _fail(f"警語沒有帶出來：{warn!r} → {decoded!r}")
+    if resp.headers["x-unresolved-cites"] == "0":
+        _fail("有對不回來的引註，X-Unresolved-Cites 卻是 0")
+    warn.encode("latin-1")        # 編不過就是還會 500
 
 
 def test_endpoint_exports_pdf() -> None:
