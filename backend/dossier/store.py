@@ -34,6 +34,7 @@ import os
 import pathlib
 import re
 import shutil
+import sys
 import tempfile
 from typing import Any, Callable
 
@@ -343,6 +344,67 @@ def set_latest_run(
     return m
 
 
+def artifact_id_for(run_id: str) -> str:
+    """草稿 artifact 的 id **由 run_id 決定，不是隨機**。
+
+    同一次 run 重複登記要落在同一筆，否則右欄會出現三份一模一樣的
+    「訴願決定書草稿」而它們其實是同一份。抽成具名函式是因為 `record_run` 也要算它
+    ——兩處各寫一次 sha1 就會有兩種 id。
+    """
+    return "art-" + hashlib.sha1(run_id.encode("utf-8")).hexdigest()[:10]  # noqa: S324
+
+
+def record_run(
+    case_id: str,
+    payload: dict[str, Any],
+    title: str = "訴願決定書草稿",
+    cases_dir: pathlib.Path | None = None,
+) -> str | None:
+    """把一次**成功的** run 記進卷宗：`latest_run_id` ＋（真的有句子時）一筆 artifact。
+
+    回傳登記到的 `artifact_id`；沒有草稿可登記就 `None`。
+
+    **兩條路徑共用這一支**：`POST /cases/{id}/runs`（`backend/api/app.py`）與 chat 的
+    pipeline 工具（`backend/orchestrator/chat_bridge.py`）。2026-09-12 整合時發現
+    登記原本只接在 HTTP 那條路上，而契約 §0.1 說**前端只打 chat、永遠不會打 `/runs`**
+    ——唯一會登記的路徑正好是前端不會走的那一條。右欄「答辯書與產出」因此永遠是空的。
+    修法是把本體下沉到這裡讓兩邊都呼叫，**不是在 chat 那側複製一份**：
+    複製的那份遲早會跟這裡分岔，而分岔的時候沒有症狀。
+
+    收 `payload`（`build_payload()` 的輸出）而不是 `CaseState`：卷宗層不該把編排層
+    拉進 import 圖，而兩個呼叫端本來就都已經有 payload 在手上。
+
+    **判準是「`doc[]` 裡真的有句子」，不是「這個案子有沒有被封鎖」**（2026-09-12 實測更正）：
+    原本寫的是「C 型案不作成草稿所以不登記」，那是錯的——六節點的 `run_case`
+    對 `synthetic-blocked-01` 一樣產出事實／理由／期間計算／主文四段，
+    差別在 `submit_allowed=false` 與 `blockers[]`，不在有沒有文件。
+    （不作成結論的是 chat 的 `generate_decision_draft` 工具那條路徑，不是這裡。）
+    被封鎖的草稿**要**登記：承辦人正是要讀它、接手完成結論。藏起來才是幫倒忙。
+    真正要防的只有「沒有任何句子卻登記一筆」——右欄長出一份點開是空的草稿。
+
+    寫檔失敗不往上丟：run 本身已經成功而且已經存進 runstore，
+    讓一次書籤寫入失敗把執行結果說成失敗是本末倒置。失敗要印出來，不吞。
+    """
+    run_id = str((payload or {}).get("run_id") or "")
+    if not run_id:
+        return None
+    try:
+        set_latest_run(case_id, run_id, cases_dir)
+        doc = (payload or {}).get("doc") or []
+        if not any(b.get("ss") for b in doc):
+            return None
+        record_draft_artifact(case_id, run_id, title,
+                              note=f"由 {run_id} 產出", cases_dir=cases_dir)
+        # `record_draft_artifact` 對已登記過的同一個 run 回 None（冪等），
+        # 但呼叫端要的是「這份草稿的 id」而不是「這次有沒有新增」——
+        # id 由 run_id 決定，所以照樣算得出來，不必分兩種回傳。
+        return artifact_id_for(run_id)
+    except Exception as e:  # noqa: BLE001 — 見 docstring：書籤寫失敗不等於 run 失敗
+        print(f"[warn] 卷宗登記 run {run_id} 失敗：{type(e).__name__}: {e}",
+              file=sys.stderr)
+        return None
+
+
 def record_draft_artifact(
     case_id: str,
     run_id: str,
@@ -355,7 +417,7 @@ def record_draft_artifact(
     `id` 由 run_id 決定（不是隨機）：同一次 run 重複登記要落在同一筆，
     否則右欄會出現三份一模一樣的「訴願決定書草稿 v1」而它們其實是同一份。
     """
-    art_id = "art-" + hashlib.sha1(run_id.encode("utf-8")).hexdigest()[:10]  # noqa: S324
+    art_id = artifact_id_for(run_id)
     m = ensure(case_id, cases_dir)
     if any(str(x.get("id")) == art_id for x in m["artifacts"]):
         return None

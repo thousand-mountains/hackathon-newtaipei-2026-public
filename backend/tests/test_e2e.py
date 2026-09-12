@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+import ast
 import json
 import pathlib
 import tempfile
@@ -18,10 +19,13 @@ from backend.config.settings import (
     SYNTHETIC_DIR,
 )
 import backend.llm.chat as chat_mod
+from backend.dossier import store
 from backend.orchestrator import chat_bridge
 from backend.orchestrator.graph import build_payload, list_synthetic_cases, load_case, run_case
+from backend.orchestrator.runstore import load_run
 from backend.tests.harness import assert_eq, assert_in, assert_true
 
+ROOT = pathlib.Path(__file__).resolve().parents[2]
 ORDINARY = "synthetic-ordinary-01"
 BLOCKED = "synthetic-blocked-01"
 
@@ -636,14 +640,15 @@ def test_the_bridge_hands_the_chat_layer_a_plain_dict_with_no_orchestrator_types
     直接注入 `run_case` 的話，聊天層沒有 import 語句（AST 檢查會綠），
     卻會拿到一個 `CaseState` 並讀它的屬性——**層級形式上守住、實質被穿**。
     """
-    run_pipeline = chat_bridge.pipeline_adapter(ORDINARY, mode="fixture")
-    out = run_pipeline(to_node="n3")
-    assert_eq(sorted(out), ["artifact_id", "cite_count", "has_draft", "node_timings",
-                            "run_id", "sections", "state"], "橋的回傳形狀")
-    for v in out.values():
-        assert_true(v is None or isinstance(v, (str, int, bool, dict, list)),
-                    f"橋回了一個非 plain 型別：{type(v)}")
-    assert_eq(sorted(out["sections"]), sorted(chat_bridge.PAYLOAD_SECTIONS), "分區值域")
+    with tempfile.TemporaryDirectory() as tmp:
+        run_pipeline = chat_bridge.pipeline_adapter(ORDINARY, pathlib.Path(tmp), mode="fixture")
+        out = run_pipeline(to_node="n3")
+        assert_eq(sorted(out), ["artifact_id", "cite_count", "has_draft", "node_timings",
+                                "run_id", "sections", "state"], "橋的回傳形狀")
+        for v in out.values():
+            assert_true(v is None or isinstance(v, (str, int, bool, dict, list)),
+                        f"橋回了一個非 plain 型別：{type(v)}")
+        assert_eq(sorted(out["sections"]), sorted(chat_bridge.PAYLOAD_SECTIONS), "分區值域")
 
 
 def test_the_bridge_reproduces_the_two_chat_tools_end_to_end():
@@ -652,25 +657,27 @@ def test_the_bridge_reproduces_the_two_chat_tools_end_to_end():
     釘的是**驗收條件本身**：解析跑完 `SCREENED` 且該 run 沒有草稿；
     接著續跑之後 `VERIFIED`，而且沒有重跑 n1–n3。
     """
-    run_pipeline = chat_bridge.pipeline_adapter(ORDINARY, mode="fixture")
+    with tempfile.TemporaryDirectory() as tmp:
+        run_pipeline = chat_bridge.pipeline_adapter(ORDINARY, pathlib.Path(tmp), mode="fixture")
 
-    extracted = run_pipeline(to_node="n3")
-    assert_eq(extracted["state"], "SCREENED", "解析卷證停在程序審查")
-    assert_true(not extracted["has_draft"], "這個 run 不該有草稿")
-    assert_eq(sorted(extracted["node_timings"]), ["n1", "n2", "n3"], "只跑 n1–n3")
+        extracted = run_pipeline(to_node="n3")
+        assert_eq(extracted["state"], "SCREENED", "解析卷證停在程序審查")
+        assert_true(not extracted["has_draft"], "這個 run 不該有草稿")
+        assert_eq(sorted(extracted["node_timings"]), ["n1", "n2", "n3"], "只跑 n1–n3")
 
-    drafted = run_pipeline(from_node="n4", base_run_id=extracted["run_id"],
-                           overrides={"n4_query": "廢棄物清理法第 2 條"})
-    assert_eq(drafted["state"], "VERIFIED", "生成草稿要跑到守門")
-    assert_true(drafted["has_draft"], "續跑之後要有草稿")
-    assert_eq(sorted(drafted["node_timings"]), ["n4", "n5", "n6"], "不得重跑 n1–n3")
-    assert_true(drafted["run_id"] != extracted["run_id"], "續跑是一次新的執行")
-    assert_true(drafted["cite_count"] > 0, "引用數是從 payload 數的真值")
+        drafted = run_pipeline(from_node="n4", base_run_id=extracted["run_id"],
+                               overrides={"n4_query": "廢棄物清理法第 2 條"})
+        assert_eq(drafted["state"], "VERIFIED", "生成草稿要跑到守門")
+        assert_true(drafted["has_draft"], "續跑之後要有草稿")
+        assert_eq(sorted(drafted["node_timings"]), ["n4", "n5", "n6"], "不得重跑 n1–n3")
+        assert_true(drafted["run_id"] != extracted["run_id"], "續跑是一次新的執行")
+        assert_true(drafted["cite_count"] > 0, "引用數是從 payload 數的真值")
 
 
 def test_the_bridge_refuses_to_stop_at_n5_just_like_run_case_does():
     """紅線要在橋這一層也穿得過去，不是只有 `run_case` 自己擋。"""
-    run_pipeline = chat_bridge.pipeline_adapter(ORDINARY, mode="fixture")
+    run_pipeline = chat_bridge.pipeline_adapter(ORDINARY, pathlib.Path(tempfile.gettempdir()),
+                                                mode="fixture")
     try:
         run_pipeline(to_node="n5")
     except ValueError as e:
@@ -684,19 +691,35 @@ def test_a_missing_or_broken_manifest_reads_as_an_empty_case_file_not_an_error()
 
     壞掉的 JSON 也當成空：半份清單比沒有清單更難查。
     """
+    def _write(root: pathlib.Path, case_id: str, text: str) -> None:
+        (root / case_id).mkdir(parents=True, exist_ok=True)
+        (root / case_id / "manifest.json").write_text(text, encoding="utf-8")
+
     with tempfile.TemporaryDirectory() as tmp:
         root = pathlib.Path(tmp)
-        assert_eq(chat_bridge.load_case_manifest("nope", root), {}, "沒有這個案子")
-        (root / "broken").mkdir()
-        (root / "broken" / "manifest.json").write_text("{ 壞掉的", encoding="utf-8")
-        assert_eq(chat_bridge.load_case_manifest("broken", root), {}, "壞掉的 JSON")
-        (root / "listy").mkdir()
-        (root / "listy" / "manifest.json").write_text("[1,2]", encoding="utf-8")
-        assert_eq(chat_bridge.load_case_manifest("listy", root), {}, "不是物件")
-        (root / "good").mkdir()
-        (root / "good" / "manifest.json").write_text(
-            '{"laws":[{"id":"L1","t":"x"}]}', encoding="utf-8")
-        assert_eq(chat_bridge.load_case_manifest("good", root)["laws"][0]["id"], "L1", "正常讀")
+        assert_eq(chat_bridge.load_case_manifest(ORDINARY, root), {}, "沒有這個案子")
+
+        _write(root, ORDINARY, "{ 壞掉的")
+        assert_eq(chat_bridge.load_case_manifest(ORDINARY, root), {}, "壞掉的 JSON")
+
+        _write(root, ORDINARY, "[1,2]")
+        assert_eq(chat_bridge.load_case_manifest(ORDINARY, root), {}, "頂層不是物件")
+
+        # 不合白名單的 case_id 也是空，**不是**例外：它會從 HTTP path 進來，
+        # `store.manifest_path` 擋在拼路徑之前（`../../etc/x` 之類）。
+        assert_eq(chat_bridge.load_case_manifest("../../etc/passwd", root), {}, "非法 case_id")
+
+        _write(root, ORDINARY, '{"laws":[{"id":"L1","t":"x"}]}')
+        m = chat_bridge.load_case_manifest(ORDINARY, root)
+        assert_eq(m["laws"][0]["id"], "L1", "正常讀")
+        # 走 `store.load` 的附帶好處：`_normalise` 保證四個群組一定是 list，
+        # 缺鍵補空。讀端因此不必再自己防「laws 是 dict」那種形狀。
+        assert_eq(m["references"], [], "缺的群組補成空 list 而不是 KeyError")
+        assert_eq(m["artifacts"], [], "同上")
+
+        _write(root, ORDINARY, '{"laws": {"L1": {"t": "x"}}}')
+        assert_eq(chat_bridge.load_case_manifest(ORDINARY, root)["laws"], [],
+                  "群組不是 list 時被正規化成空 list，不會讓下游拿 str 去 .get()")
 
 
 def test_the_draft_tool_lets_precondition_three_through_when_the_manifest_really_has_content():
@@ -712,20 +735,21 @@ def test_the_draft_tool_lets_precondition_three_through_when_the_manifest_really
     saved = chat_mod._throttle
     chat_mod._throttle = lambda: None          # 真的節流會讓這條睡好幾秒
     try:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = pathlib.Path(tmp)
-            (root / ORDINARY).mkdir()
-            (root / ORDINARY / "manifest.json").write_text(
-                json.dumps({"laws": [{"id": "L1", "t": "廢棄物清理法第 2 條"},
-                                     {"id": "L2", "t": "訴願法第 14 條"}],
-                            "references": [{"id": "C1", "t": "112 年訴字第 1 號"}]},
-                           ensure_ascii=False), encoding="utf-8")
-            manifest = chat_bridge.load_case_manifest(ORDINARY, root)
+        tmpdir = tempfile.TemporaryDirectory()
+        root = pathlib.Path(tmpdir.name)
+        (root / ORDINARY).mkdir()
+        (root / ORDINARY / "manifest.json").write_text(
+            json.dumps({"case_id": ORDINARY,
+                        "laws": [{"id": "L1", "t": "廢棄物清理法第 2 條"},
+                                 {"id": "L2", "t": "訴願法第 14 條"}],
+                        "references": [{"id": "C1", "t": "112 年訴字第 1 號"}]},
+                       ensure_ascii=False), encoding="utf-8")
+        manifest = chat_bridge.load_case_manifest(ORDINARY, root)
 
         events: list = []
         tools = chat_mod.ChatTools(
             {}, chat_mod.RefBook(), emit=lambda n, d: events.append((n, d)),
-            run_pipeline=chat_bridge.pipeline_adapter(ORDINARY, mode="fixture"),
+            run_pipeline=chat_bridge.pipeline_adapter(ORDINARY, root, mode="fixture"),
             case_manifest=manifest,
         )
 
@@ -750,3 +774,108 @@ def test_the_draft_tool_lets_precondition_three_through_when_the_manifest_really
                   "兩支工具合起來各報自己那三個節點")
     finally:
         chat_mod._throttle = saved
+        tmpdir.cleanup()
+
+
+# ── A/B 交界：兩條路徑都要把 run 登記進卷宗 ──────────────────────────
+#
+# 2026-09-12 整合時發現的洞：登記（`latest_run_id` ＋ artifact）原本只接在
+# `POST /cases/{id}/runs` 上，而契約 §0.1 說**前端只打 chat、永遠不會打 `/runs`**。
+# 唯一會登記的路徑正好是前端不會走的那一條——右欄「答辯書與產出」永遠是空的，
+# 下一輪 chat 也沒有 `latest_run_id` 可帶。兩邊單獨看都正確，併起來才浮出來。
+
+def test_chat_pipeline_records_latest_run_id_into_the_manifest():
+    """A1.1：經 chat 解析卷證之後，卷宗要記得這次的 run。
+
+    不記的話下一輪 chat 沒有 `run_id` 可帶 → `read_case` 看到空卷內 →
+    承辦人剛解析完的卷證，下一句話就查不到了。
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        run_pipeline = chat_bridge.pipeline_adapter(ORDINARY, root, mode="fixture")
+        out = run_pipeline(to_node="n3")
+        m = store.load(ORDINARY, root)
+        assert_eq(m["latest_run_id"], out["run_id"], "latest_run_id 要指到這次的 run")
+        # 停在 n3 沒有草稿 → 不該長出一筆點開是空的 artifact
+        assert_eq(m["artifacts"], [], "沒有句子就不登記 artifact")
+
+
+def test_chat_pipeline_records_the_draft_artifact_and_returns_its_real_id():
+    """經 chat 生成草稿之後 `artifacts[]` 要多一筆，且回傳的 `artifact_id` 與它一致。
+
+    回 `None` 或回一個編出來的 `art-…`，前端都會拿去打一支查不到的端點。
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        run_pipeline = chat_bridge.pipeline_adapter(ORDINARY, root, mode="fixture")
+        base = run_pipeline(to_node="n3")
+        drafted = run_pipeline(from_node="n4", base_run_id=base["run_id"])
+
+        m = store.load(ORDINARY, root)
+        assert_eq(len(m["artifacts"]), 1, f"草稿沒有被登記：{m['artifacts']}")
+        art = m["artifacts"][0]
+        assert_eq(drafted["artifact_id"], art["id"], "回傳的 id 要就是登記的那一筆")
+        assert_eq(art["run_id"], drafted["run_id"], "artifact 要指得回產出它的 run")
+        assert_eq(art["kind"], "draft", "")
+        assert_eq(m["latest_run_id"], drafted["run_id"], "latest_run_id 要跟著前進")
+
+        # 同一個 run 重跑登記不得長出第二筆（id 由 run_id 決定，不是隨機）
+        again = store.record_run(ORDINARY, build_payload(load_run(drafted["run_id"])),
+                                 cases_dir=root)
+        assert_eq(again, art["id"], "冪等呼叫要回同一個 id，不是 None")
+        assert_eq(len(store.load(ORDINARY, root)["artifacts"]), 1, "重複登記長出第二筆")
+
+
+def test_both_paths_record_the_same_manifest_shape():
+    """`POST /runs` 與 chat 兩條路徑登記出來的形狀必須相同。
+
+    **這條是為了防分岔**：兩邊各寫一份登記邏輯的話，差異不會有症狀——
+    右欄照樣長出東西，只是欄位少一個或 id 算法不一樣，而那要等到匯出或
+    點開產出才會炸。所以這裡直接比對兩份 manifest 的結構。
+
+    `backend/api/app.py` import fastapi（測試路徑零外部依賴），所以這裡不打 HTTP 端點，
+    而是**呼叫它實際呼叫的那一支**（`store.record_run(case_id, build_payload(state))`
+    ——app.py:432／:463 兩處都是這一行）。要防的是「兩邊各寫一份」，
+    只要兩邊真的走同一支函式，這條就成立。
+    """
+    with tempfile.TemporaryDirectory() as tmp_http, tempfile.TemporaryDirectory() as tmp_chat:
+        http_root, chat_root = pathlib.Path(tmp_http), pathlib.Path(tmp_chat)
+
+        # 路徑一：`POST /runs` 走的那一行
+        state = run_case(ORDINARY, mode="fixture")
+        store.record_run(ORDINARY, build_payload(state), cases_dir=http_root)
+
+        # 路徑二：chat 的 pipeline 工具
+        chat_pipeline = chat_bridge.pipeline_adapter(ORDINARY, chat_root, mode="fixture")
+        chat_pipeline(to_node="n6")
+
+        a, b = store.load(ORDINARY, http_root), store.load(ORDINARY, chat_root)
+        assert_eq(sorted(a), sorted(b), "manifest 頂層鍵不同")
+        assert_eq(sorted(a["artifacts"][0]), sorted(b["artifacts"][0]), "artifact 欄位不同")
+        assert_eq(a["artifacts"][0]["kind"], b["artifacts"][0]["kind"], "")
+        assert_eq(a["artifacts"][0]["name"], b["artifacts"][0]["name"], "草稿標題不同")
+        # run_id 兩次執行本來就不同；比的是「id 由 run_id 算出來」這條規則一致
+        for m in (a, b):
+            assert_eq(m["artifacts"][0]["id"],
+                      store.artifact_id_for(m["latest_run_id"]),
+                      "artifact id 不是由 run_id 算出來的")
+
+
+def test_the_chat_side_registration_is_load_bearing_not_decorative():
+    """變異測試的固定樁：**登記那一行如果被拿掉，上面兩條必須紅**。
+
+    這裡不改程式碼（測試不該改被測物），而是釘住「`pipeline_adapter` 真的呼叫了
+    `store.record_run`」這個事實——把那行刪掉，這條會紅，上面兩條也會紅。
+    三條一起紅，才知道是同一個原因。
+    """
+    tree = ast.parse(
+        (ROOT / "backend" / "orchestrator" / "chat_bridge.py").read_text(encoding="utf-8"))
+    attrs = [n.func.attr for n in ast.walk(tree)
+             if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)]
+    assert_in("record_run", attrs)   # 沒有它，chat 這條路就不會登記
+    # 反向：不得自己寫檔（那就是把登記邏輯複製一份，遲早跟 store.py 分岔）。
+    # **用 AST 不用字串比對**：這個檔的註解本來就在講 `manifest.json` 與寫入，
+    # 字串比對會被自己的說明觸發——寫得越清楚越容易誤報（本檔已踩過一次）。
+    for banned in ("write_text", "write", "dump", "dumps", "replace"):
+        assert_true(banned not in attrs,
+                    f"chat_bridge 自己呼叫了 {banned}()：寫入要集中在 dossier/store.py")

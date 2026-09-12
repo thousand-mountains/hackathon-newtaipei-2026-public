@@ -426,37 +426,14 @@ def _run_kwargs(body: RunIn | None) -> dict[str, Any]:
     return kw
 
 
-def _record_run_into_manifest(case_id: str, state: Any) -> None:
-    """把一次**成功的** run 記進卷宗：`latest_run_id` ＋（真的有句子時）一筆 artifact。
-
-    **判準是「`doc[]` 裡真的有句子」，不是「這個案子有沒有被封鎖」**（2026-09-12 實測更正）：
-    我原本寫的是「C 型案不作成草稿所以不登記」，那是錯的——六節點的 `run_case`
-    對 `synthetic-blocked-01` 一樣產出事實／理由／期間計算／主文四段，
-    差別在 `submit_allowed=false` 與 `blockers[]`，不在有沒有文件。
-    （不作成結論的是 chat 的 `generate_decision_draft` 工具那條路徑，不是這裡。）
-    被封鎖的草稿**要**登記：承辦人正是要讀它、接手完成結論。藏起來才是幫倒忙。
-    真正要防的只有「沒有任何句子卻登記一筆」——右欄長出一份點開是空的草稿。
-
-    寫檔失敗不往上丟：run 本身已經成功而且已經存進 runstore，
-    讓一次書籤寫入失敗把執行結果說成失敗是本末倒置。失敗要印出來，不吞。
-    """
-    try:
-        store.set_latest_run(case_id, state.run_id)
-        doc = build_payload(state).get("doc") or []
-        has_sentences = any(b.get("ss") for b in doc)
-        if has_sentences:
-            store.record_draft_artifact(case_id, state.run_id, "訴願決定書草稿",
-                                        note=f"由 {state.run_id} 產出")
-    except Exception as e:  # noqa: BLE001
-        print(f"[warn] 卷宗登記 run {getattr(state, 'run_id', '?')} 失敗："
-              f"{type(e).__name__}: {e}", file=sys.stderr)
-
-
 def _run_in_background(case_id: str, rid: str, kwargs: dict[str, Any]) -> None:
     """202 之後在背景把六節點跑完，進度與結果分別走 BUS 與 runstore。"""
     try:
         state = run_case(case_id, on_event=lambda k, d: BUS.push(rid, k, d), run_id=rid, **kwargs)
-        _record_run_into_manifest(case_id, state)
+        # 登記的本體在 `backend/dossier/store.py`，**chat 那條路徑也呼叫同一支**
+        # （2026-09-12：原本只接在這裡，而契約 §0.1 說前端只打 chat，
+        # 於是唯一會登記的路徑正好是前端不會走的那一條）。
+        store.record_run(case_id, build_payload(state))
     except Exception as e:  # noqa: BLE001 — graph 已發 run_failed；這裡只確保狀態收斂
         # 沒有這一段，`run_case` 進到節點之前就炸掉（例如案例不存在）時
         # BUS 會永遠停在 running，前端就永遠輪詢下去。
@@ -485,8 +462,9 @@ def create_run(case_id: str, background: BackgroundTasks, body: RunIn | None = N
             state = run_case(case_id, **kwargs)
         except Exception as e:  # noqa: BLE001
             raise _translate(e) from e
-        _record_run_into_manifest(case_id, state)
         payload = build_payload(state)
+        # payload 已經在手上，不重算一次（登記本體見 `backend/dossier/store.py`）
+        store.record_run(case_id, payload)
         if payload["origin_violations"]:
             raise HTTPException(status_code=500, detail={"origin_violations": payload["origin_violations"]})
         return payload
