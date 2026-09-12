@@ -2,6 +2,7 @@
 // 移植自 design/訴願智慧輔助平台.html 的命令式 JS，改為 Vue 響應式模型。
 import { reactive, computed } from 'vue'
 import { CASE_NO, TOOLS, GROUPS, ACKS } from '../data/data.js'
+import { DEMO_CASE_FILES } from '../data/demo-case.js'
 import { api } from '../api/index.js'
 import { ApiError } from '../api/http.js'
 import { scoreCaption, corpusScoreCaption } from '../api/ranker.js'
@@ -1081,6 +1082,19 @@ export function uploadToFolder(files) {
   else if (!dup.length) toast('未選擇任何檔案')
 }
 
+// 一鍵示範：把合成卷證組成真的 File，走**同一條** uploadToFolder。
+//
+// 兩條路唯一的差別是 File 從哪來（模組字串 vs 使用者的硬碟），之後完全一樣：
+// 一樣送真 bytes、一樣打 createCase／uploadFiles、一樣以 listFiles 對帳、
+// 一樣吃後端判的 readable。**刻意不給示範檔另開一條管線**——分岔的那條
+// 遲早會有一邊沒人測到，而 demo 當天跑的偏偏是那一邊。
+//
+// `new File([text], name)` 帶的是真內容（UTF-8 編碼後的真 bytes），
+// 跟這次修掉的 `new File([''], name)` 是兩回事：那個是空殼配假檔名。
+export function uploadDemoCase() {
+  uploadToFolder(DEMO_CASE_FILES.map((d) => new File([d.text], d.name, { type: d.type })))
+}
+
 // 首次上傳＝建案（契約 §1.1「上傳卷證即建案」，走 createCase multipart 拿真 id）；
 // 之後的上傳才走 uploadFiles。都是背景同步，失敗只提示不回捲。
 // 建案會設 c._createTask（Promise），chat/runTool 前會 await 它，確保拿到真 caseId 再打後端。
@@ -1278,6 +1292,8 @@ export const chips = computed(() => {
   const add = (label, action, lead, opts) => out.push({ label, action, lead, ...(opts || {}) })
   if (!c.docs.evidence.length) {
     add('上傳卷證檔案', { t: 'attach' }, '＋')
+    // 合成測資（CONSTITUTION §3）。label 就寫「合成」，不要讓它看起來像真案子。
+    add('載入合成示範卷證', { t: 'demo' }, '▸')
     add('你會什麼？', { t: 'ask' }, '?')
     return out
   }

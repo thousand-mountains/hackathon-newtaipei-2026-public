@@ -2,7 +2,7 @@
 import { ref, reactive, computed, watch, onMounted } from 'vue'
 import {
   state, active, boot, toast, runTool,
-  attachToPending, uploadToFolder, humanSize, MAX_UPLOAD_BYTES,
+  attachToPending, uploadToFolder, uploadDemoCase, humanSize, MAX_UPLOAD_BYTES,
   searchHave, searchLibrary, addSearched, deleteCase, deleteFolder,
   viewLawFull, viewDecisionFull, viewArtifactFull,
 } from './store/app.js'
@@ -115,6 +115,12 @@ function onPickFiles(e) {
 }
 function dropPick(i) {
   pickState.files.splice(i, 1)
+}
+// 一鍵示範：走 store 的 uploadDemoCase（＝同一條 uploadToFolder），
+// 這裡只負責關掉 sheet。示範檔不進 pickState，因為它不需要使用者再確認一次。
+function useDemoCase() {
+  closeSheet()
+  uploadDemoCase()
 }
 function submitPick() {
   const files = pickable.value
@@ -299,6 +305,15 @@ const moveFolders = computed(() => state.folders)
       <span class="fp-hint">可一次選多份，也可以分次加</span>
     </label>
     <p v-if="!pickState.files.length"><span style="color: var(--faint); font-size: 12.5px">尚未選擇檔案。</span></p>
+    <div class="demorow">
+      <div class="dr-t">
+        手邊沒有檔案？<button class="dr-btn" @click="useDemoCase">載入合成示範卷證</button>
+      </div>
+      <div class="dr-s">
+        四份<b>合成測資</b>（收文分文單、訴願書、原處分裁處書、送達證書），人名、地址與文號皆為虛構。
+        它們是真的檔案、走跟上面完全一樣的上傳路徑，判讀結果也一樣由後端決定。
+      </div>
+    </div>
     <div v-for="(f, i) in pickState.files" :key="f.name + ':' + f.size" class="pickrow" :class="{ over: f.size > MAX_UPLOAD_BYTES }">
       <span class="pt"
         >{{ f.name }}
