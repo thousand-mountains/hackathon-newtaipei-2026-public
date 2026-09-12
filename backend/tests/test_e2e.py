@@ -635,6 +635,64 @@ def test_node_done_events_report_degradation_from_the_node_not_from_a_guess():
 # adapter 原本寫在 `backend/api/chat.py` 裡，那個檔頂層 import fastapi，
 # 於是這段 `CaseState` → dict 的轉換一行都跑不到——而它正是 Epic C 要接的東西。
 
+def test_a_rerun_from_n4_does_not_launder_needs_input_into_verified():
+    """缺必填欄位的案子，續跑草稿之後終態不得變成 VERIFIED（2026-09-13 雲上抓到）。
+
+    實際發生的：同一件缺欄位的案子，「解析卷證」（n1→n3）得到 `NEEDS_INPUT`，
+    按下「生成草稿」（`from_node="n4"` 續跑）之後變成 `VERIFIED`、還帶了
+    `cite_count=4` 與一個 artifact id。欄位一個都沒補，狀態卻說「驗完了」。
+
+    根因是舊判準只看「這一輪的 n1 有沒有降級」，而續跑時 n1 根本不跑。
+
+    **這條測試一定要跑真的兩段式**，不能只呼叫內部函式：這個 bug 的形狀正是
+    「兩段分開看都對、接起來錯」——第一段的終態對，第二段自己也沒做錯什麼，
+    錯在第二段不知道第一段發生過什麼。
+
+    缺的欄位選 `d2`（送達日）而不是案號：它會改變期間計算，
+    「缺送達日卻說驗完了」比缺案號嚴重得多，而案號已經不是必填了。
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        fixture = load_case(ORDINARY)
+        fixture["extraction"]["conf"]["d2"] = 0.10  # 低信心，但值還在 → N3 照樣算得出期間
+        data_dir = pathlib.Path(tmp) / "synthetic"
+        data_dir.mkdir()
+        (data_dir / f"{ORDINARY}.json").write_text(
+            json.dumps(fixture, ensure_ascii=False), encoding="utf-8")
+
+        first = run_case(ORDINARY, mode="fixture", data_dir=data_dir,
+                         to_node="n3", persist=True)
+        assert_eq(first.state, "NEEDS_INPUT", "第一段：必填欄位信心不足就該停在 NEEDS_INPUT")
+
+        second = run_case(ORDINARY, mode="fixture", data_dir=data_dir,
+                          base_state=first, from_node="n4", persist=False)
+
+    assert_eq(second.state, "NEEDS_INPUT",
+              "續跑把 NEEDS_INPUT 洗成了 VERIFIED——欄位一個都沒補，狀態卻說驗完了")
+    assert_true(any(d.get("node") == "n1" for d in (second.run_meta or {}).get("degraded") or []),
+                "續跑把 n1 的降級紀錄弄丟了，前端會看不到還缺哪幾欄")
+
+
+def test_a_rerun_on_a_complete_case_still_reaches_verified():
+    """對照組：欄位齊全的案子續跑照樣要到 `VERIFIED`。
+
+    沒有這一條的話，「永遠回 NEEDS_INPUT」也能讓上面那條測試變綠——
+    那是把 demo 整個鎖死的過度修正，而且看起來很像修好了。
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        data_dir = pathlib.Path(tmp) / "synthetic"
+        data_dir.mkdir()
+        (data_dir / f"{ORDINARY}.json").write_text(
+            json.dumps(load_case(ORDINARY), ensure_ascii=False), encoding="utf-8")
+
+        first = run_case(ORDINARY, mode="fixture", data_dir=data_dir,
+                         to_node="n3", persist=True)
+        assert_eq(first.state, "SCREENED", "欄位齊全時第一段該停在 SCREENED")
+
+        second = run_case(ORDINARY, mode="fixture", data_dir=data_dir,
+                          base_state=first, from_node="n4", persist=False)
+    assert_eq(second.state, "VERIFIED", "欄位齊全的案子續跑卻到不了 VERIFIED")
+
+
 def test_a_missing_case_number_no_longer_stops_the_whole_case():
     """收文案號抽不到不得擋住整件案子（2026-09-13 Ci 拍板把 `no` 移出必填）。
 

@@ -325,7 +325,6 @@ def run_case(
     # 檢索佐證的是自己。2026-09-05 Ci 拍板改獨立檢索。
     # 續跑時起始狀態＝上一個節點跑完該有的狀態，不從 EXTRACTING 重來
     state.transition("EXTRACTING" if start_idx == 0 else STATE_AFTER[NODE_ORDER[start_idx - 1]])
-    intake_incomplete = False
     node = from_node  # 例外處理要報是哪一個節點炸的
     try:
         for node in NODE_ORDER[start_idx : end_idx + 1]:
@@ -390,8 +389,7 @@ def run_case(
             #
             # 終態刻意保留 `NEEDS_INPUT` 而不是 `VERIFIED`：這件案子確實還要補件，
             # 改成 VERIFIED 等於說「驗完了」。驗收腳本與前端據此判斷要不要請人確認。
-            if node == "n1" and result.degraded:
-                intake_incomplete = True
+            # **這件事在迴圈外用 `degraded` 判**（2026-09-13 改），見下面。
             state.transition(STATE_AFTER[node])
     except Exception as e:  # noqa: BLE001 — 事件要發得出去，例外照原樣往上拋
         emit("run_failed", {"node": node, "error": f"{type(e).__name__}: {e}"})
@@ -399,6 +397,32 @@ def run_case(
 
     # 六節點都跑完了，但必填欄位還缺——終態回到 NEEDS_INPUT。
     # 畫面上因此同時有「要補哪幾欄」與「已經查到的法規／相似案」，而不是二選一。
+    #
+    # ⚠️ **判準從「這一輪的 n1 有沒有降級」改成「`degraded` 裡有沒有 n1 那筆」**
+    # （2026-09-13 修，雲上實跑抓到）。舊寫法是迴圈裡的
+    # `if node == "n1" and result.degraded: intake_incomplete = True`——
+    # `from_node="n4"` 續跑時 n1 根本不跑，旗標永遠 False，於是同一件缺欄位的案子
+    # 「解析卷證」得到 NEEDS_INPUT、按下「生成草稿」之後變成 **VERIFIED**。
+    # 那推翻了上面那段註解自己寫的設計意圖：改成 VERIFIED 等於說「驗完了」，
+    # 而驗收腳本與前端正是據此判斷要不要請人確認。
+    # 缺的若是 `d2`（送達日）——那是會改變期間計算的欄位——後果比缺案號嚴重得多。
+    #
+    # **為什麼用 `degraded` 而不是另外兩個候選：**
+    # - `base_state.low_conf_fields`：**有洞**。N1 的降級條件是 `low_conf or missing`，
+    #   但 `state.low_conf_fields` 只存 `low_conf`。`intake["d2"] = None` 而 `conf["d2"]`
+    #   還留著高分時，那一欄是 missing 但不是 low_conf，這個判準會漏掉。
+    # - `base_state.state == "NEEDS_INPUT"`：可行，但它是**結論**不是**證據**——
+    #   哪天有別的東西也會把終態設成 NEEDS_INPUT，這條就開始誤判，而且看不出來。
+    # - `degraded` 裡的 n1 那筆：**它就是 N1 自己說的「我降級了」**，而且
+    #   `run_case()` 開頭已經把沒重跑的節點那幾筆從 `base_state` 複製進來了
+    #   （見上面 `degraded = [...]`），所以「這輪跑的」與「上輪留的」用同一把尺。
+    #   重跑 n1 且這次沒降級時，舊那筆會被 `d.get("node") not in rerun_nodes`
+    #   濾掉、也不會重新加入——補齊欄位之後終態就正常回到 VERIFIED。
+    #
+    # N1 的降級條件目前**只有**必填欄位不足（`n1_extract.py` 的
+    # `degraded = bool(low_conf or missing)`），所以「n1 降級」等價於「收文欄位還缺」。
+    # 哪天 N1 多一種降級原因，這裡要跟著分。
+    intake_incomplete = any(d.get("node") == "n1" for d in degraded)
     if intake_incomplete and state.state != "NEEDS_INPUT":
         state.transition("NEEDS_INPUT")
 
