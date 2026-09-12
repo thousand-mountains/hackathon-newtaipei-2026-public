@@ -22,6 +22,7 @@ if str(ROOT) not in sys.path:
 import backend.llm.chat as chat_mod  # noqa: E402
 import backend.retrieval.kb as kb_module  # noqa: E402
 from backend.dossier import corpus, runlink, store  # noqa: E402
+from backend.orchestrator import case_view  # noqa: E402
 from backend.orchestrator.artifact_sections import build_sections  # noqa: E402
 from backend.orchestrator.graph import build_payload, run_case  # noqa: E402
 from backend.tests.harness import assert_eq, assert_in, assert_true  # noqa: E402
@@ -1022,3 +1023,83 @@ def test_a_manifest_entry_with_a_blank_name_is_not_reported_as_a_retrieval_miss(
     assert_eq(marked[0]["retrieval_status"], runlink.RETRIEVAL_UNKNOWN,
               "空名字不該被算成任何一種檢索結果（Epic C 的規則刻意這樣）")
     assert_eq(marked[0]["retrieval_note"], "")
+
+
+# ── #4 彙整版：卷宗五鍵 ＋ 最後一次 run 的四塊（契約 §3.3） ─────────
+#
+# 這四塊漏掉的後果是**一顆死鈕**：使用者問期限時 `redirect` 的 CTA 要捲去
+# 「程序審查算式」，而那個畫面沒有資料可畫。那顆 CTA 是 CONSTITUTION §4 的唯一出口
+# ——期限不給模型算的天數，改給規則引擎算好的 `screen.deadline.steps`。
+# 2026-09-13 前端 e2e 抓到，後端原本只回五鍵。
+
+AGGREGATE_CASE_KEYS = ("case", "files", "laws", "references", "artifacts")
+
+
+def test_the_four_run_blocks_are_declared_in_one_place():
+    assert_eq(case_view.RUN_BLOCKS, ("intake", "facts_excerpt", "issues", "screen"))
+
+
+def test_the_block_logic_is_not_in_the_api_layer():
+    """邏輯留在 `backend/api/*` 的話，測試只能用 AST 讀原始碼——而 AST 讀不出
+    「這個對應關係算得對不對」。更糟的是測試若 import 了那個模組，
+    **整支 `run_all.py` 在沒有 fastapi 的直譯器上 import 就崩**（2026-09-13 實際踩到）。
+    與 `artifact_sections.py` 放在 orchestrator 是同一個理由。
+    """
+    api_src = (ROOT / "backend" / "api" / "dossier.py").read_text(encoding="utf-8")
+    assert_in("from backend.orchestrator.case_view import blocks_from_latest_run", api_src)
+    assert_true("RUN_BLOCKS = (" not in api_src, "四塊的清單又在 api 層多了一份")
+
+
+def test_aggregate_blocks_are_null_when_the_case_has_never_run():
+    """**鍵一定在，值是 `null`。** 省略鍵會讓前端拿到 `undefined` 而不是 `null`
+    （契約 §2.3「值為 null 也要送」同一條紀律），兩者在 JS 要寫不同分支。"""
+    got = case_view.blocks_from_latest_run(None)
+    assert_eq(sorted(got), sorted(case_view.RUN_BLOCKS))
+    for k in case_view.RUN_BLOCKS:
+        assert_eq(got[k], None, f"{k} 應該是 null")
+
+
+def test_aggregate_blocks_do_not_blow_up_when_the_run_is_unreadable():
+    """run 讀不到就整支 500 的話，使用者連自己挑進卷宗的東西都看不到了。
+
+    「還沒跑過」與「跑過但讀不到」由 `case.latest_run_id` 區分：它有值而四塊是 null
+    就是後者。這裡驗的是**不炸**，不是驗它會回什麼漂亮的東西。
+    """
+    got = case_view.blocks_from_latest_run("run-this-one-does-not-exist")
+    assert_eq(sorted(got), sorted(case_view.RUN_BLOCKS))
+    for k in case_view.RUN_BLOCKS:
+        assert_eq(got[k], None)
+
+
+def test_a_screened_run_still_carries_all_four_blocks():
+    """**`SCREENED` 的 run 沒有草稿，但這四塊都有。**
+
+    不要因為 `doc` 是空的就整組回空——那會把「還沒生草稿」誤演成「什麼都沒有」，
+    而程序審查的算式正好就在 `screen` 裡。
+    """
+    payload = build_payload(run_case("synthetic-ordinary-01", to_node="n3", persist=False))
+    assert_eq(payload["state"], "SCREENED")
+    assert_eq(payload["doc"], [], "這個 run 本來就不該有草稿")
+    for k in case_view.RUN_BLOCKS:
+        assert_true(payload.get(k), f"SCREENED 的 payload 少了 {k}")
+    steps = ((payload["screen"] or {}).get("deadline") or {}).get("steps")
+    assert_true(steps, "redirect 的 CTA 要捲去看的就是這個算式，它不能是空的")
+
+
+def test_aggregate_returns_the_dossier_keys_plus_the_four_blocks():
+    """八個鍵：原本五個一個字都沒動，加上四塊。"""
+    src = (ROOT / "backend" / "api" / "dossier.py").read_text(encoding="utf-8")
+    body = src[src.index("def get_case("):src.index("def rename_case(")]
+    for k in AGGREGATE_CASE_KEYS:
+        assert_in(f'"{k}"', body, f"彙整版少了既有的 {k} 鍵——前端已經接好了，不得改形狀")
+    assert_in("blocks_from_latest_run", body)
+
+
+def test_the_four_blocks_come_from_the_run_not_from_the_manifest():
+    """資料來源是 run payload，不是 manifest。
+
+    manifest 是書籤清單，裡面沒有案由／事實摘錄／爭點／程序審查，
+    從那裡撈只會撈到 None——而且不會報錯。
+    """
+    src = (ROOT / "backend" / "orchestrator" / "case_view.py").read_text(encoding="utf-8")
+    assert_in("build_payload(load_run(run_id))", src)
