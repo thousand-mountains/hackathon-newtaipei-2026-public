@@ -485,6 +485,28 @@ def _clip(text: str, limit: int = _QUERY_CLIP) -> str:
     return one_line if len(one_line) <= limit else one_line[:limit] + "…（節錄）"
 
 
+#: `extract_case_document` 回傳字串的結尾。**不要叫模型接著去讀卷內。**
+#:
+#: 原文是「要看內容請用 `read_case` 讀 intake／facts_excerpt／screen」，QA 雲上實測
+#: （`r05`）的後果是模型照做，一次按鈕跑出四張卡：
+#:
+#:     tc-1 extract_case_document   （n1 11150ms／n2 0ms／n3 0ms）
+#:     tc-2 read_case {"section":"intake"}
+#:     tc-3 read_case {"section":"facts_excerpt"}
+#:     tc-4 read_case {"section":"screen"}
+#:
+#: 整輪 28 秒而 n1 只佔 11 秒，其餘是三輪模型往返加三次節流。**不是模型不聽話，
+#: 是這句話叫它去做的。** 而契約 §3.3 說那四塊內容由前端打彙整版取，agent 不必再讀。
+#:
+#: 順帶修掉兩件事：原文把 `read_case` 這個函式名與三個分區鍵名端到模型面前
+#: （紅線 5 管的是模型的輸出，管不到工具回傳值——假話與術語的來源常常是我們自己）。
+_EXTRACT_NO_REREAD = (
+    "收文欄位、事實摘錄與程序審查的結果都已經隨這次解析產出，**不必再讀一次卷內**。"
+    "請用一兩句話說明解析完成、目前走到哪一步就好。"
+    "承辦人接著問某一項的細節時，那時再去讀對應的部分。"
+)
+
+
 def degraded_summary(out: dict[str, Any]) -> str:
     """流水線回報的降級原因 → 一句給承辦人的話。沒有降級就回 `""`。
 
@@ -1255,10 +1277,9 @@ class ChatTools:
                     f"這個 run 只跑到程序審查，沒有草稿。"
                     f"請照實把上面的原因告訴使用者，講清楚卡在哪一步、要補哪幾個欄位，"
                     f"並說明補齊後才能續跑。**不要說解析已完成，也不要說現在可以生成草稿。**"
-                    f"要看內容請用 read_case 讀 intake／facts_excerpt／screen。")
+                    f"{_EXTRACT_NO_REREAD}")
         return (f"已完成卷證解析（run {out.get('run_id')}，終態 {out.get('state')}）。"
-                f"這個 run **只跑到程序審查，沒有草稿**。"
-                f"要看內容請用 read_case 讀 intake／facts_excerpt／screen。")
+                f"這個 run **只跑到程序審查，沒有草稿**。{_EXTRACT_NO_REREAD}")
 
     def generate_decision_draft(self) -> str:
         """跑 n4–n6，產出一份經過引用守門的決定書草稿。

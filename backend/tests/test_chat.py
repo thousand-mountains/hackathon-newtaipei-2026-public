@@ -1505,7 +1505,34 @@ def test_a_run_with_nothing_degraded_says_not_one_extra_word():
     assert result["note"] == "", f"沒有降級卻寫了 note：{result['note']!r}"
     assert out == ("已完成卷證解析（run run-new-1，終態 SCREENED）。"
                    "這個 run **只跑到程序審查，沒有草稿**。"
-                   "要看內容請用 read_case 讀 intake／facts_excerpt／screen。"), out
+                   + chat_mod._EXTRACT_NO_REREAD), out
+
+
+def test_extract_does_not_order_the_model_to_read_the_case_again():
+    """一次「解析卷證」不該跳出四張卡（QA `r05`）。
+
+        tc-1 extract_case_document   （n1 11150ms／n2 0ms／n3 0ms）
+        tc-2 read_case {"section":"intake"}
+        tc-3 read_case {"section":"facts_excerpt"}
+        tc-4 read_case {"section":"screen"}
+
+    整輪 28 秒而 n1 只佔 11 秒，其餘是三輪模型往返加三次節流。
+    **不是模型不聽話**——`extract_case_document` 的回傳字串自己寫著
+    「要看內容請用 read_case 讀 intake／facts_excerpt／screen」。
+    而契約 §3.3 說那四塊內容由前端打彙整版取，agent 不必再讀。
+
+    chip 的目的是「按鈕寫什麼就做什麼」，那三張卡跟這個目的相反。
+    """
+    for degraded in ([], [{"node": "n1", "reason": _N1_STUCK}]):
+        calls: list = []
+        events: list = []
+        fake = _FakePipeline(["n1", "n2", "n3"], sections={"screen": {"x": 1}},
+                             degraded=degraded)
+        out = _tools(calls, events=events, run_pipeline=fake).extract_case_document()
+        assert "不必再讀一次卷內" in out, out
+        # 函式名與分區鍵名都不得端到模型面前（紅線 5 管不到工具回傳值，所以這裡自己擋）
+        for leaked in ("read_case", "facts_excerpt", "intake／"):
+            assert leaked not in out, f"回傳字串漏出了 {leaked}：{out}"
 
 
 def test_a_degraded_entry_with_no_reason_is_not_padded_with_a_guess():
