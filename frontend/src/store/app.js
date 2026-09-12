@@ -978,7 +978,19 @@ function syncThemeAttr() {
 }
 
 // ── 啟動 ──
-export async function boot() {
+// **同步的那一段不能省。** boot() 從同步改成 async 之後（26f063e），首次 render 時
+// state.cases 還是空的，`active()` 回 undefined，Chat.vue 的 computed 讀
+// `c.value.stream.length` 當場拋——Vue 把整個 App 的掛載中止，畫面是**全白**，
+// 而且 console 只有一行 `[Vue warn] Unhandled error during execution of render function`。
+// mock 與 real 都會白。所以這裡先同步建一個本地空案並選取，保證首次 render 一定有 active()，
+// 非同步的載入才接在後面。
+export function boot() {
+  const placeholder = createCase(null, null)
+  state.activeId = placeholder.id
+  return bootAsync(placeholder)
+}
+
+async function bootAsync(placeholder) {
   // 開機檢查檔位（health #1）＋載入既有案件清單（listCases #2）。
   // mock 模式一樣會回應（run_mode:'mock'），流程一致；real 模式才是真的檢查後端。
   await checkHealth()
@@ -995,13 +1007,11 @@ export async function boot() {
     })
     loadedAny = list.length > 0
   } catch {
-    /* 後端不可用時退回本地空案 */
+    /* 後端不可用時退回本地空案（placeholder 已經在了） */
   }
-  // 沒有既有案件 → 建一個本地空案讓使用者可以開始（上傳時才真的建案）
-  if (!loadedAny) {
-    const first = createCase(null, null)
-    state.activeId = first.id
-  } else {
+  // 後端有既有案件 → 丟掉本地佔位空案，選第一件；沒有就留著 placeholder 讓使用者開始上傳。
+  if (loadedAny) {
+    state.cases = state.cases.filter((x) => x.id !== placeholder.id)
     selectCase(state.cases[0].id)
   }
 }
