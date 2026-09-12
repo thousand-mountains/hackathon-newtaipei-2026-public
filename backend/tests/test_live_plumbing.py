@@ -2880,3 +2880,37 @@ def test_similar_case_channel_never_sends_the_ref_doc_kind_filter():
             r.search("q", top_k=5)      # 不傳 prefix → 相似案通道
     assert_true(all(f is None for f in _filters_of(fake)),
                 f"相似案通道不得帶 doc_kind filter，實際={_filters_of(fake)}")
+
+
+def test_outcome_is_only_read_from_filenames_of_decisions():
+    """函釋／法規的檔名不得被抓出「結果」——那是無中生有一個法律判斷。
+
+    函釋的檔名是**別人問了什麼**，不是本署答了什麼：
+    「…至撤銷查封時，始歸消滅」是在討論撤銷，那份函釋本身沒有結果。
+    2026-09-12 清點語料：函釋 16/4530、法規 5/679 的檔名含結果字樣，判解 0/3185。
+    """
+    def hit(kind, name):
+        uri = f"s3://b/kb/public/行政函釋_全量/{name}"
+        return {"score": 0.9, "content": {"text": "內文"},
+                "location": {"s3Location": {"uri": uri}},
+                "metadata": {"_file_type": "PLAIN_TEXT", "_source_uri": uri, "doc_kind": kind}}
+
+    with env(BEDROCK_RERANK_MODEL_ID=None):
+        fake = _FakeBedrockAgentRuntime([hit("ref_letter", "環署廢字0910045848號函-至撤銷查封時即生效力.txt")])
+        r = KBRetriever(kb_id="k", region="r", min_score=0.15, client=fake)
+        got = r.search("q", filters={"prefix": ["行政函釋_全量/"]}, top_k=3)
+        assert_true(got[0].payload["outcome"] is None,
+                    f"函釋不得有 outcome，實際={got[0].payload['outcome']}")
+
+        fake = _FakeBedrockAgentRuntime([hit("decision", "1141050994_駁回.txt")])
+        r = KBRetriever(kb_id="k", region="r", min_score=0.15, client=fake)
+        got = r.search("q", filters={"prefix": ["行政函釋_全量/"]}, top_k=3)
+        assert_eq(got[0].payload["outcome"], "駁回", "決定書照樣要抓得到結果")
+
+        # 沒有側檔的 KB（doc_kind 讀不到）維持舊行為，不靜默少一個欄位
+        no_kind = hit("decision", "1141050994_駁回.txt")
+        del no_kind["metadata"]["doc_kind"]
+        fake = _FakeBedrockAgentRuntime([no_kind])
+        r = KBRetriever(kb_id="k", region="r", min_score=0.15, client=fake)
+        got = r.search("q", filters={"prefix": ["行政函釋_全量/"]}, top_k=3)
+        assert_eq(got[0].payload["outcome"], "駁回", "沒有 doc_kind 時要保留退路")

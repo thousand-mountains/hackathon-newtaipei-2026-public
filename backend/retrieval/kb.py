@@ -469,7 +469,15 @@ class KBRetriever:
                     continue
                 seen_sources.add(rel)
             fname = rel.rsplit("/", 1)[-1]
-            m = OUTCOME_RE.search(fname)
+            md_kind = (r.get("metadata") or {}).get("doc_kind")
+            # **只有決定書才從檔名推結果。** 決定書的檔名帶自己的主文（`1141050994_駁回`、
+            # `…-訴願逾期-不受理`），抓得對；但函釋的檔名是**別人問了什麼**，不是本署答了什麼
+            # ——「…至撤銷查封時，始歸消滅」會被抓出 `outcome=撤銷`，而那個函釋本身沒有結果，
+            # 它只是在討論撤銷。法規名同理（「訴願決定撤銷原行政處分案件處理及管制作業要點」）。
+            # 2026-09-12 清點語料：函釋 16/4530、法規 5/679 會誤抓，判解 0/3185。
+            # 數量不多，但性質是**無中生有一個法律結果掛到不該有結果的文件上**（CONSTITUTION §1）。
+            # `doc_kind` 讀不到時（沒有側檔的 KB）維持舊行為——寧可保留退路，不要靜默少一個欄位。
+            m = OUTCOME_RE.search(fname) if md_kind in (None, "decision") else None
             text = re.sub(r"\s+", " ", ((r.get("content") or {}).get("text") or "")).strip()
             md = r.get("metadata") or {}
             # 側檔（`x.txt.metadata.json`，scripts/build_kb_metadata.py 產）優先，檔名是退路。
