@@ -90,6 +90,38 @@ def _normalize_basis_citations(text: str, law_names: list[str]) -> list[str]:
     return out
 
 
+def self_exclusion_keys(state: CaseState) -> list[str]:
+    """本案自己在 KB 裡的識別字，用來把「自己」擋在相似案之外。
+
+    **為什麼需要**（2026-09-12 實測）：拿賽方測資 `1141120180_terse.txt` 上傳，
+    相似案 C1 回的是 `1141120180_駁回`——**同一個案號**，相關性 100。那份決定書
+    還帶著結果（駁回）。對評估是灌水（同案型率、outcome 分布全被自己拉高），
+    對 demo 是破綻（評審會看到「最相似案例」就是本案）。
+
+    原本只有 `fixture["exclude_case"]` 一個來源，而那是合成案在 JSON 裡手寫的；
+    **上傳案沒有人幫它寫**，所以完全沒有排除。
+
+    這裡取兩種識別字，因為兩者不一定相同：
+
+    - `intake.no`：N1 抽到的收文案號（本例 `1141120180`）
+    - 卷證檔名去掉副檔名與後綴（`1141120180_terse.txt` → `1141120180`）
+
+    **只取長度 ≥ 6 的純數字或含數字字串**：太短的字串會誤殺（例如 `11` 會比中
+    一堆路徑）。比對是子字串（見 `kb._retrieve`），寧可少排除，不要排錯。
+    """
+    keys: list[str] = []
+    no = str((state.intake or {}).get("no") or "").strip()
+    if len(no) >= 6:
+        keys.append(no)
+    for f in state.files or []:
+        stem = str(f.get("n") or "").rsplit(".", 1)[0]
+        # `1141120180_terse` / `1141120180_駁回` 這種都取前段
+        head = stem.split("_", 1)[0].strip()
+        if len(head) >= 6 and any(ch.isdigit() for ch in head) and head not in keys:
+            keys.append(head)
+    return keys
+
+
 def build_query_sources(state: CaseState, law_names: list[str] | None = None) -> list[dict[str, Any]]:
     """組成查詢句的每一個來源，逐項標明它從哪個節點來（透明度用，也是回歸測試的鉤子）。
 
@@ -279,7 +311,14 @@ def run(
             # 查條號），而 KB 的查詢句有長度上限，整份送過去會被 ValidationException
             # 打回來——通道 B 就會因為通道 A 的改動而掛掉。正常路徑走 `case_query`
             # 不受影響，這一行只保護「case_query 為空」的退路。
-            case_hits = similar.search((case_query or query_text)[:KB_QUERY_MAX_CHARS], top_k=5)
+            # 把本案自己擋掉（見 `self_exclusion_keys`）。沒算出識別字就傳 None，
+            # 讓檢索器退回建構時的值——合成案的排除鍵在 fixture 裡，不能被蓋掉。
+            exclude_keys = self_exclusion_keys(state)
+            case_hits = similar.search(
+                (case_query or query_text)[:KB_QUERY_MAX_CHARS],
+                filters={"exclude_case": exclude_keys or None},
+                top_k=5,
+            )
         except Exception as e:  # noqa: BLE001 — 檢索器可能是 boto3，例外型別由 SDK 決定
             kb_error = f"{type(e).__name__}: {e}"
     cases: list[dict[str, Any]] = []

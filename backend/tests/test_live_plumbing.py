@@ -3371,3 +3371,63 @@ def test_corpus_counts_are_withheld_when_the_manifest_describes_another_corpus()
         note = settings.retrieval_note()
         assert_in("故不報各批筆數", note)
         assert_true("2347" not in note, "對不上時不得把另一批語料的筆數報出去")
+
+
+def test_a_case_is_never_its_own_similar_case():
+    """本案自己不得出現在相似案裡。
+
+    2026-09-12 實測：上傳賽方測資 `1141120180_terse.txt`，相似案 C1 回的是
+    `1141120180_駁回`——同一個案號、相關性 100，而且那份決定書帶著結果。
+    對評估是灌水（同案型率與 outcome 分布被自己拉高），對 demo 是破綻。
+
+    原本只有 `fixture["exclude_case"]` 一個來源，那是合成案在 JSON 手寫的；
+    上傳案沒有人幫它寫 → 完全沒有排除。
+    """
+    class _KB:
+        name = "bedrock_kb"
+
+        def __init__(self):
+            self.filters = None
+
+        def search(self, query, filters=None, top_k=5):
+            self.filters = filters
+            drop = [x for x in ((filters or {}).get("exclude_case") or []) if x]
+            rows = [("新北訴願決定書_環保局全量/1141120180_駁回.txt", "本案自己"),
+                    ("新北訴願決定書_環保局全量/1011071291_駁回.txt", "別的案子")]
+            return [Hit(id=f"kb-{i}", title=src.rsplit("/", 1)[-1][:-4], score=0.9,
+                        source=src, payload={"provenance": "public_crawl", "text": t})
+                    for i, (src, t) in enumerate(rows, 1)
+                    if not any(k in src for k in drop)]
+
+        def meta(self):
+            return {"backend": "bedrock_kb", "available": True}
+
+    st = CaseState(case_id="upload-abc", run_mode="bedrock")
+    st.intake = {"type": "違反廢棄物清理法事件", "no": "1141120180"}
+    st.files = [{"n": "1141120180_terse.txt"}]
+    st.facts_excerpt = [{"text": "訴願人為系爭土地所有人。", "page": 1}]
+    st.classification = {"class": {"case_type": "違反廢棄物清理法事件", "law_hits": ["廢棄物清理法"]}}
+    st.screen = {"art77": {"clause": None}, "deadline": {"steps": []}}
+    kb = _KB()
+    n4_retrieval.run(st, NodeCtx(run_mode="bedrock", snapshot=load_snapshot(), retriever=kb))
+    srcs = [c["src"] for c in st.retrieval["cases"]]
+    assert_true(all("1141120180" not in s for s in srcs), f"本案自己出現在相似案裡：{srcs}")
+    assert_in("1141120180", kb.filters["exclude_case"], "排除鍵沒有傳給檢索器")
+
+
+def test_exclusion_keys_are_too_short_to_misfire():
+    """排除鍵是子字串比對，太短會誤殺整批語料。"""
+    st = CaseState(case_id="upload-x", run_mode="bedrock")
+    st.intake = {"no": "11"}                      # 太短
+    st.files = [{"n": "5_a.txt"}, {"n": "1141120180_terse.txt"}]
+    keys = n4_retrieval.self_exclusion_keys(st)
+    assert_eq(keys, ["1141120180"], f"短字串不得成為排除鍵（實得 {keys}）")
+
+
+def test_synthetic_fixture_exclusion_is_not_overwritten():
+    """合成案的排除鍵寫在 fixture，算不出識別字時不得把它蓋掉。"""
+    st = CaseState(case_id="synthetic-ordinary-01", run_mode="bedrock")
+    st.intake = {"no": None}
+    st.files = [{"n": "synthetic-訴願書.pdf"}]
+    assert_eq(n4_retrieval.self_exclusion_keys(st), [],
+              "算不出識別字時要回空，讓檢索器退回 fixture 的值")

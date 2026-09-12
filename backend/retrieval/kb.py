@@ -330,7 +330,7 @@ class KBRetriever:
     name = "bedrock_kb"
 
     def __init__(self, kb_id: str, region: str, min_score: float | None = None,
-                 exclude_case: str | None = None, client: Any = None) -> None:
+                 exclude_case: str | list[str] | None = None, client: Any = None) -> None:
         if not kb_id or not region:
             raise ValueError("KBRetriever 需要 kb_id 與 region（BEDROCK_KB_ID / AWS_REGION）")
         self.kb_id = kb_id
@@ -355,6 +355,8 @@ class KBRetriever:
         沒指定 prefix ＝ 相似案通道 → 依 `settings.similar_case_quota()` 分批查再合併。
         """
         filters = filters or {}
+        # 排除鍵**可以是多個**（2026-09-12）：上傳案要同時擋掉收文案號與檔名，
+        # 兩者不一定一樣。呼叫端沒給就退回建構時的值（合成案在 fixture 手寫那一個）。
         exclude = filters.get("exclude_case") or self.exclude_case
         explicit = list(filters.get("prefix") or [])
         # 有重排時先多留候選給它排；沒有重排就維持原本「撈幾筆回幾筆」的行為。
@@ -371,7 +373,7 @@ class KBRetriever:
         # 沒有重排時仍是 embedding 分數最高的那筆（`payload.ranked_by` 說得出是哪一種）
         return [dataclasses.replace(h, id=f"kb-{i}") for i, h in enumerate(hits, start=1)]
 
-    def _quota_search(self, query: str, exclude: str | None, top_k: int) -> list[Hit]:
+    def _quota_search(self, query: str, exclude: str | list[str] | None, top_k: int) -> list[Hit]:
         """兩批各自查、各自取配額席次，不足由另一批補滿，最後按分數排序。
 
         `top_k` 是**這一層要交出幾筆**，不一定等於最後顯示幾筆：有重排時呼叫端會要
@@ -485,7 +487,7 @@ class KBRetriever:
                       metadata_filter: dict[str, Any] | None = None) -> dict:
         return retrieve_raw(self._c(), self.kb_id, query, want, metadata_filter=metadata_filter)
 
-    def _retrieve(self, query: str, prefixes: list[str], exclude: str | None, *,
+    def _retrieve(self, query: str, prefixes: list[str], exclude: str | list[str] | None, *,
                   want: int, limit: int, dedupe_by_source: bool = False,
                   doc_kinds: list[str] | None = None) -> list[Hit]:
         """打一次 KB 並做後過濾，回傳最多 limit 筆（`id` 是佔位值，由呼叫端重編）。
@@ -497,6 +499,9 @@ class KBRetriever:
         重複的量級跟這裡不一樣，見該處說明）；沒有重排時仍維持已驗證的舊行為，
         是**已知且刻意未改**，不是漏看。
         """
+        # 單一字串或字串清單都收：來源可能是 fixture 的一個值，也可能是 N4 依
+        # 收文案號＋檔名算出來的兩三個。
+        exclude_keys = [exclude] if isinstance(exclude, str) else list(exclude or [])
         flt = doc_kind_filter(doc_kinds or [])
         resp = self._retrieve_raw(query, want, flt)
         if flt and not resp.get("retrievalResults"):
@@ -526,7 +531,7 @@ class KBRetriever:
             kind, rel = _relative_path(uri)
             if not any(rel.startswith(p) for p in prefixes):
                 continue
-            if exclude and exclude in rel:
+            if any(x and x in rel for x in exclude_keys):
                 continue
             if dedupe_by_source:  # 同一份文件的其他 chunk，丟掉（見上方 seen_sources 說明）
                 if rel in seen_sources:
@@ -573,7 +578,7 @@ class KBRetriever:
                 "kb_id_set": bool(self.kb_id)}
 
 
-def build_retriever(kind: str, *, exclude_case: str | None = None) -> KBRetriever | None:
+def build_retriever(kind: str, *, exclude_case: str | list[str] | None = None) -> KBRetriever | None:
     """編排層用：依 RETRIEVER 建相似案檢索器。lawtable_only → None（維持 Phase 0 行為）。"""
     if kind != "kb":
         return None
