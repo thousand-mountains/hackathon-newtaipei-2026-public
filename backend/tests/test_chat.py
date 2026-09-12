@@ -1348,3 +1348,97 @@ def test_relation_graph_tool_is_in_the_tool_label_vocabulary():
     （前端靠 `label` 顯示，缺了會拿到 undefined）。
     """
     assert TOOL_LABELS["build_relation_graph"] == "畫案件關聯圖"
+
+
+# ── `ranked_by`：score 那個數字是哪一種（2026-09-13）──────────────────
+
+def _kb_hit(ranked: bool) -> Hit:
+    """KB 命中。**沒重排時檢索器刻意不標 `ranked_by`**——那是既有行為
+    （`test_live_plumbing.py` 的「沒重排就不該標 ranked_by」釘住的），
+    所以這裡的假 hit 也不標，否則測的是一個不存在的形狀。"""
+    payload = {"provenance": "official"}
+    if ranked:
+        payload |= {"ranked_by": "rerank", "embedding_score": 0.42, "rerank_score": 0.87}
+    return Hit(id="kb-1", title="甲", score=0.87 if ranked else 0.42,
+               source="歷史訴願決定書/x.txt", payload=payload)
+
+
+def _lawtable_hit() -> Hit:
+    """法條查表命中。`score` 是 **1.0／0.0 的二元命中**，不是相似度。"""
+    return Hit(id="L-訴願法-14", title="訴願法第 14 條", score=1.0,
+               source="laws-snapshot.json／訴願法", verified=True,
+               payload={"law": "訴願法", "article": "14", "in_snapshot_law": True})
+
+
+def test_a_reranked_hit_says_so_instead_of_letting_the_screen_call_it_vector_similarity():
+    """**這條釘的是畫面上那句文案會不會說謊。**
+
+    開了重排之後 `KBRetriever` 把 `score` 換成重排分數（`retrieval/kb.py:546`）。
+    不把 `ranked_by` 帶出去的話，前端拿到一個重排分數卻寫「向量相似度 87%」——
+    **那個數字不是向量相似度**，而那句話就在 demo 主畫面上（CONSTITUTION §1）。
+    """
+    entry = RefBook().add(_kb_hit(ranked=True))
+    assert entry["ranked_by"] == "rerank", entry
+    assert entry["score"] == 0.87, "score 要是重排分數本身，不是 embedding 分數"
+
+
+def test_a_plain_embedding_hit_still_carries_the_field_rather_than_omitting_it():
+    """沒重排時**也要送**，值是 embedding。
+
+    檢索器在沒重排時刻意不標這個鍵，但「缺鍵」不能原樣傳給前端——
+    省略會讓前端拿到 `undefined` 而不是值，跟契約 §2.3／§4.4 同一條紀律。
+    規則與 `backend/nodes/n4_retrieval.py:345` 一致（`p.get("ranked_by") or "embedding"`）。
+    """
+    entry = RefBook().add(_kb_hit(ranked=False))
+    assert "ranked_by" in entry, "沒重排就把鍵省略了——前端會拿到 undefined"
+    assert entry["ranked_by"] == "embedding", entry
+
+
+def test_a_law_table_hit_reports_null_because_its_score_is_not_a_similarity():
+    """法條查表的 1.0 是**條號在不在快照裡**，報成任何一種排序方式都是
+    把二元結果講成程度。回 `None`，前端據此不顯示百分比。
+    """
+    entry = RefBook().add(_lawtable_hit(), chat_mod._score_kind(
+        type("R", (), {"name": "lawtable"})()))
+    assert entry["ranked_by"] is None, entry
+    assert "ranked_by" in entry, "None 也要有這個鍵，不能省略"
+
+
+def test_the_score_kind_comes_from_the_retriever_name_not_from_sniffing_the_payload():
+    """判斷依據是 retriever **宣告出來的** `name`（`lawtable.py:21` 的類別屬性）。
+
+    嗅 payload（「有 `law` 鍵就是查表」）會在某天欄位改名時靜默倒向另一邊，
+    而症狀是畫面上的文案錯了、**沒有任何燈會亮**。
+    """
+    assert chat_mod._score_kind(type("R", (), {"name": "lawtable"})()) is None
+    assert chat_mod._score_kind(type("R", (), {"name": "bedrock_kb"})()) == "embedding"
+    # 認不出來的檢索器當成一般相似度檢索，不當成二元命中——
+    # 寧可多報一個 embedding（前端顯示百分比），也不要把相似度靜默藏起來
+    assert chat_mod._score_kind(type("R", (), {"name": "local_bm25"})()) == "embedding"
+
+
+def test_case_refs_have_no_ranked_by_because_they_have_no_score():
+    """卷內既有資料（`L1`／`C3`）沒有檢索分數，也就沒有「誰排的」可言。"""
+    rb = RefBook()
+    rb.add_case_refs([{"id": "L1", "t": "廢棄物清理法第 2 條"}])
+    entry = rb.get("L1")
+    assert entry["score"] is None and entry["ranked_by"] is None, entry
+
+
+def test_ranked_by_reaches_both_tool_result_hits_and_done_refs():
+    """契約要求**兩個地方**都有：`tool_result.hits[]` 與 `done.refs[]`。
+
+    `done.refs[]` 是 `classify_answer` 從 RefBook 撈回來的，所以只驗 hits[]
+    會漏掉「refs 那條路上有人重組 entry 把欄位弄丟」的情形。
+    """
+    calls: list = []
+    events: list = []
+    t = _tools(calls, _FakeRetriever([_kb_hit(ranked=True)]), events=events)
+    t.retrieve_refs("信賴保護")
+
+    hits = [d["hits"] for n, d in events if n == "tool_result"][0]
+    assert hits[0]["ranked_by"] == "rerank", hits
+
+    verdict = classify_answer("這個爭點有前例嗎？", "有的，參見 [c1]。", t.refbook)
+    assert verdict.refs, "這一則應該有 refs 才驗得到"
+    assert verdict.refs[0]["ranked_by"] == "rerank", verdict.refs
