@@ -48,25 +48,55 @@ class MissingLocalFile(RuntimeError):
     """stage 目錄缺檔。跟上傳失敗分開：這是資料沒備齊，重試不會好。"""
 
 
-def _sync_one(entry: dict, *, bucket: str, region: str, stage: str) -> bool:
-    """同步一個檔。回傳 True＝有上傳、False＝sha256 相同略過。
+def _exists(s3, bucket: str, key: str) -> bool:
+    try:
+        s3.head_object(Bucket=bucket, Key=key)
+        return True
+    except s3.exceptions.ClientError:
+        return False
+
+
+def _sha_matches(s3, bucket: str, key: str, sha: str) -> bool:
+    try:
+        head = s3.head_object(Bucket=bucket, Key=key)
+    except s3.exceptions.ClientError:
+        return False
+    return head.get("Metadata", {}).get("sha256") == sha
+
+
+def _upload_sidecar(s3, local: pathlib.Path, bucket: str, key: str) -> None:
+    s3.upload_file(str(local), bucket, key,
+                   ExtraArgs={"ContentType": "application/json; charset=utf-8"})
+
+
+def _sync_one(entry: dict, *, bucket: str, region: str, stage: str) -> tuple[bool, int]:
+    """同步一個檔。回傳 (本文有沒有上傳, 側檔上傳數 0/1)。
 
     冪等靠 S3 物件的 `sha256` metadata 比對，與序列版完全相同。
+
+    側檔跟著本文走：`x.txt` 的分類欄位在 `x.txt.metadata.json`（build_kb_metadata.py 產）。
+    它**不是獨立文件**，是這一筆的屬性，所以不進 manifest、也不單獨算冪等——
+    本文要重傳時它一起重傳。沒有側檔（還沒跑過產生器）就跳過，不報錯。
     """
     s3 = _s3_client(region)
     local = pathlib.Path(stage) / entry["path"].removeprefix("kb/")
     if not local.exists():
         raise MissingLocalFile(str(local))
-    try:
-        head = s3.head_object(Bucket=bucket, Key=entry["path"])
-        if head.get("Metadata", {}).get("sha256") == entry["sha256"]:
-            return False
-    except s3.exceptions.ClientError:
-        pass
+    side_local = local.with_name(local.name + ".metadata.json")
+    side_key = entry["path"] + ".metadata.json"
+    if _sha_matches(s3, bucket, entry["path"], entry["sha256"]):
+        # 本文沒變，但側檔可能是這次才生出來的——缺了就補，不然 KB 永遠讀不到分類欄位
+        if side_local.exists() and not _exists(s3, bucket, side_key):
+            _upload_sidecar(s3, side_local, bucket, side_key)
+            return False, 1
+        return False, 0
     s3.upload_file(str(local), bucket, entry["path"],
                    ExtraArgs={"Metadata": {"sha256": entry["sha256"], "provenance": entry["provenance"]},
                               "ContentType": "text/plain; charset=utf-8"})
-    return True
+    if side_local.exists():
+        _upload_sidecar(s3, side_local, bucket, side_key)
+        return True, 1
+    return True, 0
 
 
 def main() -> int:
@@ -86,7 +116,7 @@ def main() -> int:
         print("缺 S3_KB_BUCKET 或 AWS_REGION", file=sys.stderr)
         return 2
     entries = json.loads(pathlib.Path(a.manifest).read_text(encoding="utf-8"))["entries"]
-    uploaded = skipped = 0
+    uploaded = skipped = sidecars = 0
     missing: list[str] = []
     failed: list[str] = []
     workers = max(1, a.workers)
@@ -98,15 +128,19 @@ def main() -> int:
         for fut in concurrent.futures.as_completed(futures):
             key = futures[fut]["path"]
             try:
-                if fut.result():
-                    uploaded += 1
-                else:
-                    skipped += 1
+                did_upload, side = fut.result()
             except MissingLocalFile as exc:
                 missing.append(str(exc))
+                continue
             except Exception as exc:  # noqa: BLE001 — 任何供應商錯誤都記下來，不吞
                 failed.append(f"{key}: {type(exc).__name__}: {exc}")
-    print(f"S3 同步完成：上傳 {uploaded}、略過 {skipped}、並行 {workers}")
+                continue
+            if did_upload:
+                uploaded += 1
+            else:
+                skipped += 1
+            sidecars += side
+    print(f"S3 同步完成：上傳 {uploaded}、略過 {skipped}、側檔 {sidecars}、並行 {workers}")
     if missing:
         print(f"缺本機檔 {len(missing)} 個：", file=sys.stderr)
         for m in missing[:20]:
