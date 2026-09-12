@@ -2,6 +2,9 @@
 
 **Input**: `.prospec/changes/draft-and-export/{proposal,plan,delta-spec}.md`
 **Prerequisites**: plan.md、delta-spec.md 已填
+**權威 AC**: `proposal.md`（commit `ec95430`）US-C3 的 C3.1–C3.4；
+delta-spec 的 `REQ-EXPORT-*` 是它的機檢粒度拆解，對照表見 delta-spec 抬頭。
+**US-C1／US-C2 本輪不做**——依賴 Epic A 的 `generate_decision_draft` 工具。
 
 ## Format: `[ID] [P?] Description (~lines)`
 

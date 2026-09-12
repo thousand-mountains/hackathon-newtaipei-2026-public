@@ -4,6 +4,22 @@
 > 本輪只落地 `REQ-EXPORT-*`；`REQ-DRAFT-*`（US-C1／C2）等 Epic A 的
 > `generate_decision_draft` 工具合併後再開。
 
+**權威來源是 `proposal.md`（commit `ec95430`）的 US-C3 四條 AC。** 下表是對照，
+`REQ-EXPORT-*` 只是把它們拆細到可逐條機檢的粒度，**不取代也不改寫** AC 本身
+（CONSTITUTION §9：不得為了讓驗收變綠而改契約／規格）。
+
+| proposal AC | 對應 REQ | 機檢在哪 |
+|---|---|---|
+| **C3.1** docx 在 Word 開得起來、段落可編輯（python-docx 組，非 HTML 轉檔） | REQ-EXPORT-001 | `backend/tests/test_export.py` `test_docx_is_real_ooxml` / `test_docx_is_editable` |
+| **C3.2** pdf 中文不是豆腐字（**沒字型時不報錯，要特別驗**） | REQ-EXPORT-002 | `test_pdf_embeds_cjk_font` / `test_pdf_text_layer_is_chinese_not_tofu` / `test_pdf_without_font_is_hard_failure` |
+| **C3.3** 引註跟著出去，不得只匯出白文 | REQ-EXPORT-003 | `test_docx_carries_citations`、`test_pdf_text_layer_is_chinese_not_tofu` 後半 |
+| **C3.4** 加字型前後各量一次 build context，與 4.8 MB 基準比 | （非程式碼，記在 commit 與交接） | commit `435873c` 訊息 |
+
+`REQ-EXPORT-004`（輸入防護：format 白名單、路徑穿越、404／409）**proposal 沒有列**，
+是我加的。理由：`artifactId` 從 URL 進來會被拼成檔案路徑，不擋等於開放任意檔案讀取；
+以及「run 存在但還沒生成草稿」若回一份只有抬頭的空白檔，會被讀成「本案無話可說」。
+這是加防線不是改契約，但**請契約擁有者知悉**。
+
 ## ADDED
 
 ### REQ-EXPORT-001: 草稿匯出為 `.docx`（可續編）

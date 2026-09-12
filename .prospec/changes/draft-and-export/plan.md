@@ -1,5 +1,8 @@
 # Implementation Plan: draft-and-export（本輪＝US-C3 匯出）
 
+> 需求的權威來源是 `proposal.md`（commit `ec95430`，3 個 US／12 條 AC）。
+> 本份只講**怎麼做**與**為什麼這樣做**，不重述也不改寫 AC（CONSTITUTION §9）。
+
 ## Overview
 
 承辦人現在看得到草稿、拿不走草稿（前端 `exportDownload()` 只是 toast）。本輪把
