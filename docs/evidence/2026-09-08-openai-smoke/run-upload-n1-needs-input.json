@@ -1,0 +1,182 @@
+{
+ "case_id": "upload-0fab3543bf1e",
+ "run_id": "run-upload-0fab3543bf1e-e32bdd61423e",
+ "state": "NEEDS_INPUT",
+ "provenance": {
+  "kind": "uploaded",
+  "note": "本案卷證由承辦人上傳，抽取結果為模型即時產出，未經人工確認前不得用於解除結論封鎖。",
+  "banner": "上傳案件：卷證來自使用者上傳，內容未進 git、未離開本服務所在環境。",
+  "constitution": "分層誠實：可驗算（規則引擎，攤開算式）／有出處（檢索，標明字號）／請人工判斷（拒絕生成，只給風險提示）。",
+  "dataset_scope": "引用驗證的範圍即 laws-snapshot.json 的涵蓋範圍（11 部法規、17 筆判解、2 則釋字）。標「庫外，未驗證」代表本系統無法驗證，不代表該字號不存在。"
+ },
+ "files": [
+  {
+   "n": "訴願書.txt",
+   "s": "2040 bytes",
+   "x": "承辦人上傳"
+  }
+ ],
+ "intake": {
+  "no": "synthetic-環稽字第114-000001號",
+  "type": null,
+  "person": "蔡○庭",
+  "org": "冠庭環保有限公司",
+  "d1": "2025-05-26",
+  "d2": "2025-05-31",
+  "d3": "2025-07-18",
+  "agent": null,
+  "note": null,
+  "service_method": null,
+  "transit_days": 0,
+  "interested_party": false,
+  "auto_fields": [
+   "d1",
+   "d2",
+   "d3",
+   "no",
+   "org",
+   "person"
+  ],
+  "auto_toast": "已由卷證擷取 6 個欄位，請確認"
+ },
+ "intake_conf": {
+  "no": 1.0,
+  "type": 0.0,
+  "person": 1.0,
+  "org": 1.0,
+  "d1": 1.0,
+  "d2": 1.0,
+  "d3": 1.0,
+  "agent": 0.0,
+  "note": 0.0,
+  "service_method": 0.0,
+  "transit_days": 0.5,
+  "interested_party": 0.5
+ },
+ "intake_origin": {
+  "no": "llm",
+  "type": "llm",
+  "person": "llm",
+  "org": "llm",
+  "d1": "llm",
+  "d2": "llm",
+  "d3": "llm",
+  "agent": "llm",
+  "note": "llm",
+  "service_method": "llm",
+  "transit_days": "llm",
+  "interested_party": "llm"
+ },
+ "intake_confirmed": [],
+ "facts_excerpt": [
+  {
+   "text": "事情經過是這樣：訴願人所有車輛（車牌號碼：00-000；出廠年月：民國102年5月，\n發照年月：102年10月，車種類型：大型重機，下稱系爭車輛），依空氣污染防制法相關規定\n及公告，應每年於行車執照原發照月份前後1個月內，即應於111年9月至同年11月間辦理\n系爭車輛111年度排放空氣污染物定期檢驗完竣。經原處分機關查得系爭車輛逾期未完成\n定期檢驗，認訴願人違反空氣污染防制法相關規定，裁處罰鍰新臺幣500元。",
+   "page": 1,
+   "quote_ref": "《訴願書.txt#p1"
+  }
+ ],
+ "classification": {},
+ "screen": {},
+ "retrieval": {},
+ "laws": [],
+ "cases": [],
+ "issues": [],
+ "doc": [],
+ "citations": [],
+ "retrieval_divergence": {
+  "cited_not_retrieved": [],
+  "retrieved_not_cited": [],
+  "note": "N4 的檢索是獨立進行的（查詢句只由案情組成），所以它找到的法條與草稿實際引用的不會一一對應。落差不等於錯誤：引用對錯看 citations[] 的四態，這裡只說明兩份清單為什麼長得不一樣。實體法條號目前無法由案情自動判定（缺 PDF 視覺抽取），所以 cited_not_retrieved 會偏長，這是已知限制不是 bug。"
+ },
+ "citation_counts": {},
+ "lamp_stats": {},
+ "blockers": [],
+ "issue_refs": [],
+ "handoff": {
+  "criterion": {
+   "blocked": true,
+   "reason_id": "unknown_case_type_fail_safe",
+   "text": "案型「（空白）」不在已知需事實認定型清單內，且程序上也沒有可直接算出的不受理事由——系統無法判斷本案是否需要實體審查，保守起見封鎖結論段交由承辦人判斷。",
+   "fact_issue_role": "observation",
+   "fact_issue_label": "另外偵測到的事實認定爭點（提醒，非本案封鎖原因）",
+   "origin": "rule"
+  },
+  "observations": [],
+  "observations_label": "另外偵測到的事實認定爭點（提醒，非本案封鎖原因）"
+ },
+ "submit_allowed": false,
+ "agents": [
+  {
+   "k": "clerk",
+   "ico": "clerk",
+   "name": "卷證書記官",
+   "role": "抽取案件欄位與事實段原文",
+   "node": "n1",
+   "out": "自卷證擷取 12 個欄位，事實段原文 1 段。",
+   "logs": [
+    [
+     "必填欄位 4 項，信心門檻 0.80",
+     ""
+    ],
+    [
+     "低信心欄位：type、service_method",
+     "y"
+    ],
+    [
+     "模型即時抽取：gpt-4.1-mini，信心值為模型自報",
+     ""
+    ],
+    [
+     "卷證輸入：訴願書.txt（txt）",
+     ""
+    ],
+    [
+     "⚠ 本節點已降級：必填欄位信心不足或缺漏（低信心：['type', 'service_method']；缺漏：['type', 'service_method']），需人工表單補齊後才能續跑",
+     "r"
+    ]
+   ]
+  }
+ ],
+ "token_note": "幕僚敘述中的數字由節點實際結果填入（architecture §3.2）；live 模式下前端不重算燈號與引用狀態，一律以後端輸出為準。",
+ "run_meta": {
+  "run_id": "run-upload-0fab3543bf1e-e32bdd61423e",
+  "base_run_id": null,
+  "from_node": "n1",
+  "overrides": {},
+  "run_id_note": "支援 base_run_id + from_node 續跑；同一份 body 重送仍會產生新的 run_id（不做冪等去重）。",
+  "run_mode": "bedrock",
+  "started_at": "2026-09-07T16:37:16+00:00",
+  "elapsed_ms": 10414,
+  "node_timings": {
+   "n1": 10414
+  },
+  "degraded": [
+   {
+    "node": "n1",
+    "reason": "必填欄位信心不足或缺漏（低信心：['type', 'service_method']；缺漏：['type', 'service_method']），需人工表單補齊後才能續跑",
+    "agents": [
+     "clerk"
+    ]
+   }
+  ],
+  "model_ids": {
+   "provider": "openai",
+   "extract": "gpt-4.1-mini",
+   "draft": "gpt-4.1-mini"
+  },
+  "model_ids_note": "MODEL_PROVIDER=openai：本次執行呼叫的**不是** AWS 服務提供之基礎模型，輸出僅供開發期調 prompt，**不得**作為驗收證據或 demo 內容（賽制限 AWS 基礎模型）。 ",
+  "kb_snapshot_date": "2026-08-22",
+  "final_state": "NEEDS_INPUT",
+  "summary": "本次執行 1 個節點，共 10414 ms，其中 1 個節點降級。"
+ },
+ "tiers": {
+  "可驗算": [],
+  "有出處": [],
+  "請人工判斷": []
+ },
+ "history": [
+  "CREATED -> EXTRACTING",
+  "EXTRACTING -> NEEDS_INPUT"
+ ],
+ "origin_violations": []
+}

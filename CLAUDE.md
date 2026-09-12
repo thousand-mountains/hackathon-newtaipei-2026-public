@@ -30,7 +30,7 @@
 - `qa-legal` 待確認：其工作是驗證/對抗測試，跟全域「審查用最強模型」原則有張力，暫維持 `opus` 未降級，需 Ci 確認是否要照上述規則改 `sonnet`。
 
 **規矩**：
-- 部署走 **AWS**（賽制：僅限 AWS 服務提供之基礎模型）；**不碰** GCP `<other-gcp-project>`、不借用其他專案的任何 secret。
+- 部署走 **AWS**（賽制：僅限 AWS 服務提供之基礎模型）。**開發期可用開發用 AWS 帳號**（2026-09-06 Claire 拍板；profile 名、帳號 ID、KB id、bucket 名一律只在 `.env`／`~/.aws`，不進程式與文件；賽方帳號到手即以 `scripts/ingest_kb.py` 重建並切換，之後刪除開發用帳號上的 bucket 與 KB）；**不碰** GCP `<other-gcp-project>`。
 - 賽方資料集「僅供競賽之用」：**不進 git**、S3 不公開。實體檔問 Ci（`C_法制局-資料集.zip`）。
 - Linear team `HACK`；branch `hack-<issue>-<slug>`，小改可直推 main，要 demo 的走 PR。
 - Slack：`#hack-general`（人）／`#hack-dev`（通知）。
