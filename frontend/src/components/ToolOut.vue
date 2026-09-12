@@ -120,10 +120,12 @@ const provLabel = (p) => PROV[p] || '出處未標示'
   <template v-else-if="out.type === 'status'">
     <div class="sec">
       <div class="sec-h">{{ out.status === 'failed' ? '工具執行失敗' : out.status === 'empty' ? '查無結果' : '完成' }}</div>
+      <!-- 只顯示後端的 note，**不要再加一句固定的解釋**。契約 §2.3 把 failed 描述成
+           「工具本身失敗（KB 打不到、快照載不動、pipeline 炸了）」，但後端也用 failed
+           回前置條件沒滿足（實測「還沒有解析過卷證。」）。對那種情況說
+           「查詢來源本身失敗，可以重試」是錯的——重試一百次也不會過。
+           note 本來就每種情況都寫得具體，讓它自己說。 -->
       <p style="margin: 0; font-size: 13.5px">{{ out.note }}</p>
-      <p v-if="out.status === 'failed'" style="margin: 8px 0 0; color: var(--muted); font-size: 12px">
-        這是<b style="font-weight: 500">查詢來源本身失敗</b>，不是資料庫裡沒有這筆資料，可以重試。
-      </p>
     </div>
   </template>
 

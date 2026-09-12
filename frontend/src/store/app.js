@@ -65,6 +65,15 @@ const OUT_TYPE = {
 
 const esc = (s) =>
   String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]))
+
+// agent 的回覆是 markdown（粗體、編號清單、換行）。**先 esc 再套最小格式**，
+// 不然畫面上出現的是字面的 `**法規依據**`，而且整段擠成一坨沒有換行
+//（實測「還沒有解析過卷證」那則回覆就是這樣）。只處理粗體與換行，
+// 不引入 markdown 套件——輸入已經 escape 過，這裡不會開出 HTML 注入的口子。
+const fmt = (s) =>
+  esc(s)
+    .replace(/\*\*([^*\n]+)\*\*/g, '<b>$1</b>')
+    .replace(/\n/g, '<br>')
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 const pick = (a) => a[Math.floor(Math.random() * a.length)]
 
@@ -472,10 +481,12 @@ async function driveChat(c, payload, uiTool) {
         if (tokenMsg) {
           // 校正 token 串接：以 done.answer 為準，但「不得比已顯示的內容更短」——
           // 避免 answer 缺漏／截斷時反而把完整的逐字內容蓋掉（話被 cut 的第二個來源）。
+          // **長短要比同一把尺**：streamed 是 esc 過的，所以拿 esc(answer) 去比，
+          // 比完才用 fmt(answer) 渲染（fmt 會多出 <b>／<br> 標籤，直接比會偏長）。
           const streamed = tokenMsg.html.replace(/^<p>/, '').replace(/<\/p>$/, '')
-          const answer = data.answer ? esc(data.answer) : ''
-          const best = answer.length >= streamed.length ? answer : streamed
-          tokenMsg.html = '<p>' + best + '</p>'
+          const answerEsc = data.answer ? esc(data.answer) : ''
+          const useAnswer = answerEsc.length >= streamed.length
+          tokenMsg.html = '<p>' + (useAnswer ? fmt(data.answer) : streamed) + '</p>'
         }
         // 紅線二（第二件）：dropped_refs 非空 → 標「引用有問題」。
         if (data.dropped_refs && data.dropped_refs.length && tokenMsg)
