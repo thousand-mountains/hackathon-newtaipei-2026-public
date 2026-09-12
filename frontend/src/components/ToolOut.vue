@@ -95,10 +95,13 @@ const provLabel = (p) => PROV[p] || '出處未標示'
     </div>
 
     <ProcedureCheck v-if="cur().screen" :screen="cur().screen" />
-    <div v-else-if="cur().runStale" class="sec">
+    <!-- 這張卡是「解析卷證**跑完了**」才會出現的，所以走到這裡就代表有 run
+         （`out.runId`）——此時拿不到 screen 一律是異常，不是「還沒跑過」。
+         不要靜默留白：留白會讓人以為這件案子沒有程序爭點。 -->
+    <div v-else-if="cur().runStale || out.runId" class="sec">
       <div class="sec-h">程序審查</div>
       <p style="margin: 0; color: var(--warn); font-size: 12.5px">
-        這件案子有執行紀錄，但讀不回程序審查內容。不顯示任何期間推算，請重跑一次解析卷證。
+        這次執行有紀錄（{{ out.runId || cur().runId }}），但讀不回程序審查內容。<b style="font-weight: 500">不顯示任何期間推算</b>，請重跑一次解析卷證。
       </p>
     </div>
   </template>
