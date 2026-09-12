@@ -607,6 +607,48 @@ def test_json_view_and_export_share_one_sections_implementation() -> None:
         _fail(f"run {rid} 轉出來是空的，這條比對就沒有意義")
 
 
+def test_the_two_ends_share_the_resolution_but_deliberately_differ_on_an_empty_draft() -> None:
+    """**這條釘的是一個刻意的不一致，不是一個 bug。**
+
+    同一個 `run-…`，run 存在但 `doc[]` 沒有任何句子時：
+      - 匯出（#23）→ **409**（契約 §1.5 #23 錯誤碼表明文：回 200 空檔＝失敗看起來像成功）
+      - JSON 檢視（#21）→ **200 ＋ 空 `sections[]`**（§4.4 #21 沒有這條規則）
+
+    2026-09-13 team-lead 拍板維持現狀。會寫這條測試是因為**看到兩處行為不一致的人
+    很容易「順手對齊」**，而對齊會踩掉 409 那條擋「空白檔被讀成本案無話可說」的守門。
+    要改的話先改契約（§4.4 #21 補一條回應碼規則），不是先改實作——
+    這條紅了就代表有人動了其中一邊，請先去讀
+    `backend/dossier/artifact_ref.py` 檔頭「共用的是解析，不是回應碼」那一段。
+
+    **同時也釘住「解析是共用的」**：兩端都要認得出這是一個 run id
+    （2026-09-13 修掉的分岔正是「匯出認得、詳情不認得」）。
+    """
+    api = _endpoint()
+    if dossier_api is None:  # pragma: no cover
+        raise TestSkipped(f"需要 fastapi（{DOSSIER_IMPORT_ERROR}）。")
+
+    # `to_node="n3"` 停在 SCREENED——這是聊天「解析卷證」工具走的同一條路，
+    # 產出的 run 有狀態但沒有草稿。不是為了測試捏造的形狀。
+    rid = run_case(ORDINARY, mode="fixture", to_node="n3", persist=True).run_id
+    if has_body(build_sections(build_payload(run_case(
+            ORDINARY, mode="fixture", to_node="n3", persist=False)), artifact_id=rid)):
+        _fail("挑來當「沒有草稿」的 run 其實有草稿，這條比對就沒有意義")
+
+    try:
+        api.export_artifact(ORDINARY, rid, format="docx")
+    except _http_error() as e:
+        if e.status_code != 409:
+            _fail(f"匯出端預期 409（沒有草稿不給空白檔），實得 {e.status_code}")
+    else:
+        _fail("沒有草稿的 run 竟然匯出成功了——那份檔案只有抬頭")
+
+    out = dossier_api.get_artifact(ORDINARY, rid)
+    if out["run_id"] != rid:
+        _fail("JSON 檢視端沒有認出直接帶進來的 run id——解析又分岔了")
+    if out["sections"]:
+        _fail(f"這個 run 不該有 sections：{out['sections']!r}")
+
+
 def test_endpoint_mounted_on_app_with_contract_path() -> None:
     """契約 §1.5 #23 的路徑要真的掛上去。
 
