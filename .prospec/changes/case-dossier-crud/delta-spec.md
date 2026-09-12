@@ -1,102 +1,99 @@
 # Delta Spec: case-dossier-crud
 
-> REQ ID 格式：`REQ-{MODULE}-{NUMBER}`
+> REQ ID 格式：`REQ-{MODULE}-{NUMBER}`。每條對應 `proposal.md` 的 AC 編號。
 
 ## ADDED
 
-### REQ-DOSSIER-001: 一案一份 manifest 的持久化層
+### REQ-DOSSIER-001：一案一份 manifest 的持久化層（US-B1）
 
-**Description:**
-`backend/output/cases/{case_id}/manifest.json` 存一個案子的四份成員清單與案件中繼資料。
-寫入一律 tmp + `os.replace`。不引入資料庫。
+`backend/output/cases/{case_id}/manifest.json`，四份清單同一物件，不加資料庫。
 
-**Acceptance Criteria:**
-1. 檔案落在 `backend/output/cases/{case_id}/manifest.json`，頂層含
-   `case_id`／`name`／`created_at`／`latest_run_id`／`files`／`laws`／`references`／`artifacts`。
-2. 序列化中途失敗時，磁碟上的舊檔內容不變，且目錄內不留 `.tmp` 殘骸（有測試）。
+1. 頂層含 `case_id`／`name`／`created_at`／`latest_run_id`／四組清單。（B1.2）
+2. 寫入走 tmp + `os.replace`；**有測試**證明中途失敗舊檔完好、不留 `.tmp`。（**B1.4**）
 3. `case_id` 走白名單 regex，不合法直接拒絕，不做路徑清洗。
-4. docstring 明載兩條限制：多副本會分裂、容器重啟即失。
+4. 改名／刪案在重啟 process 後仍生效。（**B1.3**）
+5. docstring 明載三條限制：不原子已修、多副本會分裂、容器重啟即失。
 
-**Priority:** High
-
----
-
-### REQ-DOSSIER-002: 案件 CRUD
-
-**Description:**
-`GET /api/cases` 補齊顯示欄位；`GET /api/cases/{id}` 一次回彙整；`PATCH` 改名；`DELETE` 刪案。
-建案語意維持「上傳卷證即建案」。
-
-**Acceptance Criteria:**
-1. `GET /api/cases` 的每個項目含 `{id, name, created_at}`。
-2. `GET /api/cases/{id}` 回 `{case, files, laws, references, artifacts}`。
-3. `PATCH /api/cases/{id}` body `{name}` → 改名後重啟 process 仍讀得到新名字。
-4. `DELETE /api/cases/{id}` → `204`。
-5. 沒有「先建空案」的端點。
-
-**Priority:** High
+**Priority:** P0
 
 ---
 
-### REQ-DOSSIER-003: 四組卷宗成員 C/R/D
+### REQ-DOSSIER-002：案件清單與彙整開案（US-B1）
 
-**Description:**
-`files`／`laws`／`references`／`artifacts` 各自 GET／POST／DELETE，路徑與欄位名逐字等同契約 §4.1–§4.4。
+1. `GET /api/cases` 每筆含 `{id, name, created_at}`。（**B1.1**）
+2. `GET /api/cases/{id}` 一次回 `{case, files, laws, references, artifacts}`。（**B1.2**）
 
-**Acceptance Criteria:**
-1. 12 支端點齊備，四組都**沒有** PUT／PATCH。
-2. `POST …/laws` body `{law_ids:[…]}`、`POST …/references` body `{decision_ids:[…]}`，回 `201`。
-3. `DELETE` 一律 `204`；刪不存在的 id 回 `404`。
-4. 重複加入同一個 id 不會在清單裡變成兩筆。
-5. 加入時把全文快取進 `body_cached`／`full_cached`。
-
-**Priority:** High
+**Priority:** P0
 
 ---
 
-### REQ-CORPUS-001: 母庫查（法規）
+### REQ-DOSSIER-003：上傳卷證建案與可讀性誠實（US-B2）
 
-**Description:**
-`GET /api/laws?q=` 走 Bedrock KB 的 server-side `doc_kind=statute` filter ＋ 來源去重；
-`GET /api/laws/{lawId}` 走 S3 `get_object` 讀全文。
+1. `POST /api/cases` 維持 multipart「上傳卷證即建案」，**沒有「先建空案」**。（**B2.1**）
+2. 不限副檔名；讀不到的回 `readable:false` 並在 `note` 說原因，**不得靜默跳過**。（**B2.2**）
+3. **掃描影像 PDF（`route_documents` 判 `pdf_visual`，無文字層）`readable` 必須是 `false`**
+   ——契約 §4.1 與 §6 各講了一次。`note` 要帶得出原因（中文比例低於門檻、改以視覺讀取），
+   讓畫面說得出「為什麼讀不到」，而不是只說讀不到，也不得暗示支援 OCR。（**B2.3**）
 
-**Acceptance Criteria:**
-1. 回的每一筆 `doc_kind == "statute"`。
-2. 同一部法規只回一筆。
-3. filter 篩不到東西時**回空**，不退回不篩（與 N4 的防呆刻意相反，理由見 plan §2）。
-4. `body` 以 UTF-8 編碼的位元組數 == 該 S3 物件的 `ContentLength`。
-5. 回應恆 `verified:false`、`relevance:"unknown"`；`retrieval/lawtable.py` 一行未改。
-6. `lawId` 不是 `kb/(official|public)/…​.txt` 形狀時回 400。
-
-**Priority:** High
+**Priority:** P0
 
 ---
 
-### REQ-CORPUS-002: 母庫查（訴願決定）
+### REQ-CORPUS-001：母庫查法規（US-B3）
 
-**Description:**
-`GET /api/decisions?q=` filter `doc_kind=decision`；`GET /api/decisions/{decisionId}` 讀全文。
+1. 回的每一筆 `doc_kind == "statute"`；要有「不帶 filter 抓 20 筆時法規佔幾筆」的實測數字。（**B3.1**）
+2. 同一部法規的多個 chunk 收斂成一筆；要有「未去重 N → 去重後 M」的實測數字。（**B3.2**）
+3. `body` 的 utf-8 位元組數 == 該 S3 物件 `ContentLength`。（**B3.4**）
+4. 恆 `verified:false`、`relevance:"unknown"`；`retrieval/lawtable.py` 一行未改。
+5. filter 篩不到東西時**回空，不退回不篩**（與 N4 的防呆刻意相反）。
 
-**Acceptance Criteria:**
-1. 結果**不含** `court_ruling`。
-2. `verdict` 來自側檔 `outcome`、`category` 來自側檔 `category`；側檔缺席留 `null`，不從內文猜。
-3. `provenance` ∈ `official`／`public_crawl`／`null`。
-4. 對 `court_ruling` 的 `GET /api/decisions/{id}` 回 400 並說明本期不納入。
+**Priority:** P1
 
-**Priority:** High
+---
+
+### REQ-CORPUS-002：母庫查訴願決定（US-B3）
+
+1. 結果**不含** `court_ruling`。（**B3.3**）
+2. `verdict`／`category` 來自側檔，缺席留 `null`，**不從內文猜**。
+3. 對 `court_ruling` 的 id 直取回 400 並說明本期不納入。
+
+**Priority:** P1
+
+---
+
+### REQ-DOSSIER-004：加入即快取全文（US-B3）
+
+1. `POST /cases/{id}/laws`／`references` 寫 `body_cached`／`full_cached`。
+2. `GET /cases/{id}/laws` **只讀 manifest，不打 KB**。（**B3.5**）
+
+**Priority:** P1
+
+---
+
+### REQ-DOSSIER-005：手動挑的法規影響草稿（US-B4）
+
+1. `manifest.json` 的路徑與欄位名必須是 `chat_bridge.load_case_manifest` 讀得到的形狀
+   ——B4.1／B4.2 的 `terms` 由 `llm/chat.py` 組，前提是讀得到這份檔。（**B4.1／B4.2 的前提**）
+2. 一次草稿 run 之後，manifest 的 `laws[]` 每筆要標「有進檢索結果」或
+   「檢索未命中，未進入草稿」。（**B4.3**）
+3. **紅線**：未命中的法規**不得**被塞進 `payload["laws"]` 以求好看。
+   這條要有**反向測試**——斷言「塞進去」這件事沒有發生，不是只測「有標記」。（**B4.3**）
+
+**Priority:** P1
 
 ---
 
 ## MODIFIED
 
-### REQ-API-CASES-LIST: `GET /api/cases` 回應形狀
-
+### REQ-API-CASES-LIST：`GET /api/cases` 回應形狀
 **Before:** `cases` 是 case_id 字串陣列。
 **After:** `cases` 是 `[{id,name,created_at,kind}]`；`synthetic`／`uploaded` 維持字串陣列（相容）。
-**理由:** 左欄要顯示案名與建立時間（契約 §1.1 #2）。現無任何呼叫端讀 `cases` 這個鍵
-（`scripts/run_eval.py`、`scripts/live_acceptance.py` 只打 `POST /api/cases`）。
+**理由:** B1.1。現無呼叫端讀 `cases` 這個鍵。
 
----
+### REQ-BRIDGE-ARTIFACT-ID：`pipeline_adapter` 的 `artifact_id`
+**Before:** 寫死 `None`，註解寫「產出 id 由案件資源層配，這一層還不知道」。
+**After:** 由案件資源層登記後回真值；`GET .../artifacts/{id}` 同時接受 `run-…`（契約 §4.4 過渡規則）。
+**理由:** 那個註解指的就是本 Epic。
 
 ## REMOVED
 

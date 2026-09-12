@@ -39,6 +39,7 @@ import tempfile
 from typing import Any, Callable
 
 from backend.config.settings import CASES_DIR, SYNTHETIC_DIR
+from backend.dossier import runlink
 from backend.intake.documents import route_documents
 from backend.intake.uploads import UPLOADS_DIR
 
@@ -121,8 +122,22 @@ def _file_entry(name: str, ext: str, note: str, readable: bool) -> dict[str, Any
 
 
 #: `route_documents` 的 kind → 是否讀得到。`unreadable` 以外都讀得到。
+#: 有文字層、讀得出字的 kind。**`pdf_visual` 不在裡面，這是刻意的。**
+#:
+#: `pdf_visual` ＝掃描影像 PDF，`pdftotext` 一個字都抽不出來。管線仍然讀得到它
+#: （整份 PDF 餵給模型視覺讀取），但契約 §4.1 與 §6 兩處都要求
+#: **掃描影像回 `readable:false`、UI 標「無法辨讀」**，理由是「目前不做 OCR，
+#: 不要寫成支援」。標成 readable 會讓上傳文案變成「已上傳，可直接改」
+#: ——那是在暗示一個我們沒有的能力。
+#:
+#: 兩件事分開講、不合成一句：`readable` 說的是**有沒有文字層**，
+#: `note` 說的是**為什麼**（`route_documents` 給的原因，例「中文比例 0.0 < 0.6，
+#: 改以視覺讀取」）。承辦人要看得到這份卷證是「模型看圖說話」讀來的。
+_TEXT_LAYER_KINDS = ("txt", "docx_text", "pdf_text")
+
+
 def _readable(kind: str) -> bool:
-    return kind != "unreadable"
+    return kind in _TEXT_LAYER_KINDS
 
 
 def _files_from_case(case_id: str, uploads_dir: pathlib.Path | None = None) -> list[dict[str, Any]]:
@@ -152,7 +167,13 @@ def _files_from_case(case_id: str, uploads_dir: pathlib.Path | None = None) -> l
     out: list[dict[str, Any]] = []
     for doc in route_documents(d):
         ext = pathlib.Path(doc.n).suffix.lower().lstrip(".")
-        out.append(_file_entry(doc.n, ext, "；".join(doc.notes), _readable(doc.kind)))
+        readable = _readable(doc.kind)
+        note = "；".join(doc.notes)
+        if not readable and not note:
+            # **`readable:false` 一定要說得出原因。** 只說「無法辨讀」而不說為什麼，
+            # 承辦人會以為是系統壞了，然後重傳三次同一份檔（proposal B2.2）。
+            note = f"沒有可抽取的文字層（route_documents 判為 {doc.kind}）。"
+        out.append(_file_entry(doc.n, ext, note, readable))
     return out
 
 
@@ -273,13 +294,40 @@ def rename(case_id: str, name: str, cases_dir: pathlib.Path | None = None) -> di
     return m
 
 
-def delete_case(case_id: str, cases_dir: pathlib.Path | None = None) -> bool:
-    """刪掉這個案子的 manifest 目錄。**不碰 `output/uploads/` 的實體卷證，也不刪 runs**
-    ——那兩者是另外的生命週期，一起刪會讓「移出卷宗」與「銷毀證據」變成同一個動作。"""
-    d = case_dir(case_id, cases_dir)
-    if not d.exists():
+class CaseNotDeletable(ValueError):
+    """這個案子不能刪（合成測資）。與「找不到」不是同一件事。"""
+
+
+def delete_case(case_id: str, cases_dir: pathlib.Path | None = None,
+                uploads_dir: pathlib.Path | None = None) -> bool:
+    """刪掉這個案子：manifest 目錄 ＋ `output/uploads/{case_id}` 的實體卷證。
+
+    **為什麼卷證也要刪**（2026-09-12 實跑抓到）：原本只刪 manifest，理由寫的是
+    「移出卷宗 ≠ 銷毀證據」。那句話對的是**單一卷證的移除**（`DELETE …/files/{id}`），
+    套到整個案子上就錯了——`list_cases()` 是掃 `output/uploads/` 列出來的，
+    只刪 manifest 的話案子會在下一次 `GET /api/cases` **原地復活**，
+    而且名字變回預設值。使用者按了刪除、東西還在，那不是「保守」，那是壞掉。
+
+    **不刪 runs**：那是執行紀錄、以 run_id 為鍵、不在 UI 的任何清單裡，
+    而且刪掉會讓已經匯出的草稿再也查不回來源。
+
+    合成測資（`synthetic-`）**拒絕刪除**並說明理由：它是進 git 的測試案例，
+    刪了會讓 `run_all.py` 紅，而且下次 `git checkout` 又回來——
+    做一個註定失效的動作比直接說不能刪更糟。
+    """
+    if case_id.startswith("synthetic-"):
+        raise CaseNotDeletable(
+            f"{case_id} 是合成測資（進 git 的測試案例），不提供刪除。"
+            f"要清掉它的卷宗內容請逐項移出，或換一個上傳案操作。"
+        )
+    d = case_dir(case_id, cases_dir)          # 也順便驗 case_id 格式
+    up = (uploads_dir or UPLOADS_DIR) / case_id
+    if not (d.exists() or up.exists()):
         return False
-    shutil.rmtree(d)
+    if d.exists():
+        shutil.rmtree(d)
+    if up.exists():
+        shutil.rmtree(up)
     return True
 
 
@@ -354,6 +402,26 @@ def artifact_id_for(run_id: str) -> str:
     return "art-" + hashlib.sha1(run_id.encode("utf-8")).hexdigest()[:10]  # noqa: S324
 
 
+def _mark_law_retrieval(case_id: str, payload: dict[str, Any],
+                        cases_dir: pathlib.Path | None = None) -> None:
+    """B4.3：把本案 `laws[]` 逐筆標上「檢索命中／未命中」（契約 §3.5.2 末段）。
+
+    手動挑的法規是當**查詢詞**餵回 N4 的，所以「挑了」不等於「會進草稿」。
+    契約原文是「右欄該項標『檢索未命中，未進入草稿』」——**右欄**，
+    表示關掉對話再打開狀態還要在，所以寫進 manifest，而不是只在 chat 回合裡講一次
+    （chat 那半是 `llm/chat.py:unmatched_picks`，兩半都要）。
+    比對規則不在這裡，見 `backend/dossier/runlink.py`。
+
+    接在 `record_run` 裡而不是讓兩個呼叫端各自呼叫：理由與 `record_run` 本身
+    下沉到這裡是同一個——複製的那份遲早分岔，而分岔的時候沒有症狀。
+    """
+    m = ensure(case_id, cases_dir)
+    marked = runlink.classify_law_retrieval(m["laws"], list((payload or {}).get("laws") or []))
+    if marked != m["laws"]:
+        m["laws"] = marked
+        save(m, cases_dir)
+
+
 def record_run(
     case_id: str,
     payload: dict[str, Any],
@@ -390,6 +458,7 @@ def record_run(
         return None
     try:
         set_latest_run(case_id, run_id, cases_dir)
+        _mark_law_retrieval(case_id, payload, cases_dir)
         doc = (payload or {}).get("doc") or []
         if not any(b.get("ss") for b in doc):
             return None
