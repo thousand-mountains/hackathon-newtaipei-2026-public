@@ -3191,3 +3191,55 @@ def test_case_type_normalization_strips_party_names_and_known_typos():
 
     # 正常值不得被動到
     assert_eq(f("噪音管制法"), "噪音管制法")
+
+
+def _run_eval_module():
+    spec = importlib.util.spec_from_file_location(
+        "_run_eval", pathlib.Path(__file__).resolve().parents[2] / "scripts" / "run_eval.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_eval_does_not_call_a_spec_mandated_default_a_hallucination():
+    """`n1_extract.md` 明文要求的預設值，不得被評估腳本判成「編」。
+
+    prompt 寫得很清楚：`transit_days` 卷證沒寫就 0、`interested_party` 不確定給 false
+    （都附 conf 0.5）。golden 照腳本的規則把「卷證沒寫」抄成 null，若不認這件事，
+    這兩欄每一列都會落進 🔴「卷證沒寫卻填了值」——而報告對那一格的指示是
+    「改 n1_extract.md 時優先壓這一格」，等於叫人去改一個本來就對的規格。
+
+    真正的 hallucination（卷證沒寫卻生出非預設值）仍然要抓得到。
+    """
+    ev = _run_eval_module()
+    assert_eq(ev.judge_field("transit_days", None, 0), "ok", "0 是規格預設，不是編的")
+    assert_eq(ev.judge_field("interested_party", None, False), "ok", "false 是規格預設")
+    assert_eq(ev.judge_field("transit_days", None, 5), "hallucinated",
+              "卷證沒寫卻生出 5 天在途期間——這個才是編的")
+    assert_eq(ev.judge_field("interested_party", None, True), "hallucinated")
+    # 其他欄位不受影響：沒有規格預設，填了就是編的
+    assert_eq(ev.judge_field("no", None, "新北環稽字第123號"), "hallucinated")
+    assert_eq(ev.judge_field("d2", None, "2024-06-13"), "hallucinated")
+
+
+def test_eval_compares_loose_typed_fields_after_normalising_both_sides():
+    """`transit_days`／`interested_party` 在 schema 裡是 LooseFieldValue，型別刻意寬鬆。
+
+    模型可能回 `False`，也可能回 `"false"`。直接 `str(want) == str(got)` 會把
+    `False` 與 `"false"` 判成不等，於是對的被記成「抽錯」——那會讓人去調一個沒壞的 prompt。
+    """
+    ev = _run_eval_module()
+    assert_eq(ev.judge_field("interested_party", True, "true"), "ok")
+    assert_eq(ev.judge_field("interested_party", False, "false"), "ok")
+    assert_eq(ev.judge_field("transit_days", 3, "3"), "ok")
+    assert_eq(ev.judge_field("transit_days", 3, "5"), "wrong", "真的不一樣還是要判錯")
+    assert_eq(ev.judge_field("interested_party", True, "false"), "wrong")
+
+
+def test_eval_still_reports_the_four_verdicts_for_ordinary_fields():
+    """一般欄位的四種判級不得因為上面兩條而改變。"""
+    ev = _run_eval_module()
+    assert_eq(ev.judge_field("d2", "2024-06-13", "2024-06-13"), "ok")
+    assert_eq(ev.judge_field("d2", "2024-06-13", "2024-06-14"), "wrong")
+    assert_eq(ev.judge_field("d2", "2024-06-13", None), "missed")
+    assert_eq(ev.judge_field("d2", None, None), "ok")

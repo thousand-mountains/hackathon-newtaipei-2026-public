@@ -25,8 +25,24 @@
 
 ## 退出碼
 
-- `0`：跑完，且行為面紅線沒有被踩到（抽取有錯不算紅線，那是要調 prompt 的量測結果）
-- `1`：踩到紅線（該封鎖沒封鎖／越界引用／分層誠實違規），或有案子根本沒跑起來
+**退出碼只涵蓋「客觀判得出來」的那幾條**，其餘一律要人讀報告——這裡寫得比實作寬
+會比沒有這段更糟：趕時間的人只看 exit code，會把「沒驗到」讀成「驗過了沒問題」。
+
+- `1`：以下任一
+  - **查無字號**（`citation_counts.missing > 0`）——編出來的字號，CONSTITUTION §2
+  - **分層誠實違規**（`origin_violations`）——欄位的 origin 與註冊表不符
+  - 有案子**根本沒跑起來**（建案／執行失敗）
+  - **沒有任何一件跑到 `VERIFIED`**——那代表行為面紅線這一段一條都沒驗到，
+    報告裡那幾欄全是 ⏸。這種情況回 0 等於拿「沒有證據」當「沒有問題」。
+- `0`：其餘
+
+**刻意不列入退出碼**（印在報告裡，要人判）：
+
+- **該封鎖沒封鎖**：要知道「這件是不是實體爭議案」才判得出來，腳本沒有那個知識。
+  報告第三段會把它標出來，出現「否」一律逐案查 `backend/gate/lamps.py`。
+- **越界引用**（`out_of_scope`）：引到資料集涵蓋範圍外的字號不必然是錯（見第三段說明），
+  數字變大才值得追。
+- **抽取正確率**：那是要調 prompt 的量測結果，不是紅線。
 """
 from __future__ import annotations
 
@@ -255,10 +271,35 @@ VERDICTS = {
 }
 
 
-def judge_field(want: object | None, got: object | None) -> str:
+# 卷證沒寫時 **prompt 明文要求給的預設值**（`backend/llm/prompts/n1_extract.md`）：
+#
+#   transit_days      「卷證沒寫就 0 且 conf 給 0.5」
+#   interested_party  「不確定給 false 且 conf 給 0.5」
+#
+# 這兩欄因此**幾乎不可能是 null**。golden 照本腳本的規則把「卷證沒寫」抄成 null，
+# 若不認這件事，每一列都會被判成 🔴「卷證沒寫卻填了值」——而那一格的指示是
+# 「改 n1_extract.md 時優先壓這一格」，等於叫人去改一個 prompt 明文要求的正確行為。
+#
+# 真正的 hallucination 是「卷證沒寫，而系統給了**非預設**的值」（例如憑空生出
+# transit_days=5），那仍然會被抓出來。
+SPEC_DEFAULTS: dict[str, object] = {"transit_days": 0, "interested_party": False}
+
+
+def judge_field(field: str, want: object | None, got: object | None) -> str:
+    """比一個欄位。`field` 是為了認得 SPEC_DEFAULTS 與寬鬆型別的那兩欄。
+
+    `transit_days`／`interested_party` 在 schema 裡是 `LooseFieldValue`（型別刻意寬鬆），
+    模型可能回 `False` 也可能回 `"false"`。**兩邊都過 `norm_golden` 再比**，
+    否則 `str(False) != str("false")` 會把對的判成「抽錯」。
+    """
+    if field in SPEC_DEFAULTS and got is not None:
+        got = norm_golden(field, str(got))
     if want is None and got is None:
         return "ok"
     if want is None:
+        # 規格預設值不算「編」——見 SPEC_DEFAULTS 的說明
+        if field in SPEC_DEFAULTS and got == SPEC_DEFAULTS[field]:
+            return "ok"
         return "hallucinated"
     if got is None:
         return "missed"
@@ -323,9 +364,11 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     run_mode = str(health.get("run_mode", "?"))
     kb_backend = str(health.get("kb_backend", "?"))
-    # provider 不從 /api/health 拿：那個欄位目前恆為 null（app.py:219 寫死，
-    # 註解還停在 fixture 檔位的假設）。真的被呼叫的那個模型只有跑完一次才知道，
-    # 所以往下從第一份 payload 的 run_meta.model_ids.provider 讀。
+    # provider 不從 /api/health 拿。**不是因為那裡沒有**——bedrock 檔位它有值
+    # （`app.py` 的 `model_ids` 走 `llm/client.py:model_ids()`，一定帶 provider；
+    # fixture 檔位回 None 是刻意的，那時根本沒呼叫過任何模型）。
+    # 而是因為 health 報的是**設定值**，這份報告要講的是**這批數字是誰跑出來的**
+    # ——那只有跑完一次才知道，所以往下從 payload 的 run_meta.model_ids.provider 讀。
     provider = "?"
 
     # ── 上傳 → 跑 ──
@@ -456,7 +499,7 @@ def main(argv: list[str] | None = None) -> int:
                     cells.append("—")
                     continue
                 got = (d.get("intake") or {}).get(fld)
-                v = judge_field(g[fld], got)
+                v = judge_field(fld, g[fld], got)
                 tally[fld][v] += 1
                 sym = {"ok": "✅", "wrong": "❌", "hallucinated": "🔴", "missed": "⚠"}[v]
                 if v == "ok":
@@ -558,12 +601,20 @@ def main(argv: list[str] | None = None) -> int:
             f"{'是' if submit else '否'} | {oos} | {'🔴 ' + str(miss) if miss else '0'} | "
             f"{'🔴 ' + str(viol) + ' 項' if viol else '✅ 無違規'} |")
     say()
+    verified_n = sum(1 for _, cid in cases if str((final(cid) or {}).get("state")) == "VERIFIED")
     if halted:
         say(f"- **停在 NEEDS_INPUT 的有 {len(halted)}／{len(payloads)} 件**："
             + "、".join(f"`{h}`" for h in halted)
             + "。N1 抽取信心不足就停下來要承辦人補，**這是正確行為不是失敗**；"
             "但比例太高代表 prompt 對這種文體讀不動，值得調。停下來的案子下游沒跑，"
-            "封鎖那一欄標 ⏸ 而不是「否」。")
+            "封鎖那一欄標 ⏸ 而不是「否」。加 `--confirm` 可用 golden 的值當"
+            "「承辦人已確認」續跑，讓下游真的跑起來。")
+    if cases and not verified_n:
+        # **這一段沒有驗到任何東西**：沒有一件跑到終態，紅線那幾欄全是 ⏸。
+        # 這種情況回 0 就是拿「沒有證據」當「沒有問題」——AC5 先前假通過的同一個坑。
+        say()
+        say("> 🔴 **沒有任何一件跑到 `VERIFIED`，本段一條紅線都沒有驗到。**"
+            "上面的 0 不代表沒問題，代表沒量到。退出碼因此是 1。")
     say("- **結論封鎖**：實體爭議案（廢清法、建築法…）應為「是」。出現「否」要逐案查 "
         "`backend/gate/lamps.py`，那是最嚴重的破口，**不是 prompt 問題**。")
     say("- **越界引用**（庫外未驗證）不必然是錯，但數字變大代表主筆在引資料集涵蓋範圍外的字號；"
@@ -610,7 +661,9 @@ def main(argv: list[str] | None = None) -> int:
     say()
 
     print("\n".join(OUT))
-    return 1 if (red or failures) else 0
+    # 退出碼的完整契約見檔頭。`red` 是查無字號／分層誠實違規的件數；
+    # 「一件都沒跑到 VERIFIED」單獨成一條，因為那是「沒驗到」而不是「驗過了」。
+    return 1 if (red or failures or (cases and not verified_n)) else 0
 
 
 if __name__ == "__main__":
