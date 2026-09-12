@@ -119,7 +119,7 @@ const provLabel = (p) => PROV[p] || '出處未標示'
   <!-- 工具回 empty / failed（契約 §2.3）：兩者畫面上要分得出來 -->
   <template v-else-if="out.type === 'status'">
     <div class="sec">
-      <div class="sec-h">{{ out.status === 'failed' ? '工具執行失敗' : '查無結果' }}</div>
+      <div class="sec-h">{{ out.status === 'failed' ? '工具執行失敗' : out.status === 'empty' ? '查無結果' : '完成' }}</div>
       <p style="margin: 0; font-size: 13.5px">{{ out.note }}</p>
       <p v-if="out.status === 'failed'" style="margin: 8px 0 0; color: var(--muted); font-size: 12px">
         這是<b style="font-weight: 500">查詢來源本身失敗</b>，不是資料庫裡沒有這筆資料，可以重試。

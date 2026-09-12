@@ -4,7 +4,6 @@ import { reactive, computed } from 'vue'
 import { CASE_NO, EVIDENCE_POOL, TOOLS, GROUPS, ACKS } from '../data/data.js'
 import { api } from '../api/index.js'
 import { ApiError } from '../api/http.js'
-import { diffToHtml } from '../api/diff.js'
 
 // ── 草稿版本快取（localStorage）──
 // 優化文案的 diff 需要「上一版文字」。生成草稿／每次潤稿成功後，把新版純文字存進 localStorage；
@@ -66,9 +65,6 @@ const OUT_TYPE = {
 
 const esc = (s) =>
   String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]))
-// esc 的逆運算：把逐字串接後的 HTML 還原成純文字，供 diff 比對用。
-const unesc = (s) =>
-  String(s).replace(/<br>/g, '\n').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&amp;/g, '&')
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 const pick = (a) => a[Math.floor(Math.random() * a.length)]
 
@@ -445,29 +441,21 @@ async function driveChat(c, payload, uiTool) {
         appendToken(data.text || '')
       } else if (event === 'done') {
         if (data.session_id) c.sessionId = data.session_id
-        // 沒有 token 也沒有工具卡、但有 answer → 用 answer 補一則（否則泡泡會空白）
-        if (!tokenMsg && !toolMsg && data.answer) {
+        // 沒有逐字串流但有 answer → 補一則泡泡。
+        // **判斷不能含「也沒有工具卡」。** 實測 /優化文案：agent 開了工具卡的 ack、
+        // 但沒真的呼叫工具（它回問「要改哪段文字」），零個 token、零個 tool_result——
+        // 畫面上就只剩一張空的、標著「✓ 完成」的工具卡，agent 的回話整段被丟掉。
+        if (!tokenMsg && data.answer) {
           clearThinking()
           tokenMsg = push(c, { who: 'ai', kind: 'html', html: '' })
         }
         clearThinking()
-        // 優化文案（real 路徑）：改寫後的新版文字走 token 串回（契約 §3.4）。
-        // 若工具卡還沒有 diff（mock 走 refined_text 已在 tool_result 設好），這裡用最終文字補算。
-        if (uiTool === 'refine' && toolMsg && !(toolMsg.out && toolMsg.out.type === 'diff')) {
-          const streamedText = tokenMsg ? unesc(tokenMsg.html.replace(/^<p>/, '').replace(/<\/p>$/, '')) : ''
-          const next = (data.answer || streamedText || '').trim()
-          if (next) {
-            const prev = loadDraftText(c.caseId)
-            toolMsg.out = { type: 'diff', html: diffToHtml(prev, next), instruction: (payload.args && payload.args.instruction) || '' }
-            saveDraftText(c.caseId, next)
-            // 收掉獨立的 token 泡泡（改寫文字改以 diff 呈現，不重複顯示原文）
-            if (tokenMsg) {
-              const i = c.stream.indexOf(tokenMsg)
-              if (i >= 0) c.stream.splice(i, 1)
-              tokenMsg = null
-            }
-          }
-        }
+        // 優化文案：**不要自動把 done.answer 當成「改寫後全文」去做 diff。**
+        // 契約 §3.4 寫「改寫後的文字走 token」，但實測 token 串回來的是 agent 的
+        // **修改建議表格**（「原句／建議／說明」三欄），不是改寫後的草稿。
+        // 拿它去跟上一版逐詞比對，畫出來的是一團把舊草稿和建議表交織在一起的紅綠字，
+        // 看起來像「草稿被改成這樣了」——那比沒有對照功能糟。
+        // 改寫文字目前沒有契約定義的欄位能可靠取得，已回報；在那之前照實顯示回覆本身。
         // 紅線一（契約 §2.4.1 一、CONSTITUTION §4）：redirect 非 null →
         // 期限／天數這類問題交給規則引擎，**不得顯示 agent 講的任何天數**。
         // 這裡刻意**不寫 data.answer**（answer 裡就是 LLM 算的天數），只放 reason + CTA。
@@ -634,13 +622,10 @@ function applyToolResult(c, toolMsg, data) {
     // 新基準等 #21 取回 sections[] 再存（見 loadDraftSections），這裡不塞假草稿。
     clearDraftText(c.caseId)
   } else if (tool === 'refine_text') {
-    // 優化文案：拿上一版（localStorage）與後端回傳新版做 diff，畫成前後對照。
-    const prev = loadDraftText(c.caseId)
-    const next = data.refined_text || esc(data.answer || '')
-    if (next) {
-      if (toolMsg) toolMsg.out = { type: 'diff', html: diffToHtml(prev, next), instruction: (data.instruction || '') }
-      saveDraftText(c.caseId, next) // 新版成為下次 diff 的基準
-    }
+    // 契約 §3.4：`hits: []`，工具本身沒有結構化產出，note 由後端帶
+    //（「已改寫；改寫文字無出處，本則回答標為請人工判斷。」）。
+    // 這裡只把 note 放上去，改寫內容由 agent 在下方逐字說明。
+    if (toolMsg) toolMsg.out = { type: 'status', status: 'ok', note: data.note || '已改寫。改寫文字無出處，請人工判斷。' }
   }
 }
 

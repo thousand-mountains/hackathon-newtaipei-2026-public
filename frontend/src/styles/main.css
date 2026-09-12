@@ -471,3 +471,6 @@ button{font:inherit;color:inherit;cursor:pointer}
 }
 .step.degraded{color:var(--warn)}
 .step.degraded .tick{color:var(--warn)}
+/* 右欄項目的三態標籤（picked_laws）：與後端 retrieval_note 同行時要有間距，
+   否則「僅用於相似案檢索已用於相似案檢索；…」會黏成一句讀不了 */
+.fitem .ft small .tag{margin-right:6px}
