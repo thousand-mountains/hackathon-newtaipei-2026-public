@@ -135,13 +135,37 @@ main{max-width:1500px;margin:0 auto;padding:20px}
 .lawdoc .fm b{color:var(--ink-2);font-weight:500}
 .lawdoc .ch{font-family:var(--sans);font-size:12.5px;color:var(--navy);font-weight:700;letter-spacing:.1em;padding-left:1em}
 .lawdoc .art{font-family:var(--sans);font-size:13.5px;font-weight:700;color:var(--ink);margin:9px 0 3px}
+.lawdoc .art.artfocus{color:var(--seal);border-left:3px solid var(--seal);padding-left:8px;margin-left:-11px}
+.lawdoc .artcur{font-family:var(--sans);font-size:11px;font-weight:500;color:var(--white);background:var(--seal);border-radius:2px;padding:1px 6px;vertical-align:1px}
 .lawdoc .pa{display:grid;grid-template-columns:1.6em 1fr;gap:2px}
 .lawdoc .pn{font-family:var(--mono);font-size:12.5px;color:var(--ink-3);padding-top:2px}
 .lawdoc .kk{display:block;padding-left:1.6em;text-indent:-1.6em}
 .lawdoc .mu{display:block;padding-left:3em;text-indent:-1.6em}
 .lawdoc .hl{background:#FFF3CE;border-radius:2px;font-weight:600;color:var(--ink)}
+/* 程序審查控制盤 */
+.proc{border:1px solid var(--navy);border-radius:3px;background:#F7FAFD;margin-bottom:12px;overflow:hidden}
+.proc.hit{border-color:var(--seal);box-shadow:0 0 0 3px rgba(158,42,43,.14);background:#F7FAFD}
+.proc.dim{opacity:1}
+.proc>.ph{display:flex;align-items:center;gap:7px;padding:9px 11px;background:linear-gradient(#EFF5FB,#F7FAFD);border-bottom:1px solid #DCE7F1}
+.proc>.ph .mi{font-size:18px;color:var(--navy)}
+.proc>.ph .ttl{font-size:13.5px;font-weight:700;color:var(--navy)}
+.proc>.ph .gap{flex:1}
+.proc .bd{padding:11px}
+.proc label{display:block;font-size:12.5px;color:var(--ink-3);margin:0 0 4px;font-weight:500}
+.proc select{width:100%;padding:7px 10px;border:1px solid var(--line);border-radius:3px;font-family:inherit;font-size:13px;color:var(--ink);background:var(--white)}
+.proc .fld+.fld{margin-top:9px}
+.proc .mainbox{display:flex;gap:9px;align-items:baseline;background:var(--white);border:1px solid var(--line);border-left:3px solid var(--seal);border-radius:3px;padding:8px 11px;margin-top:11px}
+.proc .mainbox .lb{font-size:12px;color:var(--ink-3);letter-spacing:.3em;white-space:nowrap}
+.proc .mainbox .vl{font-family:var(--serif);font-size:14.5px;font-weight:600;color:var(--seal)}
+.proc ul.note{margin:10px 0 0;padding-left:18px;font-size:12.5px;color:var(--ink-2);line-height:1.85}
+.proc .warn{font-size:12px;color:var(--amber);margin-top:9px;display:flex;gap:5px;align-items:flex-start}
+.proc .warn .mi{font-size:15px;margin-top:1px}
 .aiwhy{background:#F7FAFD;border:1px solid #E2EBF3;border-radius:3px;padding:9px 11px;font-size:12.5px;color:var(--ink-2);line-height:1.7;margin:10px 0 0}
 .aiwhy b{display:block;color:var(--navy);font-size:12.5px;margin-bottom:2px;letter-spacing:.03em}
+.itm[data-law],.itm[data-caserow]{cursor:pointer}
+.itm[data-law] .row,.itm[data-caserow] .row{cursor:pointer}
+.seefull{color:var(--navy-l);font-size:12.5px;display:inline-flex;align-items:center;gap:2px;cursor:pointer;border-radius:3px;padding:2px 6px}
+.seefull:hover{background:#EDF3F9;text-decoration:underline}
 .sim{font-family:var(--mono);font-size:12.5px;color:var(--ink-3);white-space:nowrap}
 .simbar{height:4px;width:52px;background:var(--line-2);border-radius:2px;overflow:hidden;display:inline-block;vertical-align:middle;margin-right:5px}
 .simbar i{display:block;height:100%;background:var(--navy-l)}
@@ -165,10 +189,8 @@ main{max-width:1500px;margin:0 auto;padding:20px}
 .editor{flex:1;min-height:0;overflow:auto;background:var(--paper-2);padding:18px 0}
 .sheet{--lh:34px;width:calc(100% - 34px);margin:0 auto;background:var(--paper);border:1px solid var(--line);
   box-shadow:0 1px 3px rgba(0,0,0,.05);padding:var(--lh) 30px calc(var(--lh)*2);
-  background-image:repeating-linear-gradient(var(--paper),var(--paper) calc(var(--lh) - 1px),#EAE4D6 calc(var(--lh) - 1px),#EAE4D6 var(--lh));
-  background-origin:content-box;background-clip:content-box;
   font-family:var(--serif);font-size:15.5px;line-height:var(--lh);letter-spacing:.04em}
-.sheet.view{background-image:none;padding-top:26px}
+.sheet.view{padding-top:26px}
 .sheet .exfm{font-family:var(--sans);font-size:13.5px;line-height:2;color:var(--ink-2);
   border-bottom:1px solid var(--line);padding-bottom:10px;margin-bottom:var(--lh)}
 .sheet .exfm .rw{display:grid;grid-template-columns:5.6em 1fr;gap:6px;align-items:start}
@@ -231,6 +253,7 @@ input:focus,textarea:focus{outline:2px solid var(--navy-l);outline-offset:-1px;b
   .editor{overflow:visible;padding:0;background:#fff}
   .sheet{border:0;box-shadow:none;background:#fff;background-image:none;width:auto}
   .sent{border-bottom:0!important;background:transparent!important}}
+
 @media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
 </style>
 </head>
@@ -290,16 +313,16 @@ input:focus,textarea:focus{outline:2px solid var(--navy-l);outline-offset:-1px;b
     <div class="leftcol">
       <div class="pane">
         <div class="tabs" role="tablist">
-          <button class="tab" role="tab" aria-selected="true" data-t="law">相關法條<span class="badge" id="bd-law">0</span></button>
+          <button class="tab" role="tab" aria-selected="true" data-t="fact">案情與爭點<span class="badge" id="bd-fact">0</span></button>
+          <button class="tab" role="tab" aria-selected="false" data-t="law">相關法條<span class="badge" id="bd-law">0</span></button>
           <button class="tab" role="tab" aria-selected="false" data-t="case">相似案例<span class="badge" id="bd-case">0</span></button>
-          <button class="tab" role="tab" aria-selected="false" data-t="fact">案情與爭點<span class="badge" id="bd-fact">0</span></button>
           <span style="flex:1"></span>
-          <button class="btn ghost sm" id="addlaw" style="margin:0 4px"><span class="mi" style="font-size:15px;vertical-align:-3px">add</span> 加入法條</button>
+          <button class="btn ghost sm" id="addlaw" style="margin:0 4px;display:none"><span class="mi" style="font-size:15px;vertical-align:-3px">add</span> 加入法條</button>
         </div>
         <div class="tabbody">
-          <div class="tabpane on" id="tp-law"></div>
+          <div class="tabpane on" id="tp-fact"></div>
+          <div class="tabpane" id="tp-law"></div>
           <div class="tabpane" id="tp-case"></div>
-          <div class="tabpane" id="tp-fact"></div>
         </div>
       </div>
       <div class="pane">
@@ -383,10 +406,10 @@ document.addEventListener('keydown',e=>{if(e.key==='Escape')$$('.mask.on').forEa
 
 /* ========== 上傳 ========== */
 const DEMO_FILES=[
- {n:'訴願書_1147061268.pdf',s:'412 KB',x:'訴願人 · 3 頁'},
- {n:'原處分書_書面告誡_11403210490-01.pdf',s:'186 KB',x:'警察局新店分局 · 1 頁'},
+ {n:'訴願書_1147101517.pdf',s:'412 KB',x:'訴願人 · 3 頁'},
+ {n:'原處分書_書面告誡_11312180226-03.pdf',s:'186 KB',x:'警察局汐止分局 · 1 頁'},
  {n:'送達證書.pdf',s:'94 KB',x:'掛號回執 · 1 頁'},
- {n:'答辯書_新北警店刑字第1144081092號.pdf',s:'238 KB',x:'原處分機關 · 2 頁'}];
+ {n:'撤銷函_新北警汐刑字第11442604401號.pdf',s:'152 KB',x:'原處分機關 · 1 頁'}];
 function addFile(f,i){
   const li=document.createElement('li');li.style.animationDelay=(i*80)+'ms';
   li.innerHTML='<span class="mi doc">description</span><span class="meta"><b>'+f.n+'</b><span>'+f.s+'　·　'+f.x+
@@ -410,7 +433,7 @@ $('#confirm').onclick=()=>{
   const b=$('#confirm');b.disabled=true;b.textContent='生成草稿中…';
   setTimeout(()=>{
     $('#p-up').classList.remove('on');$('#p-work').classList.add('on');
-    $('#caseno').textContent='案號 1147061268　·　違反洗錢防制法事件';
+    $('#caseno').textContent='案號 1147101517　·　違反洗錢防制法事件';
     buildDoc();b.disabled=false;b.textContent='確認上傳，生成草稿 →';
     window.scrollTo({top:0});
   },1400);
@@ -430,9 +453,19 @@ const LAWDB=[
   rel:[''],src:'資料集／相關法規／行政罰法.pdf',
   why:'訴願人主張法律不溯及既往，需要用這條回應。條次雖然變更但構成要件沒變，所以沒有從新從輕的適用。',
   paras:[{n:'',t:'行為後法律或自治條例有變更者，適用裁處時之規定。但裁處前之法律或自治條例有利於受處罰者，適用最有利於受處罰者之規定。'}]},
+ {id:'訴1',law:'訴願法',date:'民國 101 年 06 月 27 日',ch:'第 一 章 總則',se:'第 一 節 訴願事件',art:'第 1 條',tag:'訴願定義',rank:1,
+  rel:['1'],src:'資料集／相關法規／訴願法.pdf',
+  why:'訴願救濟制度的總則規定。理由第一點引第 1 至 3 條說明訴願係人民對行政處分請求救濟之方法。',
+  paras:[{n:'1',t:'人民對於中央或地方機關之行政處分，認為違法或不當，致損害其權利或利益者，得依本法提起訴願。但法律另有規定者，從其規定。'},
+   {n:'2',t:'各級地方自治團體或其他公法人對上級監督機關之行政處分，認為違法或不當，致損害其權利或利益者，亦同。'}]},
+ {id:'訴2',law:'訴願法',date:'民國 101 年 06 月 27 日',ch:'第 一 章 總則',se:'第 一 節 訴願事件',art:'第 2 條',tag:'消極處分',rank:1,
+  rel:['1'],src:'資料集／相關法規／訴願法.pdf',
+  why:'與第 1、3 條併引，說明訴願制度救濟範圍。',
+  paras:[{n:'1',t:'人民因中央或地方機關對其依法申請之案件，於法定期間內應作為而不作為，認為損害其權利或利益者，亦得提起訴願。'},
+   {n:'2',t:'前項期間，法令未規定者，自機關受理申請之日起為二個月。'}]},
  {id:'訴77',law:'訴願法',date:'民國 101 年 06 月 27 日',ch:'第 三 章 訴願程序',se:'第 三 節 訴願決定',art:'第 77 條',tag:'程序要件',rank:1,
-  rel:[],src:'資料集／相關法規／訴願法.pdf',
-  why:'程序檢核的依據。理由欄要交代 8 款都不該當，本件才能進入實體審查。',
+  rel:['六'],src:'資料集／相關法規／訴願法.pdf',
+  why:'本件不受理的直接依據。原處分經自行撤銷而不存在，該當第 6 款「行政處分已不存在者」，應為不受理之決定。',
   lead:'訴願事件有左列各款情形之一者，應為不受理之決定：',
   paras:[{n:'',t:'',ks:[
    {n:'一',t:'訴願書不合法定程式不能補正或經通知補正逾期不補正者。'},
@@ -563,99 +596,195 @@ const CASEDB=[
 
 const FACTDB=[
  {id:'X1',k:'事實經過',tag:'卷證',
-  d:'訴願人將其向○○商業銀行申請開立之帳戶（末4碼 0000）交付、提供他人使用，該帳戶其後經通報涉及財產犯罪。新北市政府警察局新店分局認其違反洗錢防制法第 22 條第 1 項，依同條第 2 項於 114 年 7 月 13 日以書面告誡裁處，同日合法送達。',
-  src:'卷證：原處分書、送達證書、帳戶交易明細'},
+  d:'訴願人因違反洗錢防制法事件，經原處分機關新北市政府警察局汐止分局於 114 年 1 月 2 日以書面告誡（案件編號：11312180226-03）裁處。訴願人不服，提起本件訴願。',
+  src:'卷證：原處分書、送達證書、訴願書'},
  {id:'X2',k:'訴願主張',tag:'訴願書',
-  d:'系爭帳戶至今仍在訴願人管領權限之內，並無交付、提供予他人使用之情形，自無故意或過失；另主張原處分違反處罰法定原則與法律不溯及既往原則，請求撤銷。訴願人委任律師 2 名。',
-  src:'卷證：訴願書_1147061268.pdf'},
- {id:'X3',k:'機關答辯',tag:'答辯書',
-  d:'原處分已於 114 年 7 月 13 日合法送達；系爭帳戶經通報涉及財產犯罪，訴願人亦自承提供帳戶資料予他人，核已該當洗錢防制法第 22 條第 1 項規定。惟答辯書未具體記載違規事實過程，亦未檢附證據資料。',
-  src:'卷證：答辯書_新北警店刑字第1144081092號'},
- {id:'X4',k:'爭點一：帳戶是否已交付而喪失管領',tag:'事實認定',
-  d:'訴願人稱帳戶仍在自己手上，與卷附交易明細、通報紀錄所載不符。此為證據取捨問題，決定書理由第三點即以此為基礎，認定已該當「交付、提供予他人使用」。',
-  src:'對應理由三　·　參 113年第16號決定書'},
- {id:'X5',k:'爭點二：113/7/31 條次變更之法律適用',tag:'法律適用',
-  d:'洗錢防制法第 15 條之 2 移列為第 22 條，構成要件與法律效果均未變更，故依行政罰法第 5 條無從新從輕之適用。本案行為發生於修法施行後，亦無溯及既往問題。',
-  src:'對應理由二、四　·　參 114年第15號決定書'}];
+  d:'訴願人不服原處分機關 114 年 1 月 2 日書面告誡所為之處分，認其違法或不當，致損害其權利或利益，請求救濟。',
+  src:'卷證：訴願書_1147101517.pdf'},
+ {id:'X4',k:'關鍵事實：原處分已自行撤銷',tag:'程序關鍵',
+  d:'原處分機關重新審酌本案後，以 114 年 12 月 15 日新北警汐刑字第 11442604401 號函自行撤銷原書面告誡，原處分顯已不復存在，訴願標的業已消失。',
+  src:'卷證：新北警汐刑字第11442604401號函　·　對應理由二'},
+ {id:'X5',k:'爭點：訴願標的是否消滅',tag:'程序審查',
+  d:'原處分既經自行撤銷而不復存在，訴願之標的即已消失，依訴願法第 77 條第 6 款「行政處分已不存在者」，本件應為不受理之決定。',
+  src:'對應理由一、三　·　訴願法第 77 條第 6 款'}];
 const factById=id=>FACTDB.find(x=>x.id===id);
 const isFact=id=>FACTDB.some(x=>x.id===id);
 
+/* ========== 程序審查：結論 → 版式 / 主文 / 文章結構 ========== */
+const PROC_MAINS_C=['原處分撤銷，由原處分機關於2個月內另為適法之處分。','原處分撤銷。',
+ '原處分撤銷，由原處分機關另為適法之處分。','原處分撤銷，由原處分機關於2個月內另為適法之處理。',
+ '原處分撤銷，由原處分機關另為適法之處理。','原處分撤銷，由原處分機關於文到2個月內另為適法之處分。'];
+const PROC_KUAN=[['1','訴願書不合法定程式，經通知補正逾期不補正'],['2','提起訴願逾 30 日法定期間'],
+ ['3','訴願人不符第 18 條規定'],['4','無訴願能力未由法定代理人代為'],
+ ['6','行政處分已不存在'],['7','對已決定或已撤回之事件重行提起'],['8','對非行政處分提起訴願']];
+const PROC_NOTE={
+ A:['逐款檢核訴願法第 77 條 8 款不受理事由，本件第 6 款「行政處分已不存在」該當','原處分機關已於 114/12/15 自行撤銷原書面告誡，訴願標的消滅','結論：程序不合，應為不受理之決定（主文＋理由，無事實段）'],
+ B:['訴願法第 77 條 8 款不受理事由逐款比對，全部不該當','送達之次日起 30 日期間內提起，程序合法','結論：程序合法，進入實體審查，擬駁回（主文＋事實＋理由）'],
+ C:['訴願法第 77 條 8 款不受理事由逐款比對，全部不該當','程序合法，惟原處分有瑕疵，擬撤銷命其另為處分','結論：程序合法，但原處分有瑕疵，擬撤銷（主文＋事實＋理由）'],
+ D:['訴願標的可分：罰鍰部分為實體審查、限期改善部分因無權利保護必要','罰鍰部分程序合法、實體無理由 → 駁回（79 I）','限期改善部分非屬訴願救濟範圍 → 不受理（77 條第 8 款）','結論：部分駁回、部分不受理（雙主文＋事實＋理由）']};
+/* 目前程序審查狀態（預設對應參考案：不受理，77 條第 6 款）
+   con: A 不受理 / B 駁回 / C 撤銷(另處) / D 部分駁回部分不受理
+   kuan: A 版式不受理款次；dkuan: D 版式不受理部分的款次 */
+const PROC={con:'A',kuan:'6',main:0,dkuan:'8'};
+
 /* ========== 文件 ========== */
 let DOC=[],SENTS=[],selId=null,mode='edit';
-const PICK={laws:['洗22','罰5','訴77','訴79','訴14','訴3','程96','審26'],cases:['C1','C2','C3','C4','C5'],user:[]};
+const PICK={laws:['訴77','訴1','訴2','訴3','洗22','訴79','訴81','審26'],cases:['C1','C2','C3','C4','C5'],user:[]};
 const byId=id=>SENTS.find(s=>s.id===id);
 const isCase=id=>CASEDB.some(c=>c.id===id);
 function S_(id,t,refs){return{id:id,t:t,refs:refs||[]}}
-function buildDOC(){return[
+/* 委員名單（依參考決定書） */
+const COMMITTEE_HEAD='主任委員　委員會主任委員　蔡庭榕（公出）';
+const COMMITTEE=[
+ '委員　陳明燦（代理）','委員　陳立夫','委員　張文郁','委員　蔡進良','委員　黃源銘',
+ '委員　劉宗德','委員　王藹芸','委員　劉定基','委員　董鈺琪','委員　林泳玲','委員　唐美芝'];
+function committeeBlocks(){
+  return [{ty:'meta',text:COMMITTEE_HEAD},{ty:'gap'},...COMMITTEE.map(c=>({ty:'meta',text:c}))];
+}
+
+/* ---- 共用區塊 ---- */
+function docHead(){return[
  {ty:'title'},
- {ty:'meta',text:'訴　願　人　胡○倫'},
- {ty:'meta',text:'代　理　人　陳○駿 律師、洪○辰 律師'},
- {ty:'meta',text:'原處分機關　新北市政府警察局新店分局'},
+ {ty:'meta',text:'訴願人　吳○源'},
+ {ty:'meta',text:'原處分機關　新北市政府警察局汐止分局'},
  {ty:'gap'},
- {ty:'p',ss:[S_('h1','上列訴願人因違反洗錢防制法事件，不服原處分機關民國114年7月13日書面告誡（案件編號：11403210490-01）所為之處分，提起訴願一案，本府依法決定如下：',['訴3'])]},
- {ty:'gap'},{ty:'h',text:'主　文'},
- {ty:'p',ss:[S_('m0','訴願駁回。',['訴79'])]},
+ {ty:'p',ss:[S_('h1','上列訴願人因違反洗錢防制法事件，不服原處分機關民國114年1月2日書面告誡（案件編號：11312180226-03）所為之處分，提起訴願一案，本府依法決定如下：',['X1','洗22'])]}
+];}
+function docTail(zRefs){return[
+ {ty:'gap'},
+ ...committeeBlocks(),
+ {ty:'gap'},
+ {ty:'p',ss:[S_('z1','如不服本決定，得於決定書送達之次日起2個月內向臺北高等行政法院（地址：臺北市士林區福國路101號）提起行政訴訟。',zRefs||[])]},
+ {ty:'meta',text:'中華民國114年12月31日'}
+];}
+/* 事實段（B／C／D 共用；A 不受理無事實段） */
+function factSection(){return[
  {ty:'gap'},{ty:'h',text:'事　實'},
  {ty:'p',ss:[
-  S_('f1','緣訴願人於不詳時間，無正當理由將其向○○商業銀行申請開立之帳戶（帳號末4碼為0000，下稱系爭帳戶）交付、提供他人使用。',['X1','洗22']),
-  S_('f2','案經原處分機關審查，認訴願人違反洗錢防制法第22條第1項規定，遂依同條第2項規定，以114年7月13日書面告誡裁處訴願人告誡。',['X1','洗22']),
-  S_('f3','訴願人不服，提起本件訴願，並據原處分機關檢卷答辯到府。茲摘敘訴辯意旨於次：',['訴14'])]},
+  S_('f1','緣訴願人因違反洗錢防制法事件，經原處分機關新北市政府警察局汐止分局於114年1月2日以書面告誡（案件編號：11312180226-03）裁處。',['X1','洗22']),
+  S_('f2','訴願人不服，於114年提起本件訴願，並據原處分機關檢卷答辯到府。茲摘敘訴辯意旨於次：',['X1','洗22'])]},
  {ty:'p',ss:[
-  S_('f4','一、訴願意旨略謂：系爭帳戶至今仍在訴願人管領權限之內，並無交付、提供予他人使用之情形，自無故意或過失。',['X2','罰7']),
-  S_('f5','訴願人另主張原處分違反處罰法定原則及法律不溯及既往原則，應予撤銷等語。',['X2','罰5'])]},
+  S_('f4','一、訴願意旨略謂：訴願人不服原處分機關114年1月2日書面告誡所為之處分，認其違法或不當，致損害其權利或利益，請求撤銷原處分等語。',['X2'])]},
  {ty:'p',ss:[
-  S_('f6','二、答辯意旨略謂：原處分業於114年7月13日合法送達，訴願人於114年8月1日提起訴願。',['X3','訴14']),
-  S_('f7','系爭帳戶經通報涉及財產犯罪，訴願人亦自承提供帳戶資料予他人，核已該當洗錢防制法第22條第1項規定等語。',['X3','C4'])]},
+  S_('f6','二、答辯意旨略謂：訴願人違反洗錢防制法第22條第1項規定，原處分機關依同條第2項裁處告誡，並無違誤等語。',['X1','洗22'])]}
+];}
+
+/* 版式 A：程序不受理（主文＋理由，無事實段） */
+function docA(){
+  const kuan=PROC.kuan;
+  return[
+   ...docHead(),
+   {ty:'gap'},{ty:'h',text:'主　文'},
+   {ty:'p',ss:[S_('m0','訴願不受理。',['proc','訴77'])]},
+   {ty:'gap'},{ty:'h',text:'理　由'},
+   {ty:'p',ss:[
+    S_('r1','一、按訴願係人民對行政機關之行政處分，認為其違法或不當，致損害其權利或利益時，請求救濟之方法，此觀訴願法第1條至第3條之規定甚明。',['X5','訴1','訴2','訴3']),
+    S_('r2','若原處分已撤銷而不復存在，則訴願之標的即已消失。',['X4','訴3']),
+    S_('r3','又行政處分已不存在者，訴願事件應為不受理之決定，為訴願法第77條第'+kuan+'款所明文。',['X5','訴77','C5'])]},
+   {ty:'p',ss:[
+    S_('r4','二、查本件訴願標的為原處分機關民國（下同）114年1月2日書面告誡（案件編號：11312180226-03）所為之處分，業經原處分機關重新審酌本案後，以114年12月15日新北警汐刑字第11442604401號函自行撤銷，是原處分顯已不復存在，則本件訴願標的業已消失，揆諸首揭條文規定，訴願人提起之訴願，程序即有未洽，自不應受理。',['X4','訴77','C5'])]},
+   {ty:'p',ss:[
+    S_('r5','三、綜上論結，本件訴願為程序不合，爰依訴願法第77條第'+kuan+'款規定，決定如主文。',['X5','訴77'])]},
+   ...docTail(['訴77'])
+  ];
+}
+
+/* 版式 B：實體駁回（主文→事實→理由） */
+function docB(){return[
+ ...docHead(),
+ {ty:'gap'},{ty:'h',text:'主　文'},
+ {ty:'p',ss:[S_('m0','訴願駁回。',['proc','訴79'])]},
+ ...factSection(),
  {ty:'gap'},{ty:'h',text:'理　由'},
  {ty:'p',ss:[
   S_('r1','一、按洗錢防制法第22條第1項規定：「任何人不得將自己或他人向金融機構申請開立之帳戶、向提供虛擬資產服務或第三方支付服務之事業或人員申請之帳號交付、提供予他人使用。但符合一般商業、金融交易習慣，或基於親友間信賴關係或其他正當理由者，不在此限。」',['洗22']),
   S_('r2','同條第2項規定：「違反前項規定者，由直轄市、縣（市）政府警察機關裁處告誡。」',['洗22'])]},
  {ty:'p',ss:[
-  S_('r3','二、次按本件行為時洗錢防制法業於113年7月31日修正公布，原第15條之2規定移列為第22條，構成要件及法律效果均未變更。',['X5','洗22','C2']),
-  S_('r4','依行政罰法第5條規定，尚無從新從輕原則之適用，合先敘明。',['罰5'])]},
+  S_('r5','二、卷查訴願人違反洗錢防制法第22條第1項規定，原處分機關依同條第2項規定裁處告誡，揆諸前揭規定，洵屬有據。',['X1','洗22','C1','C3'])]},
  {ty:'p',ss:[
-  S_('r5','三、卷查訴願人主張系爭帳戶仍在其管領權限內一節，經核與卷附帳戶交易明細及通報紀錄所載不符。',['X4','C1']),
-  S_('r6','訴願人既將帳戶資料交付他人而喪失實際控制，即該當「交付、提供予他人使用」之要件，尚難以其名義上仍為帳戶名義人而免責。',['X4','洗22','C1'])]},
- {ty:'p',ss:[
-  S_('r7','四、至訴願人主張原處分違反法律不溯及既往原則云云，惟本件違規行為發生於修正條文施行後，並無溯及適用之情事，其主張洵無足採。',['X5','罰5','C2'])]},
- {ty:'p',ss:[
-  S_('r8','五、另本件原處分之送達日期為114年7月13日，訴願人於114年8月1日提起訴願，計19日，未逾訴願法第14條所定30日之法定期間。',['訴14','C5']),
-  S_('r9','復經逐款檢核訴願法第77條各款不受理事由，均無該當，本件應為實體審查。',['訴77'])]},
- {ty:'p',ss:[S_('r10','六、綜上論結，本件訴願為無理由，依訴願法第79條第1項規定，決定如主文。',['訴79'])]},
- {ty:'gap'},
- {ty:'meta',text:'訴願審議委員會主任委員　○○○'},
- {ty:'meta',text:'中華民國114年8月23日'},
- {ty:'gap'},
- {ty:'p',ss:[S_('z1','如不服本決定，得於決定書送達之次日起2個月內，向臺北高等行政法院（地址：臺北市士林區福國路101號）提起行政訴訟。',['訴79'])]}
+  S_('r8','三、至訴願人主張原處分違法或不當一節，經核與卷附事證不符，尚難採據；復經逐款檢核訴願法第77條各款不受理事由，均無該當，本件應為實體審查。',['X2','X5','訴77','C2']),
+  S_('r9','是原處分認事用法並無違誤，應予維持。',['X1','C1'])]},
+ {ty:'p',ss:[S_('r10','四、綜上論結，本件訴願為無理由，依訴願法第79條第1項規定，決定如主文。',['訴79'])]},
+ ...docTail(['訴79'])
 ]}
 
-function buildDoc(){
-  DOC=buildDOC();SENTS=[];
+/* 版式 C：撤銷／撤銷另為處分（主文→事實→理由） */
+function docC(){
+  const isRevoke=PROC.main===1;  /* 「原處分撤銷。」單純撤銷，其餘為撤銷另處 */
+  return[
+ ...docHead(),
+ {ty:'gap'},{ty:'h',text:'主　文'},
+ {ty:'p',ss:[S_('m0',PROC_MAINS_C[PROC.main],['proc','訴81'])]},
+ ...factSection(),
+ {ty:'gap'},{ty:'h',text:'理　由'},
+ {ty:'p',ss:[
+  S_('r1','一、按行政院及各級行政機關訴願審議委員會審議規則第26條第2項規定：「原行政處分機關逾期不為答辯或答辯不完備者，受理訴願機關得逕為決定；必要時，得撤銷原行政處分，命其於一定期間內另為適法之處分。」',['審26'])]},
+ {ty:'p',ss:[
+  S_('r5','二、卷查原處分機關答辯未具體記載違規事實過程，亦未檢附證據資料，致本件事實未臻明確，'+(isRevoke?'原處分非無違誤，爰予撤銷，以符法制。':'爰將原處分撤銷，由原處分機關查明後另為適法之處分，以資妥適。'),['X4','審26','C4'])]},
+ {ty:'p',ss:[S_('r9','三、綜上論結，本件訴願為有理由，依訴願法第81條第1項'+(isRevoke?'':'及第2項')+'規定，決定如主文。',['訴81'])]},
+ ...docTail(['訴81'])
+]}
+
+/* 版式 D：部分駁回、部分不受理（雙主文→事實→理由） */
+function docD(){
+  const dk=PROC.dkuan;
+  return[
+ ...docHead(),
+ {ty:'gap'},{ty:'h',text:'主　文'},
+ {ty:'p',ss:[S_('m0','原處分關於書面告誡部分，訴願駁回。',['proc','訴79'])]},
+ {ty:'p',ss:[S_('m1','原處分關於限期改善部分，訴願不受理。',['proc','訴77'])]},
+ ...factSection(),
+ {ty:'gap'},{ty:'h',text:'理　由'},
+ {ty:'p',ss:[
+  S_('rd1','一、關於不服原處分書面告誡部分：',['洗22'])]},
+ {ty:'p',ss:[
+  S_('rd2','（一）按洗錢防制法第22條第1項規定：「任何人不得將自己或他人向金融機構申請開立之帳戶……交付、提供予他人使用。」同條第2項規定：「違反前項規定者，由直轄市、縣（市）政府警察機關裁處告誡。」',['洗22']),
+  S_('rd3','（二）卷查訴願人違反洗錢防制法第22條第1項規定，原處分機關依同條第2項裁處告誡，洵屬有據，此部分訴願為無理由，應予維持。',['X1','洗22','C1'])]},
+ {ty:'p',ss:[
+  S_('rd4','二、關於不服原處分限期改善部分：',['訴77'])]},
+ {ty:'p',ss:[
+  S_('rd5','（一）按訴願法第77條第'+dk+'款規定，對於非行政處分或其他依法不屬訴願救濟範圍內之事項提起訴願者，應為不受理之決定；提起訴願須其訴願有權利保護必要，即具有訴願之實益為前提。',['訴77','C5']),
+  S_('rd6','（二）查訴願人就限期改善部分已無可回復之法律上利益，欠缺權利保護之必要，非屬訴願救濟範圍事項，依訴願法第77條第'+dk+'款規定，應為不受理之決定。',['X4','訴77','C5'])]},
+ {ty:'p',ss:[
+  S_('rd7','三、綜上論結，本件訴願為部分程序不合、部分無理由，依訴願法第77條第'+dk+'款及第79條第1項規定，決定如主文。',['訴77','訴79'])]},
+ ...docTail(['訴77','訴79'])
+]}
+
+function buildDOC(){
+  return PROC.con==='A'?docA():PROC.con==='C'?docC():PROC.con==='D'?docD():docB();
+}
+
+function buildDoc(regen){
+  DOC=buildDOC();SENTS=[];selId=null;
   DOC.forEach(b=>(b.ss||[]).forEach(s=>{s.orig=s.t;SENTS.push(s)}));
-  buildSheet();buildRefs();
-  $('#chat').innerHTML='';chatCtx();
-  pushMsg('ai','草稿已生成，共 '+SENTS.length+' 句，每一句都已連結到左上角的法條或案例。<br>我只做文字層面的潤飾與改寫；要增刪法條，請用左上角的「加入法條」。');
+  buildSheet();buildRefs();syncAddLawBtn();
+  if(!regen){
+    $('#chat').innerHTML='';chatAll=true;chatCtx();
+    pushMsg('ai','草稿已生成，共 '+SENTS.length+' 句，每一句都已連結到左側的案情、法條或案例。<br>我只做文字層面的潤飾與改寫；要增刪法條，請切到「相關法條」分頁用「加入法條」。');
+  }
 }
 function lawLines(){
-  const laws=PICK.laws.map(lawById).filter(Boolean).sort((a,b)=>a.rank-b.rank);
+  /* 只列草稿實際引用到的法條（與參考決定書「相關法條」欄一致） */
+  const cited=new Set();SENTS.forEach(s=>s.refs.forEach(r=>cited.add(r)));
+  let laws=PICK.laws.map(lawById).filter(l=>l&&cited.has(l.id));
+  if(!laws.length)laws=PICK.laws.map(lawById).filter(Boolean);
   const g={};laws.forEach(l=>{(g[l.law]=g[l.law]||[]).push(l.art.replace(/[^0-9\-]/g,''))});
-  return Object.keys(g).map(k=>k+'　第 '+g[k].join('、')+' 條');
+  return Object.keys(g).map(k=>k+'　第 '+[...new Set(g[k])].sort((a,b)=>parseInt(a)-parseInt(b)).join('、')+' 條');
 }
 function exHeadHTML(){
   return '<div class="exfm">'+
-   '<div class="rw"><span class="lb">案號</span><span class="vl">1147061268</span></div>'+
+   '<div class="rw"><span class="lb">案號</span><span class="vl">1147101517</span></div>'+
    '<div class="rw"><span class="lb">要旨</span><span class="vl">因違反洗錢防制法事件提起訴願</span></div>'+
-   '<div class="rw"><span class="lb">發文日期</span><span class="vl">民國 114 年 08 月 23 日</span></div>'+
-   '<div class="rw"><span class="lb">發文字號</span><span class="vl">新北府訴決字第 1140474455 號</span></div>'+
+   '<div class="rw"><span class="lb">發文日期</span><span class="vl">民國 114 年 12 月 31 日</span></div>'+
+   '<div class="rw"><span class="lb">發文字號</span><span class="vl">新北府訴決字第 1142270177 號</span></div>'+
    '<div class="rw"><span class="lb">相關法條</span><span class="vl" id="exlaws">'+
      lawLines().map(x=>'<span class="ln">'+x+'</span>').join('')+
-     '<button class="addlaw" id="exadd"><span class="mi" style="font-size:15px">add</span>加入法條</button></span></div>'+
+     '</span></div>'+
    '<div class="rw"><span class="lb">全文</span><span class="vl"></span></div></div>';
 }
 function refreshExLaws(){
   const el=$('#exlaws');if(!el)return;
-  el.innerHTML=lawLines().map(x=>'<span class="ln">'+x+'</span>').join('')+
-    '<button class="addlaw" id="exadd"><span class="mi" style="font-size:15px">add</span>加入法條</button>';
+  el.innerHTML=lawLines().map(x=>'<span class="ln">'+x+'</span>').join('');
 }
 function pcls(b){return /^[一二三四五六]、/.test((b.ss&&b.ss[0]&&b.ss[0].t)||'')?'num':''}
 function buildSheet(){
@@ -663,7 +792,7 @@ function buildSheet(){
   DOC.forEach(b=>{
     if(b.ty==='gap'){sh.insertAdjacentHTML('beforeend','<p class="gapline">　</p>');return}
     if(b.ty==='title'){sh.insertAdjacentHTML('beforeend',exHeadHTML()+
-      '<div class="doc-title"><span>新北市政府訴願決定書</span><span class="no">案號：1147061268 號</span></div>');return}
+      '<div class="doc-title"><span>新北市政府訴願決定書</span><span class="no">案號：1147101517 號</span></div>');return}
     if(b.ty==='meta'){sh.insertAdjacentHTML('beforeend','<p class="meta">'+b.text+'</p>');return}
     if(b.ty==='h'){sh.insertAdjacentHTML('beforeend','<h4>'+b.text+'</h4>');return}
     sh.insertAdjacentHTML('beforeend','<p class="'+pcls(b)+'">'+b.ss.map(s=>
@@ -684,27 +813,41 @@ function applyMode(){
 $('#medit').onclick=()=>{mode='edit';applyMode()};
 $('#mview').onclick=()=>{mode='view';applyMode()};
 
-/* 左上：法條與案例 */
+/* 取法條「重點」：優先取螢光筆標記的項/款，否則取首項或 lead */
+function lawKeyPoint(l){
+  const rel=l.rel||[];
+  for(const p of l.paras){
+    if(p.t&&rel.includes(p.n))return p.t;
+    for(const k of (p.ks||[]))if(rel.includes(k.n))return k.n+'、'+k.t;
+  }
+  if(l.lead)return l.lead;
+  const p0=l.paras[0];
+  return p0.t||((p0.ks||[])[0]?(p0.ks[0].n+'、'+p0.ks[0].t):'');
+}
+/* 左上：法條與案例（點卡片＝連結到右側句子；點「看全文」＝開 dialog） */
 function refHTML(o){
   const users=SENTS.filter(s=>s.refs.includes(o.id)).length;
-  if(isCase(o)||CASEDB.includes(o)){}
   if(o.paras){
     const mine=PICK.user.includes(o.id);
-    return '<details class="itm" id="ref-'+o.id+'" data-ref="'+o.id+'"><summary><span class="mi chev">chevron_right</span>'+
+    return '<div class="itm" id="ref-'+o.id+'" data-ref="'+o.id+'" data-law="'+o.id+'"><div class="row">'+
      '<span class="nm">'+o.law+'　'+o.art+'</span>'+
      (users?'<span class="tag n">引用 '+users+' 句</span>':'')+
      (mine?'<span class="tag k2">自行加入</span>':'<span class="tag ai">AI 建議</span>')+
-     '<button class="del" data-dellaw="'+o.id+'" title="移除">×</button></summary>'+
-     '<div class="lawdoc">'+lawHTML(o)+'<div class="aiwhy"><b>AI 採用理由</b>'+
-     (mine?'由承辦人手動加入，未經 AI 評估。':o.why)+'</div></div></details>';
+     '<button class="del" data-dellaw="'+o.id+'" title="移除">×</button></div>'+
+     '<div style="padding:0 12px 11px;font-size:13px;color:var(--ink-2);line-height:1.7">'+
+     '<div style="color:var(--ink);font-weight:500;margin-bottom:2px">'+o.tag+'</div>'+
+     lawKeyPoint(o)+
+     '<div class="aiwhy"><b>AI 採用理由</b>'+(mine?'由承辦人手動加入，未經 AI 評估。':o.why)+'</div>'+
+     '<div style="margin-top:8px;text-align:right"><span class="seefull" data-lawfull="'+o.id+'">看全文<span class="mi" style="font-size:16px;vertical-align:-3px">chevron_right</span></span></div>'+
+     '</div></div>';
   }
-  return '<div class="itm" id="ref-'+o.id+'" data-ref="'+o.id+'" data-case="'+o.id+'"><div class="row">'+
+  return '<div class="itm" id="ref-'+o.id+'" data-ref="'+o.id+'" data-caserow="'+o.id+'"><div class="row">'+
    '<span class="nm">'+o.t+'</span>'+(users?'<span class="tag n">引用 '+users+' 句</span>':'')+
    '<span class="tag ai">AI 建議</span></div>'+
    '<div style="padding:0 12px 11px;font-size:13px;color:var(--ink-2);line-height:1.7">'+o.d+
    '<div class="aiwhy">'+'<b>AI 採用理由</b>'+o.why+'</div>'+
    '<div style="margin-top:8px;display:flex;align-items:center;gap:9px"><span class="sim"><span class="simbar"><i style="width:'+o.sim+'%"></i></span>相似度 '+o.sim+'%</span>'+
-   '<span style="margin-left:auto;color:var(--navy-l);font-size:12.5px;display:flex;align-items:center;gap:2px">看全文<span class="mi" style="font-size:16px">chevron_right</span></span></div></div></div>';
+   '<span style="margin-left:auto"><span class="seefull" data-casefull="'+o.id+'">看全文<span class="mi" style="font-size:16px;vertical-align:-3px">chevron_right</span></span></span></div></div></div>';
 }
 function buildRefs(){
   const laws=PICK.laws.map(lawById).filter(Boolean).sort((a,b)=>a.rank-b.rank);
@@ -713,49 +856,140 @@ function buildRefs(){
   refreshExLaws();
   $('#tp-law').innerHTML=laws.map(refHTML).join('');
   $('#tp-case').innerHTML=cases.map(refHTML).join('');
-  $('#tp-fact').innerHTML=FACTDB.map(f=>{
+  const factCards=FACTDB.map(f=>{
     const users=SENTS.filter(s=>s.refs.includes(f.id)).length;
-    return '<div class="itm" id="ref-'+f.id+'" data-ref="'+f.id+'"><div class="row" style="cursor:default">'+
+    return '<div class="itm" id="ref-'+f.id+'" data-ref="'+f.id+'" data-fact="'+f.id+'" style="cursor:pointer"><div class="row">'+
      '<span class="nm">'+f.k+'</span>'+(users?'<span class="tag n">引用 '+users+' 句</span>':'')+
      '<span class="tag k">'+f.tag+'</span></div>'+
      '<div style="padding:0 12px 11px;font-size:13px;color:var(--ink-2);line-height:1.8">'+f.d+
      '<div style="margin-top:7px;font-size:12.5px;color:var(--ink-3);font-family:var(--mono)">'+f.src+'</div></div></div>';
   }).join('');
+  $('#tp-fact').innerHTML=procHTML()+factCards;
+  wireProc();
+}
+/* 程序審查控制盤 */
+function procHTML(){
+  return '<div class="proc itm" id="ref-proc" data-ref="proc">'+
+   '<div class="ph"><span class="mi">gavel</span><span class="ttl">程序審查</span>'+
+   '<span class="mi tip" tabindex="0" data-tip="程序審查結果直接決定決定書版式與主文用語。主文由規則查表產生，非模型自由生成，變更後右側草稿會即時重組。">info</span>'+
+   '<span class="gap"></span><span class="tag n" id="procver">版式 '+PROC.con+'</span></div>'+
+   '<div class="bd">'+
+     '<div class="fld"><label>審查結論</label>'+
+       '<select id="proccon">'+
+         '<option value="A">程序不合 → 訴願不受理（77 條各款）</option>'+
+         '<option value="B">程序合法，應為實體審查 → 訴願無理由，駁回（79 I）</option>'+
+         '<option value="C">程序合法，應為實體審查 → 訴願有理由，撤銷／撤銷另處（81 I）</option>'+
+         '<option value="D">部分程序不合、部分無理由 → 部分不受理、部分駁回（77 條某款＋79 I）</option>'+
+       '</select></div>'+
+     '<div class="fld" id="kuanwrap" style="display:none"><label>不受理款次（訴願法第 77 條）</label>'+
+       '<select id="prockuan"></select></div>'+
+     '<div class="fld" id="mainwrap" style="display:none"><label>主文用語（撤銷型 6 種變體）</label>'+
+       '<select id="procmain"></select></div>'+
+     '<div class="fld" id="dkuanwrap" style="display:none"><label>不受理部分款次（訴願法第 77 條）</label>'+
+       '<select id="procdkuan"></select></div>'+
+     '<div class="mainbox"><span class="lb">主　文</span><span class="vl" id="mainprev"></span></div>'+
+     '<ul class="note" id="procnote"></ul>'+
+     '<div class="warn"><span class="mi">info</span><span>變更審查結論會重新生成整份決定書的主文、理由與結構。</span></div>'+
+   '</div></div>';
+}
+function mainText(){
+  if(PROC.con==='A')return '訴願不受理。';
+  if(PROC.con==='B')return '訴願駁回。';
+  if(PROC.con==='C')return PROC_MAINS_C[PROC.main];
+  /* D：雙主文，預覽用換行呈現 */
+  return '原處分關於書面告誡部分，訴願駁回。<br>原處分關於限期改善部分，訴願不受理。';
+}
+function wireProc(){
+  const kw=$('#kuanwrap'),mw=$('#mainwrap'),dkw=$('#dkuanwrap');
+  $('#prockuan').innerHTML=PROC_KUAN.map(k=>'<option value="'+k[0]+'">第 '+k[0]+' 款　'+k[1]+'</option>').join('');
+  $('#procmain').innerHTML=PROC_MAINS_C.map((m,i)=>'<option value="'+i+'">'+m+'</option>').join('');
+  $('#procdkuan').innerHTML=PROC_KUAN.map(k=>'<option value="'+k[0]+'">第 '+k[0]+' 款　'+k[1]+'</option>').join('');
+  $('#proccon').value=PROC.con;$('#prockuan').value=PROC.kuan;$('#procmain').value=PROC.main;$('#procdkuan').value=PROC.dkuan;
+  kw.style.display=PROC.con==='A'?'':'none';
+  mw.style.display=PROC.con==='C'?'':'none';
+  dkw.style.display=PROC.con==='D'?'':'none';
+  $('#procver').textContent='版式 '+PROC.con;
+  $('#mainprev').innerHTML=mainText();
+  $('#procnote').innerHTML=PROC_NOTE[PROC.con].map(x=>'<li>'+x+'</li>').join('');
+  $('#proccon').onchange=e=>{PROC.con=e.target.value;regenDoc()};
+  $('#prockuan').onchange=e=>{PROC.kuan=e.target.value;regenDoc()};
+  $('#procmain').onchange=e=>{PROC.main=+e.target.value;regenDoc()};
+  $('#procdkuan').onchange=e=>{PROC.dkuan=e.target.value;regenDoc()};
+}
+/* 依程序審查結論重新生成整份決定書 */
+function regenDoc(){
+  buildDoc(true);openTab('fact');
+  const lbl={A:'版式 A · 程序不受理',B:'版式 B · 實體駁回',C:'版式 C · 撤銷／撤銷另處',D:'版式 D · 部分駁回部分不受理'}[PROC.con];
+  toast('已依「'+lbl+'」重新生成決定書');
+}
+function syncAddLawBtn(){
+  const active=$$('.tab').find(x=>x.getAttribute('aria-selected')==='true');
+  $('#addlaw').style.display=(active&&active.dataset.t==='law')?'':'none';
 }
 $$('.tab').forEach(b=>b.onclick=()=>{
   $$('.tab').forEach(x=>x.setAttribute('aria-selected',x===b));
-  $$('.tabpane').forEach(p=>p.classList.toggle('on',p.id==='tp-'+b.dataset.t))});
+  $$('.tabpane').forEach(p=>p.classList.toggle('on',p.id==='tp-'+b.dataset.t));syncAddLawBtn()});
 function openTab(t){$$('.tab').forEach(x=>x.setAttribute('aria-selected',x.dataset.t===t));
-  $$('.tabpane').forEach(p=>p.classList.toggle('on',p.id==='tp-'+t))}
+  $$('.tabpane').forEach(p=>p.classList.toggle('on',p.id==='tp-'+t));syncAddLawBtn()}
 
 /* 句 ↔ 依據 */
 function selectSent(id){
   selId=id;const s=byId(id);if(!s)return;
   $$('#sheet .sent').forEach(el=>el.classList.toggle('sel',el.dataset.id===id));
-  $$('.itm[data-ref]').forEach(el=>{const hit=s.refs.includes(el.dataset.ref);
-    el.classList.toggle('hit',hit);el.classList.toggle('dim',s.refs.length>0&&!hit)});
+  $$('.itm[data-ref]').forEach(el=>{el.classList.toggle('hit',s.refs.includes(el.dataset.ref));el.classList.remove('dim')});
   if(s.refs.length){
-    const r=s.refs[0];openTab(isFact(r)?'fact':isCase(r)?'case':'law');
+    const r=s.refs[0];openTab(r==='proc'||isFact(r)?'fact':isCase(r)?'case':'law');
     const el=$('#ref-'+r);
-    if(el){if(el.tagName==='DETAILS')el.open=true;el.scrollIntoView({block:'nearest',behavior:'smooth'})}
+    if(el)el.scrollIntoView({block:'nearest',behavior:'smooth'});
   }
-  chatCtx(s);
+  /* 點句子後，AI 對話框改為針對該句 */
+  chatAll=false;chatCtx(s);
 }
-$('#sheet').addEventListener('click',e=>{const el=e.target.closest('.sent');if(el)selectSent(el.dataset.id)});
+function clearSel(){
+  selId=null;
+  $$('#sheet .sent').forEach(el=>el.classList.remove('sel'));
+  $$('.itm[data-ref]').forEach(el=>el.classList.remove('hit','dim'));
+  chatAll=true;chatCtx();
+}
+$('#editorwrap').addEventListener('click',e=>{
+  const el=e.target.closest('.sent');
+  if(el){selectSent(el.dataset.id)}
+  else clearSel();
+});
 $('#sheet').addEventListener('input',e=>{
   const el=e.target.closest('.sent');if(!el)return;
   const s=byId(el.dataset.id);if(s){s.t=el.textContent;updateWC()}
 });
+/* 連結依據卡到右側引用句：套用與「點句子」一致的 active 效果
+   —— 選中的卡片 .hit（其餘不變），引用句 .sel，並捲動至第一句 */
+function linkToSentences(refId){
+  const users=SENTS.filter(s=>s.refs.includes(refId));
+  selId=null;
+  $$('#sheet .sent').forEach(el=>el.classList.remove('sel','flash'));
+  $$('.itm[data-ref]').forEach(el=>{
+    el.classList.toggle('hit',el.dataset.ref===refId);
+    el.classList.remove('dim');
+  });
+  if(!users.length){toast('草稿中尚無句子引用此依據');return}
+  users.forEach(s=>{const el=$('#sheet .sent[data-id="'+s.id+'"]');if(el)el.classList.add('sel')});
+  const first=$('#sheet .sent[data-id="'+users[0].id+'"]');
+  first&&first.scrollIntoView({block:'center',behavior:'smooth'});
+}
 document.addEventListener('click',e=>{
   if(e.target.closest('.del'))return;
-  const c=e.target.closest('[data-case]');if(c){openFull(c.dataset.case);return}
-  const r=e.target.closest('.itm[data-ref]');
-  if(r&&$('#tp-law').contains(r)){
-    const users=SENTS.filter(s=>s.refs.includes(r.dataset.ref));
-    $$('#sheet .sent').forEach(el=>el.classList.remove('flash'));
-    users.forEach(s=>{const el=$('#sheet .sent[data-id="'+s.id+'"]');if(el)el.classList.add('flash')});
-    if(users[0]){const el=$('#sheet .sent[data-id="'+users[0].id+'"]');el&&el.scrollIntoView({block:'center',behavior:'smooth'})}
-  }
+  /* 看全文：法條 dialog */
+  const lf=e.target.closest('[data-lawfull]');if(lf){e.stopPropagation();openLawFull(lf.dataset.lawfull);return}
+  /* 看全文：案例 dialog */
+  const cf=e.target.closest('[data-casefull]');if(cf){e.stopPropagation();openFull(cf.dataset.casefull);return}
+  /* 點法條卡其他地方 → 連結到右側句子 */
+  const lr=e.target.closest('[data-law]');if(lr){linkToSentences(lr.dataset.law);return}
+  /* 點案例卡其他地方 → 連結到右側句子 */
+  const cr=e.target.closest('[data-caserow]');if(cr){linkToSentences(cr.dataset.caserow);return}
+  /* 點案情與爭點卡 → 連結到右側句子 */
+  const fr=e.target.closest('[data-fact]');if(fr){linkToSentences(fr.dataset.fact);return}
+  /* 點程序審查面板（非下拉選單）→ 連結到主文 */
+  const pr=e.target.closest('#ref-proc');
+  if(pr&&!e.target.closest('select,option,label,input,textarea')){linkToSentences('proc');return}
 });
 /* 移除法條 */
 document.addEventListener('click',e=>{
@@ -780,6 +1014,39 @@ function openFull(id){
 }
 $('#full_close').onclick=()=>$('#fullmask').classList.remove('on');
 $('#fullmask').addEventListener('click',e=>{if(e.target===$('#fullmask'))$('#fullmask').classList.remove('on')});
+
+/* 法條全文（用到的重點條項以螢光筆背景標示） */
+/* 單一條文渲染（供全文列表用）：highlight 只在 focus 條文套用 */
+function lawArticleHTML(l,focused){
+  const hl=k=>(focused&&(l.rel||[]).includes(k))?' hl':'';
+  let h='';
+  if(l.ch)h+='<div class="ch">'+l.ch+'</div>';
+  if(l.se)h+='<div class="ch">'+l.se+'</div>';
+  h+='<div class="art'+(focused?' artfocus':'')+'">'+l.art+(focused?'　<span class="artcur">本件援用</span>':'')+'</div>';
+  if(l.lead)h+='<div>'+l.lead+'</div>';
+  const multi=l.paras.length>1;
+  l.paras.forEach(p=>{
+    let inner='';
+    if(p.t)inner+='<span class="'+hl(p.n).trim()+'">'+p.t+'</span>';
+    (p.ks||[]).forEach(k=>{inner+='<span class="kk'+hl(k.n)+'">'+k.n+'、'+k.t+'</span>'});
+    if(multi&&p.n)h+='<div class="pa"><span class="pn">'+p.n+'</span><span>'+inner+'</span></div>';
+    else h+='<div>'+inner+'</div>';
+  });
+  return h;
+}
+/* 法條全文：列出該法規在資料庫內全部條文（依條號排序），本件援用的條文高亮 */
+function openLawFull(id){
+  const focus=lawById(id);if(!focus)return;
+  const artNum=a=>{const m=(a||'').match(/\d+/);return m?parseInt(m[0]):9999};
+  const arts=LAWDB.filter(x=>x.law===focus.law).sort((a,b)=>artNum(a.art)-artNum(b.art));
+  $('#fulltitle').textContent=focus.law;
+  $('#fullsim').innerHTML='<span style="font-size:12.5px;color:var(--ink-3)">'+(focus.src||'全國法規資料庫')+'　·　共 '+arts.length+' 條（資料庫收錄）</span>';
+  let body='<div class="lawdoc" style="border:0;padding:0;background:none">'+
+    '<div class="fm">法規名稱：<b>'+focus.law+'</b><br>修正日期：<b>'+focus.date+'</b></div>'+
+    arts.map(a=>lawArticleHTML(a,a.id===focus.id)).join('')+'</div>';
+  $('#fullbody').innerHTML=body;$('#fullmask').classList.add('on');
+  const cur=$('#fullbody .artfocus');if(cur)setTimeout(()=>cur.scrollIntoView({block:'center'}),60);
+}
 
 /* 加入法條 */
 let picked=[],lawTimer=null;
@@ -813,7 +1080,7 @@ $('#lawq').addEventListener('input',()=>{
   $('#lawres').innerHTML='<p style="font-size:13px;color:var(--ink-3);text-align:center;padding:22px">搜尋中…</p>';
   lawTimer=setTimeout(renderLawRes,350);
 });
-document.addEventListener('click',e=>{if(e.target.closest('#exadd'))$('#addlaw').click()});
+
 $('#addlaw').onclick=()=>{picked=[];$('#lawq').value='';renderLawRes();$('#lawmask').classList.add('on');setTimeout(()=>$('#lawq').focus(),80)};
 document.addEventListener('change',e=>{const p=e.target.closest('[data-pick]');if(!p)return;
   const id=p.dataset.pick;if(p.checked){if(!picked.includes(id))picked.push(id)}else picked=picked.filter(x=>x!==id);renderPicked()});
@@ -887,7 +1154,7 @@ function docHTML(){
   let h='';
   DOC.forEach(b=>{
     if(b.ty==='gap'){h+='<p>　</p>';return}
-    if(b.ty==='title'){h+='<div class="t"><span>新北市政府訴願決定書</span><span>案號：1147061268 號</span></div>';return}
+    if(b.ty==='title'){h+='<div class="t"><span>新北市政府訴願決定書</span><span>案號：1147101517 號</span></div>';return}
     if(b.ty==='meta'){h+='<p class="m">'+b.text+'</p>';return}
     if(b.ty==='h'){h+='<h4>'+b.text+'</h4>';return}
     h+='<p class="'+pcls(b)+'">'+b.ss.map(s=>s.t).join('')+'</p>';
@@ -904,7 +1171,7 @@ $('#dlword').onclick=()=>{
     '<head><meta charset="utf-8"><style>'+css+'</style></head><body>'+docHTML()+'</body></html>';
   const blob=new Blob(['\ufeff'+html],{type:'application/msword'});
   const a=document.createElement('a');a.href=URL.createObjectURL(blob);
-  a.download='訴願決定書_1147061268.doc';a.click();URL.revokeObjectURL(a.href);toast('已下載 Word 檔');
+  a.download='訴願決定書_1147101517.doc';a.click();URL.revokeObjectURL(a.href);toast('已下載 Word 檔');
 };
 $('#dlpdf').onclick=()=>{$('#dlmenu').classList.remove('on');
   toast('已開啟列印視窗，請選擇「另存為 PDF」');setTimeout(()=>window.print(),300)};
