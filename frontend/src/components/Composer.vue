@@ -1,6 +1,6 @@
 <script setup>
 import { ref, computed, nextTick } from 'vue'
-import { state, active, chips, TOOLS, runTool, send, removePending } from '../store/app.js'
+import { state, active, chips, TOOLS, runTool, send, removePending, uploadDemoCase } from '../store/app.js'
 
 const emit = defineEmits(['sheet', 'search'])
 
@@ -70,6 +70,7 @@ function onChip(chip) {
   if (a.t === 'tool') runTool(a.id, a.arg)
   else if (a.t === 'attach') emit('sheet', { kind: 'attach' })
   else if (a.t === 'search') emit('sheet', { kind: 'search', groupKey: a.key })
+  else if (a.t === 'demo') uploadDemoCase()
   else if (a.t === 'ask') send('你會什麼？')
 }
 </script>
