@@ -23,7 +23,7 @@ from fastapi import APIRouter, File, HTTPException, Response, UploadFile
 from pydantic import BaseModel, ConfigDict
 
 from backend.config import settings
-from backend.dossier import corpus, store
+from backend.dossier import corpus, runlink, store
 from backend.intake.uploads import MAX_BYTES, UPLOADS_DIR, _safe_name
 from backend.orchestrator.artifact_sections import build_sections
 from backend.orchestrator.graph import build_payload
@@ -62,8 +62,8 @@ def _s3_client() -> Any:
 
 def _translate(e: Exception) -> HTTPException:
     """卷宗層的例外 → HTTP。**每一種都說得出是哪一種**，不包成一句「系統忙碌中」。"""
-    if isinstance(e, corpus.OutOfScope):
-        # 「存在但本期不供應」≠「找不到」。回 404 會讓人去找一份其實存在的檔案。
+    if isinstance(e, (corpus.OutOfScope, store.CaseNotDeletable)):
+        # 「存在但本期不供應／不可刪」≠「找不到」。回 404 會讓人去找一份其實存在的東西。
         return HTTPException(status_code=400, detail=str(e))
     if isinstance(e, (store.CaseManifestNotFound, corpus.DocumentNotFound, RunNotFound)):
         return HTTPException(status_code=404, detail=str(e))
@@ -123,8 +123,11 @@ def rename_case(case_id: str, body: RenameIn) -> dict:
 
 @router.delete("/api/cases/{case_id}", status_code=204)
 def delete_case(case_id: str) -> Response:
-    """刪案＝刪這份卷宗。**不刪 `output/uploads/` 的實體卷證、也不刪 runs**
-    ——「移出卷宗」與「銷毀證據」不該是同一個動作（見 `store.delete_case`）。"""
+    """刪案＝連實體卷證一起刪（見 `store.delete_case` 的說明）。**不刪 runs。**
+
+    只刪 manifest 是不夠的：`list_cases()` 掃的是 `output/uploads/`，案子會在下一次
+    `GET /api/cases` 原地復活，而且名字變回預設值。合成測資拒絕刪除（400）。
+    """
     try:
         ok = store.delete_case(case_id)
     except Exception as e:  # noqa: BLE001
@@ -289,6 +292,9 @@ def add_case_laws(case_id: str, body: AddLawsIn) -> dict:
         items.append({
             "id": doc["id"], "t": doc["t"], "src": doc["src"], "note": "",
             "verified": False, "relevance": "unknown", "body_cached": doc["body"],
+            # 剛加入時是「還沒查過」，**不是「查不到」**（proposal B4.3）。兩者合成一個值的話，
+            # 使用者一按加入就會看到「檢索未命中」，那是還沒發生的事。
+            "retrieval_status": runlink.RETRIEVAL_UNKNOWN, "retrieval_note": "",
         })
     try:
         store.add_items(case_id, "laws", items)

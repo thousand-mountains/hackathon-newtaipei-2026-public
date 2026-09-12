@@ -20,7 +20,8 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import backend.retrieval.kb as kb_module  # noqa: E402
-from backend.dossier import corpus, store  # noqa: E402
+from backend.dossier import corpus, runlink, store  # noqa: E402
+from backend.llm.chat import UNMATCHED_LAW_NOTE  # noqa: E402
 from backend.orchestrator.artifact_sections import build_sections  # noqa: E402
 from backend.orchestrator.graph import build_payload, run_case  # noqa: E402
 from backend.tests.harness import assert_eq, assert_in, assert_true  # noqa: E402
@@ -667,3 +668,336 @@ def test_cites_are_card_ids_not_the_indent_level():
             for c in b["cites"]:
                 assert_in(c["id"], known,
                           f"引註 {c['id']!r} 不是左欄任何一張卡片的 id——八成抓成 ind 了")
+
+
+def test_delete_case_also_removes_the_uploaded_evidence():
+    """只刪 manifest 的話案子會在下一次 `GET /api/cases` 原地復活——
+    `list_cases()` 掃的是 `output/uploads/`，不是卷宗目錄（2026-09-12 實跑抓到）。"""
+    d = _tmp()
+    uploads = _tmp()
+    case_id = "upload-0123456789ab"
+    up = uploads / case_id
+    up.mkdir(parents=True)
+    (up / "case.json").write_text(json.dumps({"case_id": case_id, "files": []}), encoding="utf-8")
+    (up / "訴願書.txt").write_text("內容", encoding="utf-8")
+    _seed(d, case_id)
+    assert_eq(store.delete_case(case_id, d, uploads), True)
+    assert_eq(up.exists(), False, "實體卷證還在，案子會在案件清單裡復活")
+
+
+def test_deleting_a_case_whose_manifest_was_never_written_still_works():
+    """卷宗可能還沒落地（建案後沒開過），但實體卷證在。那仍然是一個存在的案子。"""
+    d = _tmp()
+    uploads = _tmp()
+    case_id = "upload-0123456789ab"
+    (uploads / case_id).mkdir(parents=True)
+    assert_eq(store.delete_case(case_id, d, uploads), True)
+
+
+def test_a_synthetic_case_refuses_to_be_deleted_with_a_reason():
+    """合成測資進 git，刪了 `run_all.py` 會紅、下次 checkout 又回來。
+    做一個註定失效的動作比直接說不能刪更糟。"""
+    try:
+        store.delete_case("synthetic-ordinary-01", _tmp(), _tmp())
+    except store.CaseNotDeletable as e:
+        assert_in("合成測資", str(e))
+        return
+    raise AssertionError("合成測資應該拒絕刪除並說明理由")
+
+
+class FakeS3:
+    def __init__(self, objects: dict[str, bytes]):
+        self.objects = objects
+        self.keys_read: list[str] = []
+
+    def get_object(self, Bucket: str, Key: str):  # noqa: N803 - boto3 的參數名就是大寫
+        self.keys_read.append(Key)
+        if Key not in self.objects:
+            raise _NoSuchKey(Key)
+        return {"Body": _Body(self.objects[Key])}
+
+
+class _NoSuchKey(Exception):
+    pass
+
+
+_NoSuchKey.__name__ = "NoSuchKey"
+
+
+class _Body:
+    def __init__(self, data: bytes):
+        self.data = data
+
+    def read(self) -> bytes:
+        return self.data
+
+
+# ── 草稿結構：全系統只有一份 sections[] 實作 ──────────────────────
+
+
+def test_title_and_meta_are_document_header_not_sections():
+    """把抬頭當成 section 的話，畫面最上面會多出兩個 `h` 是空字串的區塊（契約 §4.4）。"""
+    view = build_sections(_payload_fixture(), "art-x")
+    assert_true(view["title"], "抬頭要進 title，不是被丟掉")
+    assert_true(view["meta"], "案號／案由／訴願人那行要進 meta")
+    for sec in view["sections"]:
+        assert_true(sec["h"].strip(), f"出現 h 是空字串的 section：{sec}")
+    assert_in("事實", [s["h"] for s in view["sections"]])
+    assert_in("理由", [s["h"] for s in view["sections"]])
+
+
+def test_the_artifact_endpoint_keeps_the_name_shown_in_the_dossier():
+    """右欄顯示的產出名是使用者看到的那一個，不該被轉換層推的預設名蓋掉。"""
+    src = (ROOT / "backend" / "api" / "dossier.py").read_text(encoding="utf-8")
+    body = src[src.index("def get_artifact"):src.index("def remove_artifact")]
+    assert_in('"title": hit["name"]', body,
+              "產出名要用卷宗記的那個，不是 doc 抬頭——換掉會讓右欄清單與詳情對不起來")
+    assert_true('"sections": view["sections"]' in body,
+                "sections 要來自共用的 build_sections（契約 §4.4：全系統只有一份實作）")
+
+
+# ── B2.2／B2.3：掃描 PDF 的可讀性要誠實 ───────────────────────────
+
+
+def test_a_scanned_pdf_is_not_reported_as_readable():
+    """掃描影像 PDF（`pdf_visual`，沒有文字層）必須回 `readable:false`。
+
+    契約 §4.1 與 §6 各講了一次，理由是**目前不做 OCR，不要寫成支援**：
+    標成 readable 會讓上傳文案變成「已上傳，可直接改」，那是在暗示一個我們沒有的能力。
+    管線確實仍會用視覺讀它——那件事由 `note` 講，不由 `readable` 講。
+    """
+    assert_eq(store._readable("pdf_visual"), False, "掃描影像 PDF 不得標成讀得到")
+    assert_eq(store._readable("unreadable"), False)
+    for kind in ("txt", "docx_text", "pdf_text"):
+        assert_eq(store._readable(kind), True, f"{kind} 有文字層，應該是 readable")
+
+
+def test_an_unreadable_file_always_carries_a_reason():
+    """只說「無法辨讀」不說為什麼，承辦人會以為系統壞了，然後重傳三次同一份檔（B2.2）。"""
+    d = _tmp()
+    uploads = _tmp()
+    case_id = "upload-0123456789ab"
+    case_dir = uploads / case_id
+    case_dir.mkdir(parents=True)
+    (case_dir / "掃描件.pages").write_bytes(b"not really a pages file")
+    (case_dir / "case.json").write_text(
+        json.dumps({"case_id": case_id, "files": [{"n": "掃描件.pages"}]}), encoding="utf-8")
+    files = store.default_manifest(case_id, uploads)["files"]
+    bad = [f for f in files if not f["readable"]]
+    assert_true(bad, "讀不到的檔應該出現在清單裡，不得靜默跳過")
+    for f in bad:
+        assert_true(f["note"].strip(), f"{f['name']} 標了讀不到卻沒說原因")
+    assert_true(d.exists())
+
+
+# ── B4.3：檢索未命中要說出來，而且不得偷塞進 laws[] ────────────────
+
+
+def test_a_manually_picked_law_that_n4_found_is_marked_hit():
+    marked = runlink.classify_law_retrieval(
+        [{"id": "kb/public/相關法規_全量/廢棄物清理法.txt", "t": "廢棄物清理法"}],
+        [{"id": "L1", "t": "廢棄物清理法第2條", "law": "廢棄物清理法", "article": "2"}])
+    assert_eq(marked[0]["retrieval_status"], runlink.RETRIEVAL_HIT)
+    assert_eq(marked[0]["retrieval_note"], runlink.NOTE_HIT)
+
+
+def test_a_manually_picked_law_that_n4_missed_says_so():
+    """**這條驗的是誠實不是功能**（proposal B4.3）。"""
+    marked = runlink.classify_law_retrieval(
+        [{"id": "kb/public/相關法規_全量/冷門法規.txt", "t": "冷門法規"}],
+        [{"id": "L1", "t": "訴願法第14條", "law": "訴願法", "article": "14"}])
+    assert_eq(marked[0]["retrieval_status"], runlink.RETRIEVAL_MISS)
+    assert_eq(marked[0]["retrieval_note"], "檢索未命中，未進入草稿")
+
+
+def test_marking_never_injects_the_missed_law_into_the_payload_laws():
+    """**紅線反向測試**：不得為了讓它出現而把未命中的法規塞進 `payload["laws"]`。
+
+    只測「有標記」是不夠的——一個把法規偷塞進 `laws[]` 再標 hit 的實作照樣會過。
+    這裡斷言的是**塞進去這件事沒有發生**：呼叫前後 `payload["laws"]` 逐位元組相同。
+    """
+    payload_laws = [{"id": "L1", "t": "訴願法第14條", "law": "訴願法", "article": "14"}]
+    before = json.dumps(payload_laws, ensure_ascii=False, sort_keys=True)
+    manifest_laws = [{"id": "kb/public/相關法規_全量/冷門法規.txt", "t": "冷門法規"}]
+    runlink.classify_law_retrieval(manifest_laws, payload_laws)
+    after = json.dumps(payload_laws, ensure_ascii=False, sort_keys=True)
+    assert_eq(after, before, "檢索結果 laws[] 被動過了——這正是 B4.3 的紅線")
+    assert_eq(len(payload_laws), 1, "未命中的法規被偷加進檢索結果")
+
+
+def test_marking_does_not_mutate_the_manifest_entries_it_was_given():
+    manifest_laws = [{"id": "x", "t": "冷門法規"}]
+    runlink.classify_law_retrieval(manifest_laws, [])
+    assert_eq(sorted(manifest_laws[0]), ["id", "t"], "應該回新物件，不是就地改傳入的那份")
+
+
+def test_a_statute_is_not_counted_as_hit_because_its_name_is_a_prefix_of_another():
+    """`廢棄物清理法` 是 `廢棄物清理法施行細則` 的子字串。用包含比對會把
+    「細則命中」誤報成「本法命中」——**誤報 hit 是危險的方向**，那等於對承辦人
+    宣稱他挑的法規進了草稿，而其實沒有。"""
+    marked = runlink.classify_law_retrieval(
+        [{"id": "a", "t": "廢棄物清理法"}],
+        [{"id": "L1", "t": "廢棄物清理法施行細則第3條", "law": "廢棄物清理法施行細則"}])
+    assert_eq(marked[0]["retrieval_status"], runlink.RETRIEVAL_MISS)
+
+
+def test_a_freshly_added_law_is_unknown_not_missed():
+    """沒查過與查不到是兩件事。合成一個值的話，使用者一按加入就看到「檢索未命中」。"""
+    assert_true(runlink.RETRIEVAL_UNKNOWN not in (runlink.RETRIEVAL_HIT, runlink.RETRIEVAL_MISS))
+    src = (ROOT / "backend" / "api" / "dossier.py").read_text(encoding="utf-8")
+    body = src[src.index("def add_case_laws"):src.index("def remove_case_law")]
+    assert_in("runlink.RETRIEVAL_UNKNOWN", body, "新加入的法規要標 unknown，不是 miss")
+
+
+def test_record_run_writes_latest_run_id_artifact_and_law_marks():
+    d = _tmp()
+    case_id = "upload-0123456789ab"
+    _seed(d, case_id)
+    store.add_items(case_id, "laws",
+                    [{"id": "a", "t": "訴願法"}, {"id": "b", "t": "冷門法規"}], d)
+    payload = {"run_id": "run-abc",
+               "laws": [{"id": "L1", "t": "訴願法第14條", "law": "訴願法"}],
+               "doc": [{"ty": "p", "ss": [{"t": "一句話", "refs": []}]}]}
+    art = store.record_run(case_id, payload, cases_dir=d)
+    m = store.load(case_id, d)
+    assert_eq(m["latest_run_id"], "run-abc")
+    assert_eq([x["retrieval_status"] for x in m["laws"]],
+              [runlink.RETRIEVAL_HIT, runlink.RETRIEVAL_MISS])
+    assert_eq([x["retrieval_note"] for x in m["laws"]][1], "檢索未命中，未進入草稿")
+    assert_eq(len(m["artifacts"]), 1)
+    assert_eq(art, m["artifacts"][0]["id"])
+
+
+def test_record_run_returns_the_existing_artifact_id_on_a_repeat():
+    d = _tmp()
+    case_id = "upload-0123456789ab"
+    _seed(d, case_id)
+    payload = {"run_id": "run-abc", "laws": [],
+               "doc": [{"ty": "p", "ss": [{"t": "一句話", "refs": []}]}]}
+    first = store.record_run(case_id, payload, cases_dir=d)
+    second = store.record_run(case_id, payload, cases_dir=d)
+    assert_eq(first, second, "同一個 run 重跑要拿回同一個 artifact_id，不是 None")
+    assert_eq(len(store.load(case_id, d)["artifacts"]), 1)
+
+
+def test_a_run_with_no_sentences_registers_no_artifact():
+    d = _tmp()
+    case_id = "upload-0123456789ab"
+    _seed(d, case_id)
+    art = store.record_run(case_id, {"run_id": "run-abc", "laws": [], "doc": []}, cases_dir=d)
+    assert_eq(art, None, "沒有句子就不該長出一份點開是空的草稿")
+    assert_eq(store.load(case_id, d)["artifacts"], [])
+    assert_eq(store.load(case_id, d)["latest_run_id"], "run-abc", "latest_run_id 還是要記")
+
+
+def test_law_marks_are_written_even_when_the_run_has_no_draft():
+    """草稿沒生出來不代表「檢索沒跑」。N4 跑了、laws[] 有東西，標記就該更新。"""
+    d = _tmp()
+    case_id = "upload-0123456789ab"
+    _seed(d, case_id)
+    store.add_items(case_id, "laws", [{"id": "a", "t": "訴願法"}], d)
+    store.record_run(case_id, {"run_id": "run-abc", "doc": [],
+                               "laws": [{"id": "L1", "law": "訴願法"}]}, cases_dir=d)
+    assert_eq(store.load(case_id, d)["laws"][0]["retrieval_status"], runlink.RETRIEVAL_HIT)
+
+
+# ── 跨 Epic 契約：chat_bridge 讀的，必須是 store 寫的 ───────────────
+
+
+def test_the_draft_query_terms_join_into_a_single_string():
+    """契約 §3.5.2：`n4_query` 是**單一字串不是陣列**（`graph.OVERRIDE_WHITELIST` 只收它），
+    而 `graph.py` 會把它送進 `cited_laws` 與 `extra_case_terms` **兩條通道**。
+    這裡用 AST／文字讀 `llm/chat.py` 與 `graph.py`，確認兩端講的是同一件事。
+    """
+    chat_src = (ROOT / "backend" / "llm" / "chat.py").read_text(encoding="utf-8")
+    body = chat_src[chat_src.index("def generate_decision_draft"):]
+    body = body[:body.index("def ", 40)]
+    assert_in('"；".join(', body, "多條法規要 join 成單一字串，不是送陣列")
+    assert_in('{"n4_query": terms}', body)
+    graph_src = (ROOT / "backend" / "orchestrator" / "graph.py").read_text(encoding="utf-8")
+    assert_in("cited_laws=[q] if q else None, extra_case_terms=[q] if q else None", graph_src,
+              "n4_query 要同時進兩條通道；只進 cited_laws 的話它其實只影響法條清單")
+    assert_in('OVERRIDE_WHITELIST = ("n4_query",)', graph_src)
+
+
+# ── B3.5：加入之後讀本案清單，不得再打 KB ──────────────────────────
+
+
+class ExplodingClient:
+    """任何方法被呼叫就爆。用來證明「這條路徑沒有打外部服務」。"""
+
+    def __getattr__(self, name):
+        def boom(*a, **kw):
+            raise AssertionError(f"這條路徑不該呼叫外部服務，卻打了 {name}()")
+        return boom
+
+
+def test_reading_the_case_law_list_does_not_touch_the_kb():
+    """B3.5：全文在加入時就快取進 manifest，讀清單是純檔案操作。
+
+    用「會爆的 client」證明，不是用「程式碼裡看不到 KB 呼叫」證明——後者
+    看不出間接呼叫。這裡連 KB client 都沒有被建起來的機會。
+    """
+    d = _tmp()
+    case_id = "upload-0123456789ab"
+    _seed(d, case_id)
+    store.add_items(case_id, "laws",
+                    [{"id": "kb/public/a.txt", "t": "甲法", "body_cached": "第一條 …"}], d)
+    laws = store.load(case_id, d)["laws"]
+    assert_eq(laws[0]["body_cached"], "第一條 …", "全文要在 manifest 裡，不必回頭打 KB")
+    try:
+        corpus.search_statutes("甲法", kb=ExplodingClient())
+    except AssertionError:
+        pass          # 證明這個假 client 真的會爆——否則上面的斷言等於沒驗
+    except Exception:  # noqa: BLE001  缺 BEDROCK_KB_ID 之類，也代表沒走到呼叫
+        pass
+    else:
+        raise AssertionError("ExplodingClient 沒有爆，這條測試的手法本身失效了")
+
+
+def test_the_case_law_list_endpoint_never_builds_a_kb_client():
+    src = (ROOT / "backend" / "api" / "dossier.py").read_text(encoding="utf-8")
+    body = src[src.index("def list_case_laws"):src.index("def add_case_laws")]
+    for forbidden in ("_kb_client", "_s3_client", "corpus."):
+        assert_true(forbidden not in body,
+                    f"GET /cases/{{id}}/laws 碰了 {forbidden}——它應該只讀 manifest（B3.5）")
+
+
+def test_the_miss_wording_is_shared_with_the_chat_layer_not_retyped():
+    """右欄標的字樣與 chat 回合裡講的話必須**逐字相同**。
+
+    兩處各寫一句的話，哪天改了一邊就會出現「畫面說 A、對話說 B」，
+    而使用者無從判斷哪個是真的。
+    """
+    assert_eq(runlink.NOTE_MISS, UNMATCHED_LAW_NOTE)
+    assert_eq(runlink.NOTE_MISS, "檢索未命中，未進入草稿")
+
+
+def test_the_comparison_rule_lives_in_one_place_only():
+    """比對規則只有一份（`llm/chat.py:unmatched_picks`）。
+
+    兩份比對就是兩套判準，遲早出現「chat 回合說沒命中、右欄卻標著命中」
+    ——那正是 B4.3 要防的那種「使用者搞不清楚系統有沒有用他挑的東西」。
+    """
+    src = (ROOT / "backend" / "dossier" / "runlink.py").read_text(encoding="utf-8")
+    assert_in("unmatched_picks", src)
+    for own_rule in ("hit_names", ".strip()", "in hit_names"):
+        assert_true(own_rule not in src,
+                    f"runlink 又自己寫了一份比對規則（{own_rule}）")
+
+
+def test_full_width_space_in_a_statute_name_does_not_cause_a_false_miss():
+    """KB 檔名是人整理的，全形空白真的會出現。這條是 Epic C 的比對規則多做的事，
+    我原本的精確相等會在這裡誤報未命中。"""
+    marked = runlink.classify_law_retrieval(
+        [{"id": "a", "t": "廢棄物　清理法"}],
+        [{"id": "L1", "t": "廢棄物清理法第2條", "law": "廢棄物清理法"}])
+    assert_eq(marked[0]["retrieval_status"], runlink.RETRIEVAL_HIT)
+
+
+def test_a_manifest_entry_with_a_blank_name_is_not_reported_as_a_retrieval_miss():
+    """名字是空的代表 manifest 那筆壞了，不是檢索沒命中。兩件事混著報，
+    承辦人會去查一個根本不存在的檢索問題。"""
+    marked = runlink.classify_law_retrieval([{"id": "a", "t": ""}], [])
+    assert_eq(marked[0]["retrieval_status"], runlink.RETRIEVAL_HIT,
+              "空名字不該被報成未命中（Epic C 的規則刻意這樣）")
