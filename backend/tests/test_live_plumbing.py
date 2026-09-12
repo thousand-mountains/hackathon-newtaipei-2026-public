@@ -3422,15 +3422,21 @@ def test_the_chat_layer_really_says_which_field_is_missing():
     `chat_bridge.pipeline_adapter` 只取 `final_state`／`node_timings`，
     中間那一行把原因丟掉，兩端各自看起來都對。
 
-    合成案例本身四個必填欄位都齊（不會降級），所以這裡**複製一份 fixture 到
-    暫存目錄並拿掉 `no`**，走 `data_dir` 餵給真的 `run_case`。改的是測試資料，
-    不是生產路徑。拿掉的是 `no` 而不是 `d2`，因為那正是 2026-09-13 雲上實測
-    兩個案子都缺的那一欄（`缺漏：['no']`）。
+    合成案例本身必填欄位都齊（不會降級），所以這裡**複製一份 fixture 到暫存目錄
+    並拿掉 `type`**，走 `data_dir` 餵給真的 `run_case`。改的是測試資料，不是生產路徑。
+
+    拿掉的欄位換過兩次，兩次都有理由：
+    - 原本是 `d2`——但缺 `d2` 會讓 N3 崩潰（2026-09-13 修掉了，見 `test_nodes.py`），
+      當時得避開。
+    - 接著是 `no`——那是雲上實測兩個案子都缺的那一欄。但 `no` 在 2026-09-13
+      由 Ci 拍板移出 `REQUIRED_FIELDS`（它不進任何規則運算，而訴願書本來就沒有
+      這個號），所以它不再會降級。
+    - 現在是 `type`：仍在 `REQUIRED_FIELDS` 裡，而且缺它不會讓任何節點炸。
     """
     fixture = json.loads(
         (settings.SYNTHETIC_DIR / "synthetic-ordinary-01.json").read_text(encoding="utf-8"))
-    fixture["extraction"]["intake"].pop("no", None)
-    fixture["extraction"]["conf"].pop("no", None)
+    fixture["extraction"]["intake"].pop("type", None)
+    fixture["extraction"]["conf"].pop("type", None)
 
     with tempfile.TemporaryDirectory() as tmp:
         root = pathlib.Path(tmp)
@@ -3453,11 +3459,11 @@ def test_the_chat_layer_really_says_which_field_is_missing():
     result = [d for n, d in events if n == "tool_result"][0]
     assert_eq(result["state"], "NEEDS_INPUT", "缺必填欄位的終態")
     assert_eq(result["status"], "ok", "降級不是失敗")
-    assert_in("案號", result["note"], "note 沒說缺的是哪一欄")
+    assert_in("案件類型", result["note"], "note 沒說缺的是哪一欄")
     assert_in("需人工表單補齊後才能續跑", result["note"], "note 沒說下一步")
-    assert_true("'no'" not in result["note"] and "['no']" not in result["note"],
+    assert_true("'type'" not in result["note"] and "['type']" not in result["note"],
                 f"note 漏出了開發者鍵名：{result['note']!r}")
-    assert_in("案號", out, "回給模型的字串沒帶上原因，模型就講不出來")
+    assert_in("案件類型", out, "回給模型的字串沒帶上原因，模型就講不出來")
     assert_in("不要說解析已完成", out, "沒有擋掉模型講「已完成」")
 
 

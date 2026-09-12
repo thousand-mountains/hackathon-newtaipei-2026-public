@@ -21,6 +21,7 @@ from backend.config.settings import (
 import backend.llm.chat as chat_mod
 from backend.dossier import store
 from backend.orchestrator import chat_bridge
+from backend.nodes import n1_extract
 from backend.orchestrator.graph import build_payload, list_synthetic_cases, load_case, run_case
 from backend.orchestrator.runstore import load_run
 from backend.tests.harness import assert_eq, assert_in, assert_true
@@ -633,6 +634,50 @@ def test_node_done_events_report_degradation_from_the_node_not_from_a_guess():
 # 這一段跑的是**真的 adapter 配真的 run_case**（fixture 檔位）。
 # adapter 原本寫在 `backend/api/chat.py` 裡，那個檔頂層 import fastapi，
 # 於是這段 `CaseState` → dict 的轉換一行都跑不到——而它正是 Epic C 要接的東西。
+
+def test_a_missing_case_number_no_longer_stops_the_whole_case():
+    """收文案號抽不到不得擋住整件案子（2026-09-13 Ci 拍板把 `no` 移出必填）。
+
+    `backend/llm/prompts/n1_extract.md` 自己寫著訴願書內文通常沒有這個號，
+    而且明文禁止拿原處分字號充數——所以**任何只有訴願書＋裁處書的上傳案都必然
+    抽不到它**。留在 `REQUIRED_FIELDS` 裡的後果是每一件真實卷證都停在 NEEDS_INPUT，
+    擋住的不是錯的東西。它也不進任何規則運算
+    （`settings.DEADLINE_INPUT_FIELDS` 沒有它，§77-2／§77-3 也不看它）。
+
+    **但「不必填」不等於「不抽」，更不等於「抽不到就算了」。**
+    這條測試釘的是三件事，第三件最容易在重構時掉：
+
+    1. `no` 不在 `REQUIRED_FIELDS`。
+    2. 只缺 `no` 的案子跑得完，N1 不降級。
+    3. **`intake` 裡 `no` 這個鍵還在，值是 `None`。**
+       前端靠「鍵在不在」決定畫不畫收文表格那一列——鍵整個消失的話，
+       承辦人看到的是**少一列**，從「擋住你」變成「靜默丟棄」，比擋住更糟。
+    """
+    assert_true("no" not in n1_extract.REQUIRED_FIELDS,
+                "`no` 又被放回必填了；它不進任何規則運算，而訴願書本來就沒有這個號")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        fixture = load_case(ORDINARY)
+        fixture["extraction"]["intake"]["no"] = None
+        fixture["extraction"]["conf"]["no"] = 0.0
+        data_dir = pathlib.Path(tmp) / "synthetic"
+        data_dir.mkdir()
+        (data_dir / f"{ORDINARY}.json").write_text(
+            json.dumps(fixture, ensure_ascii=False), encoding="utf-8")
+        state = run_case(ORDINARY, mode="fixture", data_dir=data_dir, persist=False)
+        payload = build_payload(state)
+
+    n1_degraded = [d for d in (state.run_meta or {}).get("degraded") or []
+                   if d.get("node") == "n1"]
+    assert_eq(n1_degraded, [], "只缺收文案號不該讓 N1 降級")
+    assert_true(state.state != "NEEDS_INPUT",
+                f"只缺收文案號卻停在 {state.state}——每一件真實上傳案都會卡在這裡")
+    assert_eq(state.low_conf_fields, [], "`no` 已非必填，不該再進低信心清單")
+
+    assert_in("no", payload["intake"],
+              "`no` 這個鍵從 intake 消失了——前端會少畫一列，承辦人完全沒有訊號")
+    assert_eq(payload["intake"]["no"], None, "抽不到就是 None，不得填一個看起來像案號的東西")
+
 
 def test_the_bridge_hands_the_chat_layer_a_plain_dict_with_no_orchestrator_types():
     """橋的存在理由：聊天層從頭到尾只碰得到 dict。
