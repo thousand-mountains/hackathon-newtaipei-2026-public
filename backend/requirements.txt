@@ -1,0 +1,19 @@
+# 部署期套件（Phase 0）。
+#
+# 重要：**核心流程與測試路徑零外部依賴**——backend/tests/run_all.py 與
+# `python3 -m backend.cli` 只用 Python 標準庫，不需要安裝下列任何一項。
+# 這裡宣告的只有 Web 介面層（backend/api/app.py）與 live 分支
+# （backend/llm/、backend/retrieval/kb.py）需要的東西。
+# `backend/tests/run_all.py` 有一道靜態掃描會擋住任何把第三方 import 混進
+# 測試路徑的改動。
+#
+# 版本策略：釘 minor（~=），避免 30 小時內被上游 breaking change 咬到。
+
+fastapi~=0.115.0
+uvicorn[standard]~=0.32.0
+pydantic~=2.9.0
+python-multipart~=0.0.9   # api/app.py：POST /api/cases 的 multipart 檔案上傳
+
+# ── live 分支（RUN_MODE=bedrock / RETRIEVER=kb 才會 import；fixture 模式與測試路徑不需要）──
+boto3~=1.35.0            # retrieval/kb.py：bedrock-agent-runtime Retrieve
+strands-agents>=1.15.0   # llm/client.py：N1/N5 structured output（只有這個檔可以 import 它）

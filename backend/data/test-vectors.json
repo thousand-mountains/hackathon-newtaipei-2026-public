@@ -1,0 +1,215 @@
+{
+ "comment": "Python 與 JS 引擎共用測試集。歷史案向量出處標記於 note。日期為西元 ISO。",
+ "vectors": [
+  {
+   "id": "hist-114-03",
+   "note": "114年/03 洗錢逾期案：本人簽收 112/11/12，期滿 112/12/12（決定書原文）",
+   "in": {
+    "method": "personal",
+    "service": "2023-11-12",
+    "filing": "2025-10-20"
+   },
+   "out": {
+    "deadline": "2023-12-12",
+    "overdue": true
+   }
+  },
+  {
+   "id": "hist-113-03",
+   "note": "113年/03 空污逾期案：寄存 113/6/13 即生效，第30日 113/7/13 逢週六順延至 113/7/15（決定書原文）",
+   "in": {
+    "method": "deposit",
+    "service": "2024-06-13",
+    "filing": "2024-07-20"
+   },
+   "out": {
+    "deadline": "2024-07-15",
+    "overdue": true
+   }
+  },
+  {
+   "id": "ontime-exact",
+   "note": "期滿日當天提起=未逾期",
+   "in": {
+    "method": "personal",
+    "service": "2023-11-12",
+    "filing": "2023-12-12"
+   },
+   "out": {
+    "deadline": "2023-12-12",
+    "overdue": false
+   }
+  },
+  {
+   "id": "late-by-one",
+   "note": "期滿次日提起=逾期",
+   "in": {
+    "method": "personal",
+    "service": "2023-11-12",
+    "filing": "2023-12-13"
+   },
+   "out": {
+    "deadline": "2023-12-12",
+    "overdue": true
+   }
+  },
+  {
+   "id": "sat-extend",
+   "note": "第30日落週六→順延週一",
+   "in": {
+    "method": "personal",
+    "service": "2024-06-13",
+    "filing": null
+   },
+   "out": {
+    "deadline": "2024-07-15",
+    "overdue": null
+   }
+  },
+  {
+   "id": "sun-extend",
+   "note": "第30日落週日→順延週一（2024-08-11 日→08-12 一）",
+   "in": {
+    "method": "personal",
+    "service": "2024-07-12",
+    "filing": null
+   },
+   "out": {
+    "deadline": "2024-08-12",
+    "overdue": null
+   }
+  },
+  {
+   "id": "fri-no-extend",
+   "note": "第30日落週五不順延（2024-08-09 五）",
+   "in": {
+    "method": "personal",
+    "service": "2024-07-10",
+    "filing": null
+   },
+   "out": {
+    "deadline": "2024-08-09",
+    "overdue": null
+   }
+  },
+  {
+   "id": "deposit-vs-personal",
+   "note": "寄存與簽收同日→同期滿（生效規則不同但日期同）",
+   "in": {
+    "method": "deposit",
+    "service": "2023-11-12",
+    "filing": null
+   },
+   "out": {
+    "deadline": "2023-12-12",
+    "overdue": null
+   }
+  },
+  {
+   "id": "transit-3",
+   "note": "在途 3 日：2024-06-13 寄存→第30日 7/13(六)+3=7/16(二)，不再順延",
+   "in": {
+    "method": "deposit",
+    "service": "2024-06-13",
+    "filing": null,
+    "transit": 3
+   },
+   "out": {
+    "deadline": "2024-07-16",
+    "overdue": null
+   }
+  },
+  {
+   "id": "transit-then-weekend",
+   "note": "在途加計後落週日→仍要順延：2024-06-14 簽收→第30日 7/14(日)+0；改用 7/12 送達+2 在途=7/13(六)→7/15",
+   "in": {
+    "method": "personal",
+    "service": "2024-06-12",
+    "filing": null,
+    "transit": 1
+   },
+   "out": {
+    "deadline": "2024-07-15",
+    "overdue": null
+   }
+  },
+  {
+   "id": "leap-feb",
+   "note": "跨閏年二月：2024-01-25 簽收→起算 1/26→第30日 2/24(六)→順延 2/26(一)",
+   "in": {
+    "method": "personal",
+    "service": "2024-01-25",
+    "filing": null
+   },
+   "out": {
+    "deadline": "2024-02-26",
+    "overdue": null
+   }
+  },
+  {
+   "id": "year-cross",
+   "note": "跨年：2023-12-15 簽收→第30日 2024-01-14(日)→順延 01-15(一)",
+   "in": {
+    "method": "personal",
+    "service": "2023-12-15",
+    "filing": null
+   },
+   "out": {
+    "deadline": "2024-01-15",
+    "overdue": null
+   }
+  },
+  {
+   "id": "filing-before-service",
+   "note": "提起日早於期滿甚至早於送達（誤植防護）：仍回未逾期，由人工看 caveat",
+   "in": {
+    "method": "personal",
+    "service": "2024-06-13",
+    "filing": "2024-06-01"
+   },
+   "out": {
+    "deadline": "2024-07-15",
+    "overdue": false
+   }
+  },
+  {
+   "id": "long-overdue",
+   "note": "逾期近兩年（114年/03 型態）",
+   "in": {
+    "method": "deposit",
+    "service": "2023-01-05",
+    "filing": "2024-12-31"
+   },
+   "out": {
+    "deadline": "2023-02-06",
+    "overdue": true
+   }
+  },
+  {
+   "id": "monday-30th",
+   "note": "第30日落週一（2024-07-16 二？驗證非週末不動）：2024-06-17 簽收→第30日 7/17(三)",
+   "in": {
+    "method": "personal",
+    "service": "2024-06-17",
+    "filing": null
+   },
+   "out": {
+    "deadline": "2024-07-17",
+    "overdue": null
+   }
+  },
+  {
+   "id": "demo-114-1147061268",
+   "note": "prototype 示範案件（洗錢防制法書面告誡）：本人簽收 114/7/13，提起 114/8/1，計 19 日未逾期。決定書理由五之數字由本向量鎖定。",
+   "in": {
+    "method": "personal",
+    "service": "2025-07-13",
+    "filing": "2025-08-01"
+   },
+   "out": {
+    "deadline": "2025-08-12",
+    "overdue": false
+   }
+  }
+ ]
+}

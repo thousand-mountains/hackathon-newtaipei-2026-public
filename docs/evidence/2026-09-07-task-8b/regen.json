@@ -1,0 +1,79 @@
+{
+ "regenbar_hidden_live": false,
+ "buttons": [
+  [
+   "n1",
+   "重新抽取"
+  ],
+  [
+   "n4",
+   "重新檢索"
+  ],
+  [
+   "n5",
+   "重新產生草稿"
+  ]
+ ],
+ "after_go1": {
+  "run_id": "run-synthetic-ordinary-01-e24f0d62a0fb",
+  "from_node": "n2",
+  "base_run_id": "run-synthetic-ordinary-01-3ccee368c45d"
+ },
+ "n5": {
+  "hint": "已從 n5 重跑（run run-synthetic-ordinary-01-e55f1ff331d9，接續 run-synthetic-ordinary-01-e24f0d62a0fb）。燈號與引用狀態一律由後端守門節點重判。",
+  "run_id": "run-synthetic-ordinary-01-e55f1ff331d9",
+  "from_node": "n5",
+  "base_run_id": "run-synthetic-ordinary-01-e24f0d62a0fb",
+  "node_timings": [
+   "n5",
+   "n6"
+  ],
+  "f_confirm": true,
+  "intake_confirmed_n": 12
+ },
+ "n5_agprog": "7 / 7",
+ "n4": {
+  "hint": "已從 n4 重跑（run run-synthetic-ordinary-01-fb3d3295beaf，接續 run-synthetic-ordinary-01-e55f1ff331d9，查詢詞「行政程序法 送達 期間」）。燈號與引用狀態一律由後端守門節點重判。",
+  "from_node": "n4",
+  "base_run_id": "run-synthetic-ordinary-01-e55f1ff331d9",
+  "overrides": {
+   "n4_query": "行政程序法 送達 期間"
+  },
+  "node_timings": [
+   "n4",
+   "n5",
+   "n6"
+  ]
+ },
+ "n1": {
+  "hint": "已從 n1 重跑（run run-synthetic-ordinary-01-fdf1b2109278）：欄位已換成本次抽取的結果，承辦人確認已清空——請重新核對欄位並勾選「我已核對上列全部欄位」。",
+  "from_node": "n1",
+  "base_run_id": null,
+  "overrides": {},
+  "node_timings": [
+   "n1",
+   "n2",
+   "n3",
+   "n4",
+   "n5",
+   "n6"
+  ],
+  "intake_confirmed_n": 0,
+  "f_confirm": false,
+  "confirmnote": "尚未由承辦人確認：目前欄位全部由模型自卷證抽取。按「啟動幕僚團分析」即視為承辦人已核對本頁欄位；在此之前，系統不會用期間結果解除結論段封鎖（結論一律交人工）。",
+  "f_no": "synthetic-1130000001",
+  "sourcenote": "資料來源：後端 POST /api/cases/synthetic-ordinary-01/runs（run_id run-synthetic-ordinary-01-fdf1b2109278）。燈號與引用狀態由後端守門節點判定，本頁不重算。"
+ },
+ "gate": {
+  "go4_disabled": false,
+  "title": "紅燈句均已確認",
+  "reds": 0
+ },
+ "s_min": "11 ms",
+ "s_min_lb": "本次重跑 2 節點合計（n5、n6；其餘沿用上一次執行）",
+ "offline_badge": "offline",
+ "regenbar_hidden_offline": true,
+ "regenbar_display_offline": "none",
+ "regenbar_visible_offline": false,
+ "errors": []
+}
