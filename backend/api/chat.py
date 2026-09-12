@@ -29,9 +29,12 @@ runstore 與 orchestrator**（之後要能整份搬上託管服務，那個容�
 from __future__ import annotations
 
 import json
+import pathlib
+import queue
+import threading
 import time
 import uuid
-from typing import Any
+from typing import Any, Callable
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -41,7 +44,7 @@ from backend.api.events import BUS
 from backend.config import settings
 from backend.config.settings import load_snapshot, run_mode
 from backend.llm.chat import RefBook, build_chat_agent, classify_answer
-from backend.orchestrator.graph import build_payload
+from backend.orchestrator.graph import build_payload, run_case
 from backend.orchestrator.runstore import RunNotFound, load_run
 from backend.retrieval.kb import build_retriever
 
@@ -68,18 +71,21 @@ class ChatIn(BaseModel):
     表裡，回 422 不違反契約。
     """
 
-    run_id: str
+    run_id: str | None = None
     message: str
     session_id: str | None = None
+    tool_hint: str | None = None
     context: dict[str, Any] | None = None
+    args: dict[str, Any] | None = None
 
 
 def _validate(body: ChatIn) -> None:
     """spec §2.3 的 400。空白字元只有空白也算空——前端誤送一個空格不該被當成問題。"""
     if not body.message.strip():
         raise HTTPException(status_code=400, detail="message 不得為空")
-    if not body.run_id.strip():
-        raise HTTPException(status_code=400, detail="run_id 不得為空")
+    # `run_id` 是**選填**（契約 v2 §2.1 ③）：新案子上傳完卷證，第一句話一定是
+    # 「解析卷證」，那時候還沒有任何 run。空字串與省略同義——前端把「還沒有」
+    # 送成 `""` 很常見，兩種都當成沒有，不要因為型別長得不一樣就回 400。
 
 
 def _live_gate() -> JSONResponse | None:
@@ -101,11 +107,17 @@ def _live_gate() -> JSONResponse | None:
     )
 
 
-def _load_case_payload(case_id: str, run_id: str) -> dict[str, Any]:
+def _load_case_payload(case_id: str, run_id: str) -> tuple[dict[str, Any], dict[str, Any]]:
     """讀 run、組 payload、切分區。**這是本檔存在的理由**（spec §4.0）。
 
     狀態碼沿用 `GET /api/runs/{id}` 的語義，不另發明一套：
     409 還在跑、502 失敗、404 不存在、400 run 不屬於這個 case。
+
+    回傳 `(sections, run_info)`。**`run_info` 是 2026-09-12 補的**（契約 v2 §0.1 第 1 點）：
+    原本這裡只看 BUS 狀態，而 BUS 只分「跑完／還在跑／失敗」——`to_node="n3"` 之後
+    「跑完」有兩種意思：跑到 n6 有草稿，跟停在 n3 沒有草稿。分不出來的後果是
+    `generate_decision_draft` 會把一個沒解析過的案子當成解析過的，續跑出一份沒有依據的草稿。
+    `final_state` 才分得出來，所以從 `run_meta` 取。
     """
     st = BUS.status(run_id)
     if st and st.get("status") == "running":
@@ -128,7 +140,87 @@ def _load_case_payload(case_id: str, run_id: str) -> dict[str, Any]:
             status_code=400,
             detail=f"run_id {run_id} 屬於案件 {payload.get('case_id')}，不是 {case_id}",
         )
-    return {k: payload.get(k) for k in PAYLOAD_SECTIONS}
+    run_meta = payload.get("run_meta") or {}
+    run_info = {
+        "run_id": payload.get("run_id"),
+        "final_state": run_meta.get("final_state") or payload.get("state"),
+        "to_node": run_meta.get("to_node"),
+        # 有沒有草稿看實際內容，不看狀態名：狀態名之後可能再加一個，`doc` 有沒有東西不會。
+        "has_draft": bool(payload.get("doc")),
+    }
+    return {k: payload.get(k) for k in PAYLOAD_SECTIONS}, run_info
+
+
+#: 一案一份卷宗清單（契約 v2 §4.0）。**這一層只讀不寫**——寫入屬於案件資源層。
+CASES_DIR = settings.OUTPUT_DIR / "cases"
+
+
+def _load_case_manifest(case_id: str) -> dict[str, Any]:
+    """讀本案的 `manifest.json`。讀不到就回空 dict。
+
+    空 dict 的意思是「這個案子的卷宗清單是空的」，而 `generate_decision_draft` 會據此
+    擋下前置條件 3。**這個方向是刻意的**：寧可擋下來要使用者先查法規與案例，
+    也不要生一份通篇引用都被清空的草稿——那個失敗看起來很像成功（契約 v2 §3.5.1）。
+    """
+    f = CASES_DIR / case_id / "manifest.json"
+    try:
+        return json.loads(f.read_text(encoding="utf-8"))
+    except (FileNotFoundError, NotADirectoryError, json.JSONDecodeError, OSError):
+        return {}
+
+
+def _pipeline_adapter(case_id: str) -> Callable[..., dict[str, Any]]:
+    """把 `run_case()` 包成聊天層看得懂的 callable（契約 v2 §0.1 末段）。
+
+    **注入的必須是這個 adapter，不是 `run_case` 本身。** 直接注入 `run_case`，
+    `backend/llm/chat.py` 雖然沒有 import 語句，卻會拿到一個 `CaseState` 物件並讀它的
+    屬性——AST 的層級測試會綠，層級卻實質被穿了。adapter 在這一層（**允許** import
+    orchestrator）把 `CaseState` 轉成 plain dict，聊天層從頭到尾只碰得到 dict。
+
+    乙案（AgentCore Runtime）容器裡沒有 orchestrator，那邊就不注入這個東西，
+    兩支 pipeline 工具會回「此檔位不可用」。
+    """
+
+    def run_pipeline(*, to_node: str | None = None, from_node: str = "n1",
+                     base_run_id: str | None = None,
+                     overrides: dict[str, Any] | None = None,
+                     on_event: Any = None) -> dict[str, Any]:
+        base_state = load_run(base_run_id) if base_run_id else None
+        state = run_case(
+            case_id,
+            base_state=base_state,
+            from_node=from_node,
+            to_node=to_node or "n6",
+            overrides=overrides or None,
+            on_event=on_event,
+        )
+        payload = build_payload(state)
+        run_meta = payload.get("run_meta") or {}
+        return {
+            "run_id": payload.get("run_id"),
+            "state": run_meta.get("final_state") or payload.get("state"),
+            "node_timings": dict(run_meta.get("node_timings") or {}),
+            "cite_count": len(payload.get("citations") or []),
+            # 產出 id 由案件資源層配（契約 v2 §1.5）。這一層還不知道，如實回 None——
+            # 隨手編一個 `art-…` 會讓前端拿去打一支查不到的端點。
+            "artifact_id": None,
+            "has_draft": bool(payload.get("doc")),
+            "sections": {k: payload.get(k) for k in PAYLOAD_SECTIONS},
+        }
+
+    return run_pipeline
+
+
+def _load_run_context(case_id: str, run_id: str | None
+                      ) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    """`run_id` 選填之後的統一入口。沒有 run 就是**卷內是空的**，不是錯誤。
+
+    契約 v2 §2.1 ③：沒有 `run_id` 時 `read_case` 回「卷內是空的」，
+    agent 只能先呼叫 `extract_case_document`（它自己會產生第一個 run）。
+    """
+    if not (run_id or "").strip():
+        return {k: None for k in PAYLOAD_SECTIONS}, None
+    return _load_case_payload(case_id, run_id)
 
 
 def _user_message(body: ChatIn, history: list[dict[str, str]]) -> str:
@@ -150,27 +242,47 @@ def _user_message(body: ChatIn, history: list[dict[str, str]]) -> str:
     return "\n\n".join(parts)
 
 
+#: `ack` 的口白。**故意寫得像個承辦助理，而不是像一個進度條**——
+#: 它的用途是讓對話框立刻有東西，不是宣告工具已經開始跑（那是 `tool_call` 的事）。
+ACK_TEXT = "收到，我看一下卷內資料。"
+
+
 def _run_turn(case_id: str, body: ChatIn, emit: Any,
-              case_payload: dict[str, Any] | None = None) -> dict[str, Any]:
+              case_payload: dict[str, Any] | None = None,
+              run_info: dict[str, Any] | None = None,
+              turn_id: str | None = None) -> dict[str, Any]:
     """跑一回合，逐筆呼叫 `emit(event_name, data)`，回傳 `done` 的內容。
 
     SSE 與 `?stream=0` **共用這個函式**，所以兩條路徑不會長歪：一次性模式只是把
     `emit` 收集起來而不是立刻送出。
+
+    `turn_id` 由呼叫端給（契約 v2 §2.3 說它是**所有事件**的共通欄位，而事件框架在
+    呼叫端組）。不給就自己生一個，讓既有的測試與直呼路徑不必跟著改。
     """
     started = time.monotonic()
-    turn_id = f"turn-{uuid.uuid4().hex[:12]}"
+    turn_id = turn_id or f"turn-{uuid.uuid4().hex[:12]}"
     session_id = body.session_id or f"sess-{uuid.uuid4().hex[:12]}"
     history = _SESSIONS.get(session_id, [])
     truncated = False
 
+    # `session_id` 在 `ack`（seq 0）就送出去，不是等到 `done`（契約 v2 §2.3 ② 第三項）。
+    # 理由是斷線：`token` 收到一半斷掉就永遠拿不到 `done`，下一輪只能開新 session，
+    # 前面講過的話全丟。
+    emit("ack", {"text": ACK_TEXT, "session_id": session_id})
+
     # 串流路徑已經在開流之前讀過一次了（讓 404/409 以 JSON 回），不重讀。
     if case_payload is None:
-        case_payload = _load_case_payload(case_id, body.run_id)
+        case_payload, run_info = _load_run_context(case_id, body.run_id)
     refbook = RefBook()
     retriever = build_retriever(settings.retriever_kind(), exclude_case=case_id)
     snapshot = load_snapshot()
 
-    agent, tools = build_chat_agent(case_payload, refbook, retriever, snapshot, emit)
+    agent, tools = build_chat_agent(
+        case_payload, refbook, retriever, snapshot, emit,
+        run_pipeline=_pipeline_adapter(case_id),
+        run_id=(run_info or {}).get("run_id"),
+        case_manifest=_load_case_manifest(case_id),
+    )
     answer = str(agent(_user_message(body, history)))
 
     # 模型講完才判燈。判定的輸入只有四樣，沒有一樣是問模型「你這句可不可信」。
@@ -211,11 +323,14 @@ def chat(case_id: str, body: ChatIn, request: Request):
     _validate(body)
 
     stream = request.query_params.get("stream", "1") != "0"
-    events: list[dict[str, Any]] = []
     seq = {"n": 0}
+    # `turn_id` 在這裡生成而不是在 `_run_turn` 裡：契約 v2 §2.3 說它是**所有事件**的
+    # 共通欄位，而事件框架（`seq` 與 `event:` 行）在這一層組。原本只有 `done` 有 turn_id，
+    # 前端就沒辦法把稍早的 `tool_call` 歸到同一回合。
+    turn_id = f"turn-{uuid.uuid4().hex[:12]}"
 
     def record(name: str, data: dict[str, Any]) -> dict[str, Any]:
-        ev = {"event": name, "data": {"seq": seq["n"], **data}}
+        ev = {"event": name, "data": {"seq": seq["n"], "turn_id": turn_id, **data}}
         seq["n"] += 1
         return ev
 
@@ -227,7 +342,7 @@ def chat(case_id: str, body: ChatIn, request: Request):
             collected.append(record(name, data))
 
         try:
-            done = _run_turn(case_id, body, emit)
+            done = _run_turn(case_id, body, emit, turn_id=turn_id)
         except HTTPException:
             raise
         except Exception as e:  # noqa: BLE001 — 失敗照實回，不包成一則假回答
@@ -239,30 +354,59 @@ def chat(case_id: str, body: ChatIn, request: Request):
 
     # 讀 run 的錯誤要在開串流之前浮出來：讀一次，讓 404/409/400/502 以 JSON 回，
     # 並把結果帶進 gen()——重讀一次不只是浪費，還可能讀到不同的狀態。
-    case_payload = _load_case_payload(case_id, body.run_id)
+    case_payload, run_info = _load_run_context(case_id, body.run_id)
 
     def gen():
-        pending: list[dict[str, Any]] = []
+        """真串流：`emit` 推 queue，generator 邊跑邊 yield（契約 v2 §0.1 第 3 點）。
+
+        **原本的做法是 `pending.append()` 然後整批 yield**，實測 t=0 emit 的事件
+        t=2.02s 才抵達。解析卷證要 10 秒、生成草稿要 24–72 秒，整批送的畫面是
+        「全黑很久，然後一次跳出一堆帶時間戳的步驟」——那比沒有 `tool_step` 更糟，
+        因為畫面會假裝剛才有過程。
+
+        `_run_turn` 本身**一個字都沒改形狀**：它仍是同步函式、仍是 SSE 與 `?stream=0`
+        的唯一產生路徑（spec §2.2 的既有契約）。改的只有誰在跑它、事件怎麼出去。
+
+        `record()` 的 `seq` 由 worker 與 generator 共用，但**不會並行寫入**：
+        worker 只在自己這條 thread 上 emit，而 `done`／`error` 是 sentinel 之後才 record，
+        那時 worker 已經結束了。
+        """
+        q: queue.Queue = queue.Queue()
+        done_marker = object()
+        box: dict[str, Any] = {}
 
         def emit(name: str, data: dict[str, Any]) -> None:
-            pending.append(record(name, data))
+            q.put(record(name, data))
 
-        try:
-            done = _run_turn(case_id, body, emit, case_payload)
-        except Exception as e:  # noqa: BLE001
+        def worker() -> None:
+            try:
+                box["done"] = _run_turn(case_id, body, emit, case_payload,
+                                        run_info, turn_id)
+            except Exception as e:  # noqa: BLE001 — 例外帶回去，由 generator 決定怎麼說
+                box["error"] = e
+            finally:
+                # **一定要送出去**：不送的話 generator 會永遠卡在 q.get()，
+                # 而卡住的 SSE 連線看起來就像「還在跑」，比報錯更難查。
+                q.put(done_marker)
+
+        t = threading.Thread(target=worker, name="chat-turn", daemon=True)
+        t.start()
+        while True:
+            ev = q.get()
+            if ev is done_marker:
+                break
+            yield _frame(ev)
+        t.join()
+        if "error" in box:
             # spec §4.6：失敗必須有一個**與 done 不同**的形狀。用 done 包一句道歉，
             # 前端會把它當一則正常回答並標燈——那正是 CONSTITUTION §1 要防的。
-            for ev in pending:
-                yield _frame(ev)
+            e = box["error"]
             yield _frame(record("error", {
-                "turn_id": None,
                 "stage": _stage_of(e),
                 "error": f"{type(e).__name__}: {e}",
             }))
             return
-        for ev in pending:
-            yield _frame(ev)
-        yield _frame(record("done", done))
+        yield _frame(record("done", box["done"]))
 
     return StreamingResponse(
         gen(),

@@ -584,3 +584,39 @@ def test_resume_from_n4_after_a_screened_run_reaches_verified_without_rerunning_
     assert_eq(state.run_meta["final_state"], "VERIFIED", "續跑要跑到守門")
     assert_eq(sorted(state.run_meta["node_timings"]), ["n4", "n5", "n6"], "不得重跑 n1–n3")
     assert_eq(state.run_meta["base_run_id"], base.run_id, "要指得回上一次")
+
+
+def test_node_done_events_carry_the_same_elapsed_ms_as_run_meta_node_timings():
+    """契約 v2 §2.3 ③：`tool_step.elapsed_ms` 是**真值，不是另外估的**。
+
+    聊天的 pipeline 工具只是把 `node_done` 原樣轉成 `tool_step`，所以「沒有另外估」
+    這件事真正要釘在**事件來源**這一層：`node_done.elapsed_ms` 必須就是
+    `run_meta.node_timings[node]` 那個數字。
+
+    兩邊各自算一次也會「看起來對」（同一次執行的時間本來就接近），差別在
+    `time.perf_counter()` 呼叫的位置不同會差幾毫秒——那種不一致沒有症狀，
+    只會讓畫面上的秒數跟紀錄裡的秒數對不起來，沒有人查得出為什麼。
+    """
+    seen: dict[str, int] = {}
+
+    def on_event(kind: str, data: dict) -> None:
+        if kind == "node_done":
+            seen[data["node"]] = data["elapsed_ms"]
+
+    state = run_case(ORDINARY, mode="fixture", on_event=on_event)
+    assert_eq(seen, state.run_meta["node_timings"],
+              "node_done 的 elapsed_ms 與 run_meta.node_timings 必須是同一個值")
+
+
+def test_node_done_events_report_degradation_from_the_node_not_from_a_guess():
+    """`degraded` 同理：轉發的那一層不判斷、只轉發，所以真值在這裡釘。"""
+    reported: dict[str, bool] = {}
+
+    def on_event(kind: str, data: dict) -> None:
+        if kind == "node_done":
+            reported[data["node"]] = bool(data["degraded"])
+
+    state = run_case(ORDINARY, mode="fixture", on_event=on_event)
+    from_meta = {d["node"] for d in state.run_meta["degraded"]}
+    assert_eq({n for n, v in reported.items() if v}, from_meta,
+              "事件說降級的節點，要跟 run_meta.degraded 記的是同一批")

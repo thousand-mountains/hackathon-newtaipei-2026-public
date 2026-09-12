@@ -987,3 +987,124 @@ def test_resetting_case_refs_leaves_this_turn_s_retrieval_numbers_alone():
     assert rb.get("c1")["t"] == "甲"
     # 計數器不倒退：下一筆檢索要接 c2，不是重來一次 c1
     assert rb.add(_hit("kb-2", "乙"))["id"] == "c2"
+
+
+# ── 契約 v2 §0.1 第 3 點：gen() 必須是真串流 ────────────────────────
+#
+# `backend/api/chat.py` import fastapi，而測試路徑零外部依賴（run_all.py 有靜態掃描），
+# 所以這裡只驗得了**結構**。行為證據靠實跑：抵達時間記在
+# `.prospec/changes/chat-tools-unified/verification.md`（改動前六個事件全在 2.993s
+# 一起到，改動後 0.000／0.000／0.999／2.002／3.007／3.008）。
+
+def _gen_fn() -> ast.FunctionDef:
+    tree = ast.parse(_api_chat_src())
+    chat_fn = next(n for n in ast.walk(tree)
+                   if isinstance(n, ast.FunctionDef) and n.name == "chat")
+    return next(n for n in ast.walk(chat_fn)
+                if isinstance(n, ast.FunctionDef) and n.name == "gen")
+
+
+def test_gen_does_not_buffer_events_into_a_list_before_yielding():
+    """**這條釘的是那個 2.02 秒。**
+
+    原版 `emit` 是 `pending.append(...)`，跑完才整批 yield。只要 `emit` 的函式體裡
+    出現 `.append(`，就是又回到攢一批再送——那會讓 10–72 秒的工作變成全黑一段時間
+    再一次跳出，畫面等於假裝剛才有過程。
+
+    `emit` 必須把事件推進一個有阻塞語義的佇列（`put`），由 generator 那端取。
+    """
+    gen = _gen_fn()
+    emit = next(n for n in ast.walk(gen)
+                if isinstance(n, ast.FunctionDef) and n.name == "emit")
+    attrs = [n.func.attr for n in ast.walk(emit)
+             if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)]
+    assert "append" not in attrs, "gen() 的 emit 又在攢清單了——串流會退回整批送"
+    assert "put" in attrs, "gen() 的 emit 沒有推進佇列，generator 那端取不到東西"
+
+
+def test_gen_runs_the_turn_on_a_worker_thread_so_the_generator_can_yield_meanwhile():
+    """同步 generator 自己跑 `_run_turn` 就沒有機會 yield——必須有人代跑。"""
+    src = ast.dump(_gen_fn())
+    assert "Thread" in src, "gen() 沒有把回合丟到工作執行緒，yield 不出中間事件"
+    assert "join" in src, "沒有 join：worker 還在寫 box 的時候就讀，done/error 可能讀到空"
+
+
+def test_every_event_carries_turn_id_not_just_done():
+    """契約 v2 §2.3：`turn_id` 是**所有事件**的共通欄位。
+
+    原本只有 `done` 有，前端沒辦法把稍早的 `tool_call` 歸到同一回合；`error` 那條
+    還明著填 `None`。所以 `turn_id` 要在事件框架（`record()`）這一層注入。
+    """
+    tree = ast.parse(_api_chat_src())
+    rec = next(n for n in ast.walk(tree)
+               if isinstance(n, ast.FunctionDef) and n.name == "record")
+    keys = [k.value for n in ast.walk(rec) if isinstance(n, ast.Dict)
+            for k in n.keys if isinstance(k, ast.Constant)]
+    assert "turn_id" in keys and "seq" in keys, \
+        "record() 沒有把 turn_id 注進每一個事件"
+
+
+def test_ack_is_emitted_at_the_top_of_the_turn_with_the_session_id():
+    """契約 v2 §2.3 ② 第三項：`session_id` 提前到 `ack`。
+
+    斷在 `token` 中途就永遠拿不到 `done`，下一輪只能開新 session，前面講過的話全丟。
+    """
+    tree = ast.parse(_api_chat_src())
+    fn = next(n for n in ast.walk(tree)
+              if isinstance(n, ast.FunctionDef) and n.name == "_run_turn")
+    acks = [n for n in ast.walk(fn) if isinstance(n, ast.Call)
+            and getattr(n.func, "id", "") == "emit"
+            and n.args and isinstance(n.args[0], ast.Constant) and n.args[0].value == "ack"]
+    assert acks, "_run_turn 沒有發 ack"
+    keys = [k.value for n in ast.walk(acks[0]) if isinstance(n, ast.Dict)
+            for k in n.keys if isinstance(k, ast.Constant)]
+    assert "session_id" in keys, "ack 沒有帶 session_id，斷線就接不回來"
+
+
+def test_run_id_is_optional_and_an_empty_one_is_not_a_400():
+    """契約 v2 §2.1 ③：新案子上傳完卷證、還沒有任何 run 的時候也要能開口。"""
+    tree = ast.parse(_api_chat_src())
+    cls = next(n for n in ast.walk(tree)
+               if isinstance(n, ast.ClassDef) and n.name == "ChatIn")
+    ann = next(n for n in cls.body
+               if isinstance(n, ast.AnnAssign) and getattr(n.target, "id", "") == "run_id")
+    assert "None" in ast.unparse(ann.annotation), "run_id 仍是必填"
+    assert ann.value is not None and ast.unparse(ann.value) == "None", "run_id 沒有預設值"
+    validate = next(n for n in ast.walk(tree)
+                    if isinstance(n, ast.FunctionDef) and n.name == "_validate")
+    assert "run_id" not in ast.unparse(validate), \
+        "_validate 還在擋空 run_id——契約已改成選填"
+
+
+def test_the_pipeline_callable_injected_into_the_chat_layer_is_an_adapter_not_run_case():
+    """層級禁令的真正守法：注入的必須是**回傳 plain dict 的 adapter**。
+
+    直接把 `run_case` 注進去的話，`backend/llm/chat.py` 雖然沒有 import 語句
+    （AST 那條測試會綠），卻會拿到一個 `CaseState` 物件並讀它的屬性——
+    **層級形式上守住、實質被穿**。這條檢查 `_pipeline_adapter` 真的存在，
+    而且 `build_chat_agent` 收到的是它而不是 `run_case`。
+    """
+    tree = ast.parse(_api_chat_src())
+    assert any(isinstance(n, ast.FunctionDef) and n.name == "_pipeline_adapter"
+               for n in ast.walk(tree)), "找不到 _pipeline_adapter"
+    build = [n for n in ast.walk(tree) if isinstance(n, ast.Call)
+             and getattr(n.func, "id", "") == "build_chat_agent"]
+    assert build, "找不到 build_chat_agent 的呼叫"
+    injected = [kw for kw in build[0].keywords if kw.arg == "run_pipeline"]
+    assert injected, "build_chat_agent 沒有收到 run_pipeline"
+    expr = ast.unparse(injected[0].value)
+    assert expr.startswith("_pipeline_adapter("), f"注入的不是 adapter，而是 {expr}"
+
+
+def test_load_case_payload_reports_whether_that_run_has_a_draft():
+    """契約 v2 §0.1 第 1 點：BUS 只分「跑完／還在跑／失敗」。
+
+    `to_node="n3"` 之後「跑完」有兩種意思，分不出來的後果是
+    `generate_decision_draft` 把一個沒解析過的案子當成解析過的。
+    """
+    tree = ast.parse(_api_chat_src())
+    fn = next(n for n in ast.walk(tree)
+              if isinstance(n, ast.FunctionDef) and n.name == "_load_case_payload")
+    src = ast.unparse(fn)
+    assert "final_state" in src, "_load_case_payload 沒有看 final_state"
+    assert "has_draft" in src, "_load_case_payload 沒有回報這個 run 有沒有草稿"
