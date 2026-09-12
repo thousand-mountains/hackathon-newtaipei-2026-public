@@ -36,6 +36,8 @@
   --n-out:#1F6B3E; --n-out-bg:#E6F1EA;
   --shadow:0 1px 2px rgba(28,31,34,.06),0 8px 24px rgba(28,31,34,.07);
   --r:4px;
+  /* 整體文字（連同版面）等比放大倍率——只改這一處即可 */
+  --zoom:1.5;
   --sans:"Noto Sans TC",-apple-system,"PingFang TC","Microsoft JhengHei",sans-serif;
   --serif:"Noto Serif TC",Georgia,"Songti TC",serif;
   --mono:"IBM Plex Mono",ui-monospace,Menlo,monospace;
@@ -73,13 +75,16 @@
 
 *{box-sizing:border-box}
 body{margin:0;background:var(--ground);color:var(--ink);font-family:var(--sans);font-size:14px;line-height:1.7;-webkit-font-smoothing:antialiased}
+/* 整體文字（連同版面）等比放大，方便展示閱讀。倍率見 :root 的 --zoom。 */
+#app{zoom:var(--zoom)}
 button{font:inherit;color:inherit;cursor:pointer}
 :focus-visible{outline:2px solid var(--acc-2);outline-offset:2px}
 ::-webkit-scrollbar{width:10px;height:10px}
 ::-webkit-scrollbar-thumb{background:var(--line);border:3px solid transparent;background-clip:content-box;border-radius:8px}
 
 /* ── shell ─────────────────────────────── */
-.app{display:flex;flex-direction:column;height:100vh;height:100dvh}
+/* #app zoom 會把 vh 也放大，故除以縮放倍率讓版面剛好填滿一個視窗高度 */
+.app{display:flex;flex-direction:column;height:calc(100vh / var(--zoom));height:calc(100dvh / var(--zoom))}
 .topbar{display:flex;align-items:center;gap:14px;padding:0 16px;height:54px;flex:0 0 auto;
   background:var(--ground);color:var(--ink);border-bottom:1px solid var(--line)}
 .brand{display:flex;align-items:center;gap:12px;min-width:0}
@@ -380,8 +385,10 @@ button{font:inherit;color:inherit;cursor:pointer}
 .gdetail .gd-s{font-size:11.5px;color:var(--muted);margin-top:5px}
 
 /* ── modal / menu / toast ──────────────── */
-.scrim{position:fixed;inset:0;background:rgba(15,20,26,.5);display:flex;align-items:center;justify-content:center;padding:20px;z-index:60}
-.sheet{background:var(--ground);border:1px solid var(--line);border-radius:var(--r);box-shadow:0 20px 60px rgba(0,0,0,.3);width:min(720px,100%);max-height:min(86vh,880px);display:flex;flex-direction:column}
+/* scrim 在 zoom 的座標系內，inset:0 會涵蓋放大後的視窗；改用除以倍率的高度並允許捲動，確保對話框永遠置中且可完整看到 */
+.scrim{position:fixed;top:0;left:0;width:100%;height:calc(100vh / var(--zoom));height:calc(100dvh / var(--zoom));background:rgba(15,20,26,.5);display:flex;align-items:center;justify-content:center;padding:20px;overflow:auto;z-index:60}
+/* .sheet 以 scrim 高度為上限（max-height:100%），header/footer 固定、只有內文捲動 */
+.sheet{background:var(--ground);border:1px solid var(--line);border-radius:var(--r);box-shadow:0 20px 60px rgba(0,0,0,.3);width:min(720px,100%);max-height:100%;display:flex;flex-direction:column}
 .sheet.wide{width:min(860px,100%)}
 .sheet.xwide{width:min(1180px,100%)}
 .sheet-h{display:flex;align-items:center;gap:10px;padding:12px 16px;border-bottom:1px solid var(--line)}
