@@ -88,6 +88,45 @@ wire 格式：`event: <名稱>\ndata: <一行 JSON>\n\n`（`backend/api/events.p
 3. **不加後端事件。** 改 orchestrator 的事件面是動主線，30 小時內不值得；
    而「卡片級細度」是視覺需求，用一個事件驅動兩張卡就能達到。
 
+### 2.1 ⚠️ Pink 現有分支的進度條跟後端六節點對不上
+
+`origin/feat/frontend-ai-layout` 的 `frontend/src/components/Chat.vue:26`：
+
+```
+title="辦案進度：萃取 → 案例 → 法規 → 關聯圖 → 草稿 → 產出"
+```
+
+後端實際六節點是：**萃取／分類／程序審查／檢索（法規與案例同一節點）／草稿／守門**。
+
+| Pink 現有格子 | 後端節點 | 處置 |
+|---|---|---|
+| 萃取 | `n1` | 保留 |
+| （無） | `n2` 分類 | **新增** |
+| （無） | `n3` 程序審查與期間計算 | **新增**（期間引擎攤開算式是主秀） |
+| 案例 | `n4` | 保留，但**與下一格同時點亮** |
+| 法規 | `n4` | 保留，同一個 `n4` 事件；**不要假裝兩者分別完成** |
+| 關聯圖 | 無 | **砍**。後端沒有這個節點，payload 也沒有圖結構。若要保留，只能降級成畫既有引註關係（句子→法條）並明標不做相似性推論 |
+| 草稿 | `n5` | 保留 |
+| 產出 | — | 與 `n6` 對調語意：改成守門 |
+| （無） | `n6` 守門 | **一定要補**。守門是唯一會擋下生成的環節，也是本專案的差異化；漏掉它，評審看到的流程會像一般的 RAG 問答 |
+
+### 2.2 ⚠️ 燈號顯示要從零建，但**不要從零想**
+
+用 `lamp`／`tier`／`verify`／三個 tier 的中文字樣掃過 `origin/feat/frontend-ai-layout` 的
+整個 `frontend/src`：**六個關鍵字全部零命中**。分層誠實的顯示在她的分支上完全不存在。
+
+但 `main` 上有完整的既有實作可以直接取回參考：
+
+| 檔案（在 `main` 上） | 有什麼 |
+|---|---|
+| `frontend/src/api/adapt.js` | payload → 燈號的轉接 |
+| `frontend/src/components/DecisionSheet.vue` | 決定書逐句燈號渲染 |
+| `frontend/src/components/ProcPanel.vue` | 程序審查卡（含三態 `agree` 與 `shared_blind_spot`） |
+| `frontend/src/components/LeftColumn.vue` | 收文確認／爭點區 |
+| `frontend/src/store/workbench.js` | 燈號狀態與 `compared`／`blockers` 處理 |
+
+**這是「取回參考」不是「搬過來調樣式」**——資料形狀有變（見 §4），但渲染邏輯與用字可以省下大半時間。
+
 ## 3. 新聊天端點 `POST /api/cases/{case_id}/chat`
 
 > 契約已凍結，以下逐欄照抄 `docs/spec/2026-09-12-chat-honesty-lamps.md` §2–§4。**後端尚未實作**（`backend/api/` 目前只有 `app.py`／`events.py`），Pink 用 spec §6 的 mock 先開工。
@@ -169,6 +208,14 @@ wire 格式：`event: <名稱>\ndata: <一行 JSON>\n\n`（`backend/api/events.p
 | **`transport`** | 「連線中斷」，可重問。**2026-09-12 新增的契約變更**（原本只有三個值），開流之後的傳輸／proxy 失敗歸這裡，**不要說成模型錯誤** |
 | `internal` | 照實顯示 `error` 原文，這是 bug |
 
+> **這是「一開始就寫成四個值」，不是「改已經寫好的三個」。** 實查
+> `origin/feat/frontend-ai-layout`：目前沒有任何 stage 處理（那是 mock UI），
+> 所以現在分出來比事後補容易。
+>
+> 為什麼要獨立出 `transport`：開流之後的網路斷線原本只能歸進 `internal`，
+> 於是**畫面會把使用者的網路問題說成我們的系統故障**——那既不準確，也會讓
+> 「可重問」這個正確建議變成「這是 bug」的錯誤暗示。
+
 ## 5. 設計稿要砍掉的功能
 
 | 砍什麼 | 位置 | 理由 |
@@ -187,6 +234,15 @@ wire 格式：`event: <名稱>\ndata: <一行 JSON>\n\n`（`backend/api/events.p
 2. **相似度要標「向量相似度非法律相似度」。** KB 命中沒有對資料集實檔驗證。
 
 ## 6. Pink 專屬待辦
+
+### ⚠️ 三件目前無主，不要因為這份檔進了 git 就當成已結案
+
+| # | 事 | 卡在誰 |
+|---|---|---|
+| 1 | **`done.redirect` 那顆鈕會不會動，沒有人在驗。** 後端驗收只驗回傳值，驗不到前端行為 | **Pink 補一條前端驗收** |
+| 2 | 聊天檢索取幾筆（`top_k`）——目前會**靜默吃函式預設 5**，那是「沒人決定」不是「已決定」 | Claire 拍板 |
+| 3 | 賽制是否把聊天呼叫算進每秒一次的流量 | Ci 向賽方確認 |
+
 
 1. **補一條前端 AC：`done.redirect` 那顆 CTA 會動。** 動作**已定案為「捲到左欄程序審查卡」**（tech lead 2026-09-12），**不是**呼叫期間試算——那個面板不存在（`frontend/src/` 沒有任何程式打 `POST /api/deadline`；`ProcPanel.vue` 只渲染 payload 的 `screen.deadline`）。後端 AC7 只驗 `done.redirect.endpoint == "/api/deadline"` 的值，**驗不到這顆鈕**。沒有人補就是沒人驗。建議 AC：點 CTA 後程序審查卡進入視窗且被 highlight。
 2. **US-7 逐節點進度**：先確認輪詢路徑（§1.2）完全可用，再修 SSE 具名事件監聽（§2 已知限制），改完要**實際點下去看畫面逐格亮**才算過。
