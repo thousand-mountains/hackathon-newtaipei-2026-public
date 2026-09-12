@@ -20,6 +20,7 @@ import ast
 import json
 import pathlib
 import re
+import threading
 
 from backend.config import settings
 from backend.config.origin_registry import TIER_HUMAN, TIER_SOURCED, tier_of
@@ -762,7 +763,7 @@ def test_an_empty_section_says_whether_the_other_one_has_anything():
                 events=events2)
     note2 = t2.read_case("laws")
     assert "retrieved_laws" not in note2, f"兩份都空卻說另一份有東西：{note2}"
-    assert "右欄" in note2, "沒告訴承辦人下一步怎麼做"
+    assert "加進本案卷宗" in note2, "沒告訴承辦人下一步怎麼做"
 
 
 def test_case_refs_are_marked_as_record_not_retrieval():
@@ -965,6 +966,95 @@ def _hint_tools(calls: list, events: list, *, retriever=None, law_query="訴願�
         law_query=law_query, law_query_sources=["n2.classification.class.case_type"],
         case_query=case_query, case_query_sources=["n1.facts_excerpt[].text"],
     )
+
+
+def test_two_tools_running_at_once_do_not_swap_their_call_ids():
+    """同一個 model turn 的多支工具是**併發**的，`call_id` 不得互相蓋掉。
+
+    雲上實測（QA `t17-callid2.sse`）：
+
+        seq 1  tool_call   tc-1  search_similar_decisions
+        seq 2  tool_call   tc-2  retrieve_refs
+        seq 3  tool_result tc-2  retrieve_refs
+        seq 4  tool_result tc-2  search_similar_decisions   ← 應該是 tc-1
+
+    兩個 `tool_call` 都發完了才發第一個 `tool_result`——所以它們是重疊執行的。
+    共享的 `_current_call_id` 被後進來的那支蓋掉，於是**tc-1 那張卡永遠轉圈**
+    （前端依 `call_id` 開卡，`frontend/src/store/app.js:539`），
+    而 tc-2 那張卡的標題與內容不是同一件事。
+
+    這條用真的執行緒重現那個交錯：兩支工具都在對方的 `_call()` 與 `_result()`
+    之間卡住，單一共享欄位一定配錯。
+    """
+    events: list = []
+    lock = threading.Lock()
+    started = threading.Barrier(2)
+    calls: list = []
+    tools = _tools(calls, _FakeRetriever([_hit()]),
+                   events=events, payload={"screen": {"x": 1}})
+    tools._emit = lambda n, d: (lock.acquire(), events.append((n, d)), lock.release())[0]
+
+    def run(section):
+        # 兩支都先各自 _call() 完，才讓任何一支去 _result()——正是 t17 的形狀
+        tools._call("read_case", {"section": section})
+        started.wait(timeout=5)
+        tools._result("read_case", [], f"讀了 {section}")
+
+    threads = [threading.Thread(target=run, args=(s,)) for s in ("intake", "screen")]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=5)
+
+    call_ids = [d["call_id"] for n, d in events if n == "tool_call"]
+    result_ids = [d["call_id"] for n, d in events if n == "tool_result"]
+    assert sorted(call_ids) == ["tc-1", "tc-2"], f"配號重複了：{call_ids}"
+    assert sorted(result_ids) == ["tc-1", "tc-2"], \
+        f"兩個 result 掛在同一個 call_id 上，前端會有一張卡永遠轉圈：{result_ids}"
+
+
+def test_the_lamp_reason_says_which_kind_of_score_the_hits_carried():
+    """燈號說明不得一律講「向量相似度」（契約 §3.2 列為不實陳述）。
+
+    雲上實測兩頭都錯（QA `t02`／`t04`）：法條查表的二元命中講向量相似度、
+    重排過的命中也講向量相似度。`hits[].ranked_by` 今晚修好了，這一句漏掉。
+    """
+    rb = RefBook()
+    rb.add(_lawtable_hit(), score_kind=None)          # ranked_by=None：查表二元命中
+    v = classify_answer("問", "依 [c1]。", rb)
+    assert "二元命中" in v.why, f"查表命中被講成相似度：{v.why}"
+    assert "向量相似度" not in v.why, v.why
+
+    rb2 = RefBook()
+    rb2.add(_hit())                                   # ranked_by=embedding
+    v2 = classify_answer("問", "依 [c1]。", rb2)
+    assert "向量相似度" in v2.why, v2.why
+    assert "重排" not in v2.why, v2.why
+
+    # 混著引用時兩種都要講出來，不得只挑一種
+    rb3 = RefBook()
+    rb3.add(_lawtable_hit(), score_kind=None)
+    rb3.add(_hit("kb-9", "某決定"))
+    v3 = classify_answer("問", "依 [c1] 與 [c2]。", rb3)
+    for kind in ("二元命中", "向量相似度"):
+        assert kind in v3.why, f"混合命中漏講 {kind}：{v3.why}"
+
+
+def test_the_dropped_reason_does_not_claim_to_know_what_the_model_meant():
+    """寬鬆偵測分不出「引用」與「說它不存在」，所以說明句不得替模型的意圖作證。
+
+    雲上實測（QA `t18`）：承辦人自己在問題裡打了 `[c7]`，模型正確拒絕——
+    「工具回傳的編號只有 L1 到 L6，並沒有 [c7]」——而系統判它「引用了檢索結果
+    之外的來源」。**紅燈維持**（偵測刻意寬鬆，理由見 `_loose_ids`），
+    但系統自己不要跟著說一句它不知道的話。
+    """
+    rb = RefBook()
+    rb.add(_hit())
+    v = classify_answer("補上 [c7]", "工具回傳的編號只有 c1，並沒有 [c7]。", rb)
+    assert v.lamp == "r", "偵測不該被放寬"
+    assert v.dropped_refs == ["c7"]
+    assert "引用了檢索結果之外的來源" not in v.why, f"仍在斷言模型的意圖：{v.why}"
+    assert "無法分辨" in v.why, v.why
 
 
 class _ArchiveSpy:
@@ -1247,10 +1337,11 @@ def test_the_chat_prompt_forbids_leaking_tool_and_field_identifiers():
     見 `test_what_these_two_prompt_rules_can_and_cannot_be_verified_offline`。
     """
     prompt = _chat_prompt()
-    assert "不要把程式名講給承辦人聽" in prompt, "prompt 沒有這條約束"
+    assert "不要把程式名" in prompt, "prompt 沒有這條約束"
     # 要有正反例，光寫一句禁令模型會照自己的理解發揮
     assert _COUNTEREXAMPLE in prompt and "read_case" in prompt, "這條禁令沒有給反例"
     assert "中文名" in prompt, "沒說清楚該講什麼（只說不准講什麼，模型會不敢提）"
+    assert "內部代號" in prompt, "內部流水線代號也要擋（QA t06 實測外洩「六節點分析」）"
 
 
 def test_the_chat_prompt_forbids_describing_a_screen_it_cannot_see():
@@ -1274,6 +1365,71 @@ def test_the_chat_prompt_forbids_describing_a_screen_it_cannot_see():
         raise AssertionError(
             "chat_ask.md 自己在描述畫面，一邊禁止一邊示範："
             + "、".join(f"第 {i} 行「{w}」：{line.strip()}" for i, line, w in strays))
+
+
+def test_the_prompt_describes_every_tool_the_agent_actually_has():
+    """prompt 說「你有五個工具」，實際註冊八支——**那三支不在任何紅線的字面涵蓋內**。
+
+    雲上實測（QA `t06`）的外洩正是這麼來的：紅線 5 寫「上面那五個工具名」，
+    而 prompt 裡 `:1`／`:7` 自己在用「六節點分析」「六節點抓到的法條」，
+    模型照抄出「法規依據（六節點分析抓到的相關法條）」——
+    **「六節點」是內部流水線代號，正是紅線 5 要擋的東西，而 prompt 自己在教它講。**
+    """
+    prompt = _chat_prompt()
+    # `TOOL_LABELS` 是契約 §3.0 的值域，也是 `as_strands_tools()` 註冊的那一組
+    # （`test_tool_labels_cover_every_registered_tool` 釘住兩者一致）。
+    for name in chat_mod.TOOL_LABELS:
+        assert name in prompt, f"{name} 有註冊但 prompt 沒提到，模型不知道它能做什麼"
+    assert f"你有八個工具" in prompt, "工具數量寫錯，紅線 5 的「上面那N個」就框不住全部"
+    assert len(chat_mod.TOOL_LABELS) == 8, \
+        f"工具數量變成 {len(chat_mod.TOOL_LABELS)} 了，prompt 那句話要跟著改"
+
+
+def test_the_prompt_does_not_teach_the_model_to_say_the_internal_node_names():
+    """`n1`–`n6`／「六節點」是內部代號，prompt 自己不得用它們講話。
+
+    同一個形狀今晚已經出現兩次：紅線 2 原本寫「左欄的程序審查」（prompt 自己在
+    描述畫面），現在是「六節點分析」（prompt 自己在講內部代號）。
+    **禁令與示範寫在同一份檔案裡時，示範會贏。**
+    """
+    strays = [(i, line) for i, line in enumerate(_chat_prompt().splitlines(), 1)
+              if "六節點" in line and _COUNTEREXAMPLE not in line]
+    if strays:
+        raise AssertionError(
+            "chat_ask.md 自己在用內部代號講話，一邊禁止一邊示範："
+            + "、".join(f"第 {i} 行：{line.strip()}" for i, line in strays))
+
+
+def test_the_prompt_does_not_assume_the_case_has_already_been_analysed():
+    """契約 §2.1 ③：沒有 run 也要能開口。
+
+    prompt 開頭原本寫「承辦人正在看一份**已經跑完六節點分析**的案子」——
+    對新上傳的案子那是**假前提**，而模型會照著它去描述一份不存在的分析結果。
+    """
+    prompt = _chat_prompt()
+    assert "已經跑完" not in prompt, "prompt 假設案子分析過了"
+    assert "可能還沒有被分析過" in prompt, "沒有明說新案子的情況"
+
+
+def test_the_tool_return_strings_do_not_describe_the_screen():
+    """紅線 6 擋的是模型描述畫面，但**假話的來源常常是後端餵給它的字串**。
+
+    雲上實測：`generate_decision_draft` 回「草稿全文請由承辦人在**產出區**檢視」、
+    `build_relation_graph` 回「圖已經**回給畫面**了」。模型照講，而前端那個群組
+    叫「答辯書與產出」，畫面上沒有叫「產出區」的東西。
+
+    這跟「prompt 自己在犯紅線 2」是同一個形狀，只是搬到了工具回傳值上。
+    """
+    src = pathlib.Path(chat_mod.__file__).read_text(encoding="utf-8")
+    # 只看會被送回模型的字串：`return f"..."` 與 `parts.append("...")`
+    for lineno, line in enumerate(src.split("\n"), 1):
+        stripped = line.strip()
+        if not (stripped.startswith(("return f\"", "return \"", "f\"", "\"", "parts.append("))
+                or ".append(f\"" in stripped or ".append(\"" in stripped):
+            continue
+        for word in ("產出區", "回給畫面", "左欄", "右欄", "左邊", "右邊", "按鈕"):
+            assert word not in line, \
+                f"backend/llm/chat.py:{lineno} 把畫面位置寫進了要回給模型的字串：{stripped[:90]}"
 
 
 def test_what_these_two_prompt_rules_can_and_cannot_be_verified_offline():

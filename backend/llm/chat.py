@@ -36,10 +36,12 @@ spec §4.0「payload 由呼叫端提供」：`read_case` 只讀呼叫端餵進�
 """
 from __future__ import annotations
 
+import contextvars
 import dataclasses
 import json
 import re
 import sys
+import threading
 from typing import Any
 
 from backend.config import settings
@@ -115,11 +117,54 @@ REDIRECT_DEADLINE = {
 
 WHY_NUMERIC = "期間計算由規則引擎負責，聊天不計算期限。"
 WHY_REFINE = "本則為模型改寫的文字，系統不替其內容背書，請覆核後採用。"
-WHY_SOURCED = ("本則回答引用了 {n} 筆檢索命中；命中為 KB 向量相似度結果，"
+#: `ranked_by` → **那個分數是什麼**。契約 §3.2 把「一律說成向量相似度」列為不實陳述：
+#: 開了重排之後 `score` 是 cross-encoder 判的語意相關性（實測同一批命中
+#: rerank 0.950 vs embedding 0.732，差 22 個百分點），而法條查表的 1.0／0.0
+#: 根本不是相似度，是條號在不在快照裡。
+#:
+#: 這張表**跟前端 `api/ranker.js` 的 `RANKER_CAPTION` 講同一件事，但不是同一句**：
+#: 那邊是標在分數旁邊的短標籤（「重排模型判定」），這裡是燈號說明句的一個片語。
+#: 兩邊都由 `hits[].ranked_by` 決定，所以不會各自漂到不同的事實上。
+WHY_RANKED_BY = {
+    "rerank": "重排模型判定的語意相關性",
+    "embedding": "向量相似度",
+    None: "法條查表的二元命中（條號在不在快照裡，不是相似度）",
+}
+#: 出現順序固定，否則同一組命中會因為 dict 走訪順序而講出不同的句子。
+_RANKED_BY_ORDER = ("rerank", "embedding", None)
+
+WHY_SOURCED = ("本則回答引用了 {n} 筆檢索命中（{kinds}）；"
                "未對資料集實檔驗證，請覆核後採用。")
+
+
+def _why_sourced(refs: list[dict[str, Any]]) -> str:
+    """依這幾筆命中**實際的** `ranked_by` 組出燈號說明。
+
+    2026-09-13 之前這句話寫死「命中為 KB 向量相似度結果」，不看命中是什麼。
+    雲上實測兩頭都錯（QA 存檔 `t02`／`t04`）：
+
+    - `t02` 是法條查表，`ranked_by:null`、分數是 1.0／0.0 的二元命中——不是相似度。
+    - `t04` 是重排過的 KB 命中，`ranked_by:"rerank"`，分數由 cross-encoder 判。
+
+    兩者的 `why` 都講「向量相似度」。`hits[].ranked_by` 今晚修好了，這一句漏掉。
+    """
+    present = {r.get("ranked_by") for r in refs}
+    kinds = [WHY_RANKED_BY[k] for k in _RANKED_BY_ORDER if k in present]
+    # 認不得的值不猜一個說法：寧可少講一種，也不要把某一批分數歸到錯的說法裡。
+    return WHY_SOURCED.format(n=len(refs), kinds="、".join(kinds) if kinds else "來源未標明")
 WHY_UNSOURCED = "本則回答沒有引用任何檢索命中，系統無法確認其依據，請人工判斷。"
-WHY_DROPPED = ("模型引用了檢索結果之外的來源（{dropped}），已移除；"
-               "該則回答視為無出處。")
+#: ⚠️ **這句話原本自己在說一件它不知道的事。** 原文是「模型引用了檢索結果之外的
+#: 來源（…），已移除」，但寬鬆樣式（`_loose_ids`）抓的是「這幾個編號出現在回答裡」，
+#: **分不出模型是在引用它、還是在說它不存在**。
+#:
+#: 雲上實測（QA `t18`）：承辦人在問題裡自己打了 `[c7]`、`[c8]` 要模型補上，模型
+#: 正確拒絕——「工具回傳的編號只有 L1 到 L6，並沒有 `[c7]` 或 `[c8]`」——
+#: 而系統把這則**正確的拒絕**判成「引用了檢索結果之外的來源」。
+#:
+#: 偵測維持原樣（寬鬆、寧可誤報），理由見 `_loose_ids`；但**說明句不再替模型的
+#: 意圖作證**。紅燈該亮還是亮，只是不編一個「它引用了」的事實。
+WHY_DROPPED = ("本則出現了檢索結果以外的編號（{dropped}）。系統無法分辨那是引用、"
+               "還是在說明那些編號不存在，一律不替本則內容背書，請人工判斷。")
 
 
 # ── 引用編號簿 ──────────────────────────────────────────────────────
@@ -306,6 +351,19 @@ def _loose_ids(answer: str) -> list[str]:
     """回答裡出現的所有 `cN` 樣式（不論有沒有括號），依出現順序、去重。
 
     只用來抓 `dropped_refs`——寬鬆的方向是「多抓」，多抓只會多紅一則。
+
+    **已知的誤報，2026-09-13 評估後刻意不收窄**（QA `t18`）：承辦人自己在問題裡打了
+    `[c7]`，模型正確地回「工具回傳的編號只有 L1 到 L6，並沒有 [c7]」，這裡照樣抓到。
+
+    想過的收窄法與為什麼不採用：
+    - **問題裡出現過的編號就不算**——擋不住真正危險的那種。承辦人打了 `[c7]`、
+      模型接著說「依 [c7] 該案駁回」，那是**替一個不存在的來源編造內容**，
+      而這個規則會放它過去。誤報的代價是一則正確的回答被標成不可信；
+      漏報的代價是一段編造的內容被標成有出處。**兩者不對稱。**
+    - **判斷編號出現在肯定句還是否定句**——那是語意判斷，沒有可靠的樣式可寫，
+      而寫不可靠的樣式等於把紅線交給運氣。
+
+    所以偵測維持寬鬆，改的是**說明句不再替模型的意圖作證**（見 `WHY_DROPPED`）。
     """
     seen: list[str] = []
     for cid in _CITE_LOOSE.findall(answer or ""):
@@ -380,7 +438,7 @@ def classify_answer(
         refs = [refbook.get(c) for c in used] if refbook is not None else []
         refs = [r for r in refs if r is not None]
         if refs:
-            return _verdict("y", "retrieval", WHY_SOURCED.format(n=len(refs)), refs=refs)
+            return _verdict("y", "retrieval", _why_sourced(refs), refs=refs)
 
     # 規則 4：其餘（refs 空、或有 refs 但回答一個都沒引）。
     return _verdict("r", "llm", WHY_UNSOURCED)
@@ -455,7 +513,7 @@ def degraded_summary(out: dict[str, Any]) -> str:
 
 #: 乙案（AgentCore Runtime）容器裡沒有六節點流水線，`run_pipeline` 不會被注入。
 #: **明說「這個檔位沒有」，不要靜默失敗**（契約 v2 §0.1 末段）。
-_NO_PIPELINE = ("這個檔位沒有六節點流水線，解析卷證與生成草稿在這裡跑不了。"
+_NO_PIPELINE = ("這個檔位沒有卷證分析流水線，解析卷證與生成草稿在這裡跑不了。"
                 "請告訴使用者這項功能目前不可用，不要改用推測代替。")
 
 #: 同理：關聯圖要讀 run 檔才畫得出來，沒有注入 adapter 的檔位畫不了。
@@ -661,6 +719,13 @@ def picks_needing_note(picked: list[dict[str, Any]],
             if p["state"] != PICK_MATCHED]
 
 
+#: **這一支工具**的 `call_id`。不是 instance 欄位——同一個 model turn 的多支工具
+#: 併發執行，共享欄位會被後進來的那支蓋掉（實測見 `ChatTools._current_call_id`）。
+#: ContextVar 讓每個執行緒／task 各有一份，配對就不會跨支錯亂。
+_CURRENT_CALL_ID: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "chat_current_call_id", default=None)
+
+
 _NO_RETRIEVER = "目前沒有可用的檢索來源，這個工具查不了。請直接說明查不到，不要改用推測作答。"
 
 #: 分數**不是相似度**的檢索器。`LawTableRetriever.name`（`backend/retrieval/lawtable.py:21`）
@@ -755,23 +820,54 @@ class ChatTools:
         self.law_query_sources = list(law_query_sources or [])
         self.case_query_sources = list(case_query_sources or [])
         self._call_n = 0
-        self._current_call_id: str | None = None
+        #: `_call_n` 的鎖。同一個 model turn 的多支工具是**併發**跑的（見 `_call`），
+        #: `+= 1` 不是原子操作，兩支同時進來會拿到同一個 `tc-N`。
+        self._call_lock = threading.Lock()
 
     # ── 事件 ────────────────────────────────────────────────────────
+
+    @property
+    def _current_call_id(self) -> str | None:
+        """**這一支工具**的 `call_id`。值在 `_CURRENT_CALL_ID` 這個 ContextVar 裡。
+
+        2026-09-13 之前它是一個 instance 欄位，`_call()` 寫、`_result()` 讀。
+        雲上實測（QA `t17-callid2.sse`）抓到配錯：
+
+            seq 1  tool_call   tc-1  search_similar_decisions
+            seq 2  tool_call   tc-2  retrieve_refs
+            seq 3  tool_result tc-2  retrieve_refs
+            seq 4  tool_result tc-2  search_similar_decisions   ← 應該是 tc-1
+
+        **兩個 `tool_call` 都發完了，才發第一個 `tool_result`** ——所以同一個 model turn
+        的多支工具是併發跑的，不是一支跑完再跑下一支（跨輪連續呼叫的 `t16` 配對正確，
+        因為那是真的一支一支來）。tc-2 的 `_call()` 在 tc-1 的 `_result()` 之前把共享
+        欄位蓋掉，於是 tc-1 那張卡永遠等不到它的 result。
+
+        畫面後果（`frontend/src/store/app.js:539` 依 `call_id` 開卡）：
+        **tc-1 那張卡永遠轉圈**，而 tc-2 那張卡的標題與內容不是同一件事。
+
+        用 `ContextVar` 不用 `threading.local`：執行緒與 asyncio task 兩種併發模型
+        都收得住，而這一層不該假設上游用哪一種。
+        """
+        return _CURRENT_CALL_ID.get()
 
     def _call(self, name: str, args: dict[str, Any]) -> str:
         """開一次工具呼叫，配一個本回合內遞增的 `call_id`（契約 v2 §2.3 ②）。
 
         **為什麼 `tool` + `seq` 配不起來**：同一回合內同一支工具可能被呼叫兩次以上
         （讀完爭點常會再查一次法規），前端拿不到配對鍵就只能猜哪個 result 對應哪個 call。
+
+        配號要上鎖、存號要存進 ContextVar——理由見 `_current_call_id`。
         """
-        self._call_n += 1
-        self._current_call_id = f"tc-{self._call_n}"
-        self.tool_calls.append({"tool": name, "args": args, "call_id": self._current_call_id})
+        with self._call_lock:
+            self._call_n += 1
+            call_id = f"tc-{self._call_n}"
+        _CURRENT_CALL_ID.set(call_id)
+        self.tool_calls.append({"tool": name, "args": args, "call_id": call_id})
         if self._emit:
-            self._emit("tool_call", {"call_id": self._current_call_id, "tool": name,
+            self._emit("tool_call", {"call_id": call_id, "tool": name,
                                      "args": args, "label": TOOL_LABELS[name]})
-        return self._current_call_id
+        return call_id
 
     def _result(self, name: str, hits: list[dict[str, Any]], note: str = "",
                 status: str = "ok", **extra: Any) -> None:
@@ -996,10 +1092,13 @@ class ChatTools:
         "intake": "收文欄位（卷證抽取出來的）",
         "facts_excerpt": "事實段原文摘錄",
         "screen": "程序審查結果",
-        "laws": "**案件卷宗**裡的相關法規——承辦人自己挑進來的那份，"
-                "就是畫面右欄「相關法規」看到的東西，也是生成草稿的前置條件看的那份",
-        "cases": "**案件卷宗**裡的相關案例——承辦人自己挑進來的那份，"
-                 "就是畫面右欄「相關案例」看到的東西，也是生成草稿的前置條件看的那份",
+        # **不要寫「畫面右欄」**（2026-09-13 修）：後端不知道承辦人的畫面長什麼樣，
+        # 而模型會照抄（紅線 6）。講「案件卷宗」就夠了——那是這個東西的名字，
+        # 不是它在螢幕上的位置，而分辨這兩份靠的本來就是名字不是位置。
+        "laws": "**案件卷宗**裡的相關法規——承辦人自己挑進本案的那份，"
+                "也是生成草稿的前置條件看的那份",
+        "cases": "**案件卷宗**裡的相關案例——承辦人自己挑進本案的那份，"
+                 "也是生成草稿的前置條件看的那份",
         "retrieved_laws": "**這一輪檢索**查到的法條（N4 查表的結果），"
                           "不是承辦人挑的那份",
         "retrieved_cases": "**這一輪檢索**查到的相似決定，不是承辦人挑的那份",
@@ -1037,7 +1136,7 @@ class ChatTools:
                      f"（{self._SECTION_WHAT.get(pair, pair)}）。"
                      f"**不要說成「卷內什麼都沒有」**，兩份是不同的東西。")
         elif section in _MANIFEST_SECTIONS:
-            note += "請承辦人用右欄的「＋」把法規／案例加進卷宗，或先查一次再加。"
+            note += "請承辦人先把法規／案例加進本案卷宗，或先查一次再加。"
         return note
 
     def read_case(self, section: str) -> str:
@@ -1260,8 +1359,8 @@ class ChatTools:
                           f"請照實把這件事告訴使用者，"
                           f"**不要說這份草稿已經可以直接用、也不要說案件已審查完成**。")
         return (f"已生成草稿（run {out.get('run_id')}，終態 {out.get('state')}，"
-                f"引用 {out.get('cite_count')} 處）。草稿全文請由承辦人在產出區檢視，"
-                f"不要在這裡整份複述。{stuck_note}{note}")
+                f"引用 {out.get('cite_count')} 處）。草稿全文不要在這裡整份複述——"
+                f"它會以完整文件的形式交給承辦人。{stuck_note}{note}")
 
     # ── 工具 chip（`tool_hint`）──────────────────────────────────────
 
@@ -1382,7 +1481,10 @@ class ChatTools:
             parts.append(f"另有 {len(unlinked['laws'])} 條檢索到的法規沒有被任何句子引用。")
         if unlinked.get("issues"):
             parts.append(str(unlinked.get("note") or ""))
-        parts.append("圖已經回給畫面了，**不要在對話裡逐一複述節點**。")
+        # **不要寫「回給畫面了」這種話**（2026-09-13 修）：後端不知道承辦人的畫面
+        # 長什麼樣，而模型會照抄。這跟紅線 6 是同一件事，只是搬到了工具回傳值上——
+        # 假話的來源不是模型，是我們餵給它的字串。
+        parts.append("這張圖已經以結構化資料回傳，**不要在對話裡逐一複述節點**。")
         return "".join(parts)
 
     # ── 給 Strands 的 @tool 包裝 ────────────────────────────────────
@@ -1455,7 +1557,8 @@ class ChatTools:
 
             Args:
                 section: intake（收文欄位）｜facts_excerpt（事實摘錄）｜
-                    screen（程序審查）｜laws（六節點抓到的法條）｜cases（相似案）。
+                    screen（程序審查）｜laws（卷宗清單裡的法規）｜cases（卷宗清單裡的案例）｜
+                    retrieved_laws（這一輪檢索到的法條）｜retrieved_cases（這一輪檢索到的相似決定）。
             """
             return outer.read_case(section)
 
