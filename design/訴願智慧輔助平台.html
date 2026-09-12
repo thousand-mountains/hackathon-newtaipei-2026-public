@@ -312,6 +312,7 @@ button{font:inherit;color:inherit;cursor:pointer}
 .fgroup-h .gc{margin-left:auto;font-family:var(--mono);font-size:10.5px;color:var(--muted)}
 .fgroup-h .add{border:1px solid var(--line);background:var(--ground);border-radius:2px;width:19px;height:19px;line-height:1;display:flex;align-items:center;justify-content:center;font-size:13px;color:var(--muted);padding:0}
 .fgroup-h .add:hover{color:var(--acc-2);border-color:var(--acc-2)}
+.fgroup-h .add.upload svg{display:block}
 .fgroup-body{padding:5px}
 .fgroup.collapsed .fgroup-body{display:none}
 .fitem{display:flex;gap:7px;align-items:flex-start;padding:6px 7px;border-radius:3px}
@@ -325,6 +326,24 @@ button{font:inherit;color:inherit;cursor:pointer}
 .fitem:hover .rm{opacity:1}
 .fitem .rm:hover{color:var(--alert)}
 .fempty{font-size:11.5px;color:var(--faint);padding:8px 8px 10px;text-align:center;line-height:1.6}
+
+/* 新增項目發光提示 */
+@keyframes flashHead{0%{background:var(--brand-wash)}100%{background:var(--panel-2)}}
+@keyframes flashBody{0%{background:var(--brand-wash)}100%{background:var(--ground)}}
+@keyframes flashItem{0%{background:var(--brand-wash)}70%{background:var(--brand-wash)}100%{background:transparent}}
+.fgroup.glow .fgroup-h{animation:flashHead 1.3s ease}
+.fgroup.glow .fgroup-body{animation:flashBody 1.3s ease}
+.fitem.fitem-new{animation:flashItem 1.5s ease;border-radius:3px}
+@media (prefers-reduced-motion:reduce){
+  .fgroup.glow .fgroup-h,.fgroup.glow .fgroup-body,.fitem.fitem-new{animation:none}
+}
+
+/* 搜尋加入對話框 */
+.ssearch{display:flex;align-items:center;gap:10px;margin-bottom:10px}
+.ssearch .field{flex:1}
+.ssspin{display:flex;align-items:center;gap:6px;font-size:11.5px;color:var(--muted);white-space:nowrap;flex:0 0 auto}
+.sslist{max-height:320px;overflow-y:auto;transition:opacity .15s}
+.sslist.searching{opacity:.45}
 
 /* ── 關聯圖 ────────────────────────────── */
 .graphwrap{border:1px solid var(--line);border-radius:var(--r);background:var(--ground);overflow:hidden}
@@ -373,6 +392,8 @@ button{font:inherit;color:inherit;cursor:pointer}
 .btn:hover{border-color:var(--acc-2);color:var(--acc-2)}
 .btn.pri{background:var(--acc);border-color:var(--acc);color:var(--acc-ink)}
 .btn.pri:hover{color:var(--acc-ink);opacity:.9}
+.btn.danger{background:var(--alert);border-color:var(--alert);color:#fff}
+.btn.danger:hover{opacity:.9;color:#fff}
 
 .pickrow{display:flex;gap:10px;align-items:flex-start;padding:9px 10px;border:1px solid var(--line-soft);border-radius:3px;margin-bottom:6px;cursor:pointer}
 .pickrow:hover{border-color:var(--acc-2);background:var(--acc-wash)}
@@ -630,7 +651,6 @@ function renderTree(){
   const box=$("#tree");box.innerHTML="";
   buckets().forEach(f=>{
     const list=S.cases.filter(c=>c.folderId===f.id);
-    if(f.fixed&&!list.length&&S.folders.length)return;
     const wrap=el("div","tree-folder");
     const row=el("div","tree-row"+(f.open?"":" collapsed")+(f.fixed?" fixed":""));
     row.innerHTML='<span class="tw">▼</span><span class="fname"></span>';
@@ -706,9 +726,16 @@ function caseMenu(e,c){
     "-",
     {label:"刪除案件",danger:true,fn:()=>{
       if(S.cases.length===1){toast("至少須保留一件案件");return;}
-      S.cases=S.cases.filter(x=>x.id!==c.id);
-      if(S.activeId===c.id)S.activeId=S.cases[0].id;
-      renderAll();toast("案件已刪除");
+      confirmSheet({
+        title:"刪除案件",
+        body:`確定要刪除「${esc(c.name)}」嗎？案件內的卷證、案例、法規與草稿都會一併消失，此動作無法復原。`,
+        confirmLabel:"刪除案件",
+        fn:()=>{
+          S.cases=S.cases.filter(x=>x.id!==c.id);
+          if(S.activeId===c.id)S.activeId=S.cases[0].id;
+          renderAll();toast("案件已刪除");
+        }
+      });
     }}
   ]);
 }
@@ -717,11 +744,29 @@ function folderMenu(e,f){
     {label:"重新命名",fn:()=>promptSheet("重新命名資料夾","資料夾名稱",f.name,v=>{f.name=v;renderTree();})},
     {label:"在此新增案件",fn:()=>{const c=newCase(null,f.id);f.open=true;S.activeId=c.id;renderAll();}},
     "-",
-    {label:"刪除資料夾（案件移至未分類）",danger:true,fn:()=>{
-      S.cases.forEach(c=>{if(c.folderId===f.id)c.folderId=null;});
-      S.folders=S.folders.filter(x=>x.id!==f.id);renderTree();
+    {label:"刪除資料夾",danger:true,fn:()=>{
+      const n=S.cases.filter(x=>x.folderId===f.id).length;
+      confirmSheet({
+        title:"刪除資料夾",
+        body:n?`確定要刪除「${esc(f.name)}」嗎？裡面的 ${n} 件案件會移至「未分類」，資料夾本身無法復原。`
+              :`確定要刪除「${esc(f.name)}」嗎？此動作無法復原。`,
+        confirmLabel:"刪除資料夾",
+        fn:()=>{
+          S.cases.forEach(c=>{if(c.folderId===f.id)c.folderId=null;});
+          S.folders=S.folders.filter(x=>x.id!==f.id);renderTree();
+          toast("資料夾已刪除");
+        }
+      });
     }}
   ]);
+}
+function confirmSheet({title,body,confirmLabel,fn}){
+  const b=el("div");
+  b.innerHTML=`<p style="margin:0;font-size:13.5px;line-height:1.75;color:var(--ink-2)">${body}</p>`;
+  openSheet({title,body:b,actions:[
+    {label:"取消",fn:closeSheet},
+    {label:confirmLabel,danger:true,fn:()=>{closeSheet();fn();}}
+  ]});
 }
 
 /* ══════════════════ 右側卷宗 ══════════════════ */
@@ -732,24 +777,38 @@ const GROUPS=[
   {key:"out",name:"答辯書與產出",abbr:"稿",empty:"草稿與匯出檔案會存放於此。"}
 ];
 const collapsed={};
+let touched=[];
+function addOne(c,key,item){
+  item._new=true;
+  c.docs[key].push(item);
+  if(!touched.includes(key))touched.push(key);
+  return item;
+}
+const ICON_UPLOAD='<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 15.5V4.2"/><path d="M7.4 8.6L12 4l4.6 4.6"/><path d="M4.5 15.5v3a2 2 0 002 2h11a2 2 0 002-2v-3"/></svg>';
 function renderFolders(){
   const box=$("#folders");box.innerHTML="";
   const c=active();let total=0;
   GROUPS.forEach(g=>{
     const items=c.docs[g.key];total+=items.length;
     const wrap=el("div","fgroup"+(collapsed[g.key]?" collapsed":""));
+    wrap.dataset.key=g.key;
     const head=el("div","fgroup-h");
     head.innerHTML=`<span class="tw">▼</span><span class="gn"></span><span class="gc">${items.length}</span>`;
     head.querySelector(".gn").textContent=g.name;
-    const add=el("button","add","＋");add.title="加入項目";
-    add.onclick=ev=>{ev.stopPropagation();addSheet(g);};
-    head.appendChild(add);
+    const isUpload=g.key==="evidence";
+    if(g.key!=="out"){
+      const add=el("button","add"+(isUpload?" upload":""));
+      add.innerHTML=isUpload?ICON_UPLOAD:"＋";
+      add.title=isUpload?"上傳卷證檔案":"搜尋並加入";
+      add.onclick=ev=>{ev.stopPropagation();isUpload?uploadSheet():searchSheet(g);};
+      head.appendChild(add);
+    }
     head.onclick=()=>{collapsed[g.key]=!collapsed[g.key];renderFolders();};
     wrap.appendChild(head);
     const body=el("div","fgroup-body");
     if(!items.length)body.appendChild(el("div","fempty",g.empty));
     items.forEach((it,i)=>{
-      const row=el("div","fitem");
+      const row=el("div","fitem"+(it._new?" fitem-new":""));
       row.appendChild(el("span","ic",it.ext||g.abbr));
       const t=el((it.full||it.graph)?"button":"div","ft");
       t.innerHTML=`${esc(it.name)}${it.note?`<small>${esc(it.note)}</small>`:""}`;
@@ -764,39 +823,88 @@ function renderFolders(){
   });
   $("#folder-count").textContent=total?total+" 項":"";
 }
-function addSheet(g){
-  const c=active();
-  let pool=[];
-  if(g.key==="evidence")pool=EVIDENCE_POOL.map(f=>({name:f.name,note:f.note,ext:f.ext}));
-  if(g.key==="laws")pool=LAW_POOL.map(l=>({name:l.no+"　"+l.title,note:l.note,ext:"法",full:`<p>${esc(l.body)}</p><p style="color:var(--muted);font-size:12.5px">${esc(l.note)}</p>`}));
-  if(g.key==="cases")pool=CASE_POOL.map(k=>({name:k.no+"　"+k.title,note:k.type+"．"+k.verdict,ext:"例",full:k.full}));
-  if(g.key==="out")pool=[{name:"訴願決定書草稿 v1",note:"待生成",ext:"稿"}];
-  const have=new Set(c.docs[g.key].map(x=>x.name));
-  const avail=pool.filter(p=>!have.has(p.name));
-  const b=el("div");
-  b.appendChild(el("p",null,`<span style="color:var(--muted);font-size:12.5px">勾選要加入「${esc(g.name)}」的項目，或於下方自行輸入。</span>`));
-  const list=el("div");
-  if(!avail.length)list.appendChild(el("p",null,'<span style="color:var(--faint);font-size:12.5px">建議清單中的項目皆已加入。</span>'));
-  avail.forEach((p,i)=>{
-    const r=el("label","pickrow");
-    r.innerHTML=`<input type="checkbox" id="pk${i}"><span class="pt">${esc(p.name)}<small>${esc(p.note||"")}</small></span>`;
-    r.querySelector("input").dataset.i=i;list.appendChild(r);
+function flushTouched(){
+  if(!touched.length){renderFolders();return;}
+  const keys=touched.slice();touched=[];
+  keys.forEach(k=>{collapsed[k]=false;});
+  renderFolders();
+  requestAnimationFrame(()=>{
+    keys.forEach(k=>{
+      const g=document.querySelector('.fgroup[data-key="'+k+'"]');
+      if(!g)return;
+      g.scrollIntoView({behavior:"smooth",block:"nearest"});
+      g.classList.add("glow");
+      setTimeout(()=>g.classList.remove("glow"),1300);
+    });
   });
-  b.appendChild(list);
-  const custom=el("div");custom.style.marginTop="12px";
-  custom.innerHTML='<label class="flabel" for="cust">自訂項目名稱</label><input class="field" id="cust" placeholder="例：環境部 114 年環部廢字第 1140012345 號函">';
-  b.appendChild(custom);
-  openSheet({title:"加入項目至卷宗",sub:g.name,body:b,actions:[
+  setTimeout(()=>{
+    const c=active();if(!c)return;
+    keys.forEach(k=>c.docs[k]&&c.docs[k].forEach(it=>delete it._new));
+  },1500);
+}
+function searchSheet(g){
+  const c=active();
+  const pool = g.key==="laws"
+    ? LAW_POOL.map(l=>({name:l.no+"　"+l.title,note:l.note,ext:"法",
+        kw:(l.no+l.title+l.note+l.body).toLowerCase(),
+        full:`<p style="font-family:var(--serif);line-height:2">${esc(l.body)}</p><p style="color:var(--muted);font-size:12.5px;border-top:1px solid var(--line-soft);padding-top:10px">本案關聯：${esc(l.note)}</p>`}))
+    : CASE_POOL.map(k=>({name:k.no+"　"+k.title,note:k.type+"．"+k.verdict+"．相似度 "+k.sim+"%",ext:"例",
+        kw:(k.no+k.title+k.type+k.verdict+k.law).toLowerCase(),full:k.full}));
+  const have=new Set(c.docs[g.key].map(x=>x.name));
+
+  const b=el("div","searchsheet");
+  b.innerHTML=`<div class="ssearch">
+      <input class="field" id="ssq" placeholder="輸入關鍵字搜尋，例如法條字號、案由、爭點⋯⋯" autocomplete="off">
+      <span class="ssspin" id="ssspin" hidden><span class="spin"></span>搜尋中⋯⋯</span>
+    </div>
+    <div class="sslist" id="sslist"></div>`;
+  openSheet({title:"搜尋並加入"+g.name,sub:g.name+"．後端資料庫",body:b,actions:[
     {label:"取消",fn:closeSheet},
-    {label:"加入",pri:true,fn:()=>{
-      let n=0;
-      list.querySelectorAll("input:checked").forEach(inp=>{c.docs[g.key].push(avail[+inp.dataset.i]);n++;});
-      const cv=$("#cust").value.trim();
-      if(cv){c.docs[g.key].push({name:cv,note:"承辦人手動加入",ext:g.abbr});n++;}
-      closeSheet();renderFolders();
+    {label:"加入所選",pri:true,fn:()=>{
+      const list=$("#sslist");let n=0;
+      list.querySelectorAll("input:checked").forEach(inp=>{
+        const item=pool[+inp.dataset.i];
+        addOne(c,g.key,{name:item.name,note:item.note,ext:item.ext,full:item.full});
+        n++;
+      });
+      closeSheet();flushTouched();
       toast(n?`已加入 ${n} 項至「${g.name}」`:"未選擇任何項目");
     }}
   ]});
+
+  const q=$("#ssq"),list=$("#sslist"),spin=$("#ssspin");
+  function draw(items){
+    list.innerHTML="";
+    if(!items.length){
+      list.appendChild(el("p",null,'<span style="color:var(--faint);font-size:12.5px;display:block;padding:14px 2px">沒有符合的結果，換個關鍵字試試。</span>'));
+      return;
+    }
+    items.forEach(p=>{
+      const idx=pool.indexOf(p);
+      const r=el("label","pickrow");
+      r.innerHTML=`<input type="checkbox" data-i="${idx}"><span class="pt">${esc(p.name)}<small>${esc(p.note||"")}</small></span>`;
+      list.appendChild(r);
+    });
+  }
+  function drawIdle(){
+    list.innerHTML="";
+    list.appendChild(el("p",null,'<span style="color:var(--faint);font-size:12.5px;display:block;padding:14px 2px">輸入關鍵字開始搜尋⋯⋯</span>'));
+  }
+  function runSearch(){
+    const term=q.value.trim().toLowerCase();
+    if(!term){drawIdle();return;}
+    const avail=pool.filter(p=>!have.has(p.name));
+    draw(avail.filter(p=>p.kw.includes(term)));
+  }
+  drawIdle();
+  let deb;
+  q.addEventListener("input",()=>{
+    clearTimeout(deb);
+    if(!q.value.trim()){spin.hidden=true;list.classList.remove("searching");drawIdle();return;}
+    spin.hidden=false;list.classList.add("searching");
+    deb=setTimeout(()=>{runSearch();spin.hidden=true;list.classList.remove("searching");},420);
+  });
+  setTimeout(()=>q.focus(),30);
 }
 function docSheet(it){
   const b=el("div");
@@ -810,7 +918,10 @@ function scrollDown(){const s=stream();s.scrollTop=s.scrollHeight;}
 function mount(node){
   const c=active();
   let inner=c.dom;
-  if(!inner){inner=el("div","stream-inner");c.dom=inner;}
+  if(!inner){
+    inner=el("div","stream-inner");c.dom=inner;
+    const s=stream();s.innerHTML="";s.appendChild(inner);
+  }
   inner.appendChild(node);scrollDown();return node;
 }
 function userMsg(text,files,isCmd){
@@ -877,7 +988,7 @@ async function runTool(id,arg,silent){
   if(!silent){userMsg(arg?`${tool.cmd} ${arg}`:tool.cmd,null,true);await sleep(240);}
   pendingAck=pick(ACKS[id]||["好的，這就處理。"]);
   busy=true;setChips();
-  try{await IMPL[id](c,tool,arg);}finally{pendingAck=null;busy=false;c.started=true;renderTree();setChips();renderFolders();renderStages();scrollDown();}
+  try{await IMPL[id](c,tool,arg);}finally{pendingAck=null;busy=false;c.started=true;renderTree();setChips();flushTouched();renderStages();scrollDown();}
 }
 
 const IMPL={
@@ -964,7 +1075,7 @@ async cases(c,tool){
   const have=new Set(c.docs.cases.map(x=>x.name));
   CASE_POOL.forEach(k=>{
     const nm=k.no+"　"+k.title;
-    if(!have.has(nm))c.docs.cases.push({name:nm,note:k.type+"．"+k.verdict+"．相似度 "+k.sim+"%",ext:"例",full:k.full});
+    if(!have.has(nm))addOne(c,"cases",{name:nm,note:k.type+"．"+k.verdict+"．相似度 "+k.sim+"%",ext:"例",full:k.full});
   });
   c.flags.cases=true;
   aiMsg("<p>撈到 5 筆，都放進右側卷宗了，點卡片可以看全文。其中 <b>1143058447</b> 就爭點一提出「物理狀態＋交易價值＋處置意思」三要素判準，<b>1143041902</b> 就爭點二採撤銷另處之體例，二者最具參考價值。</p>");
@@ -989,7 +1100,7 @@ async laws(c,tool){
   const have=new Set(c.docs.laws.map(x=>x.name));
   LAW_POOL.forEach(l=>{
     const nm=l.no+"　"+l.title;
-    if(!have.has(nm))c.docs.laws.push({name:nm,note:l.note,ext:"法",
+    if(!have.has(nm))addOne(c,"laws",{name:nm,note:l.note,ext:"法",
       full:`<p style="font-family:var(--serif);line-height:2">${esc(l.body)}</p><p style="color:var(--muted);font-size:12.5px;border-top:1px solid var(--line-soft);padding-top:10px">本案關聯：${esc(l.note)}</p>`});
   });
   c.flags.laws=true;
@@ -1018,7 +1129,7 @@ async graph(c,tool){
   out.appendChild(sec);
   c.flags.graph=true;
   if(!c.docs.out.some(x=>x.name==="案件關聯圖"))
-    c.docs.out.push({name:"案件關聯圖",note:GNODES.length+" 節點．"+GEDGES.length+" 條關聯",ext:"圖",graph:true});
+    addOne(c,"out",{name:"案件關聯圖",note:GNODES.length+" 節點．"+GEDGES.length+" 條關聯",ext:"圖",graph:true});
   aiMsg("<p>畫好了！<b>兩條紅色虛線</b>都指向爭點一：答辯意旨與訴願意旨就堆置物性質直接對立，而稽查工作紀錄僅呈現外觀、不足以支持「減失原效用」之要件事實。這是本案最脆弱的一環，撰擬理由欄時應優先處理。</p>");
 },
 
@@ -1037,7 +1148,7 @@ async draft(c,tool){
   out.innerHTML=DRAFT_HTML;
   c.flags.draft=true;
   if(!c.docs.out.some(x=>x.name==="訴願決定書草稿 v1"))
-    c.docs.out.push({name:"訴願決定書草稿 v1",note:"AI 生成．引註 14 處．待承辦人審核",ext:"稿",full:DRAFT_HTML});
+    addOne(c,"out",{name:"訴願決定書草稿 v1",note:"AI 生成．引註 14 處．待承辦人審核",ext:"稿",full:DRAFT_HTML});
   aiMsg("<p>初稿出爐，已歸檔。全文 14 處引註皆可回溯至右側卷宗，未附來源之推論已一律略去。<b>擬採主文為「原處分撤銷，由原處分機關於 2 個月內另為適法之處分」</b>——理由在於程序瑕疵尚待補正、且廢棄物性質之要件事實調查未足，宜由原處分機關重為調查認定，而非逕予撤銷。如欲改採其他主文，請告知方向由我修潤。</p>");
 },
 
@@ -1096,7 +1207,7 @@ async function exportFile(c,tool,kind){
   row.append(b1,b2);card.appendChild(row);
   out.appendChild(card);
   const nm=fname;
-  if(!c.docs.out.some(x=>x.name===nm))c.docs.out.push({name:nm,note:(isPdf?"PDF":"Word")+"．訴願決定書版型",ext:isPdf?"pdf":"docx"});
+  if(!c.docs.out.some(x=>x.name===nm))addOne(c,"out",{name:nm,note:(isPdf?"PDF":"Word")+"．訴願決定書版型",ext:isPdf?"pdf":"docx"});
   c.flags.out=true;
   aiMsg(`<p>${isPdf?"PDF":"Word 檔"}已產出並歸檔至右側「答辯書與產出」。委員署名欄依訴願審議委員會現行名單自動帶入，教示條款依主文自動選用。</p>`);
 }
@@ -1320,7 +1431,7 @@ function setChips(){
   if(f.cases&&f.laws&&!f.draft)add("生成決定書草稿",()=>runTool("draft"),"▸");
   if(f.draft){
     add("優化文案：語氣更嚴謹",()=>runTool("refine","語氣更嚴謹、論理更緊密"),"▸");
-    add("補充卷宗資料",()=>addSheet(GROUPS[2]),"＋");
+    add("補充相關法規",()=>searchSheet(GROUPS[2]),"＋");
     if(f.graph)add("重繪關聯圖",()=>runTool("graph"),"▸");
     if(!f.out){add("生成 PDF",()=>runTool("pdf"),"▸");add("生成 DOC",()=>runTool("doc"),"▸");}
     else{add("重新生成 PDF",()=>runTool("pdf"),"▸");add("生成 DOC",()=>runTool("doc"),"▸");}
@@ -1355,6 +1466,35 @@ function attachSheet(){
     {label:"附加至訊息",pri:true,fn:()=>{
       list.querySelectorAll("input:checked").forEach(inp=>S.pendingFiles.push(avail[+inp.dataset.i]));
       closeSheet();renderPending();$("#input").focus();
+    }}
+  ]});
+}
+function uploadSheet(){
+  const c=active();
+  const have=new Set(c.docs.evidence.map(x=>x.name));
+  const avail=EVIDENCE_POOL.filter(f=>!have.has(f.name));
+  const b=el("div");
+  b.appendChild(el("p",null,'<span style="color:var(--muted);font-size:12.5px">原型展示：以下為模擬的本機卷證檔案，勾選後直接上傳至卷宗。</span>'));
+  const list=el("div");
+  if(!avail.length)list.appendChild(el("p",null,'<span style="color:var(--faint);font-size:12.5px">示範檔案皆已上傳。</span>'));
+  avail.forEach((f,i)=>{
+    const r=el("label","pickrow");
+    r.innerHTML=`<input type="checkbox" checked><span class="pt">${esc(f.name)}<small>${esc(f.note)}</small></span>`;
+    r.querySelector("input").dataset.i=i;list.appendChild(r);
+  });
+  b.appendChild(list);
+  openSheet({title:"上傳卷證檔案",sub:"卷證檔案",body:b,actions:[
+    {label:"取消",fn:closeSheet},
+    {label:"上傳",pri:true,fn:()=>{
+      let n=0;
+      list.querySelectorAll("input:checked").forEach(inp=>{addOne(c,"evidence",avail[+inp.dataset.i]);n++;});
+      closeSheet();
+      if(n){
+        c.started=true;renderTree();$("#attach").classList.remove("hintme");
+        if(isAutoName(c.name)){c.name="吉○實業／違反廢清法";}
+      }
+      flushTouched();
+      toast(n?`已上傳 ${n} 份卷證`:"未選擇任何檔案");
     }}
   ]});
 }
@@ -1397,37 +1537,44 @@ function matchTool(text){
   return null;
 }
 
+let sendLock=false;
 async function send(){
-  if(busy)return;
+  if(sendLock||busy)return;
   const inp=$("#input");
   const text=inp.value.trim();
   const files=S.pendingFiles.slice();
   if(!text&&!files.length)return;
-  const c=active();
-  inp.value="";autosize();S.pendingFiles=[];renderPending();closeSlash();
-  userMsg(text||"（附加檔案）",files);
-  if(files.length){
-    files.forEach(f=>{if(!c.docs.evidence.some(x=>x.name===f.name))c.docs.evidence.push({name:f.name,note:f.note,ext:f.ext});});
-    c.started=true;renderFolders();renderTree();$("#attach").classList.remove("hintme");
-    if(isAutoName(c.name)){c.name="吉○實業／違反廢清法";renderAll();}
-  }
-  await sleep(280);
+  sendLock=true;
+  try{
+    const c=active();
+    inp.value="";autosize();S.pendingFiles=[];renderPending();closeSlash();
+    userMsg(text||"（附加檔案）",files);
+    if(files.length){
+      files.forEach(f=>{if(!c.docs.evidence.some(x=>x.name===f.name))addOne(c,"evidence",{name:f.name,note:f.note,ext:f.ext});});
+      c.started=true;renderTree();$("#attach").classList.remove("hintme");
+      if(isAutoName(c.name)){c.name="吉○實業／違反廢清法";}
+      flushTouched();
+    }
+    await sleep(280);
 
-  if(/你會什麼|會做什麼|有哪些工具|有什麼工具|能做什麼|功能|help|工具清單/i.test(text)){
-    const h=aiShell();h.innerHTML=toolListHTML();renderToolCards(h);scrollDown();setChips();return;
+    if(/你會什麼|會做什麼|有哪些工具|有什麼工具|能做什麼|功能|help|工具清單/i.test(text)){
+      const h=aiShell();h.innerHTML=toolListHTML();renderToolCards(h);scrollDown();setChips();return;
+    }
+    const tool=text?matchTool(text):null;
+    if(tool){
+      let arg="";
+      if(tool.id==="refine")arg=text.replace(tool.cmd,"").replace(/優化文案|優化|修潤|潤稿/g,"").trim();
+      await runTool(tool.id,arg,true);return;
+    }
+    if(files.length&&!text){
+      aiMsg(`<p>已收到 ${files.length} 份卷證並歸檔至右側「卷證檔案」。是否要開始萃取？點選下方的「萃取答辯書」，或直接輸入 <code style="font-family:var(--mono);font-size:11.5px">/萃取答辯書</code>。</p>`);
+      setChips();return;
+    }
+    aiMsg('<p>這句我沒對到工具。可以按 <code style="font-family:var(--mono);font-size:11.5px">/</code> 查看可呼叫的工具清單，或輸入「你會什麼」讓我列出全部 7 支 API。</p>');
+    setChips();
+  } finally {
+    sendLock=false;
   }
-  const tool=text?matchTool(text):null;
-  if(tool){
-    let arg="";
-    if(tool.id==="refine")arg=text.replace(tool.cmd,"").replace(/優化文案|優化|修潤|潤稿/g,"").trim();
-    await runTool(tool.id,arg,true);return;
-  }
-  if(files.length&&!text){
-    aiMsg(`<p>已收到 ${files.length} 份卷證並歸檔至右側「卷證檔案」。是否要開始萃取？點選下方的「萃取答辯書」，或直接輸入 <code style="font-family:var(--mono);font-size:11.5px">/萃取答辯書</code>。</p>`);
-    setChips();return;
-  }
-  aiMsg('<p>這句我沒對到工具。可以按 <code style="font-family:var(--mono);font-size:11.5px">/</code> 查看可呼叫的工具清單，或輸入「你會什麼」讓我列出全部 7 支 API。</p>');
-  setChips();
 }
 
 /* ══════════════════ 斜線選單 ══════════════════ */
@@ -1439,13 +1586,19 @@ function openSlash(filter){
   items.forEach((t,i)=>{
     const b=el("button","slash-item"+(i===slashSel?" sel":""));
     b.innerHTML=`<span class="cmd">${esc(t.cmd)}</span><span class="d">${esc(t.name)}<small>${esc(t.desc)}</small></span>`;
-    b.onclick=()=>{closeSlash();$("#input").value="";runTool(t.id);};
+    b.onclick=()=>{fillSlash(t);};
     list.appendChild(b);
   });
   $("#slash").classList.add("open");
   $("#slash").dataset.items=items.map(t=>t.id).join(",");
 }
 function closeSlash(){$("#slash").classList.remove("open");slashSel=0;}
+function fillSlash(t){
+  const inp=$("#input");
+  inp.value=t.cmd+" ";
+  closeSlash();autosize();inp.focus();
+  const len=inp.value.length;inp.setSelectionRange(len,len);
+}
 
 /* ══════════════════ Sheet / Toast ══════════════════ */
 let sheetEl=null;
@@ -1460,7 +1613,7 @@ function openSheet({title,sub,body,actions,wide,xwide}){
   const x=el("button","x","×");x.setAttribute("aria-label","關閉");x.onclick=closeSheet;h.appendChild(x);
   const b=el("div","sheet-b");b.appendChild(body);
   const f=el("div","sheet-f");
-  (actions||[]).forEach(a=>{const btn=el("button","btn"+(a.pri?" pri":""));btn.textContent=a.label;btn.onclick=a.fn;f.appendChild(btn);});
+  (actions||[]).forEach(a=>{const btn=el("button","btn"+(a.danger?" danger":a.pri?" pri":""));btn.textContent=a.label;btn.onclick=a.fn;f.appendChild(btn);});
   sh.append(h,b,f);scrim.appendChild(sh);
   scrim.onclick=e=>{if(e.target===scrim)closeSheet();};
   $("#modal-root").appendChild(scrim);sheetEl=scrim;
@@ -1546,7 +1699,9 @@ inp.addEventListener("keydown",e=>{
   }
   if(e.key==="Enter"&&!e.shiftKey){
     e.preventDefault();
+    if(e.repeat)return;
     if(open){const items=[...$("#slash-list").children];(items[slashSel]||items[0]).click();return;}
+    if(sendLock||busy)return;
     send();
   }
 });
