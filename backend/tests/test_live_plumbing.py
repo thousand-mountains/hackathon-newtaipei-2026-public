@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import importlib.util
 import json
 import os
 import pathlib
@@ -34,7 +35,7 @@ from backend.orchestrator.graph import (
 from backend.orchestrator.state import CaseState, NodeCtx
 from backend.retrieval.base import Hit
 import backend.retrieval.kb as kb_module
-from backend.retrieval.kb import KBRetriever, build_retriever
+from backend.retrieval.kb import KBRetriever, build_retriever, describe_similar_case_backend
 from backend.tests import run_all
 from backend.tests.harness import assert_eq, assert_in, assert_true
 from backend.tests.test_gate_hardening import _confirmed_of
@@ -63,7 +64,7 @@ def test_settings_defaults_are_offline():
         assert_eq(settings.run_mode(), "fixture")
         assert_eq(settings.model_provider(), "bedrock")
         assert_eq(settings.retriever_kind(), "lawtable_only")
-        assert_eq(settings.kb_min_score(), 0.25)
+        assert_eq(settings.kb_min_score(), 0.15)
         assert_eq(settings.missing_live_settings("fixture", "lawtable_only"), [])
 
 
@@ -852,6 +853,19 @@ def test_n5_logs_when_upstream_retrieval_is_empty():
 
 
 # ── Task 5：Managed KB 檢索器與 N4 通道 B ────────────────────────────
+def _search_cfg(call: dict) -> dict:
+    """從一次 retrieve 呼叫裡取出搜尋設定，**不管它用的是哪個鍵**。
+
+    設定鍵依 KB 型態而異（managed／vector，見 kb.py），由 `kb.py` 自己試錯決定。
+    這些測試在乎的是 `numberOfResults` 抓多深，不是鍵叫什麼——把鍵名釘死在斷言裡，
+    等於讓「支援另一種 KB」這件事必然弄紅一票無關的測試（2026-09-12 已經發生過一次）。
+    鍵名本身的正確性由 `test_search_key_*` 那組守。
+    """
+    cfg = call["retrievalConfiguration"]
+    assert_eq(len(cfg), 1, f"一次呼叫只能帶一個搜尋設定鍵，實際={list(cfg)}")
+    return next(iter(cfg.values()))
+
+
 class _FakeBedrockAgentRuntime:
     """模擬 boto3 bedrock-agent-runtime client 的 retrieve()。"""
 
@@ -887,15 +901,40 @@ def test_kb_retriever_filters_by_prefix_score_filetype_and_exclusion():
     assert_true(hits[0].verified is False, "verified 由 N6 對 manifest 決定，檢索不自己宣稱")
     call = fake.calls[0]
     assert_eq(call["knowledgeBaseId"], "kb-x")
-    assert_eq(call["retrievalConfiguration"]["vectorSearchConfiguration"]["numberOfResults"],
+    assert_eq(_search_cfg(call)["numberOfResults"],
               kb_module.REF_FETCH_DEPTH, "先多抓再後過濾（深度見 REF_FETCH_DEPTH）")
+
+
+def test_kb_retriever_dedupes_hits_from_the_same_source_file():
+    """同一份文件被切成多個 chunk，只算**一筆**——留分數最高的那個。
+
+    2026-09-12 實測：查詢「寄存送達 自寄存之日起發生效力」回的 3 筆函釋，
+    全是同一個檔案（`法務部93年4月13日法律字0930014628號函-寄存送達.txt`）的不同 chunk。
+    不去重的話 N5 的 refs 會出現 R1／R2／R3 指向同一份函釋，
+    承辦人看到「3 筆依據」，其實只有 1 份——那是對「有多少佐證」說謊（CONSTITUTION §1）。
+    相似案通道同樣會中（同一份決定書切兩塊，看板上就是兩張卡）。
+
+    `retrieve` 的結果已按 score 降序，所以 first-seen 就是最高分那個 chunk。
+    """
+    fake = _FakeBedrockAgentRuntime([
+        _kb_result("行政函釋/法務部93年-寄存送達.txt", 0.95, "chunk 1：寄存送達自寄存之日起…"),
+        _kb_result("行政函釋/法務部93年-寄存送達.txt", 0.44, "chunk 2：同一份函釋的另一段"),
+        _kb_result("行政函釋/法務部93年-寄存送達.txt", 0.28, "chunk 3：同一份函釋的第三段"),
+        _kb_result("行政函釋/內政部100年-送達.txt", 0.30, "另一份函釋"),
+    ])
+    r = KBRetriever(kb_id="k", region="r", min_score=0.25, client=fake)
+    hits = r.search("寄存送達", filters={"prefix": ["行政函釋/"]}, top_k=5)
+    assert_eq([h.source for h in hits],
+              ["行政函釋/法務部93年-寄存送達.txt", "行政函釋/內政部100年-送達.txt"])
+    assert_eq(hits[0].score, 0.95, "同源多 chunk 留最高分")
+    assert_eq([h.id for h in hits], ["kb-1", "kb-2"], "id 依去重後的順序連號，不留空號")
 
 
 def test_kb_retriever_parses_public_prefix_and_outcome_from_filename():
     res = _kb_result("x", 0.9, "t")
     res["location"]["s3Location"]["uri"] = "s3://b/kb/public/新北訴願決定書_全量/1121051256_不受理.txt"
     res["metadata"]["_source_uri"] = res["location"]["s3Location"]["uri"]
-    r = KBRetriever(kb_id="k", region="r", client=_FakeBedrockAgentRuntime([res]))
+    r = KBRetriever(kb_id="k", region="r", min_score=0.25, client=_FakeBedrockAgentRuntime([res]))
     hits = r.search("q", filters={"prefix": ["新北訴願決定書_全量/"]})
     assert_eq(hits[0].payload["provenance"], "public_crawl")
     assert_eq(hits[0].payload["outcome"], "不受理")
@@ -979,7 +1018,7 @@ def test_similar_case_quota_queries_each_batch_separately():
         hits = r.search("q", top_k=5)
     calls = r._client.calls
     assert_eq(len(calls), 2, "相似案通道要兩批各打一次，不是打一次撈一大包")
-    assert_eq(calls[0]["retrievalConfiguration"]["vectorSearchConfiguration"]["numberOfResults"], 50,
+    assert_eq(_search_cfg(calls[0])["numberOfResults"], 50,
               "配額查詢要抓夠深，否則少數批永遠被擠掉（2026-09-12 實測 15 撈到 0 筆 official）")
     provs = [h.payload["provenance"] for h in hits]
     assert_eq(len(hits), 5)
@@ -1030,7 +1069,7 @@ def test_explicit_prefix_still_does_a_single_query():
     r = _quota_retriever([[_kb_result("行政函釋/法務部93.txt", 0.9, "函釋")]])
     hits = r.search("q", filters={"prefix": ["行政函釋/", "司法院釋字及行政判解/"]}, top_k=5)
     assert_eq(len(r._client.calls), 1, "指定前綴時不得變成兩次查詢")
-    assert_eq(r._client.calls[0]["retrievalConfiguration"]["vectorSearchConfiguration"]["numberOfResults"],
+    assert_eq(_search_cfg(r._client.calls[0])["numberOfResults"],
               kb_module.REF_FETCH_DEPTH,
               "比對常數而不是寫死的數字——改深度時不該連帶要改這條測試")
     assert_eq([h.source for h in hits], ["行政函釋/法務部93.txt"])
@@ -1115,6 +1154,172 @@ def test_n4_reports_hits_by_provenance():
     assert_eq(by, {"official": 1, "public_crawl": 1})
 
 
+def test_kb_retriever_parses_https_source_uri_from_managed_kb():
+    """Managed KB 的 `_source_uri` 是 https 且 percent-encoded，不是 `s3://`。
+
+    2026-09-12 實測：真的 Managed KB 回
+    `https://{bucket}.s3.{region}.amazonaws.com/kb/official/%E6%AD%B7...`。
+    只認 `s3://` 的話，前綴比不中 → 命中被過濾器**靜默刷成 0 筆**（回空 list，不報錯），
+    比報錯更難發現，所以這條要有測試守著。
+    """
+    tail = "%E6%AD%B7%E5%8F%B2%E8%A8%B4%E9%A1%98%E6%B1%BA%E5%AE%9A%E6%9B%B8/114%E5%B9%B4/04-%E9%A7%81%E5%9B%9E.txt"
+    uri = f"https://bucket.s3.us-west-2.amazonaws.com/kb/official/{tail}"
+    res = {"score": 0.7, "content": {"text": "主文：訴願駁回。"},
+           "location": {"s3Location": {"uri": uri}},
+           "metadata": {"_file_type": "PLAIN_TEXT", "_source_uri": uri}}
+    r = KBRetriever(kb_id="k", region="r", min_score=0.25, client=_FakeBedrockAgentRuntime([res]))
+    hits = r.search("q", filters={"prefix": ["歷史訴願決定書/"]})
+    assert_eq([h.source for h in hits], ["歷史訴願決定書/114年/04-駁回.txt"])
+    assert_eq(hits[0].payload["provenance"], "official")
+    assert_eq(hits[0].payload["outcome"], "駁回")
+
+
+def test_kb_retriever_accepts_virtual_host_and_path_style_https():
+    """path-style（`https://s3.{region}.amazonaws.com/{bucket}/kb/...`）也要認得。"""
+    for uri in ("https://b.s3.us-west-2.amazonaws.com/kb/public/新北訴願決定書_全量/1121051256_不受理.txt",
+                "https://s3.us-west-2.amazonaws.com/b/kb/public/新北訴願決定書_全量/1121051256_不受理.txt"):
+        res = {"score": 0.7, "content": {"text": "t"},
+               "location": {"s3Location": {"uri": uri}},
+               "metadata": {"_file_type": "PLAIN_TEXT", "_source_uri": uri}}
+        r = KBRetriever(kb_id="k", region="r", min_score=0.25, client=_FakeBedrockAgentRuntime([res]))
+        hits = r.search("q", filters={"prefix": ["新北訴願決定書_全量/"]})
+        assert_eq([h.source for h in hits],
+                  ["新北訴願決定書_全量/1121051256_不受理.txt"], f"解析失敗：{uri}")
+        assert_eq(hits[0].payload["provenance"], "public_crawl")
+
+
+def test_kb_metadata_sidecar_carries_case_type_for_both_batches():
+    """側檔要讓兩批來源都帶得出案型——這是相似案卡標題與 AC7 量測的共同依據。
+
+    公開爬蟲那批檔名只有 `案號_結果`，案型只存在 manifest 的 `category`；
+    賽方那批案型在檔名裡（`04.114年-違反廢棄物清理法事件-77(2)-…`）。
+    兩條路都要通，否則畫面上一半的相似案卡看不出是什麼案子（2026-09-12 實測）。
+    """
+    spec = importlib.util.spec_from_file_location(
+        "_build_kb_metadata", pathlib.Path(__file__).resolve().parents[2] / "scripts" / "build_kb_metadata.py")
+    bm = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(bm)
+
+    pub = bm.attributes_for({"path": "kb/public/新北訴願決定書_全量/1141050994_駁回.txt",
+                             "provenance": "public_crawl", "category": "空氣污染防制法",
+                             "outcome": "駁回", "year": "114", "case_no": "1141050994"})
+    assert_eq(pub["category"], "空氣污染防制法")
+    assert_eq(pub["provenance"], "public_crawl")
+    assert_eq(pub["doc_kind"], "decision")
+
+    off = bm.attributes_for({
+        "path": "kb/official/歷史訴願決定書/114年/04.114年-違反廢棄物清理法事件-77(2)-訴願逾期-不受理.txt",
+        "provenance": "official", "outcome": "不受理"})
+    assert_eq(off["category"], "違反廢棄物清理法事件", "案型要從檔名還原")
+    assert_eq(off["year"], "114")
+    assert_eq(off["clause"], "77(2)")
+    assert_eq(off["outcome"], "不受理")
+    assert_eq(off["doc_kind"], "decision")
+
+    ref = bm.attributes_for({"path": "kb/official/行政函釋/法務部93.txt", "provenance": "official"})
+    assert_eq(ref["doc_kind"], "ref_letter")
+    assert_true("category" not in ref, "函釋沒有案型，不得硬塞一個")
+
+    rul = bm.attributes_for({"path": "kb/official/司法院釋字及行政判解/釋字第546號解釋-訴願無實益.txt",
+                             "provenance": "official"})
+    assert_eq(rul["doc_kind"], "court_ruling")
+
+    for attrs in (pub, off, ref, rul):
+        for v in attrs.values():
+            assert_true(isinstance(v, str), f"Bedrock metadata 值必須是字串：{attrs}")
+
+
+def test_build_manifest_outcome_with_slash_stays_one_path_segment():
+    """`outcome` 含斜線的 21 筆不得在檔名裡長出一層目錄。
+
+    2026-09-12 在 S3 上實測到 `…/1141060373_不受理/駁回.txt`——`kb.py` 取檔名時
+    只拿得到 `駁回.txt`，案號掉了。這條守著那個回歸。
+    """
+    spec = importlib.util.spec_from_file_location(
+        "_build_manifest", pathlib.Path(__file__).resolve().parents[2] / "scripts" / "build_manifest.py")
+    bm = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(bm)
+    for raw, want in (("部分不受理/駁回", "部分不受理、駁回"),
+                      ("不受理/駁回", "不受理、駁回"),
+                      ("部分不受理/撤銷", "部分不受理、撤銷"),
+                      ("駁回", "駁回")):
+        got = bm.safe_segment(raw)
+        assert_eq(got, want)
+        assert_true("/" not in got, f"{raw} 仍含斜線")
+    name = f"1141060373_{bm.safe_segment('不受理/駁回')}.txt"
+    assert_eq(name.count("/"), 0, "檔名不得含路徑分隔字元")
+    assert_eq(name.rsplit("/", 1)[-1], name, "kb.py 的取檔名方式要拿得回完整檔名（含案號）")
+
+
+def test_kb_prefers_sidecar_metadata_over_filename_parsing():
+    """有側檔就用側檔，沒有才退回檔名——公開那批的檔名根本沒有案型。
+
+    `1141050994_駁回.txt` 只讀得出結果，讀不出案型；側檔的 `category` 才有。
+    退路要留著：側檔是 2026-09-12 才補的，沒側檔的檔案仍要能用（檔名至少有結果）。
+    """
+    uri = "s3://b/kb/public/新北訴願決定書_全量/1141050994_駁回.txt"
+    with_side = {"score": 0.8, "content": {"text": "t"},
+                 "location": {"s3Location": {"uri": uri}},
+                 "metadata": {"_file_type": "PLAIN_TEXT", "_source_uri": uri,
+                              "category": "空氣污染防制法", "outcome": "駁回",
+                              "provenance": "public_crawl", "year": "114"}}
+    r = KBRetriever(kb_id="k", region="r", min_score=0.25, client=_FakeBedrockAgentRuntime([with_side]))
+    h = r.search("q", filters={"prefix": ["新北訴願決定書_全量/"]})[0]
+    assert_eq(h.payload["category"], "空氣污染防制法", "側檔的案型要帶進 payload")
+    assert_eq(h.payload["outcome"], "駁回")
+    assert_eq(h.payload["provenance"], "public_crawl")
+
+    no_side = {"score": 0.8, "content": {"text": "t"},
+               "location": {"s3Location": {"uri": uri}},
+               "metadata": {"_file_type": "PLAIN_TEXT", "_source_uri": uri}}
+    r2 = KBRetriever(kb_id="k", region="r", min_score=0.25, client=_FakeBedrockAgentRuntime([no_side]))
+    h2 = r2.search("q", filters={"prefix": ["新北訴願決定書_全量/"]})[0]
+    assert_true(h2.payload["category"] is None, "沒側檔就誠實留 None，不從檔名硬猜案型")
+    assert_eq(h2.payload["outcome"], "駁回", "結果仍可從檔名讀")
+    assert_eq(h2.payload["provenance"], "public_crawl", "來源仍可從路徑讀")
+
+
+def test_n4_carries_category_onto_the_similar_case_card():
+    """案型要一路帶到相似案卡——卡片標題只有『1141050994_駁回』時，這是唯一的案型來源。"""
+    class KBWithCategory:
+        name = "bedrock_kb"
+
+        def search(self, query, filters=None, top_k=5):
+            return [Hit(id="kb-1", title="1141050994_駁回", score=0.8,
+                        source="新北訴願決定書_全量/1141050994_駁回.txt",
+                        payload={"outcome": "駁回", "provenance": "public_crawl",
+                                 "category": "空氣污染防制法", "text": "主文：訴願駁回。"})]
+
+        def meta(self):
+            return {"backend": "bedrock_kb", "available": True}
+
+    st = CaseState(case_id="synthetic-ordinary-01", run_mode="bedrock")
+    st.intake = {"type": "違反空氣污染防制法事件"}
+    st.facts_excerpt = [{"text": "訴願人於農地露天燃燒稻稈。", "page": 1}]
+    st.classification = {"class": {"case_type": "違反空氣污染防制法事件", "law_hits": ["空氣污染防制法"]}}
+    st.screen = {"art77": {"clause": "77-2"}, "deadline": {"steps": []}}
+    n4_retrieval.run(st, NodeCtx(run_mode="bedrock", snapshot=load_snapshot(), retriever=KBWithCategory()))
+    assert_eq(st.retrieval["cases"][0]["category"], "空氣污染防制法")
+
+
+def test_describe_similar_case_backend_tells_the_truth_about_the_channel():
+    """健康檢查不得把「開著的通道」講成 unavailable。
+
+    `/api/health` 原本把 `kb_backend`／`similar_case_backend` 寫死成 Phase 0 的值
+    （`lawtable_only`／`unavailable`），`RETRIEVER=kb` 也照樣這樣回報
+    ——2026-09-12 實測到。方向是「把有的說成沒有」，看板會顯示相似案通道不可用，
+    違反分層誠實（CONSTITUTION §1）：健康檢查說的話必須是它真的知道的事。
+    """
+    with env(RETRIEVER="lawtable_only", BEDROCK_KB_ID=None, AWS_REGION=None):
+        assert_eq(describe_similar_case_backend("lawtable_only"), "unavailable")
+    with env(BEDROCK_KB_ID="kb-x", AWS_REGION="us-west-2"):
+        assert_eq(describe_similar_case_backend("kb"), "bedrock_kb")
+    with env(BEDROCK_KB_ID=None, AWS_REGION=None):
+        got = describe_similar_case_backend("kb")
+        assert_in("misconfigured", got, "RETRIEVER=kb 卻缺變數時要說出來，不得假裝 unavailable")
+        assert_in("BEDROCK_KB_ID", got, "缺哪個變數要講明")
+
+
 def test_build_retriever_requires_env_for_kb():
     with env(BEDROCK_KB_ID=None, AWS_REGION=None):
         try:
@@ -1163,6 +1368,33 @@ def test_n4_uses_injected_retriever_for_similar_cases():
     )
     assert_eq(st.retrieval["retrieval_meta"]["backend"], "lawtable+bedrock_kb")
     assert_true(r.degraded is False, "兩條通道都有結果就不是降級")
+
+
+def test_n4_keeps_public_crawl_provenance_so_ui_can_mark_it():
+    """公開爬蟲那批要查得到，而且 `provenance` 必須一路帶到 payload。
+
+    spec §6.1：賽方資料集那批 UI 無標記，公開資料庫那批相似案卡要加「公開資料庫」標記。
+    標記的依據就是這個欄位——掉了就等於把兩種來源混為一談。
+    """
+    class PublicKB:
+        name = "bedrock_kb"
+
+        def search(self, query, filters=None, top_k=5):
+            return [Hit(id="kb-1", title="1121051256_不受理", score=0.8,
+                        source="新北訴願決定書_全量/1121051256_不受理.txt",
+                        payload={"outcome": "不受理", "provenance": "public_crawl", "text": "主文：訴願不受理。"})]
+
+        def meta(self):
+            return {"backend": "bedrock_kb", "available": True}
+
+    st = CaseState(case_id="synthetic-ordinary-01", run_mode="bedrock")
+    st.intake = {"type": "違反廢棄物清理法事件"}
+    st.facts_excerpt = [{"text": "訴願人未依規定清除廢棄物。", "page": 1}]
+    st.classification = {"class": {"case_type": "違反廢棄物清理法事件", "law_hits": ["廢棄物清理法"]}}
+    st.screen = {"art77": {"clause": "77-2"}, "deadline": {"steps": []}}
+    n4_retrieval.run(st, NodeCtx(run_mode="bedrock", snapshot=load_snapshot(), retriever=PublicKB()))
+    assert_eq(len(st.retrieval["cases"]), 1, "公開那批被前綴過濾擋掉的話這裡會是 0")
+    assert_eq(st.retrieval["cases"][0]["provenance"], "public_crawl")
 
 
 def test_n4_without_retriever_keeps_phase0_behaviour():
@@ -2261,3 +2493,92 @@ def test_bedrock_min_interval_default_is_under_one_rps():
     finally:
         if orig is not None:
             os.environ["BEDROCK_MIN_INTERVAL_S"] = orig
+
+
+class _KeyPickyRuntime:
+    """只接受某一個搜尋設定鍵的假 client，其餘一律 ValidationException。
+
+    模擬真帳號的行為（2026-09-12 實測）：MANAGED KB 收到 vectorSearchConfiguration
+    會回「is not supported for managed knowledge bases」，反之亦然。
+    """
+
+    class ValidationException(Exception):
+        pass
+
+    def __init__(self, accepts: str, results=None):
+        self.accepts = accepts
+        self.results = results or []
+        self.keys_tried: list[str] = []
+
+    def retrieve(self, **kw):
+        key = next(iter(kw["retrievalConfiguration"]))
+        self.keys_tried.append(key)
+        if key != self.accepts:
+            raise self.ValidationException(f"{key} is not supported for this knowledge base")
+        return {"retrievalResults": self.results}
+
+
+def _one_official_result():
+    return [_kb_result("歷史訴願決定書/113年/x-駁回.txt", 0.9, "主文：訴願駁回。")]
+
+
+def test_search_key_is_discovered_per_kb_not_hardcoded():
+    """兩種 KB 都要能跑。寫死任一個鍵，另一種 KB 的相似案通道就整條掛掉。
+
+    這條守的是 2026-09-12 的真實事故：main 上寫死 vectorSearchConfiguration，
+    而 `.env` 指的是 MANAGED KB，每一次 retrieve 都 ValidationException。
+    """
+    for accepts in (kb_module.MANAGED_SEARCH_KEY, kb_module.VECTOR_SEARCH_KEY):
+        kb_module.reset_search_key_cache()
+        fake = _KeyPickyRuntime(accepts, _one_official_result())
+        r = KBRetriever(kb_id=f"kb-{accepts}", region="r", min_score=0.25, client=fake)
+        with _no_retrieve_interval():
+            hits = r.search("q", filters={"prefix": ["歷史訴願決定書/"]})
+        assert_eq(len(hits), 1, f"{accepts} 的 KB 應該撈得到東西")
+        assert_eq(fake.keys_tried[-1], accepts, "最後成功的必須是這個 KB 認的鍵")
+    kb_module.reset_search_key_cache()
+
+
+def test_search_key_is_probed_once_then_cached():
+    """試錯只能發生一次：每次查詢都先浪費一個被拒的呼叫，等於把 1 RPS 預算砍半。"""
+    kb_module.reset_search_key_cache()
+    fake = _KeyPickyRuntime(kb_module.VECTOR_SEARCH_KEY, _one_official_result())
+    r = KBRetriever(kb_id="kb-cache", region="r", min_score=0.25, client=fake)
+    with _no_retrieve_interval():
+        r.search("q", filters={"prefix": ["歷史訴願決定書/"]})
+        first_round = len(fake.keys_tried)
+        r.search("q2", filters={"prefix": ["歷史訴願決定書/"]})
+    assert_true(first_round > 1, "第一次應該試過不只一個鍵")
+    assert_eq(fake.keys_tried[first_round:], [kb_module.VECTOR_SEARCH_KEY],
+              "第二次查詢不得再試錯，直接用已知可行的鍵")
+    assert_eq(kb_module.search_key_for("kb-cache"), kb_module.VECTOR_SEARCH_KEY)
+    kb_module.reset_search_key_cache()
+
+
+def test_non_validation_errors_are_not_swallowed_by_the_probe():
+    """throttle／權限／網路問題不是「鍵用錯了」，不得被試錯邏輯吞掉改試另一個鍵。
+
+    吞掉的話，KB 掛了會長得像「兩個鍵都不支援」，真正的原因（例如 throttle）就不見了。
+    """
+    kb_module.reset_search_key_cache()
+
+    class ThrottledRuntime:
+        def __init__(self):
+            self.calls = 0
+
+        def retrieve(self, **kw):
+            self.calls += 1
+            raise RuntimeError("ThrottlingException: rate exceeded")
+
+    fake = ThrottledRuntime()
+    r = KBRetriever(kb_id="kb-throttle", region="r", client=fake)
+    try:
+        with _no_retrieve_interval():
+            r.search("q", filters={"prefix": ["歷史訴願決定書/"]})
+    except RuntimeError as e:
+        assert_in("Throttling", str(e), "原始例外要照原樣冒出去")
+    else:
+        raise AssertionError("throttle 不得被當成鍵用錯而吞掉")
+    assert_eq(fake.calls, 1, "非 ValidationException 不得觸發第二個鍵的重試")
+    assert_true(kb_module.search_key_for("kb-throttle") is None, "失敗的呼叫不得寫進快取")
+    kb_module.reset_search_key_cache()

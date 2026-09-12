@@ -9,7 +9,8 @@ boto3，測試一律注入假 client，所以 `import backend.retrieval.kb` 必�
 Bedrock 卻沒裝套件時，在 `_c()` 明確 raise 說明缺什麼，不靜默失敗。
 
 Managed KB 的 filter 不支援路徑比對（AppealAssist 實測），所以多抓三倍再在這裡後過濾：
-分數門檻、URI 前綴、PDF 一律丟（Managed KB 對這批 PDF 解析全是亂碼）、demo 案來源決定書排除。
+分數門檻、URI 前綴、PDF 一律丟（Managed KB 對這批 PDF 解析全是亂碼）、demo 案來源決定書排除、
+同一份文件的多個 chunk 只留最高分那筆。
 """
 from __future__ import annotations
 
@@ -77,11 +78,84 @@ QUOTA_FETCH_DEPTH = 50
 REF_FETCH_DEPTH = 50
 OUTCOME_RE = re.compile(r"(駁回|撤銷|不受理)")
 
+# `retrieve` 的搜尋設定鍵**依 KB 型態而異，兩者互斥**（2026-09-12 對兩個真 KB 各實測）：
+#   MANAGED KB           → managedSearchConfiguration
+#   VECTOR（S3 Vectors） → vectorSearchConfiguration
+# 用錯的那個會直接 ValidationException（「is not supported for managed knowledge bases」）。
+# 團隊現在兩種 KB 都有，**所以這裡不寫死**：寫死哪一個都會讓另一半的人整條通道掛掉，
+# 而且這個坑已經在 main 上來回改過一次了。改成第一次呼叫時試錯決定，成功的那個按
+# kb_id 記著，之後直接用——每個 process 對每個 KB 最多只會浪費一次呼叫。
+#
+# 刻意**不解析錯誤訊息的文字**：措辭是 AWS 的，哪天改了我們就跟著壞。只認
+# 「這個鍵被 ValidationException 拒絕」這件事，換另一個鍵再試一次；兩個都不行就讓
+# 例外照原樣冒出去（N4 會把它降級成通道 B 失敗，不會吞掉）。
+MANAGED_SEARCH_KEY = "managedSearchConfiguration"
+VECTOR_SEARCH_KEY = "vectorSearchConfiguration"
+SEARCH_KEYS = (MANAGED_SEARCH_KEY, VECTOR_SEARCH_KEY)
+_SEARCH_KEY_CACHE: dict[str, str] = {}
+
+
+def search_key_for(kb_id: str) -> str | None:
+    """這個 KB 已經試出來的搜尋設定鍵；還沒試過回 None。測試與診斷用。"""
+    return _SEARCH_KEY_CACHE.get(kb_id)
+
+
+def reset_search_key_cache() -> None:
+    """清掉試錯結果。正式路徑不用，給測試與換 KB 的情境。"""
+    _SEARCH_KEY_CACHE.clear()
+
+
+def retrieve_raw(client: Any, kb_id: str, query: str, want: int) -> dict:
+    """打一次 KB，自動選對搜尋設定鍵（見上方 SEARCH_KEYS 的說明）。
+
+    刻意做成模組層函式而不是 `KBRetriever` 的私有方法：`scripts/` 底下的量測腳本
+    也要打同一個 KB，而它們**不能**各自再寫一份鍵名——那正是這個坑的成因。
+    """
+    cached = _SEARCH_KEY_CACHE.get(kb_id)
+    # 已知的排前面，其餘仍留作退路：快取錯一次不會永遠錯。
+    order = [cached] + [k for k in SEARCH_KEYS if k != cached] if cached else list(SEARCH_KEYS)
+    last_exc: Exception | None = None
+    for i, key in enumerate(order):
+        if i:
+            # 試錯的重試也算一次呼叫，照樣壓在 1 RPS 以下（賽方規範）
+            time.sleep(RETRIEVE_INTERVAL_S)
+        try:
+            resp = client.retrieve(
+                knowledgeBaseId=kb_id,
+                retrievalQuery={"text": query},
+                retrievalConfiguration={key: {"numberOfResults": want}},
+            )
+        except Exception as e:  # noqa: BLE001 — 例外型別由 botocore 動態生成
+            if type(e).__name__ != "ValidationException":
+                raise      # throttle、權限、網路問題不在這裡處理，直接往上丟
+            last_exc = e
+            continue
+        _SEARCH_KEY_CACHE[kb_id] = key
+        return resp
+    raise last_exc  # type: ignore[misc]  兩個鍵都被拒，讓原始例外照原樣冒出去
+
 
 def _relative_path(uri: str) -> tuple[str, str]:
-    """s3://bucket/kb/official/歷史訴願決定書/113年/x.txt → ("official", "歷史訴願決定書/113年/x.txt")。"""
+    """把各種 S3 URI 形式化約成 ("official"|"public", 相對路徑)。
+
+    三種都要認，因為**不同 KB 型態回不同形式**（2026-09-12 實測）：
+
+    - `s3://bucket/kb/official/歷史訴願決定書/113年/x.txt`（自管 vector KB）
+    - `https://bucket.s3.us-west-2.amazonaws.com/kb/official/%E6%AD%B7...`（Managed KB，virtual-host）
+    - `https://s3.us-west-2.amazonaws.com/bucket/kb/official/…`（path-style）
+
+    只認 `s3://` 的話，https 那兩種會整串留著當相對路徑，前綴一律比不中，
+    命中被後過濾**靜默刷成 0 筆**——回空 list、不報錯，比報錯更難查。
+    """
     path = urllib.parse.unquote(uri)
-    path = path.split("/", 3)[-1] if path.startswith("s3://") else path  # 去掉 s3://bucket/
+    if path.startswith("s3://"):
+        path = path.split("/", 3)[-1]                      # 去掉 s3://bucket/
+    elif path.startswith(("http://", "https://")):
+        rest = path.split("://", 1)[1]
+        host, _, tail = rest.partition("/")
+        # virtual-host（bucket 在 host 裡）→ tail 就是 key；
+        # path-style（host 以 s3 開頭）→ tail 的第一段是 bucket 名，要再剝一層。
+        path = tail.split("/", 1)[-1] if host.split(".", 1)[0] == "s3" else tail
     path = path.replace(" 的副本", "")
     m = re.match(r"^kb/(official|public)/(.+)$", path)
     if m:
@@ -157,6 +231,9 @@ class KBRetriever:
         picked.sort(key=lambda h: h.score, reverse=True)
         return picked[:top_k]
 
+    def _retrieve_raw(self, query: str, want: int) -> dict:
+        return retrieve_raw(self._c(), self.kb_id, query, want)
+
     def _retrieve(self, query: str, prefixes: list[str], exclude: str | None, *,
                   want: int, limit: int, dedupe_by_source: bool = False) -> list[Hit]:
         """打一次 KB 並做後過濾，回傳最多 limit 筆（`id` 是佔位值，由呼叫端重編）。
@@ -166,11 +243,7 @@ class KBRetriever:
         是當天實跑驗證過的行為，決賽期間不為了一個一般性的改善去動已驗證的路徑。
         相似案通道同樣有 chunk 重複的問題，是**已知且刻意未改**，不是漏看。
         """
-        resp = self._c().retrieve(
-            knowledgeBaseId=self.kb_id,
-            retrievalQuery={"text": query},
-            retrievalConfiguration={"vectorSearchConfiguration": {"numberOfResults": want}},
-        )
+        resp = self._retrieve_raw(query, want)
         hits: list[Hit] = []
         # 同一份文件會被切成多個 chunk，各自以不同分數回來（2026-09-12 兩個 session
         # 各自實測：判解查詢命中 8 筆其實只有 6 份、命中 5 筆其實只有 2 份）。
@@ -202,6 +275,10 @@ class KBRetriever:
             fname = rel.rsplit("/", 1)[-1]
             m = OUTCOME_RE.search(fname)
             text = re.sub(r"\s+", " ", ((r.get("content") or {}).get("text") or "")).strip()
+            md = r.get("metadata") or {}
+            # 側檔（`x.txt.metadata.json`，scripts/build_kb_metadata.py 產）優先，檔名是退路。
+            # **案型沒有退路**：公開爬蟲那批的檔名是 `案號_結果`，案型不在裡面，
+            # 側檔缺席就誠實留 None——不從內文猜，猜錯就是把不同案型的案子當相似案推給承辦人。
             hits.append(
                 Hit(
                     id=f"kb-{len(hits) + 1}",
@@ -211,9 +288,11 @@ class KBRetriever:
                     origin="retrieval",
                     verified=False,
                     note="",
-                    # outcome 照檔名／主文，不由模型推測（CONSTITUTION §2）
-                    payload={"outcome": m.group(1) if m else None,
-                             "provenance": _provenance(kind),
+                    # outcome 照側檔／檔名，不由模型推測（CONSTITUTION §2）
+                    payload={"outcome": md.get("outcome") or (m.group(1) if m else None),
+                             "provenance": md.get("provenance") or _provenance(kind),
+                             "category": md.get("category") or None,
+                             "year": md.get("year") or None,
                              "text": text},
                 )
             )
@@ -235,3 +314,26 @@ def build_retriever(kind: str, *, exclude_case: str | None = None) -> KBRetrieve
     if missing:
         raise ValueError(f"RETRIEVER=kb 需要環境變數 {missing}（見 .env.example）")
     return KBRetriever(kb_id=settings.kb_id(), region=settings.aws_region(), exclude_case=exclude_case)
+
+
+def describe_similar_case_backend(kind: str) -> str:
+    """健康檢查用：相似案通道現在到底是什麼狀態。**不打任何 API。**
+
+    三種答案各自代表不同的事，不可互相代替：
+
+    - `unavailable`：設定就是不查 KB（`RETRIEVER=lawtable_only`），這是刻意的
+    - `bedrock_kb`：通道開著，檢索器建得起來
+    - `misconfigured：…`：**想開但開不成**——`RETRIEVER=kb` 卻缺環境變數。
+      這種情況回 `unavailable` 等於把設定錯誤說成「本來就沒要開」，
+      看板上分不出「沒設定」與「設錯了」，而後者是要有人去修的。
+
+    `build_retriever()` 只驗環境變數並建物件，boto3 client 要到 `_c()` 才生出來，
+    所以這裡不會產生任何 AWS 呼叫，健康檢查可以放心每次都問。
+    """
+    if kind != "kb":
+        return "unavailable"
+    try:
+        r = build_retriever(kind)
+    except ValueError as e:
+        return f"misconfigured：{e}"
+    return r.name if r else "unavailable"

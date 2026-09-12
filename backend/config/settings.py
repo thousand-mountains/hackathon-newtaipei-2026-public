@@ -28,7 +28,21 @@ RUNS_DIR = OUTPUT_DIR / "runs"
 
 DEFAULT_MODEL_PROVIDER = "bedrock"
 DEFAULT_RETRIEVER = "lawtable_only"
-DEFAULT_KB_MIN_SCORE = 0.25
+# **這個值跟 KB 的建法綁死，換 KB 一定要跟著換**（2026-09-12 兩種 KB 各量一次）。
+# 同一個查詢在兩邊的分數差一倍以上，所以「調好的門檻」不能跨 KB 搬：
+#
+#   MANAGED KB        真實命中 median 0.206，閒聊句「今天天氣很好…」0.731
+#                     ——雜訊比訊號高，門檻**沒有鑑別力**，只能當砍尾端用 → 0.15
+#                     （docs/evidence/2026-09-12-bedrock-live/kb-min-score.md）
+#   VECTOR/S3 Vectors 真實命中 min 0.809，四句負控制 max 0.731，中間有空帶
+#                     ——門檻真的有用 → 窗口 0.74–0.78，取 0.76
+#                     （同目錄 kb-min-score-s3vectors.md）
+#
+# **這裡的預設刻意取寬鬆的那個（0.15）**，調好的值由 `.env` 的 KB_MIN_SCORE 帶。
+# 理由是兩種錯法的代價不對稱：門檻設太低只是多回幾筆低分的，看得見也查得出來；
+# 設太高會**靜默回 0 筆**——畫面上「相似案：無」，跟 KB 掛掉、權限不足長得一模一樣，
+# 承辦人與我們都分不出是哪一種。寧可寬鬆，不要假裝沒東西可撈。
+DEFAULT_KB_MIN_SCORE = 0.15
 # 賽方規範要求 Bedrock 請求壓在 1 RPS 以下。1.1 留一點餘裕，與
 # `backend/retrieval/kb.py` 的 RETRIEVE_INTERVAL_S 取同一個值。
 DEFAULT_BEDROCK_MIN_INTERVAL_S = 1.1
@@ -191,6 +205,73 @@ def index_state() -> dict[str, Any] | None:
     if not isinstance(state, dict) or not isinstance(state.get("documents_indexed"), int):
         return None
     return state
+
+
+# ── 資料集的結果分布：報「幾件」，不報「幾 %」──────────────────────
+#
+# 2026-09-12：資料集在手後量到的事實——**兩批資料的撤銷率差一個數量級**：
+#   公開爬蟲（2,347 筆，接近母體）：廢清法 4.9%、空污法 0.4%
+#   賽方資料集（130 筆，挑選過的教學樣本）：違反廢清法事件 23.5%、違反建築法事件 26.7%
+# 混在一起算出來的 3.3% 兩邊都不代表。所以這裡**逐批分開回**，不給合併數字。
+#
+# **為什麼回 counts 不回 rate**：一個裸露的百分比在畫面上幾乎一定被讀成
+# 「本案有 X% 機率被撤銷」——那是系統對案件結果的預測，正是 CONSTITUTION 拒絕
+# 生成的法律判斷。給「17 件中 4 件撤銷」，承辦人自己看得到分母有多小；
+# 給「23.5%」，分母就消失了。要百分比的人自己除，那是他的判斷不是系統的宣稱。
+OUTCOME_DISTRIBUTION_CAVEAT = (
+    "此為知識庫內的結果分布，**不是母體統計，也不是本案的結果預測**。"
+    "賽方資料集為挑選過的樣本（涵蓋各種 77 條款與各種結果），其比例不代表實際撤銷比率；"
+    "公開爬蟲批較接近實際分布。系統不就本案結果作任何推估。"
+)
+
+
+def outcome_counts(category: str | None = None) -> dict[str, Any] | None:
+    """知識庫的決定結果分布，依來源批次分開。manifest 讀不到 → None（不猜）。
+
+    `category` 給值時只計同案型的（比對前過 `normalize_case_type`，且雙向子字串——
+    兩批的粒度不同：公開批的 `category` 是法規名「廢棄物清理法」，
+    賽方批的檔名帶案由「違反廢棄物清理法事件」，前者是後者的子字串）。
+    """
+    try:
+        stat = MANIFEST_PATH.stat()
+    except OSError:
+        return None
+    key = (str(MANIFEST_PATH), stat.st_mtime_ns, stat.st_size, "outcomes")
+    if _manifest_cache.get("okey") != key:
+        try:
+            entries = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))["entries"]
+        except (OSError, ValueError, KeyError):
+            return None
+        rows = []
+        for e in entries:
+            outcome = e.get("outcome")
+            if not outcome:
+                continue
+            cat = e.get("category")
+            if not cat:
+                # 賽方批的案由在檔名：`NN.YYY年-案由-條款-…-結果.txt`
+                seg = str(e.get("path", "")).rsplit("/", 1)[-1].split("-")
+                cat = seg[1] if len(seg) > 1 else None
+            rows.append((e.get("provenance") or "unknown",
+                         normalize_case_type(cat) if cat else None, outcome))
+        _manifest_cache["okey"] = key
+        _manifest_cache["orows"] = rows
+    rows = _manifest_cache["orows"]
+
+    want = normalize_case_type(category) if category else None
+    out: dict[str, Any] = {"by_provenance": {}, "caveat": OUTCOME_DISTRIBUTION_CAVEAT}
+    if want:
+        out["category"] = category
+    matched = 0
+    for prov, cat, outcome in rows:
+        if want:
+            if not cat or (want not in cat and cat not in want):
+                continue
+        matched += 1
+        bucket = out["by_provenance"].setdefault(prov, {})
+        bucket[outcome] = bucket.get(outcome, 0) + 1
+    out["total"] = matched
+    return out
 
 
 def retrieval_note(kind: str | None = None) -> str:
@@ -479,6 +560,30 @@ BLOCK_CRITERION_NONE = "本案未觸發結論段封鎖，結論段由系統依�
 # 事實爭點在「不是操作判準」時的標題文字——講成提醒，不得講成封鎖原因
 FACT_ISSUE_OBSERVATION_LABEL = "另外偵測到的事實認定爭點（提醒，非本案封鎖原因）"
 FACT_ISSUE_OPERATIVE_LABEL = "本案封鎖原因涉及的事實認定爭點"
+
+# ── 「汙」與「污」是同一個字的兩種寫法，而兩種在這個專案裡都有人用 ────────
+#
+# 用「污」：SUBSTANTIVE_TYPES（本檔）、n2_classify 的法規名對照表、laws-snapshot.json，
+#          以及全國法規資料庫的正式法規名。
+# 用「汙」：前端收文頁的案型下拉選單、賽方資料集的決定書檔名。
+#
+# 2026-09-12 實測：承辦人在下拉選單選「違反空氣汙染防制法事件」，
+# `case_type in SUBSTANTIVE_TYPES` 就比不中 → 走 fail-safe 分支 →
+# 畫面對他說「案型不在已知需事實認定型清單內，系統無法判斷本案是否需要實體審查」。
+# 那個案型明明就在清單上，而且是他從系統自己的選單裡選的。
+#
+# 封鎖結果不變（fail-safe 也封鎖，安全性沒有缺口），但**理由是錯的**——
+# 系統對承辦人謊報了自己的判斷依據（CONSTITUTION §1 分層誠實）。
+#
+# 為什麼不是只改前端了事：前端那一個字已經同步改掉了，但賽方檔名仍是「汙」，
+# 承辦人也可能自己打字。靠單一拼寫正確撐著太脆，比對這一側也要收得住。
+#
+# **只吃掉這一個異體字，不做其他正規化**（不轉全半形、不去空白、不做模糊比對）：
+# 範圍越窄，誤把兩個真的不同的案型併成同一個的風險越低。
+def normalize_case_type(s: str | None) -> str:
+    """案型比對前的正規化。顯示用的值不經過這裡——畫面要照實顯示承辦人填的字。"""
+    return (s or "").replace("汙", "污")
+
 
 # 需事實認定型案型：程序合法時進入實體審查，結論段由人寫（architecture §4.3）
 SUBSTANTIVE_TYPES = (

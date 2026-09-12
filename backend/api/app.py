@@ -285,8 +285,10 @@ def health() -> JSONResponse:
         "checks": checks,
         "run_mode": mode,
         "fixture_only": mode == "fixture",
+        # 這兩個欄位一度被寫死成 Phase 0 的值，`RETRIEVER=kb` 也照樣回報「沒開」
+        # （2026-09-12 實測）。健康檢查說的話必須是它真的知道的事（CONSTITUTION §1）。
         "kb_backend": settings.retriever_kind(),
-        "similar_case_backend": "kb" if settings.retriever_kind() == "kb" else "unavailable",
+        "similar_case_backend": retrieval_kb.describe_similar_case_backend(settings.retriever_kind()),
         # fixture 檔位沒有呼叫任何基礎模型就不報 model id；live 檔位報環境變數設定的那組，
         # 但那是「設定值」不是「這次真的呼叫過」——逐次執行的實際值在 run_meta.model_ids。
         "model_ids": None if mode == "fixture" else llm_client.model_ids(),
