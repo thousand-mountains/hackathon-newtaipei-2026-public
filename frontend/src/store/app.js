@@ -196,6 +196,14 @@ function fillDocsFromServer(c, r) {
       _artifactId: a.id,
       graph: a.kind === 'graph',
     }))
+  // **旗標也要從後端還原。** 只還原 docs 不還原 flags 的話，重新整理之後
+  // 後端明明已經有草稿，畫面卻回到「還沒有草稿可以匯出，先跑一次草稿生成吧」，
+  // 而且建議 chips 也不會出現匯出與優化文案。旗標推得出來就推，不要等使用者重跑。
+  c.flags.extract = !!(r.case && r.case.latest_run_id)
+  c.flags.laws = (c.docs.laws || []).length > 0
+  c.flags.cases = (c.docs.cases || []).length > 0
+  c.flags.draft = (c.docs.out || []).some((x) => x.ext === '稿')
+  c.flags.out = (c.docs.out || []).some((x) => x.ext === 'pdf' || x.ext === 'docx')
 }
 
 export function moveCase(c, folderId, folderName) {
@@ -648,7 +656,15 @@ async function loadDraftSections(c, out) {
       out.title = a.title || ''
       if (typeof a.cite_count === 'number') out.citeCount = a.cite_count
       const item = c.docs.out.find((x) => x._artifactId === out.artifactId)
-      if (item) item.full = sectionsToHtml(a)
+      if (item) {
+        item.full = sectionsToHtml(a)
+        // 引註數以 #21 的 `cite_count` 為準，並回寫右欄。
+        // ⚠️ 實測 `tool_result.cite_count` 與 #21 的 `cite_count` **對不上**
+        //（同一份草稿：工具回 5、#21 與匯出的 X-Cite-Count 都是 7，而 sections[]
+        //  裡實際數得出 7）。兩個數字同時出現在畫面上會讓人不知道該信哪個，
+        //  所以兩處都用 #21 的值——那也是匯出檔會帶出去的那個。後端不一致已回報。
+        if (typeof a.cite_count === 'number') item.note = `AI 生成．引註 ${a.cite_count} 處．待承辦人審核`
+      }
       saveDraftText(c.caseId, sectionsToText(a.sections))
     }
   } catch {
@@ -762,8 +778,15 @@ async function runExport(c, tool, id) {
   }
   const isPdf = id === 'pdf'
   const format = isPdf ? 'pdf' : 'docx'
-  const draft = c.docs.out.find((x) => x.name === '訴願決定書草稿 v1')
+  // 依**種類**找草稿，不要用寫死的名字比對——後端回的 artifact name 不一定叫
+  // 「訴願決定書草稿 v1」，重新整理後用名字找就會拿到 undefined，
+  // 然後打出 `/artifacts/undefined/export` 得到 400，畫面只說「匯出失敗，可重試」。
+  const draft = c.docs.out.find((x) => x.ext === '稿' && x._artifactId) || c.docs.out.find((x) => x._artifactId)
   const artifactId = draft && draft._artifactId
+  if (!artifactId) {
+    aiMsg('<p>找不到可匯出的草稿（沒有 artifact id），請重新生成一次草稿。</p>')
+    return
+  }
   state.busy = true
   // 先放一張 running 的工具卡（匯出可能慢，要有 loading）
   const card = push(c, { who: 'ai', kind: 'tool', ack: pick(ACKS[id] || ['好的。']), api: tool.api, name: tool.name, steps: [], running: true, out: null })
@@ -1002,7 +1025,7 @@ export async function searchLibrary(groupKey, q) {
       return (r.results || []).map((x) => ({
         id: x.id,
         name: x.t,
-        note: [x.category, x.verdict, x.score != null ? `向量相似度 ${Math.round(x.score * 100)}%` : '']
+        note: [x.category, x.verdict, x.score != null ? `向量相似度 ${Math.round(x.score * 100)}%（非法律相似度）` : '']
           .filter(Boolean)
           .join('．'),
         ext: '例',

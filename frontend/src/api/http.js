@@ -57,8 +57,21 @@ export async function download(path) {
   const res = await fetch(API_BASE + path)
   if (!res.ok) throw new ApiError(res.status, null)
   const cd = res.headers.get('content-disposition') || ''
-  const m = /filename\*?=(?:UTF-8'')?["']?([^"';]+)/i.exec(cd)
-  const filename = m ? decodeURIComponent(m[1]) : 'download'
+  // **先看 `filename*`（RFC 5987，帶中文檔名），再退回 ASCII 的 `filename`。**
+  // 後端兩個都送，而 ASCII 那個是 `draft.pdf`——照原本的寫法會先命中它，
+  // 承辦人存下來的檔案全都叫 draft.pdf，案號與檔名都沒了。
+  const star = /filename\*=\s*UTF-8''([^;\r\n]+)/i.exec(cd)
+  const plain = /filename=\s*["']?([^"';\r\n]+)/i.exec(cd)
+  let filename = 'download'
+  if (star) {
+    try {
+      filename = decodeURIComponent(star[1])
+    } catch {
+      filename = star[1]
+    }
+  } else if (plain) {
+    filename = plain[1]
+  }
   const unresolved = parseInt(res.headers.get('x-unresolved-cites') || '0', 10) || 0
   const citeCount = parseInt(res.headers.get('x-cite-count') || '0', 10) || 0
   let warning = res.headers.get('x-export-warning') || ''
