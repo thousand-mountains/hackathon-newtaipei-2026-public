@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+import ast
 import json
 import os
 import pathlib
@@ -19,7 +20,8 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import backend.retrieval.kb as kb_module  # noqa: E402
-from backend.dossier import corpus, store  # noqa: E402
+from backend.dossier import artifacts, corpus, store  # noqa: E402
+from backend.orchestrator.graph import build_payload, run_case  # noqa: E402
 from backend.tests.harness import assert_eq, assert_in, assert_true  # noqa: E402
 
 
@@ -483,3 +485,162 @@ def test_missing_bucket_setting_says_so_instead_of_returning_empty():
             assert_in("S3_KB_BUCKET", str(e))
             return
     raise AssertionError("缺設定要照實說缺什麼，不得回空清單冒充查無")
+
+
+# ── 端點清單：AST 讀 backend/api/dossier.py ────────────────────────
+#
+# 為什麼用 AST 而不是 TestClient：`backend/api/*` 要 fastapi 才 import 得動，
+# 而 `run_all.py` 跑在一台只有 stdlib 的 python 上（harness.py 檔頭的 Phase 0 紅線）。
+# AST 驗得了「有沒有這支端點、方法對不對、有沒有多出 PUT/PATCH」；
+# 驗不了「回的 JSON 長什麼樣」——後者是實跑驗收的事，不在這裡假裝驗過。
+
+API_DOSSIER = ROOT / "backend" / "api" / "dossier.py"
+
+#: 契約 v2 §1 表格逐列抄下來的端點清單（`#` 是契約裡的編號）。
+#: **路徑一個字都不能改**——前端照它寫。
+CONTRACT_ROUTES = {
+    ("get", "/api/cases/{case_id}"),                                  # 4
+    ("patch", "/api/cases/{case_id}"),                                # 5
+    ("delete", "/api/cases/{case_id}"),                               # 6
+    ("get", "/api/cases/{case_id}/files"),                            # 7
+    ("post", "/api/cases/{case_id}/files"),                           # 8
+    ("delete", "/api/cases/{case_id}/files/{file_id}"),               # 9
+    ("get", "/api/laws"),                                             # 10
+    ("get", "/api/laws/{law_id:path}"),                               # 11
+    ("get", "/api/cases/{case_id}/laws"),                             # 12
+    ("post", "/api/cases/{case_id}/laws"),                            # 13
+    ("delete", "/api/cases/{case_id}/laws/{law_id:path}"),            # 14
+    ("get", "/api/decisions"),                                        # 15
+    ("get", "/api/decisions/{decision_id:path}"),                     # 16
+    ("get", "/api/cases/{case_id}/references"),                       # 17
+    ("post", "/api/cases/{case_id}/references"),                      # 18
+    ("delete", "/api/cases/{case_id}/references/{ref_id:path}"),      # 19
+    ("get", "/api/cases/{case_id}/artifacts"),                        # 20
+    ("get", "/api/cases/{case_id}/artifacts/{artifact_id}"),          # 21
+    ("delete", "/api/cases/{case_id}/artifacts/{artifact_id}"),       # 22
+}
+
+
+def _declared_routes() -> set[tuple[str, str]]:
+    tree = ast.parse(API_DOSSIER.read_text(encoding="utf-8"))
+    out: set[tuple[str, str]] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        for dec in node.decorator_list:
+            if not isinstance(dec, ast.Call) or not isinstance(dec.func, ast.Attribute):
+                continue
+            owner = dec.func.value
+            if not (isinstance(owner, ast.Name) and owner.id == "router"):
+                continue
+            if dec.args and isinstance(dec.args[0], ast.Constant):
+                out.add((dec.func.attr, str(dec.args[0].value)))
+    return out
+
+
+def test_every_contract_route_exists_with_the_exact_path():
+    declared = _declared_routes()
+    missing = sorted(CONTRACT_ROUTES - declared)
+    assert_eq(missing, [], "契約列了但沒實作的端點（路徑要逐字相同，前端照它寫）")
+
+
+def test_no_route_outside_the_contract_sneaks_in():
+    extra = sorted(_declared_routes() - CONTRACT_ROUTES)
+    assert_eq(extra, [], "實作了契約沒有的端點——前端不會打它，而它會變成沒人維護的面")
+
+
+def test_case_members_have_no_update_verb():
+    """卷宗成員只有 C/R/D，**沒有 U**：系統裡不能改一條法律或一份決定書（契約 §1）。
+
+    `PATCH /api/cases/{id}` 是**案件改名**，不是改卷宗成員，所以不在這條之內。
+    """
+    bad = [(m, p) for m, p in _declared_routes()
+           if m in ("put", "patch")
+           and any(p.startswith(f"/api/cases/{{case_id}}/{g}") for g in
+                   ("files", "laws", "references", "artifacts"))]
+    assert_eq(bad, [], "卷宗成員出現了 U（PUT／PATCH）")
+
+
+def test_the_mother_corpus_is_read_only():
+    bad = [(m, p) for m, p in _declared_routes()
+           if p.startswith(("/api/laws", "/api/decisions")) and m != "get"]
+    assert_eq(bad, [], "母庫只能 GET——系統裡不能改一條法律或一份決定書")
+
+
+def test_app_mounts_the_dossier_router():
+    src = (ROOT / "backend" / "api" / "app.py").read_text(encoding="utf-8")
+    tree = ast.parse(src)
+    mounted = [
+        n.args[0].id
+        for n in ast.walk(tree)
+        if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+        and n.func.attr == "include_router" and n.args and isinstance(n.args[0], ast.Name)
+    ]
+    assert_in("dossier_router", mounted, "端點寫了但沒掛上去，等於沒有")
+
+
+def test_case_list_carries_name_and_created_at():
+    """契約 §1.1 #2：左欄要畫案名與建立時間，只回 id 字串陣列畫不出來。"""
+    src = (ROOT / "backend" / "api" / "app.py").read_text(encoding="utf-8")
+    body = src[src.index('@app.get("/api/cases")'):src.index('@app.post("/api/cases"')]
+    for field in ('"id": cid', '"name"', '"created_at"'):
+        assert_in(field, body, f"GET /api/cases 沒有帶 {field}")
+
+
+# ── 草稿結構：run payload → 契約 §4.4 的 sections[] ────────────────
+
+
+def _payload_fixture() -> dict:
+    return build_payload(run_case("synthetic-ordinary-01"))
+
+
+def test_sections_take_sentence_text_from_ss_not_from_the_block_text():
+    """`ty="p"` 的塊 `text` 是空字串，句子在 `ss[].t`。抓錯欄位會得到一份全空的草稿。"""
+    sections, _ = artifacts.sections_from_payload(_payload_fixture())
+    texts = [b["text"] for s in sections for b in s["blocks"]]
+    assert_true(texts, "一句都沒轉出來")
+    assert_true(all(t.strip() for t in texts), "轉出了空句子——八成抓成 doc[].text 了")
+
+
+def test_sections_use_refs_as_cites_and_resolve_the_label():
+    sections, count = artifacts.sections_from_payload(_payload_fixture())
+    cites = [c for s in sections for b in s["blocks"] for c in b["cites"]]
+    assert_true(cites, "沒有任何引註——refs 沒接上")
+    assert_eq(count, len(cites), "cite_count 要等於真的數出來的引註數")
+    for c in cites:
+        assert_true(c["label"] and c["label"] != c["id"],
+                    f"{c['id']} 的 label 沒查到左欄卡片標題，會顯示成一個裸 id")
+
+
+def test_cite_count_is_counted_not_hardcoded():
+    """設計稿寫死「14 處」。這裡確認我們數的是 payload 裡真的有幾個。"""
+    payload = _payload_fixture()
+    _, count = artifacts.sections_from_payload(payload)
+    expected = sum(len(s.get("refs") or []) for b in payload["doc"] for s in (b.get("ss") or []))
+    assert_eq(count, expected)
+
+
+def test_headings_come_from_the_three_heading_block_types():
+    sections, _ = artifacts.sections_from_payload(_payload_fixture())
+    heads = [s["h"] for s in sections]
+    assert_in("事實", heads)
+    assert_in("理由", heads)
+    assert_true(all(isinstance(h, str) for h in heads))
+
+
+def test_cites_are_card_ids_not_the_indent_level():
+    """`doc[].ind` 是縮排層級（int），`ss[].refs` 才是引註。抓錯欄位會生出一堆假 cite。
+
+    判準用「cite 的 id 是否指得到左欄真的存在的卡片」，**不是**「數量剛好不等於 ind 總和」
+    ——後者只是巧合檢查（實測本測資兩者都是 4，一跑就誤報）。
+    """
+    payload = _payload_fixture()
+    assert_true(all(isinstance(b.get("ind"), int) for b in payload["doc"]),
+                "ind 不是 int 的話這條測試的前提就變了，要回頭看 build_payload")
+    known = {x["id"] for g in ("laws", "cases", "issues") for x in (payload.get(g) or [])}
+    sections, _ = artifacts.sections_from_payload(payload)
+    for s in sections:
+        for b in s["blocks"]:
+            for c in b["cites"]:
+                assert_in(c["id"], known,
+                          f"引註 {c['id']!r} 不是左欄任何一張卡片的 id——八成抓成 ind 了")

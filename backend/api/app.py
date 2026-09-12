@@ -64,8 +64,10 @@ except ImportError:
 import backend.llm.client as llm_client  # noqa: E402  健康檢查用：只看 Agent 在不在，不呼叫任何模型
 import backend.retrieval.kb as retrieval_kb  # noqa: E402  健康檢查用：只看 boto3 在不在，不打任何 API
 from backend.api.chat import router as chat_router  # noqa: E402
+from backend.api.dossier import router as dossier_router  # noqa: E402
 from backend.api.events import BUS  # noqa: E402
 from backend.config import settings  # noqa: E402
+from backend.dossier import store  # noqa: E402
 from backend.config.settings import load_snapshot, provenance, run_mode  # noqa: E402
 from backend.engine.deadline import compute  # noqa: E402
 from backend.intake.uploads import save_upload  # noqa: E402
@@ -157,6 +159,9 @@ app = FastAPI(
 # 聊天追問（spec 2026-09-12-chat-honesty-lamps）。閘門與事件都在該檔，
 # 這裡只掛一行——回滾就是把這行拿掉。
 app.include_router(chat_router)
+# 卷宗與母庫的一次性端點（契約 v2 §1、§4）。**掛在 chat 之後、CORS 之前**，
+# 位置沒有特別含意，只是讓兩個 router 的掛載讀起來在一起。
+app.include_router(dossier_router)
 
 # 本機開發用 CORS：只放行 localhost／127.0.0.1 的任意 port。
 # 不用 allow_origins=["*"]——那會讓任何網站都能打這支 API。
@@ -311,10 +316,28 @@ def health() -> JSONResponse:
 
 @app.get("/api/cases")
 def cases() -> dict:
-    """兩種來源分開列。`cases` 是合併後的相容清單（舊呼叫端仍讀這個鍵）。"""
+    """左欄案件清單。`cases[]` 每筆是 `{id, name, created_at, kind}`（契約 v2 §1.1 #2）。
+
+    **形狀變更（2026-09-12）**：`cases` 原本是 case_id 字串陣列，左欄只拿得到 id，
+    畫不出案名與建立時間。`synthetic`／`uploaded` 兩個鍵**維持字串陣列不動**，
+    既有呼叫端（`scripts/run_eval.py`、`scripts/live_acceptance.py`）不受影響。
+
+    `name` 與 `created_at` 從 manifest 來，沒有 manifest 的案子在這裡**順手建一份**
+    （`store.ensure`）——不是為了寫檔，是因為推導 name 要讀 case.json／測資檔，
+    讀都讀了就落地，下次列表就不必再推一次。
+    """
     lst = list_cases()
+    items = []
+    for kind, ids in (("synthetic", lst["synthetic"]), ("uploaded", lst["uploaded"])):
+        for cid in ids:
+            try:
+                m = store.ensure(cid)
+                items.append({"id": cid, "name": m["name"], "created_at": m["created_at"],
+                              "kind": kind})
+            except Exception:  # noqa: BLE001 — 一個案子的 manifest 壞掉不該讓整個清單打不開
+                items.append({"id": cid, "name": cid, "created_at": None, "kind": kind})
     return {
-        "cases": lst["synthetic"] + lst["uploaded"],
+        "cases": items,
         "synthetic": lst["synthetic"],
         "uploaded": lst["uploaded"],
         "note": "synthetic- 為合成測資；upload- 為承辦人上傳，僅存於本服務 output/ 目錄，不進 git。",
@@ -338,6 +361,13 @@ async def create_case(files: list[UploadFile] = File(...)) -> dict:
         meta = save_upload(payload)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
+    # 建案就把 manifest 落地（契約 §1.1「上傳卷證即建案」）。寫失敗不該讓建案失敗
+    # ——卷證已經存進去了，回 500 會讓使用者以為要重傳一次。
+    try:
+        store.ensure(meta["case_id"])
+    except Exception as e:  # noqa: BLE001
+        print(f"[warn] 建案 {meta['case_id']} 的 manifest 寫入失敗：{type(e).__name__}: {e}",
+              file=sys.stderr)
     return {
         "case_id": meta["case_id"],
         "files": meta["files"],
@@ -392,10 +422,37 @@ def _run_kwargs(body: RunIn | None) -> dict[str, Any]:
     return kw
 
 
+def _record_run_into_manifest(case_id: str, state: Any) -> None:
+    """把一次**成功的** run 記進卷宗：`latest_run_id` ＋（真的有句子時）一筆 artifact。
+
+    **判準是「`doc[]` 裡真的有句子」，不是「這個案子有沒有被封鎖」**（2026-09-12 實測更正）：
+    我原本寫的是「C 型案不作成草稿所以不登記」，那是錯的——六節點的 `run_case`
+    對 `synthetic-blocked-01` 一樣產出事實／理由／期間計算／主文四段，
+    差別在 `submit_allowed=false` 與 `blockers[]`，不在有沒有文件。
+    （不作成結論的是 chat 的 `generate_decision_draft` 工具那條路徑，不是這裡。）
+    被封鎖的草稿**要**登記：承辦人正是要讀它、接手完成結論。藏起來才是幫倒忙。
+    真正要防的只有「沒有任何句子卻登記一筆」——右欄長出一份點開是空的草稿。
+
+    寫檔失敗不往上丟：run 本身已經成功而且已經存進 runstore，
+    讓一次書籤寫入失敗把執行結果說成失敗是本末倒置。失敗要印出來，不吞。
+    """
+    try:
+        store.set_latest_run(case_id, state.run_id)
+        doc = build_payload(state).get("doc") or []
+        has_sentences = any(b.get("ss") for b in doc)
+        if has_sentences:
+            store.record_draft_artifact(case_id, state.run_id, "訴願決定書草稿",
+                                        note=f"由 {state.run_id} 產出")
+    except Exception as e:  # noqa: BLE001
+        print(f"[warn] 卷宗登記 run {getattr(state, 'run_id', '?')} 失敗："
+              f"{type(e).__name__}: {e}", file=sys.stderr)
+
+
 def _run_in_background(case_id: str, rid: str, kwargs: dict[str, Any]) -> None:
     """202 之後在背景把六節點跑完，進度與結果分別走 BUS 與 runstore。"""
     try:
-        run_case(case_id, on_event=lambda k, d: BUS.push(rid, k, d), run_id=rid, **kwargs)
+        state = run_case(case_id, on_event=lambda k, d: BUS.push(rid, k, d), run_id=rid, **kwargs)
+        _record_run_into_manifest(case_id, state)
     except Exception as e:  # noqa: BLE001 — graph 已發 run_failed；這裡只確保狀態收斂
         # 沒有這一段，`run_case` 進到節點之前就炸掉（例如案例不存在）時
         # BUS 會永遠停在 running，前端就永遠輪詢下去。
@@ -424,6 +481,7 @@ def create_run(case_id: str, background: BackgroundTasks, body: RunIn | None = N
             state = run_case(case_id, **kwargs)
         except Exception as e:  # noqa: BLE001
             raise _translate(e) from e
+        _record_run_into_manifest(case_id, state)
         payload = build_payload(state)
         if payload["origin_violations"]:
             raise HTTPException(status_code=500, detail={"origin_violations": payload["origin_violations"]})
