@@ -1,6 +1,10 @@
 # plans/ — superpowers 式計畫文件
 
-本專案不用 prospec（sprint、30 小時、用後即棄）。每個工作包一份 plan，格式：
+**2026-09-13 更新：多人／多 session 並行走 prospec**（一個 Epic 一個 `prospec change story`
+→ `plan` → `tasks`，見 `CONSTITUTION.md` §5）。**`plans/` 沒有被取代**——單人臨時工作包、
+以及不適合切成 Epic 的東西（例如 `2026-09-12-relation-graph.md`）仍然寫在這裡。
+
+每個工作包一份 plan，格式：
 
 ```markdown
 # <工作包名>（YYYY-MM-DD）

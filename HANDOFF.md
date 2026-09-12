@@ -533,7 +533,7 @@ uv run --with fastapi --with "uvicorn[standard]" --with pydantic --with python-m
 
 | 路徑 | 是什麼 |
 |---|---|
-| `CONSTITUTION.md` | 八原則（紅線） |
+| `CONSTITUTION.md` | 九原則（紅線） |
 | `docs/architecture.md` | 架構與資料契約（§6.1 API、§6.2 CASE payload） |
 | `plans/` | 各工作包的 plan（含驗收條件） |
 | `backend/DEPLOY.md` | 啟動指令、ECS 部署、備援路徑 |

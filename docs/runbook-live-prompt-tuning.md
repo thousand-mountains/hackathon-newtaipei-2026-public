@@ -206,5 +206,5 @@ AC7 要的是 `cases ≥ 3` **且**「同案型 ≥ 3」。2026-09-12 那次是 
 
 - `backend/DEPLOY.md` — 完整啟動／部署指令與環境變數表
 - `.env.example` — 變數名稱與用途（沒有值）
-- `CONSTITUTION.md` — 八原則，改 prompt 前先讀 §1 分層誠實、§2 引用必可驗、§4 規則引擎零 LLM
+- `CONSTITUTION.md` — 九原則，改 prompt 前先讀 §1 分層誠實、§2 引用必可驗、§4 規則引擎零 LLM
 - `docs/evidence/2026-09-12-bedrock-live/` — 目前最新的真模型實測結果

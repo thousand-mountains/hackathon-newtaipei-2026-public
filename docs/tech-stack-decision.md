@@ -14,8 +14,12 @@
 
 ## 刻意不用的
 
-- **prospec SDD**：sprint 模式、30 小時、用後即棄的 prototype——規格先行的成本划不來。
-  改用 superpowers 式 plan 文件（`plans/`，brainstorm → plan → 帶驗證條款執行）。
+- ~~**prospec SDD**~~：**2026-09-13 推翻，改為採用。** 原本的理由是「sprint 模式、30 小時、
+  用後即棄的 prototype——規格先行的成本划不來」。實際走下來相反：決賽期間有多個 session
+  與 worktree 並行，**需要一個共用的 story／AC 載體**，口頭與 `plans/` 撐不住跨 session 對齊
+  （2026-09-13 就踩過一次：proposal 沒 commit，三個 epic agent 讀不到規格照樣開工）。
+  現況 repo 內有 11 個 `.prospec/changes/`。規則見 `CONSTITUTION.md` §5。
+  單人臨時工作包仍可只寫 `plans/`（兩者並存，不是二選一）。
 - **自建向量資料庫**（pgvector/OpenSearch 自管）：30 小時內是坑，Bedrock KB 頂得住 demo 量。
 - **微服務**：單體 FastAPI，demo 完就丟。
 

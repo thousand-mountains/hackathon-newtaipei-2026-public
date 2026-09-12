@@ -2,7 +2,7 @@
 
 > **本檔不是本專案的憲章，只是一個指路標。**
 >
-> 真正的憲章在 repo 根目錄：[`../CONSTITUTION.md`](../CONSTITUTION.md) —— 八原則
+> 真正的憲章在 repo 根目錄：[`../CONSTITUTION.md`](../CONSTITUTION.md) —— 九原則
 > （分層誠實／引用必可驗／不編造測資／規則引擎零 LLM／plan 先行／資料隔離／secret／30h 紀律）。
 >
 > **請讀那一份，不要讀這一份。**
@@ -25,4 +25,4 @@ repo 根的 `CONSTITUTION.md` 沒有被 `prospec init` 覆蓋（已實測確認�
 
 `.prospec.yaml` 的 `paths.base_dir: prospec`，所以 `{{constitution_path}}`
 解析到本檔。讀到本檔的 agent 會被導去 `../CONSTITUTION.md`，
-Constitution Check 一律以那一份的八原則為準。
+Constitution Check 一律以那一份的九原則為準。

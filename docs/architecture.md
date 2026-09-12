@@ -38,7 +38,7 @@
 
 ---
 
-## 1. 設計原則與硬約束：CONSTITUTION 八原則怎麼落到架構上
+## 1. 設計原則與硬約束：CONSTITUTION 九原則怎麼落到架構上
 
 | # | 原則 | 架構上的落實機制 | 驗收方式 |
 |---|---|---|---|
@@ -57,7 +57,7 @@
 - **資料來源限定政府公開來源**，明確避開私人商業訴願／法規檢索平台（8/30 會議共識，01 §A-1）。這條是工程約束不只是說明：入庫腳本 `ingest_kb.py` 的來源清單只准賽方資料集與全國法規資料庫／司法院系統，**任何商業平台的抓取程式碼不得進 repo**。
 - 前端不得直連 Bedrock，一律過後端。
 - 不得在 request 路徑放同步阻塞呼叫（FastAPI async）。
-- 不自建向量資料庫、不做微服務、不用 prospec SDD。
+- 不自建向量資料庫、不做微服務。（~~不用 prospec SDD~~ **2026-09-13 推翻，改為採用**，見 `docs/tech-stack-decision.md` 與 `CONSTITUTION.md` §5。）
 - ⚠ **前端選型已偏離 ADR-001，需拍板後修訂**：ADR-001 表格寫「前端｜Vue 3 + Vite + shadcn-vue｜團隊現役技術（既有專案 同棧）」，狀態為已定（Ci 拍板）。本文 §10 的 `frontend/` 以五步動線分支為基準，該分支是**原生 JS ＋ 內嵌 CSS ＋ `build.py` 字串替換**，無 Vite、無框架（02 §A）。理由是 30 小時內重寫一套已給法律實務界看過的 UI 不划算。**這與 AgentCore（§13 #5）同性質，套用同一個標準：見 §13 待拍板 16，拍板後須同步修訂 ADR-001。**
 
 ---
@@ -1328,7 +1328,7 @@ Claire 那條線（1-3 → 1-9 → 1-5 → 1-4 → 2-4）從 H4 跑到 H12.5，�
 - `prototype/data/laws-snapshot.json` — 引用守門 SSOT（11 部法規／17 筆判解／2 則釋字／1 筆修法）
 - `origin/claude/prototype-update-ip99ix:prototype/data/case-demo.json` — 前端資料契約基準（§6.2）
 - `docs/spec/prototype-spec.md:80-93` — §4.6 Multi-Agent 定調
-- `CONSTITUTION.md` — 八原則
+- `CONSTITUTION.md` — 九原則
 - `.claude/team-roster.yaml` — 五個 agent 角色與模組責任對應
 
 ---

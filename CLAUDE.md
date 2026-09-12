@@ -16,10 +16,10 @@
 
 | 檔案 | 是什麼 |
 |---|---|
-| `CONSTITUTION.md` | 八原則（分層誠實/引用必可驗/不編造測資/規則引擎零 LLM/plan 先行/資料隔離/secret/30h 紀律） |
-| `docs/tech-stack-decision.md` | ADR：Bedrock + KB/S3 + FastAPI + Vue3；**不用 prospec**，用 plans/ |
+| `CONSTITUTION.md` | **九原則**（分層誠實/引用必可驗/不編造測資/規則引擎零 LLM/plan 先行＋prospec/資料隔離/secret/30h 紀律/**契約即介面**） |
+| `docs/tech-stack-decision.md` | ADR：Bedrock + KB/S3 + FastAPI + Vue3。**prospec 2026-09-13 起改為採用**（多 session 並行需要共用的 story/AC 載體），`plans/` 並存 |
 | `backlog.md` | 使用者價值句 stories（overnight-loop 讀這份） |
-| `plans/` | superpowers 式計畫文件，開工前必有、含可執行驗收條件 |
+| `plans/` | superpowers 式計畫文件，含可執行驗收條件。**並行 Epic 走 `.prospec/changes/`**，兩者並存 |
 | `.claude/agents/` + `team-roster.yaml` | 5 agents：tech-lead/backend/frontend/qa-legal/plan-guardian |
 | `prototype/` | 程式碼 |
 
