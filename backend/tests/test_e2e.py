@@ -17,6 +17,7 @@ from backend.config.settings import (
     CONFIRMABLE_INTAKE_FIELDS,
     SYNTHETIC_DIR,
 )
+import backend.llm.chat as chat_mod
 from backend.orchestrator import chat_bridge
 from backend.orchestrator.graph import build_payload, list_synthetic_cases, load_case, run_case
 from backend.tests.harness import assert_eq, assert_in, assert_true
@@ -696,3 +697,56 @@ def test_a_missing_or_broken_manifest_reads_as_an_empty_case_file_not_an_error()
         (root / "good" / "manifest.json").write_text(
             '{"laws":[{"id":"L1","t":"x"}]}', encoding="utf-8")
         assert_eq(chat_bridge.load_case_manifest("good", root)["laws"][0]["id"], "L1", "正常讀")
+
+
+def test_the_draft_tool_lets_precondition_three_through_when_the_manifest_really_has_content():
+    """前置條件 3 的**放行**路徑：真的 adapter ＋ 真的 `manifest.json` ＋ 真的 `ChatTools`。
+
+    擋下來的三種情形先前已經有測試，但「有內容時會放行」一直沒驗到——
+    **擋得住不等於放得行**。一個把 `laws`／`references` 判斷寫反的實作，
+    在只驗「擋下來」的測試組合下會全綠。
+
+    這條唯一沒有用真貨的是模型（沒有 live 檔位，見 verification.md §4）。
+    流水線、manifest 讀取、前置條件判斷、`n4_query` 組裝、RefBook 重置全是真的。
+    """
+    saved = chat_mod._throttle
+    chat_mod._throttle = lambda: None          # 真的節流會讓這條睡好幾秒
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / ORDINARY).mkdir()
+            (root / ORDINARY / "manifest.json").write_text(
+                json.dumps({"laws": [{"id": "L1", "t": "廢棄物清理法第 2 條"},
+                                     {"id": "L2", "t": "訴願法第 14 條"}],
+                            "references": [{"id": "C1", "t": "112 年訴字第 1 號"}]},
+                           ensure_ascii=False), encoding="utf-8")
+            manifest = chat_bridge.load_case_manifest(ORDINARY, root)
+
+        events: list = []
+        tools = chat_mod.ChatTools(
+            {}, chat_mod.RefBook(), emit=lambda n, d: events.append((n, d)),
+            run_pipeline=chat_bridge.pipeline_adapter(ORDINARY, mode="fixture"),
+            case_manifest=manifest,
+        )
+
+        # 先解析卷證：這一步才會讓 run_id 與 screen 進來（前置條件 2）
+        tools.extract_case_document()
+        assert_true(tools.run_id, "解析卷證要留下 run_id")
+        assert_true(tools.case_payload.get("screen"), "解析卷證要留下程序審查結果")
+
+        out = tools.generate_decision_draft()
+        results = [d for n, d in events if n == "tool_result"]
+        draft = results[-1]
+        assert_eq(draft["status"], "ok", f"前置條件 3 應該放行，實得 {draft}")
+        assert_eq(draft["state"], "VERIFIED", "生成草稿要跑到守門")
+        assert_true(draft["cite_count"] > 0, "引用數是從 payload 數的真值")
+        assert_in("已生成草稿", out)
+
+        # 兩支工具各發一組 n1–n3 / n4–n6 的 tool_step，中文 label 由後端帶
+        steps = [(d["step"], d["label"]) for n, d in events
+                 if n == "tool_step" and d["status"] == "done"]
+        assert_eq(steps, [("n1", "讀卷抽取"), ("n2", "案件分類"), ("n3", "程序審查"),
+                          ("n4", "檢索法條與相似案"), ("n5", "草稿撰寫"), ("n6", "引用守門")],
+                  "兩支工具合起來各報自己那三個節點")
+    finally:
+        chat_mod._throttle = saved

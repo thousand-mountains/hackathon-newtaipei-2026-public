@@ -3431,3 +3431,77 @@ def test_synthetic_fixture_exclusion_is_not_overwritten():
     st.files = [{"n": "synthetic-訴願書.pdf"}]
     assert_eq(n4_retrieval.self_exclusion_keys(st), [],
               "算不出識別字時要回空，讓檢索器退回 fixture 的值")
+
+
+# ── 聊天端點的 live 驗收骨架（契約 v2 / chat-tools-unified）────────────
+#
+# 這兩條**現在一定略過**，因為它們要的東西這台機器沒有。寫成骨架而不是留一句
+# 「之後要驗」的註解，是為了讓解鎖條件一到就有人跑得動——而不是等某個人想起來。
+#
+# 解鎖條件（兩個都要）：
+#   1. 有 live 執行環境：`uv run --with fastapi --with "uvicorn[standard]" --with
+#      pydantic --with python-multipart --with boto3 --with strands-agents -- \
+#      python -m uvicorn backend.api.app:app --host 127.0.0.1 --port 8080`
+#   2. `RUN_MODE=bedrock` 且 `settings.missing_live_settings()` 為空
+#      （見 `backend/DEPLOY.md`；值只由環境變數注入，不進 repo）
+#
+# 跑法：把伺服器起在 `CHAT_LIVE_BASE`（預設 http://127.0.0.1:8080），
+#   `CHAT_LIVE_CASE=<某個 upload- 或 synthetic- 案件 id>`，再跑 run_all.py。
+
+_LIVE_BASE_ENV = "CHAT_LIVE_BASE"
+_LIVE_CASE_ENV = "CHAT_LIVE_CASE"
+
+
+def _live_chat_target() -> tuple[str, str]:
+    """回 `(base_url, case_id)`，缺任一項就明確略過。
+
+    **不 import requests／httpx**：測試路徑零外部依賴（`run_all.py` 有靜態掃描）。
+    真要打的時候用 stdlib 的 `urllib.request`，它讀得到逐行的 SSE。
+    """
+    base = os.environ.get(_LIVE_BASE_ENV, "").strip()
+    case_id = os.environ.get(_LIVE_CASE_ENV, "").strip()
+    if not base or not case_id:
+        raise run_all.harness.TestSkipped(
+            f"需要 live 聊天端點：設 {_LIVE_BASE_ENV}（例 http://127.0.0.1:8080）與 "
+            f"{_LIVE_CASE_ENV}=<case id>，並讓伺服器跑在 RUN_MODE=bedrock。"
+            f"解鎖條件見本段檔頭註解。"
+        )
+    if settings.run_mode() != "bedrock" or settings.missing_live_settings():
+        raise run_all.harness.TestSkipped(
+            f"檔位不是 live：run_mode={settings.run_mode()}、"
+            f"missing={settings.missing_live_settings()}。聊天端點會回 503，"
+            f"這條驗不到真模型。"
+        )
+    return base, case_id
+
+
+def test_live_chat_extract_then_draft_walks_the_whole_contract():
+    """live 端到端：模型自己決定呼叫工具，走完解析卷證 → 生成草稿。
+
+    離線測試已經釘住了形狀（事件欄位、前置條件、`to_node`、RefBook 重置），
+    **這條要驗的是離線驗不到的那三件**：
+    1. 真模型讀得懂工具說明、真的會去呼叫 `extract_case_document`／
+       `generate_decision_draft`（工具 docstring 是寫給模型看的，離線看不出它看不看得懂）。
+    2. 真實耗時落在契約寫的區間（解析 10–11 秒、生成 24–72 秒）。
+       **契約那兩個數字是 n=3 量的，這條要重量**——ALB idle_timeout 900 秒是照它設的。
+    3. `tool_step` 在真實負載下**逐筆抵達**（離線用假回合量過管線，真回合沒量過）。
+    """
+    base, case_id = _live_chat_target()
+    raise run_all.harness.TestSkipped(
+        f"骨架未實作：解鎖條件已滿足（{base} / {case_id}），"
+        f"但打 SSE 的那段還沒寫。要做的事寫在本函式的 docstring。"
+    )
+
+
+def test_live_chat_reports_a_broken_retrieval_source_as_failed_not_empty():
+    """AC A3.2 的 live 版：把 KB endpoint 改成打不通，`status` 必須是 `failed`。
+
+    離線版用會拋例外的假 retriever 走同一條 `except` 分支驗過，**但那是我挑的例外**。
+    真的 KB 打不通時 botocore 拋什麼、會不會在更早的地方就被吞掉，離線驗不出來。
+    分錯的後果是把「查詢來源壞了」畫成「資料庫裡沒有這筆資料」。
+    """
+    base, case_id = _live_chat_target()
+    raise run_all.harness.TestSkipped(
+        f"骨架未實作：解鎖條件已滿足（{base} / {case_id}），"
+        f"但要另外把 KB endpoint 指到一個打不通的位址再跑一次，這段還沒寫。"
+    )
