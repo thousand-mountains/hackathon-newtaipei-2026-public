@@ -18,6 +18,30 @@ export interface AppealBackendStackProps extends cdk.StackProps {
   /** 檢索分數下限（字串原樣傳給後端，由後端解析） */
   readonly kbMinScore: string;
   /**
+   * 重排（cross-encoder）模型 arn。
+   *
+   * **這一項漏掉的後果是安靜的，所以 `bin/app.ts` 把它列為必填。**
+   * 沒有重排時檢索只有 embedding 的向量距離把關，而實測那個分數擋不掉語意無關的
+   * 命中（真實命中 median 0.21、閒聊句 0.73——雜訊高過訊號）。更糟的是
+   * `KB_MIN_SCORE` 放寬到 0.15 的正當性**建立在「後面有重排接手」上**，
+   * 兩者一起漏就是「門檻寬 ＋ 沒有人擋」。
+   */
+  readonly rerankModelId: string;
+  /** 重排後的相關性門檻（字串原樣傳給後端） */
+  readonly rerankMinScore: string;
+  /**
+   * 相似案通道的 `前綴/:席次`，以及 N5 可引用來源的前綴白名單。
+   *
+   * **這兩項跟著 corpus 綁定，換 KB 一定要一起換**：舊 corpus 的目錄叫
+   * `新北訴願決定書_全量/`，第三方那份叫 `新北訴願決定書_環保局全量/`——
+   * 只差三個字，但比不中時整條通道**靜默回 0 筆、不報錯**。
+   * 既然 `BEDROCK_KB_ID` 是必填，這兩項就沒有理由是選填。
+   */
+  readonly similarCaseQuota: string;
+  readonly refPrefixes: string;
+  /** 引用通道伺服器端先篩的 doc_kind。**留空＝不篩**，所以這一項可以不給。 */
+  readonly refDocKinds?: string;
+  /**
    * ALB 對外開放的來源 CIDR 清單。
    *
    * 留空（預設）＝ `0.0.0.0/0`，任何人都能點開部署網址。
@@ -102,6 +126,36 @@ export class AppealBackendStack extends cdk.Stack {
         sid: 'InvokeNamedModelsOnly',
         actions: ['bedrock:InvokeModel', 'bedrock:InvokeModelWithResponseStream'],
         resources: [...new Set(invokeResources)],
+      }),
+    );
+
+    // 重排模型要單獨開，**它不在 InvokeNamedModelsOnly 裡**（2026-09-12 部署前攔下）。
+    // `Rerank` 是 bedrock-agent-runtime 的另一支 API，動作名也不同（`bedrock:Rerank`）。
+    // 漏了它的失敗方式很難查：`/api/health` 照樣報 `rerank.enabled=true`（那只看環境變數），
+    // 但每次重排都 AccessDenied → 例外往上拋到 N4 → **相似案通道整條變 unavailable**。
+    // 本機驗不到這一條：本機走開發者自己的憑證，不是 task role。
+    // **`bedrock:Rerank` 不支援資源層級限縮，必須給 `*`**（AWS 官方 rerank-prereq 明載；
+    // 2026-09-12 線上實測過一輪才確定）。把它 scoped 到 foundation-model ARN 的話，
+    // statement 對這個 action 完全不匹配，執行時的錯誤是
+    // 「no identity-based policy allows the bedrock:Rerank **action**」
+    // ——它抱怨的是 action 不是 resource，這就是分辨「權限沒開」與「資源寫錯」的線索。
+    //
+    // 能限縮的是 `bedrock:InvokeModel`，所以拆成兩條：**該窄的仍然窄**。
+    // `Rerank` 這個動作本身只能重排呼叫端自己送進去的文件，不讀任何資料來源，
+    // 開 `*` 的實際暴露面是「可以用帳號內任何重排模型重排自己的文字」。
+    taskRole.addToPolicy(
+      new iam.PolicyStatement({
+        sid: 'RerankActionCannotBeResourceScoped',
+        actions: ['bedrock:Rerank'],
+        resources: ['*'],
+      }),
+    );
+
+    taskRole.addToPolicy(
+      new iam.PolicyStatement({
+        sid: 'InvokeRerankModelOnly',
+        actions: ['bedrock:InvokeModel'],
+        resources: invokeArnsFor(props.rerankModelId, region, account),
       }),
     );
 
@@ -212,6 +266,17 @@ export class AppealBackendStack extends cdk.Stack {
             BEDROCK_MODEL_ID_DRAFT: props.modelIdDraft,
             BEDROCK_KB_ID: props.knowledgeBaseId,
             KB_MIN_SCORE: props.kbMinScore,
+            // 檢索品質的四個旋鈕。**它們與 KB_MIN_SCORE 是一組的，不能只帶一半**
+            // （2026-09-12 部署前實際攔下來）：只帶 KB_MIN_SCORE=0.15 而不帶重排，
+            // 等於把門檻放寬之後拿掉唯一接手的那一關；不帶前綴則是目錄名對不上
+            // 第三方 corpus，相似案與引用兩條通道一起靜默回 0 筆。
+            BEDROCK_RERANK_MODEL_ID: props.rerankModelId,
+            RERANK_MIN_SCORE: props.rerankMinScore,
+            SIMILAR_CASE_QUOTA: props.similarCaseQuota,
+            REF_PREFIXES: props.refPrefixes,
+            // 留空＝不篩，所以這裡用空字串而不是省略：省略會讓「刻意不篩」與
+            // 「忘了設」在 task definition 上長得一樣。
+            REF_DOC_KINDS: props.refDocKinds ?? '',
             PORT: '8080',
           },
         },

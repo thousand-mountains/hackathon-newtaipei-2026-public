@@ -44,6 +44,15 @@ new AppealBackendStack(app, 'HackNtpcAppealBackend', {
   modelIdDraft: required('BEDROCK_MODEL_ID_DRAFT'),
   knowledgeBaseId: required('BEDROCK_KB_ID'),
   kbMinScore: required('KB_MIN_SCORE'),
+  // 這四項與 KB_MIN_SCORE 是一組的（見 stack 的 rerankModelId 說明）：
+  // 少帶任何一項，服務都會**安靜地**退化——不報錯、畫面照樣演完，
+  // 只是相似案變空或混進語意無關的命中。所以一律必填，缺了就停在這裡。
+  rerankModelId: required('BEDROCK_RERANK_MODEL_ID'),
+  rerankMinScore: required('RERANK_MIN_SCORE'),
+  similarCaseQuota: required('SIMILAR_CASE_QUOTA'),
+  refPrefixes: required('REF_PREFIXES'),
+  // 唯一的選填：留空＝不篩，是有意義的設定值（沒有側檔的 KB 一篩就全空）。
+  refDocKinds: process.env.REF_DOC_KINDS ?? '',
   // 逗號分隔的 CIDR。不設＝維持 0.0.0.0/0（任何人都點得開）。
   // 例：ALB_ALLOWED_CIDRS=1.2.3.4/32,5.6.7.8/32 ./deploy.sh deploy
   albAllowedCidrs: (process.env.ALB_ALLOWED_CIDRS ?? '')
