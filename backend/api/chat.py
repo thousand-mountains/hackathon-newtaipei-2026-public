@@ -15,11 +15,25 @@ runstore 與 orchestrator**（之後要能整份搬上託管服務，那個容�
 閘門擋在前面，前端才可以安全地假設「拿到 `text/event-stream` 就一定至少有一個
 `done` 或 `error`」。錯誤回應**全部是 JSON，不是 SSE**（spec §2.3）。
 
-## 為什麼是同步 `def` 而不是 `async def`
+## 串流 generator 是 `async def`，端點本身是同步 `def`
 
-照抄既有 `run_events()` 的做法：starlette 會把同步 generator 丟到 threadpool 迭代，
-所以 generator 裡的阻塞呼叫（模型、檢索）不會卡住 event loop。代價是每條開著的 SSE
-佔一個 threadpool thread（預設 40），demo 量級夠用，**不是通用方案**。
+**這一段 2026-09-13 改過，舊版說的是相反的事，不要照舊版做。**
+
+舊版照抄 `run_events()` 的同步 generator，理由是「阻塞呼叫不會卡住 event loop，
+代價是每條 SSE 佔一個 threadpool thread（預設 40），demo 量級夠用」。
+**「夠用」是沒有量過的猜測，實測是錯的**：starlette 迭代同步 generator 時
+**阻塞多久就佔著那個 token 多久**，而聊天一輪 10–72 秒。41 條並行就超過預設上限，
+其他端點（`/api/cases`）直接 timeout，`/api/health` 也曾一起打不開——接下來就是
+ALB 判 task 不健康、換掉 task，而 `backend/output/` 的卷證與 manifest 跟著消失。
+
+現在 `gen()` 是 **async generator**：真正的工作跑在自己的 `threading.Thread` 上，
+generator 只在 event loop 上 await 佇列，**這條路徑的 threadpool 用量歸零**
+（實測 100 條並行時 `/api/cases` 1.9 ms）。細節與量測見 `gen()` 的 docstring。
+
+端點函式 `chat()` 維持同步 `def`：它要做 `_load_run_context()` 的讀檔，
+在 threadpool 裡做是對的，而且它很快就回傳、token 隨即釋放。
+**`?stream=0` 那條仍然在 threadpool 裡跑完整輪**（10–72 秒佔一個 token）——
+那是目前已知還會長時間佔用的路徑之一，不是被遺漏，是還沒動。
 
 ## `?stream=0` 是契約的一部分，不是臨場才寫的備援
 

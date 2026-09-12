@@ -593,7 +593,19 @@ def run_events(run_id: str) -> StreamingResponse:
 
     本端點是同步 `def`：starlette 會把同步 generator 丟到 threadpool 迭代，
     所以 `stream()` 裡的 `time.sleep` 不會卡住 event loop——代價是每條開著的
-    SSE 佔一個 threadpool thread（預設 40），demo 量級夠用，不是通用方案。
+    SSE **阻塞多久就佔著一個 threadpool token 多久**。
+
+    **上一句原本接的是「（預設 40），demo 量級夠用」，那句話被實測推翻了**
+    （2026-09-13）：41 條並行的長 SSE 就會把預設池塞滿，其他同步端點
+    （`/api/cases`）直接 timeout。同一段話的複本原本也在 `backend/api/chat.py`，
+    那邊的 SSE 已經改成 async generator、threadpool 用量歸零。
+
+    **這一支還沒改，而且目前不急**：前端契約不打它（`docs/handoff/2026-09-12-frontend-contract-v2.md` §1.6），
+    實際使用者是 `verify.sh` 與除錯，並行度個位數。另外兩道防線也已經在：
+    `/api/health` 走專用執行緒池（見 `_HEALTH_POOL`，所以 ALB 不會因此判 task 不健康），
+    預設池上限也從 40 提到 `THREADPOOL_LIMIT`。
+    真要改的話**照 `backend/api/chat.py` 的 `gen()`**：工作丟 `threading.Thread`、
+    generator 改 `async def` 只 await 佇列。
 
     事件只活在這個 process 的記憶體裡（`RunEvents`），沒有持久化也沒有回放：
     process 重啟後事件就沒了，但結果還在 runstore，所以 404 的說明要指回
