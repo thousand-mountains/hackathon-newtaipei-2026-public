@@ -112,6 +112,21 @@ def _filename(view: dict[str, Any], fmt: str) -> str:
     return f"{stem}-訴願決定書草稿.{fmt}"
 
 
+def _encode_warning(text: str) -> str:
+    """`X-Export-Warning` 的值。**百分比編碼，因為 HTTP 標頭只吃 latin-1。**
+
+    2026-09-12 實測：把中文直接放進標頭，`Response(...)` 在**建構時**就丟
+    `UnicodeEncodeError`——整支匯出變 500。而觸發條件是「字型缺字」，
+    正常語料下永遠不會發生，所以這個 bug 在測試裡是隱形的
+    （`test_export_warning_header_survives_chinese` 現在把它釘住了）。
+
+    ⚠️ **契約 §4.4 寫的是「人類可讀的警語（可空）｜直接顯示」**，沒說要解碼。
+    中文不編碼在 HTTP 上根本送不出去，所以前端要 `decodeURIComponent()` 再顯示。
+    **這一句契約沒有，已回報請契約擁有者補**——不是我自行改契約（CONSTITUTION §9）。
+    """
+    return urllib.parse.quote(text or "", safe="")
+
+
 def _content_disposition(filename: str) -> str:
     """RFC 5987。檔名含中文，只給 `filename=` 的話多數瀏覽器會存成亂碼或 `download`。"""
     quoted = urllib.parse.quote(filename, safe="")
@@ -175,13 +190,19 @@ def export_artifact(
 
     headers = {
         "Content-Disposition": _content_disposition(_filename(view, fmt)),
-        # 前端要顯示「引註 N 處」時用這個，不要自己數也不要沿用設計稿寫死的 14。
+        # 契約 §4.4 標頭表。三個一律都帶（含值為 0 或空字串的情況）：
+        # 省略鍵會讓前端拿到 undefined 而不是 0／""，跟 §2.3 的「其餘為 null 也要送」同理。
         "X-Cite-Count": str(view.get("cite_count", 0)),
+        # **是引註「數」不是 id 清單**（契約：「對不回本案 laws／references 的引註數」，
+        # 前端「非 0 要警示」）。id 清單改放 X-Export-Warning——那裡才是人看的。
+        "X-Unresolved-Cites": str(view.get("unresolved_count", 0)),
     }
+
+    warnings: list[str] = []
     if view.get("unresolved"):
-        # label 對不回來的引用：匯出檔裡會印成「L9（未解析）」。這裡再揭露一次，
-        # 免得只有打開檔案的人才知道。
-        headers["X-Unresolved-Cites"] = ",".join(view["unresolved"])
+        # 對不回來的引用在匯出檔裡會印成「L9（未解析）」。這裡具名再講一次，
+        # 免得只有打開檔案的人才知道是哪幾個編號。
+        warnings.append("下列引註對不回本案卷宗：" + "、".join(view["unresolved"]))
 
     if fmt == "docx":
         body = export_render.render_docx(view)
@@ -191,8 +212,7 @@ def export_artifact(
         except export_render.CJKFontMissing as e:
             raise HTTPException(status_code=503, detail=str(e)) from e
         if missing:
-            headers["X-Export-Warning"] = (
-                "字型缺少下列字元，PDF 中會顯示為空白或豆腐字：" + "".join(missing)
-            )
+            warnings.append("字型缺少下列字元，PDF 中會顯示為空白或豆腐字：" + "".join(missing))
 
+    headers["X-Export-Warning"] = _encode_warning("；".join(warnings))
     return Response(content=body, media_type=_MEDIA_TYPES[fmt], headers=headers)

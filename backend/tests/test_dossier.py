@@ -20,7 +20,8 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import backend.retrieval.kb as kb_module  # noqa: E402
-from backend.dossier import artifacts, corpus, store  # noqa: E402
+from backend.dossier import corpus, store  # noqa: E402
+from backend.orchestrator.artifact_sections import build_sections  # noqa: E402
 from backend.orchestrator.graph import build_payload, run_case  # noqa: E402
 from backend.tests.harness import assert_eq, assert_in, assert_true  # noqa: E402
 
@@ -594,16 +595,25 @@ def _payload_fixture() -> dict:
     return build_payload(run_case("synthetic-ordinary-01"))
 
 
+def _sections(payload: dict) -> tuple[list[dict], int]:
+    """契約 §4.4 的轉換，**全系統只有 `backend/orchestrator/artifact_sections.py` 一份**
+    （2026-09-13 去重；原本 `backend/dossier/artifacts.py` 有第二份，兩邊對 `title`／`meta`
+    的處理不同，同一份草稿從 JSON 檢視與匯出出來會長得不一樣）。
+    保留這個 (sections, count) 形狀，讓底下的斷言不用跟著改。"""
+    view = build_sections(payload)
+    return view["sections"], view["cite_count"]
+
+
 def test_sections_take_sentence_text_from_ss_not_from_the_block_text():
     """`ty="p"` 的塊 `text` 是空字串，句子在 `ss[].t`。抓錯欄位會得到一份全空的草稿。"""
-    sections, _ = artifacts.sections_from_payload(_payload_fixture())
+    sections, _ = _sections(_payload_fixture())
     texts = [b["text"] for s in sections for b in s["blocks"]]
     assert_true(texts, "一句都沒轉出來")
     assert_true(all(t.strip() for t in texts), "轉出了空句子——八成抓成 doc[].text 了")
 
 
 def test_sections_use_refs_as_cites_and_resolve_the_label():
-    sections, count = artifacts.sections_from_payload(_payload_fixture())
+    sections, count = _sections(_payload_fixture())
     cites = [c for s in sections for b in s["blocks"] for c in b["cites"]]
     assert_true(cites, "沒有任何引註——refs 沒接上")
     assert_eq(count, len(cites), "cite_count 要等於真的數出來的引註數")
@@ -615,17 +625,30 @@ def test_sections_use_refs_as_cites_and_resolve_the_label():
 def test_cite_count_is_counted_not_hardcoded():
     """設計稿寫死「14 處」。這裡確認我們數的是 payload 裡真的有幾個。"""
     payload = _payload_fixture()
-    _, count = artifacts.sections_from_payload(payload)
+    _, count = _sections(payload)
     expected = sum(len(s.get("refs") or []) for b in payload["doc"] for s in (b.get("ss") or []))
     assert_eq(count, expected)
 
 
-def test_headings_come_from_the_three_heading_block_types():
-    sections, _ = artifacts.sections_from_payload(_payload_fixture())
+def test_headings_come_from_h_blocks_and_title_meta_are_not_sections():
+    """契約 §4.4（2026-09-13 釐清）：**`title` 與 `meta` 不是 section，是文件抬頭。**
+
+    當成 section 的話畫面最上面會多出兩個 `h` 是空字串、`blocks` 是空陣列的區塊。
+    原本 `backend/dossier/artifacts.py` 那份實作就是這樣做的，與匯出那份不一致——
+    同一份草稿從 JSON 檢視與匯出出來長得不一樣。去重後由這條釘住。
+    """
+    payload = _payload_fixture()
+    sections, _ = _sections(payload)
     heads = [s["h"] for s in sections]
     assert_in("事實", heads)
     assert_in("理由", heads)
     assert_true(all(isinstance(h, str) for h in heads))
+    banned = [b.get("text") for b in payload["doc"] if b.get("ty") in ("title", "meta")]
+    assert_true(banned, "測資裡沒有 title／meta 區塊，這條測試的前提不成立")
+    for text in banned:
+        assert_true(text not in heads, f"{text!r} 是文件抬頭，不該變成 section 標題")
+    assert_true(all(s["blocks"] for s in sections),
+                "有 section 一個 block 都沒有——八成是 title／meta 被當成 section 了")
 
 
 def test_cites_are_card_ids_not_the_indent_level():
@@ -638,7 +661,7 @@ def test_cites_are_card_ids_not_the_indent_level():
     assert_true(all(isinstance(b.get("ind"), int) for b in payload["doc"]),
                 "ind 不是 int 的話這條測試的前提就變了，要回頭看 build_payload")
     known = {x["id"] for g in ("laws", "cases", "issues") for x in (payload.get(g) or [])}
-    sections, _ = artifacts.sections_from_payload(payload)
+    sections, _ = _sections(payload)
     for s in sections:
         for b in s["blocks"]:
             for c in b["cites"]:
