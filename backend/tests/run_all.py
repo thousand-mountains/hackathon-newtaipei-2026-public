@@ -12,12 +12,28 @@ import re
 import subprocess
 import sys
 
+# **版本守衛必須在任何掃描之前**。`sys.stdlib_module_names` 需要 Python ≥ 3.10，
+# 而這台機器的 `python3` 解析到 /usr/bin/python3（3.9）。在 3.9 上跑的後果不是
+# 「測試紅」而是**跑到一半 traceback**：崩在第 3 條紅線掃描，於是後面 4 條
+# ——含「N2/N3/N4/N6 無 LLM 依賴」與「frontend/dist 無夾帶檔案」——**根本沒執行**，
+# 而前面一路綠會讓人以為驗過了。失敗的樣子還像環境壞掉、不像測試紅。
+if sys.version_info < (3, 10):
+    sys.exit(
+        f"需要 Python 3.10+（本檔用到 sys.stdlib_module_names），"
+        f"目前是 {sys.version_info.major}.{sys.version_info.minor}"
+        f"（{sys.executable}）。\n"
+        f"macOS 上 /usr/bin/python3 是 3.9，請改用 /opt/homebrew/bin/python3。\n"
+        f"**不要以為前面幾條綠就是驗過了**——在 3.9 上會崩在第 3 條掃描，"
+        f"後面 4 條紅線完全沒跑到。"
+    )
+
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from backend.tests import (  # noqa: E402
     harness,
+    test_build_graph,
     test_contract,
     test_cross_check,
     test_deadline,
@@ -437,7 +453,12 @@ def scan_top_level_imports() -> list[str]:
     允許：模組層、模組層的 try/except／if 區塊內（第三方套件守衛）。
     禁止：任何 FunctionDef／AsyncFunctionDef／ClassDef 內的 Import／ImportFrom。"""
     problems: list[str] = []
-    for p in _scan_files():
+    # **`scripts/` 也要掃。** 2026-09-12 變異測試：把 `import boto3` 放進
+    # `scripts/build_graph.py` 的函式體內，全套測試照樣全綠——`scripts/` 既不在
+    # 零-LLM import 圖的起點也不在可達範圍，而這條掃描原本只吃 `backend/`。
+    # 函式內 import 本身就是違規（不論 import 什麼），所以把 scripts/ 納進來
+    # 就堵住那條繞道。實測 scripts/ 六支檔目前零個函式內 import，納入零風險。
+    for p in _scan_files((BACKEND, SCRIPTS)):
         if p.suffix != ".py":
             continue
         tree = ast.parse(p.read_text(encoding="utf-8"))
@@ -474,6 +495,7 @@ def main() -> int:
         ("期間第二意見交叉比對", [test_cross_check]),
         ("當事人適格 §77-3（規則引擎意見，不作成決定）", [test_party_standing]),
         ("live 分支管線（settings／llm client／kb／續跑，全部 monkeypatch）", [test_live_plumbing]),
+        ("KB 知識圖抽取（regex + 查表，零 LLM）", [test_build_graph]),
     ]
     total_pass = total = 0
     all_failures: list[str] = []
