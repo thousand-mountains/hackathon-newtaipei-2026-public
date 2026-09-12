@@ -1,0 +1,6 @@
+name: "deploy-backend-to-aws"
+created_at: "2026-09-12T05:55:00.000Z"
+status: story
+assignee: "-72 session（後端與 AWS）"
+authored_by: "-72 session"
+description: "把後端部署到大會 AWS 帳號並取得可供評審點擊的部署網址；含 ECS Fargate + ALB 的資源建置、task role 權限、以及「不得靜默退回離線重播」的驗收"
