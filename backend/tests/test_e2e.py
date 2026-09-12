@@ -279,7 +279,14 @@ def test_ordinary_deadline_matches_known_vector():
 # 換成下面三條**會因為有人把倒推路徑接回去而變紅**的斷言。
 
 def test_retrieval_query_is_not_derived_from_the_draft():
-    """N4 查詢句只能由 N1／N2／N3 組成，不得含任何草稿內容。"""
+    """N4 查詢句只能由**案情**組成，不得含任何草稿內容。
+
+    `case` 是卷證原文本身（2026-09-12 加進查詢來源）——它比 N1 更上游，
+    是最正當的案情來源；加它的原因見 `n4_retrieval.build_query_sources`
+    （法條查表原本只讀 N1 的摘要，條號有沒有被抄進摘要決定了 laws 是 1 筆還是 0 筆）。
+    白名單放寬到 `case` **不影響這條測試要守的東西**：要防的是「拿草稿倒推查詢」，
+    所以下面另外明確斷言 n5／draft 一個都不准出現，而不是只靠白名單間接擋。
+    """
     for case_id in (ORDINARY, BLOCKED):
         meta = _payload(case_id)["retrieval"]["retrieval_meta"]
         sources = meta.get("query_sources")
@@ -288,8 +295,12 @@ def test_retrieval_query_is_not_derived_from_the_draft():
             origin_node = str(src["from"]).split(".")[0]
             assert_in(
                 origin_node,
-                ("n1", "n2", "n3"),
-                f"{case_id}：查詢句來源 {src['from']!r} 不是案情節點——草稿倒推的路徑被接回來了",
+                ("case", "n1", "n2", "n3"),
+                f"{case_id}：查詢句來源 {src['from']!r} 不是案情來源——草稿倒推的路徑被接回來了",
+            )
+            assert_true(
+                "n5" not in str(src["from"]) and "draft" not in str(src["from"]),
+                f"{case_id}：查詢句來源 {src['from']!r} 來自草稿，那是照著答案查",
             )
 
 

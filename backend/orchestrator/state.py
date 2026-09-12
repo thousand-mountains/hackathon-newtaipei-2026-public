@@ -105,6 +105,17 @@ class CaseState:
     intake_confirmed: list[str] = field(default_factory=list)
     low_conf_fields: list[str] = field(default_factory=list)
     facts_excerpt: list[dict[str, Any]] = field(default_factory=list)
+    #: 卷證**原文**（逐字，未經模型改寫），由編排層在載入案件時填。
+    #
+    # 為什麼要留一份：法條查表（N4 通道 A）原本只讀 `intake.note`＋`facts_excerpt`，
+    # 而 `note` 依 prompt 定義是「案情要點、訴願人主張的**摘要**」——模型寫的。
+    # 2026-09-12 實測：同一份卷證連跑兩次，一次摘要裡寫了「廢棄物清理法第11條第1款」
+    # → laws=1，另一次寫成「非屬廢棄物清理法所稱之廢棄物」→ laws=0。
+    # **條號一直都在原文裡**（第2條、第11條、第78條），是查詢句看不到它。
+    #
+    # 放在編排層而不是 N1：續跑（`from_node=n2`）時 N1 不跑，而「確認收文後續跑」
+    # 正是 demo 主動線——放 N1 會讓主動線上的法條查表失去原文。
+    documents_text: str = ""
 
     # N2 分類
     classification: dict[str, Any] = field(default_factory=dict)

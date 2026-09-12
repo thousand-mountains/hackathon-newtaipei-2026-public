@@ -253,6 +253,12 @@ def run_case(
     # 相似案檢索器由編排層注入（architecture §10：retrieval 是共用元件，不是 N4 的內部實作）。
     # `RETRIEVER=lawtable_only`（預設）回 None，N4 通道 B 維持誠實回空。
     # kb.py 是檢索元件、不 import backend.llm，所以 N4 拿到它仍符合「規則引擎零 LLM 依賴」。
+    # 卷證原文逐字留一份給 N4 的法條查表用（見 CaseState.documents_text 的說明）。
+    # 每次執行都填，續跑也不例外——那條路徑上 N1 不跑，但查表照樣需要原文。
+    state.documents_text = "\n\n".join(
+        str(d.get("text") or "") for d in (fixture.get("documents") or [])
+    ).strip()
+
     retriever = build_retriever(retriever_kind(), exclude_case=fixture.get("exclude_case"))
     ctx = NodeCtx(run_mode=mode, snapshot=snapshot, retriever=retriever)
 

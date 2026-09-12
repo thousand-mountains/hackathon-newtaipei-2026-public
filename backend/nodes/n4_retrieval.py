@@ -58,6 +58,11 @@ PRECEDENT_CHANNEL_NOTE = (
 )
 
 
+# 送進 KB 的查詢句上限。相似案通道的正常查詢（事實段＋摘要＋案型）實測 101–107 字，
+# 這個值只在退路上起作用（見 `similar.search` 呼叫處的說明）。
+KB_QUERY_MAX_CHARS = 900
+
+
 # 結果分布那一句：說清楚它是描述而不是預測。前端照這句畫，不自己另外編說法。
 OUTCOME_SUMMARY_NOTE = (
     "以上為檢索到的相似案與知識庫同案型的**決定結果件數**（規則計數，零 LLM）。"
@@ -137,7 +142,26 @@ def build_query_sources(state: CaseState, law_names: list[str] | None = None) ->
             }
         )
 
-    # 卷證原文（N1）：真實案件的原處分裁處依據常寫在事實段裡，抓得到就查得到。
+    # 卷證**原文**（編排層逐字留下的那份，未經模型改寫）。
+    #
+    # **這一項 2026-09-12 才補上，而它補的是一個會讓法規清單時有時無的 bug**：
+    # 原本這裡只有 `intake.note` ＋ `facts_excerpt`，兩者都是 N1 的產物，而 `note`
+    # 依 prompt 定義是「案情要點、訴願人主張的**摘要**」。同一份卷證連跑兩次實測：
+    # 一次摘要寫了「廢棄物清理法第11條第1款」→ laws=1，另一次寫成「非屬廢棄物
+    # 清理法所稱之廢棄物」→ laws=0。**條號一直都在原文裡**，是查詢句看不到它。
+    # 「本案適用哪幾條」不該由模型當下的措辭決定。
+    if state.documents_text:
+        sources.append(
+            {
+                "from": "case.documents[].text",
+                "kind": "卷證原文（逐字，未經模型改寫）",
+                "terms": [state.documents_text],
+            }
+        )
+
+    # N1 的整理：摘要與事實段摘錄。**標籤要說實話**——`note` 是模型寫的摘要，
+    # 不是原文（舊版把這一項標成「卷證原文…不改寫」，那句話本身就不實，
+    # 而且正好掩蓋了上面那個 bug：看 payload 的人會以為原文已經進去了）。
     record_blob = " ".join(
         [str(intake.get("note") or "")]
         + [str(x.get("text") or "") for x in (state.facts_excerpt or [])]
@@ -146,7 +170,7 @@ def build_query_sources(state: CaseState, law_names: list[str] | None = None) ->
         sources.append(
             {
                 "from": "n1.facts_excerpt + intake.note",
-                "kind": "卷證原文（原文照抄進查詢句，不改寫）",
+                "kind": "N1 整理的案情摘要與事實段摘錄（note 為模型改寫）",
                 "terms": [record_blob],
             }
         )
@@ -251,7 +275,11 @@ def run(
         try:
             # 不傳 prefix：收哪些前綴由 `settings.similar_case_quota()` 單點決定
             # （這裡再寫一份就會與它漂移）。N4 只說「我要相似案」，不說去哪撈。
-            case_hits = similar.search(case_query or query_text, top_k=5)
+            # 退路截斷：`query_text` 自 2026-09-12 起含**整份卷證原文**（通道 A 要它
+            # 查條號），而 KB 的查詢句有長度上限，整份送過去會被 ValidationException
+            # 打回來——通道 B 就會因為通道 A 的改動而掛掉。正常路徑走 `case_query`
+            # 不受影響，這一行只保護「case_query 為空」的退路。
+            case_hits = similar.search((case_query or query_text)[:KB_QUERY_MAX_CHARS], top_k=5)
         except Exception as e:  # noqa: BLE001 — 檢索器可能是 boto3，例外型別由 SDK 決定
             kb_error = f"{type(e).__name__}: {e}"
     cases: list[dict[str, Any]] = []
