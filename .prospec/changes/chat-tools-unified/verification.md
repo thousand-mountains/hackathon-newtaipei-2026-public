@@ -97,7 +97,7 @@ SSE 事件序：        ['ack', 'tool_call', 'tool_step', 'tool_step', 'tool_ste
 |---|---|
 | 真 Bedrock 上的端到端聊天（含真模型決定呼叫哪支工具） | 這台機器沒有 fastapi／strands／boto3 的執行環境，也沒有跑過 live 檔位。**沒有拿 fixture 的結果冒充 live** |
 | 解析卷證實際耗時 10–11 秒、生成草稿 24–72 秒 | 同上，需要真模型 |
-| `generate_decision_draft` 走到底（含真 manifest） | 需要案件資源層先寫 `manifest.json`。**流水線那一段已用真的 `run_case` 驗過**（`test_the_bridge_reproduces_the_two_chat_tools_end_to_end`，fixture 檔位：SCREENED → 續跑 → VERIFIED、不重跑 n1–n3），沒驗到的只有「manifest 有內容時前置條件 3 會放行」那一步 |
+| ~~`generate_decision_draft` 走到底（含真 manifest）~~ | **已補驗，不再留紅**（見 §8） |
 
 ## 5. 補記：adapter 從 `api/chat.py` 搬到 `backend/orchestrator/chat_bridge.py`
 
@@ -155,3 +155,54 @@ SSE 事件序：        ['ack', 'tool_call', 'tool_step', 'tool_step', 'tool_ste
 客戶端在 `ack` 就拿到 `session_id`（A4.1），斷線之後那一輪照樣被記下來，
 續問接得回去。**這正是把 `session_id` 從 `done` 提前到 `ack` 的理由**：
 斷在中途就永遠拿不到 `done`。
+
+## 8. 補驗：前置條件 3 的**放行**路徑（2026-09-12 追加）
+
+原本這條留紅，理由是「要等案件資源層寫 `manifest.json`」。重看之後那是錯的——
+production 要等 Epic B，但**驗收只要一份手寫的 manifest fixture**（team lead 同日確認：
+測試 fixture 是正當的，production 行為維持嚴格）。所以補上了：
+
+`backend/tests/test_e2e.py::test_the_draft_tool_lets_precondition_three_through_when_the_manifest_really_has_content`
+
+用**真的** `pipeline_adapter`（fixture 檔位）＋ **真的** `manifest.json`（暫存目錄）
+＋ **真的** `ChatTools`，跑 解析卷證 → 生成草稿：
+`status == "ok"`、`state == "VERIFIED"`、`cite_count > 0`，
+六筆 `tool_step` 的中文 label 依序是 讀卷抽取／案件分類／程序審查／檢索法條與相似案／
+草稿撰寫／引用守門。唯一沒有用真貨的是模型。
+
+**為什麼這條非補不可**：先前只驗了「擋下來」的三種情形。**擋得住不等於放得行**——
+一個把 `laws`／`references` 判斷寫反的實作，在只驗擋下來的組合下會全綠。
+
+變異測試（把 `if not laws or not refs` 改成 `if laws and refs`）：
+
+```
+FAIL  test_the_draft_tool_lets_precondition_three_through_when_the_manifest_really_has_content
+FAIL  test_draft_is_refused_when_no_laws_or_references_were_picked
+FAIL  test_draft_resumes_from_n4_and_feeds_the_picked_laws_back_as_a_query_term
+失敗：505/508 通過
+```
+
+三條都紅，這條測試真的咬得住。（順帶：初版裡我寫了一句
+`assert_true(draft["run_id"] != tools.run_id or True, "")`——那是恆真斷言，已移除。）
+
+## 9. 剩下的紅：寫成有解鎖條件的骨架
+
+`backend/tests/test_live_plumbing.py` 末段兩條，**現在一定略過、不計入通過數**：
+
+- `test_live_chat_extract_then_draft_walks_the_whole_contract`
+- `test_live_chat_reports_a_broken_retrieval_source_as_failed_not_empty`
+
+解鎖條件寫在檔裡（起 live 伺服器的指令、`RUN_MODE=bedrock`、
+`CHAT_LIVE_BASE`／`CHAT_LIVE_CASE` 兩個環境變數）。兩段式略過：
+
+```
+$ python3 backend/tests/run_all.py
+  略過 …：需要 live 聊天端點：設 CHAT_LIVE_BASE… 解鎖條件見本段檔頭註解。
+
+$ CHAT_LIVE_BASE=… CHAT_LIVE_CASE=… python3 backend/tests/run_all.py
+  略過 …：檔位不是 live：run_mode=fixture、missing=[]。聊天端點會回 503，這條驗不到真模型。
+```
+
+環境到位時會變成「骨架未實作」——**不會假綠**。這三條 live 才驗得到的東西，
+docstring 裡逐條寫明了：模型看不看得懂工具說明、真實耗時是否落在契約的 10–11／24–72 秒
+（契約那兩個數字是 n=3 量的，要重量）、真實負載下 `tool_step` 是否逐筆抵達。
