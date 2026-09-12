@@ -3146,3 +3146,48 @@ def test_ingest_skips_the_sidecar_when_the_generator_has_not_run():
         ing._s3_client = lambda region: s3
         assert_eq(ing._sync_one(entry, bucket="b", region="r", stage=stage), (True, 0))
     assert_eq([k for k, _ in s3.uploads], [entry["path"]], "只傳本文")
+
+
+def test_case_type_normalization_strips_party_names_and_known_typos():
+    """側檔的案型不得夾帶當事人姓名，法規正名的客觀錯字要收斂。
+
+    2026-09-12 清點第三方 corpus 的檔頭 `類別` 欄位，發現它夾著當事人姓名，
+    而且**有未遮罩的**（`受處分人吳平馨違反…`、`鍾明盛違反…`）。側檔會進 KB、
+    會顯示在相似案卡上——那是把當事人姓名端到承辦人與評審面前（CONSTITUTION §6）。
+
+    修法是砍掉「違反」**與它之前的一切**，同時解掉姓名外洩與案型歸位兩件事。
+
+    法規正名的錯字另外對照（沒有「空氣污染管制法」這部法；「土讓」是「土壤」的錯字）。
+    **刻意不處理**多部法規合併與非案型的請求事項——那是內容判斷，要 qa-legal 決定，
+    不是正規化能代勞的。
+    """
+    spec = importlib.util.spec_from_file_location(
+        "_bkm", pathlib.Path(__file__).resolve().parents[2] / "scripts" / "build_kb_metadata_from_keys.py")
+    g = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(g)
+    f = g.canonical_case_type
+
+    # 姓名一律不得留下
+    for raw in ("受處分人吳平馨違反空氣污染防制法", "鍾明盛違反廢棄物清理法",
+                "受處分人李○吉違反廢棄物清理法",
+                "財團法人新北市私立○○高級工業家事職業學校違反廢棄物清理法"):
+        got = f(raw)
+        assert_true("違反" not in got, f"「違反」之前的內容沒砍乾淨：{raw} → {got}")
+        assert_true("○" not in got, f"遮罩符號殘留（代表機構名沒砍掉）：{raw} → {got}")
+    assert_eq(f("受處分人吳平馨違反空氣污染防制法"), "空氣污染防制法")
+    assert_eq(f("鍾明盛違反廢棄物清理法"), "廢棄物清理法")
+
+    # 賽方檔名那套（異體字 ＋ 違反…事件 外殼）要跟公開批收斂到同一個值
+    assert_eq(f("違反空氣汙染防制法事件"), "空氣污染防制法")
+
+    # 法規正名的客觀錯字
+    assert_eq(f("空氣污染管制法"), "空氣污染防制法", "沒有「管制法」這部法")
+    assert_eq(f("土讓及地下水污染整治法"), "土壤及地下水污染整治法", "讓→壤")
+    assert_eq(f("土壤及地下水污染整治法事"), "土壤及地下水污染整治法", "「事件」被截成「事」")
+
+    # **不得**動的：多部法規合併與非案型的請求事項，那是內容判斷
+    assert_eq(f("空氣污染防制法及廢棄物清理法"), "空氣污染防制法及廢棄物清理法")
+    assert_eq(f("追繳空氣污染防制費"), "追繳空氣污染防制費")
+
+    # 正常值不得被動到
+    assert_eq(f("噪音管制法"), "噪音管制法")
