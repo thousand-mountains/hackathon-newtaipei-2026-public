@@ -1057,8 +1057,9 @@ async function boot(){
       :(caseIds.includes('synthetic-ordinary-01')?'synthetic-ordinary-01':caseIds[0]);
 
     L.chosen=chosen;
-    payload=await postRun({},msg=>setBadge('live','live 後端・'+chosen+'・'+msg,''));
   }catch(e){
+    /* 這個 catch 只涵蓋「探測後端」——連不上、health 不 ok、沒有案例。
+       執行失敗（Bedrock throttle／權限／逾時）**不在這裡**，見下方第二段。 */
     MODE='offline';
     setBadge('offline','離線 fixture（未接後端）',
       '本頁未連上後端 API（'+String(e&&e.message||e)+'）。畫面資料來自建置時內嵌的 data/case-demo.json，'+
@@ -1066,12 +1067,18 @@ async function boot(){
     bootApp();
     return;
   }
-  MODE='live'; LIVE=payload; CASE=adaptPayload(payload);
-  liveBadge(payload);
+
+  /* 探測成功＝後端活著。接下來不自動跑 run（2026-09-12）：
+       一、每次開頁／重整就燒一次 Opus 並等約 60 秒，重整幾次就燒幾次。
+       二、run 失敗若跟探測共用 catch，會退回內嵌 fixture 演完全程，
+           而徽章寫死「離線 fixture（未接後端）」——後端明明活著，那句是假的。
+     所以改成：探測成功就進畫面，由使用者按「啟動幕僚團分析」才發 run。 */
+  MODE='live'; LIVE=null; CASE=null;
+  setBadge('live','live 後端・'+chosen+'・待命','已連上後端（'+(health.run_mode||'?')+' 檔位）。'+
+    '尚未執行——按「啟動幕僚團分析」才會呼叫模型。');
   bootApp({caseIds:caseIds,chosen:chosen,health:health});
 }
 
-/* ================= 主程式 ================= */
 function bootApp(live){
   Object.assign(L,live||{});
   const isLive=MODE==='live';
@@ -1097,7 +1104,10 @@ $('#stepbar').addEventListener('click',e=>{const b=e.target.closest('.step');if(
 $$('[data-back]').forEach(b=>b.onclick=()=>goto(+b.dataset.back));
 
 /* ================= 1 上傳 ================= */
-let DEMO_FILES=CASE.files||[];
+/* CASE 在 live 首次進頁時是 null（boot 不再自動跑 run，見上方）。
+   這裡不能寫 CASE.files——那會丟例外、讓 bootApp 死在這行，
+   後面所有事件 handler 都掛不上去，畫面看起來正常但全部按鈕失效。 */
+let DEMO_FILES=(CASE&&CASE.files)||[];
 /* 離線模式（沒有後端可送）拖進來的檔案**不會被讀取**，只是動線示意——
    原本寫「✓ 已解析」會讓人以為系統剖析了他丟進來的 PDF。
    live 模式走 uploadFiles()，檔案是真的送到 POST /api/cases。 */
@@ -1123,10 +1133,35 @@ function setSelectValue(sel,val){
 /* after：欄位填完（含 updateGo1／renderConfirmNote）之後才跑的收尾。
    填欄位排在 700ms 的 setTimeout 裡，呼叫端要在那之後才說得出「已換成本次抽取的結果」，
    不然那句話會被 updateGo1() 重算的提示蓋掉。 */
-function loadDemo(after){
+async function loadDemo(after){
+  /* live 檔位且還沒跑過：由這個按鈕觸發 run（2026-09-12）。
+     boot() 不再自動跑，所以第一次載入案件時 CASE 還是 null——
+     這裡補上，讓「呼叫模型」永遠對應到一個明確的使用者動作。
+     run 失敗停在錯誤畫面並說出真正原因，不會退回內嵌 fixture。 */
+  if(MODE==='live'&&!CASE){
+    const btn=$('#demoload'), label=btn.textContent;
+    btn.disabled=true; btn.textContent='執行中…（約 1 分鐘）';
+    try{
+      /* 用既有的 applyLivePayload，不要另造一條——它負責把 payload 攤進
+         DOC／DEMO_FILES／LAWS／CASES／ISSUES／AGENTS 並重繪。少呼叫它，
+         畫面會出現「欄位有值但卷證與看板是空的」這種半套狀態。 */
+      applyLivePayload(await postRun({},m=>setBadge('live','live 後端・'+L.chosen+'・'+m,'')));
+    }catch(e){
+      /* 後端活著、只是這次跑失敗：**不得**退回內嵌 fixture 假裝演完。 */
+      setBadge('error','執行失敗（後端已連上）',
+        '後端連得上，但這次執行失敗：'+String(e&&e.message||e)+'。'+
+        '畫面沒有退回離線 fixture——沒有結果就是沒有結果，不會拿內嵌資料頂替。');
+      btn.disabled=false; btn.textContent=label;
+      /* 真正的原因寫在這裡，不要只說「詳見徽章」——徽章是 tooltip，
+         demo 現場沒人會把滑鼠停在上面等它浮出來。 */
+      $('#go1hint').textContent='執行失敗：'+String(e&&e.message||e);
+      return;
+    }
+    btn.disabled=false; btn.textContent=label;
+  }
   $('#filelist').innerHTML='';
   DEMO_FILES.forEach(addFile);
-  const K=CASE.intake||{};
+  const K=(CASE&&CASE.intake)||{};
   setTimeout(()=>{
     $('#f_no').value=K.no||'';
     setSelectValue($('#f_type'),K.type);
@@ -1152,7 +1187,7 @@ function loadDemo(after){
   },700);
 }
 /* 不寫 onclick=loadDemo：那樣會把 click 事件當成 after 傳進去（後面就 after is not a function）。 */
-$('#demoload').onclick=()=>loadDemo();
+$('#demoload').onclick=()=>{loadDemo().catch(e=>console.error('loadDemo 失敗',e))};
 
 /* live 模式：拖進來的檔案真的 POST /api/cases 建成 upload- 案件，接著跑六節點。
    fixture 檔位的後端會在 runs 回 400（上傳案沒有可重播的 fixture，只能在 RUN_MODE=bedrock 執行），
@@ -1448,7 +1483,9 @@ $('#go1').onclick=async ()=>{
 })();
 
 /* ================= 2 幕僚團 ================= */
-let AGENTS=CASE.agents||[];
+/* CASE 在 live 首次進頁時是 null（boot 不再自動跑 run）——這些宣告式一律要防守，
+   否則 bootApp 會死在這裡，後面的 handler 全部掛不上、畫面看起來正常但按鈕失效。 */
+let AGENTS=(CASE&&CASE.agents)||[];
 let agentsRan=false;
 const agentByK=k=>AGENTS.find(a=>a.k===k);
 const clock=()=>new Date().toLocaleTimeString('zh-TW',{hour12:false});
@@ -1775,7 +1812,9 @@ function fillTokens(str){
 
 /* ================= 文件模型：以「句」為單位 ================= */
 /* lamp: g 可被計算 / y 有證據 / r 需人工審核　refs 對應左欄卡片 id */
-let DOC=CASE.doc||[];
+/* CASE 在 live 首次進頁時是 null（boot 不再自動跑 run）——這些宣告式一律要防守，
+   否則 bootApp 會死在這裡，後面的 handler 全部掛不上、畫面看起來正常但按鈕失效。 */
+let DOC=(CASE&&CASE.doc)||[];
 const SENTS=[];
 /* live 模式改日期會由後端重算期間，整段期間計算的句子會換掉（步數可能從 6 變 5），
    所以句子清單要能重建。**原地改陣列內容**，不重新指派——所有 closure 都抓著同一個參考。 */
@@ -1818,7 +1857,7 @@ function applyDeadlineEngine(){
       s.src='規則驗算：輸入不足，未計算';});
     return;
   }
-  const r=computeDeadline({method:CASE.intake.service_method||'personal',service:svc,filing:fil});
+  const r=computeDeadline({method:((CASE&&CASE.intake)||{}).service_method||'personal',service:svc,filing:fil});
   const days=Math.round((Date.parse(fil+'T12:00:00Z')-Date.parse(svc+'T12:00:00Z'))/86400000);
   tgt.forEach(s=>{
     s.steps=r.steps; s.caveats=r.caveats;
@@ -1904,7 +1943,7 @@ async function recomputeDeadlineLive(){
   if(!isLive)return;
   const svc=$('#f_d2').value, fil=$('#f_d3').value;
   if(!svc){setRecalcNote('error','合法送達日期未填，期間無從計算（系統不猜）。');return;}
-  const K=CASE.intake||{};
+  const K=(CASE&&CASE.intake)||{};
   const seq=++recalcSeq;
   setRecalcNote('ok','重算中…');
   let r;
@@ -1960,7 +1999,9 @@ function verifyLaw(title){
 }
 
 /* ================= 左欄參考資料 ================= */
-let LAWS=CASE.laws||[], CASES=CASE.cases||[], ISSUES=CASE.issues||[];
+/* CASE 在 live 首次進頁時是 null（boot 不再自動跑 run）——這些宣告式一律要防守，
+   否則 bootApp 會死在這裡，後面的 handler 全部掛不上、畫面看起來正常但按鈕失效。 */
+let LAWS=(CASE&&CASE.laws)||[], CASES=(CASE&&CASE.cases)||[], ISSUES=(CASE&&CASE.issues)||[];
 let ALLREFS=[...LAWS,...CASES,...ISSUES];
 const refTab=id=>id[0]==='L'?'law':id[0]==='C'?'case':'issue';
 
@@ -2415,7 +2456,7 @@ $('#restart').onclick=()=>location.reload();
 /* 橫幅一律照 payload.provenance 講：合成案是「合成測資」、上傳案是「上傳案件：…」。
    換過 payload（確認續跑、上傳建案）就要重畫一次，否則橫幅會停在上一個案件的來源上。 */
 function renderProv(){
-  const el=$('#prov'), pv=CASE.provenance||{};
+  const el=$('#prov'), pv=(CASE&&CASE.provenance)||{};
   if(!el)return;
   el.textContent=pv.banner||'示範案件';
   if(pv.note)el.dataset.tip=pv.note; else delete el.dataset.tip;
