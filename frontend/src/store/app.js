@@ -70,10 +70,75 @@ const esc = (s) =>
 // 不然畫面上出現的是字面的 `**法規依據**`，而且整段擠成一坨沒有換行
 //（實測「還沒有解析過卷證」那則回覆就是這樣）。只處理粗體與換行，
 // 不引入 markdown 套件——輸入已經 escape 過，這裡不會開出 HTML 注入的口子。
-const fmt = (s) =>
+// 行內標記：粗體與行內程式碼。**一定要先 esc**，這裡只認這兩種，不開 HTML 的口子。
+const inlineMd = (s) =>
   esc(s)
     .replace(/\*\*([^*\n]+)\*\*/g, '<b>$1</b>')
-    .replace(/\n/g, '<br>')
+    .replace(/`([^`\n]+)`/g, '<code>$1</code>')
+
+const isTableRow = (l) => /^\s*\|.*\|\s*$/.test(l)
+const isTableSep = (l) => /^\s*\|[\s:|-]*-[\s:|-]*\|\s*$/.test(l)
+const tableCells = (l) => l.trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map((x) => x.trim())
+
+// agent 回覆是 markdown。**表格一定要畫成表格。**
+// `refine_text` 回的是「原句／建議／說明」三欄的修改建議表——那是這個產品要的形狀
+// （承辦人自己決定採不採納，而不是拿到一份已經被改好的稿），但以純文字吐出來時
+// 滿畫面的 `|` 跟 `---` 根本讀不了。查相似案例、列工具清單也都會用表格。
+// 只實作 agent 真的會用的子集：表格、粗體、行內碼、引言、換行。不引 markdown 套件。
+function mdToHtml(raw) {
+  const lines = String(raw || '').replace(/\r\n/g, '\n').split('\n')
+  const html = []
+  let para = [] // 累積中的一般文字行
+  const flushPara = () => {
+    if (!para.length) return
+    html.push('<p>' + para.map(inlineMd).join('<br>') + '</p>')
+    para = []
+  }
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]
+    if (isTableRow(line) && isTableSep(lines[i + 1] || '')) {
+      flushPara()
+      const head = tableCells(line)
+      i += 2
+      const body = []
+      while (i < lines.length && isTableRow(lines[i])) body.push(tableCells(lines[i++]))
+      i-- // 迴圈結尾還會 ++
+      html.push(
+        '<div class="mdtable-wrap"><table class="mdtable"><thead><tr>' +
+          head.map((h) => '<th>' + inlineMd(h) + '</th>').join('') +
+          '</tr></thead><tbody>' +
+          body
+            .map(
+              (r) =>
+                '<tr>' +
+                // 欄數不一致時補空格，不要讓表格塌掉
+                head.map((_, j) => '<td>' + inlineMd(r[j] == null ? '' : r[j]) + '</td>').join('') +
+                '</tr>',
+            )
+            .join('') +
+          '</tbody></table></div>',
+      )
+      continue
+    }
+    if (/^\s*>\s?/.test(line)) {
+      flushPara()
+      html.push('<blockquote>' + inlineMd(line.replace(/^\s*>\s?/, '')) + '</blockquote>')
+      continue
+    }
+    if (/^\s*(-{3,}|\*{3,})\s*$/.test(line)) {
+      flushPara()
+      html.push('<hr class="mdrule">')
+      continue
+    }
+    if (line.trim() === '') {
+      flushPara()
+      continue
+    }
+    para.push(line)
+  }
+  flushPara()
+  return html.join('')
+}
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 const pick = (a) => a[Math.floor(Math.random() * a.length)]
 
@@ -377,10 +442,15 @@ async function driveChat(c, payload, uiTool) {
     thinkingMsg = null
   }
 
+  // **逐字串流保留原始文字（`raw`），畫面由 mdToHtml 從 raw 重算。**
+  // 之前是直接把 esc 過的片段往 html 後面接，於是 (a) markdown 永遠沒機會被解析
+  //（表格、換行、粗體全是字面值），(b) done 要拿 answer 校正時只能比字串長度，
+  // 而 esc 與 fmt 的輸出長度不同尺，得多繞一層。存 raw 兩個問題一起沒了。
   const appendToken = (text) => {
     clearThinking()
-    if (!tokenMsg) tokenMsg = push(c, { who: 'ai', kind: 'html', html: '' })
-    tokenMsg.html += esc(text)
+    if (!tokenMsg) tokenMsg = push(c, { who: 'ai', kind: 'html', html: '', raw: '' })
+    tokenMsg.raw += text
+    tokenMsg.html = mdToHtml(tokenMsg.raw)
     scrollSoon()
   }
 
@@ -390,23 +460,15 @@ async function driveChat(c, payload, uiTool) {
     for await (const { event, data } of api.chat(c.caseId, payload)) {
       if (event === 'ack') {
         if (data.session_id) c.sessionId = data.session_id
-        if (uiTool) {
-          clearThinking()
-          toolMsg = push(c, {
-            who: 'ai',
-            kind: 'tool',
-            ack: data.text || null,
-            api: TOOL_API[uiTool] || '',
-            name: (TOOLS.find((t) => t.id === uiTool) || {}).name || '',
-            steps: [],
-            running: true,
-            out: null,
-          })
-        } else if (data.text) {
-          // 純問答：ack 是一句口白，先顯示，但 thinking 泡泡保留到首個 token／done——
-          // 因為真正的答案還在後面（5–15s），這段等待才是要 loading 的地方。
+        // **ack 不開工具卡。** 開卡等於在畫面上宣稱「系統正在跑這支工具」，
+        // 但 `tool_hint` 只是提示——實測 `/搜尋相關法規`、`/優化文案` 兩次 agent
+        // 都決定不呼叫工具（改成回問使用者）。那種情況下 ack 開的卡會停在畫面上，
+        // 標著工具名、空的、還打著「✓ 完成」，說了一件沒發生的事。
+        // 卡等 `tool_call` 再開（下一個分支），ack 的口白照舊顯示——那是 agent 真的說的。
+        if (data.text) {
           aiMsg('<p>' + esc(data.text) + '</p>')
-          // 把 thinking 移到 ack 之後（保持在串流最底）
+          // 把 thinking 移到 ack 之後（保持在串流最底）：真正的答案還在後面
+          // （解析 10–11s／草稿 24–72s／純問答 5–15s），這段等待才是要 loading 的地方。
           if (thinkingMsg) {
             const i = c.stream.indexOf(thinkingMsg)
             if (i >= 0) c.stream.splice(i, 1)
@@ -419,19 +481,15 @@ async function driveChat(c, payload, uiTool) {
         // **一回合可能呼叫同一支工具兩次以上**（契約 §2.3 ②，實測「查建築法25條和訴願法14條」
         // 就會發 tc-1／tc-2 兩組）。以前這裡只有一張 toolMsg，第二組結果會把第一組蓋掉，
         // 使用者看到的命中數比實際少。改成依 call_id 一組一張卡。
-        if (toolMsg && !toolMsg.callId) {
-          // ack 先開的那張卡還沒認領 → 給第一個 call_id 用
-          toolMsg.callId = data.call_id
-          toolMsg.api = data.tool
-          if (data.label) toolMsg.name = data.label
-          cards[data.call_id] = toolMsg
-        } else {
+        if (!cards[data.call_id]) {
           cards[data.call_id] = push(c, {
             who: 'ai', kind: 'tool', ack: null, callId: data.call_id,
+            // 工具名用**後端帶的 label**，不是前端 TOOLS 表裡那個——
+            // agent 實際挑的工具可能跟 tool_hint 不同，照前端的表寫會標錯。
             api: data.tool, name: data.label || '', steps: [], running: true, out: null,
           })
-          toolMsg = cards[data.call_id]
         }
+        toolMsg = cards[data.call_id]
       } else if (event === 'tool_step') {
         const card = cards[data.call_id] || toolMsg
         if (!card) continue
@@ -456,7 +514,7 @@ async function driveChat(c, payload, uiTool) {
         // 畫面上就只剩一張空的、標著「✓ 完成」的工具卡，agent 的回話整段被丟掉。
         if (!tokenMsg && data.answer) {
           clearThinking()
-          tokenMsg = push(c, { who: 'ai', kind: 'html', html: '' })
+          tokenMsg = push(c, { who: 'ai', kind: 'html', html: '', raw: '' })
         }
         clearThinking()
         // 優化文案：**不要自動把 done.answer 當成「改寫後全文」去做 diff。**
@@ -481,12 +539,11 @@ async function driveChat(c, payload, uiTool) {
         if (tokenMsg) {
           // 校正 token 串接：以 done.answer 為準，但「不得比已顯示的內容更短」——
           // 避免 answer 缺漏／截斷時反而把完整的逐字內容蓋掉（話被 cut 的第二個來源）。
-          // **長短要比同一把尺**：streamed 是 esc 過的，所以拿 esc(answer) 去比，
-          // 比完才用 fmt(answer) 渲染（fmt 會多出 <b>／<br> 標籤，直接比會偏長）。
-          const streamed = tokenMsg.html.replace(/^<p>/, '').replace(/<\/p>$/, '')
-          const answerEsc = data.answer ? esc(data.answer) : ''
-          const useAnswer = answerEsc.length >= streamed.length
-          tokenMsg.html = '<p>' + (useAnswer ? fmt(data.answer) : streamed) + '</p>'
+          // 兩邊都是原始文字，直接比長度就對，不必再換算標籤。
+          const streamedRaw = tokenMsg.raw || ''
+          const answerRaw = data.answer || ''
+          tokenMsg.raw = answerRaw.length >= streamedRaw.length ? answerRaw : streamedRaw
+          tokenMsg.html = mdToHtml(tokenMsg.raw)
         }
         // 紅線二（第二件）：dropped_refs 非空 → 標「引用有問題」。
         if (data.dropped_refs && data.dropped_refs.length && tokenMsg)
@@ -627,8 +684,21 @@ function applyToolResult(c, toolMsg, data) {
     c.flags.draft = true
     // 引註數用 cite_count 真值（契約 §3.5）。拿不到就不講數字，**不要沿用設計稿的「14 處」**。
     const citeNote = typeof data.cite_count === 'number' ? `引註 ${data.cite_count} 處．` : ''
-    if (!c.docs.out.some((x) => x.name === '訴願決定書草稿 v1'))
-      addOne(c, 'out', { name: '訴願決定書草稿 v1', note: `AI 生成．${citeNote}待承辦人審核`, ext: '稿', full: '', _artifactId: data.artifact_id })
+    // **以 artifact_id 去重，不要用名字；名字也跟後端一致。**
+    // 之前寫死「訴願決定書草稿 v1」＋用名字比對，有兩個問題：
+    // (1) 生第二份草稿時它一樣被叫「v1」——後端那兩份 artifact 是不同的 run，
+    //     畫面卻把第二份標成第一版；(2) 重新整理後 manifest 的名字是「訴願決定書草稿」，
+    //     名字對不上就沒去重效果。id 才是身分，名字跟後端對齊。
+    const exist = data.artifact_id && c.docs.out.find((x) => x._artifactId === data.artifact_id)
+    if (exist) exist.note = `AI 生成．${citeNote}待承辦人審核`
+    else
+      addOne(c, 'out', {
+        name: '訴願決定書草稿',
+        note: `AI 生成．${citeNote}待承辦人審核`,
+        ext: '稿',
+        full: '',
+        _artifactId: data.artifact_id,
+      })
     // 重新生成草稿＝新的一版，舊基準先清掉，避免優化文案跨版本誤比。
     // 新基準等 #21 取回 sections[] 再存（見 loadDraftSections），這裡不塞假草稿。
     clearDraftText(c.caseId)
@@ -777,7 +847,10 @@ async function runExport(c, tool, id) {
   // 依**種類**找草稿，不要用寫死的名字比對——後端回的 artifact name 不一定叫
   // 「訴願決定書草稿 v1」，重新整理後用名字找就會拿到 undefined，
   // 然後打出 `/artifacts/undefined/export` 得到 400，畫面只說「匯出失敗，可重試」。
-  const draft = c.docs.out.find((x) => x.ext === '稿' && x._artifactId) || c.docs.out.find((x) => x._artifactId)
+  // 取**最後一份**草稿，不是第一份——同一件案子可以生很多份，
+  // `find` 會抓到最舊的那份，承辦人按「生成 PDF」拿到的會是上一版。
+  const drafts = c.docs.out.filter((x) => x.ext === '稿' && x._artifactId)
+  const draft = drafts[drafts.length - 1] || [...c.docs.out].reverse().find((x) => x._artifactId)
   const artifactId = draft && draft._artifactId
   if (!artifactId) {
     aiMsg('<p>找不到可匯出的草稿（沒有 artifact id），請重新生成一次草稿。</p>')
