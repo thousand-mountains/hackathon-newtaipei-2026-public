@@ -37,6 +37,17 @@ from backend.orchestrator.runstore import load_run
 #: `test_payload_sections_match_the_chat_layer_case_sections` 釘住。
 PAYLOAD_SECTIONS = ("intake", "facts_excerpt", "screen", "laws", "cases")
 
+#: 全文沒快取到的兩種原因。**分開講**：一個是這個檔位沒有 S3、一個是抓的時候失敗，
+#: 合成一句「全文未快取」會讓人分不出該去設定環境還是該去看 log。
+NOTE_NO_FULLTEXT_FETCHER = "全文未快取（這個檔位沒有母庫全文來源）"
+NOTE_FULLTEXT_FAILED = "全文未快取（讀母庫失敗）"
+
+
+def _join_note(existing: Any, extra: str) -> str:
+    """附加一句說明，不覆蓋原本的 note（那可能是人寫的）。"""
+    base = str(existing or "").strip()
+    return f"{base}．{extra}" if base else extra
+
 def load_case_manifest(case_id: str, cases_dir: pathlib.Path | None = None
                        ) -> dict[str, Any]:
     """讀本案的卷宗清單。讀不到就回空 dict。
@@ -148,6 +159,49 @@ def pipeline_adapter(case_id: str, cases_dir: pathlib.Path | None = None,
     return run_pipeline
 
 
+def archive_adapter(case_id: str, cases_dir: pathlib.Path | None = None,
+                    fetch_text: Callable[[str], str] | None = None
+                    ) -> Callable[..., list[dict[str, Any]]]:
+    """把「檢索結果寫進本案卷宗」包成聊天層看得懂的 callable。
+
+        archive(group: "laws" | "references", items: list[dict]) -> list[dict]
+
+    回「這次真的新增的」那幾筆（`store.add_items` 依 `id` 去重）。
+
+    ## 全文快取
+
+    `fetch_text(key) -> str` 由呼叫端注入（`backend/api/dossier.py` 那邊才有 S3 client）。
+    **只對 `references` 用**，而且只在 `id` 看起來像母庫 key 時：
+    法條查表那批的 `id` 是 `lawtable:…`，S3 上根本沒有對應物件，去抓只會白拿一個 404。
+
+    契約 §4.0 要 `full_cached` 是為了「demo 當下不依賴 KB／S3 還活著」。但
+    **抓不到不得讓歸檔失敗**——那會把「這份決定書加進卷宗了、只是沒快取全文」
+    變成「加不進去」。抓不到就留空並在 `note` 說明，兩者差很多。
+
+    沒注入 `fetch_text` 時一律不抓（例：測試、或還沒設好 S3 的檔位），
+    `note` 一樣說得出來——不說的話右欄會有一批看不出為什麼沒有全文的項目。
+    """
+
+    def archive(group: str, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        prepared = [dict(x) for x in items or []]
+        if group == "references":
+            for item in prepared:
+                key = str(item.get("id") or "")
+                if not key.startswith("kb/"):
+                    continue
+                if fetch_text is None:
+                    item["note"] = _join_note(item.get("note"), NOTE_NO_FULLTEXT_FETCHER)
+                    continue
+                try:
+                    item["full_cached"] = fetch_text(key)
+                except Exception as e:  # noqa: BLE001 — 見 docstring：抓不到 ≠ 加不進去
+                    item["note"] = _join_note(
+                        item.get("note"), f"{NOTE_FULLTEXT_FAILED}（{type(e).__name__}）")
+        return store.add_items(case_id, group, prepared, cases_dir=cases_dir)
+
+    return archive
+
+
 def relation_graph_adapter(case_id: str) -> Callable[..., dict[str, Any]]:
     """把「讀 run → 組 payload → 畫關聯圖」包成聊天層看得懂的 callable。
 
@@ -175,5 +229,6 @@ def relation_graph_adapter(case_id: str) -> Callable[..., dict[str, Any]]:
     return build_graph
 
 
-__all__ = ["PAYLOAD_SECTIONS", "load_case_manifest", "pipeline_adapter",
+__all__ = ["NOTE_FULLTEXT_FAILED", "NOTE_NO_FULLTEXT_FETCHER", "PAYLOAD_SECTIONS",
+           "archive_adapter", "load_case_manifest", "pipeline_adapter",
            "relation_graph_adapter"]

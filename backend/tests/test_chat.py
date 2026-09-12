@@ -17,7 +17,9 @@
 from __future__ import annotations
 
 import ast
+import json
 import pathlib
+import re
 
 from backend.config import settings
 from backend.config.origin_registry import TIER_HUMAN, TIER_SOURCED, tier_of
@@ -947,18 +949,184 @@ class _RecordingRetriever:
         return self._hits
 
 
-def _hint_tools(calls: list, events: list, *, retriever=None, law_query="法A；法B",
+#: 查表要查得到東西，歸檔測試才測得到東西。條號清單照 `laws-snapshot.json` 的形狀。
+_SNAPSHOT_WITH_LAWS = {"laws": {"訴願法": {"articles": [str(i) for i in range(1, 102)], "max": 101}}}
+
+
+def _hint_tools(calls: list, events: list, *, retriever=None, law_query="訴願法第77條",
                 case_query="卷證事實原文", run_pipeline=None, run_id=None,
                 payload=None, case_manifest=None):
     chat_mod._throttle = lambda: calls.append(1)
     return chat_mod.ChatTools(
         payload if payload is not None else {"screen": {"x": 1}}, RefBook(),
-        retriever, {"laws": {}}, lambda n, d: events.append((n, d)),
+        retriever, _SNAPSHOT_WITH_LAWS, lambda n, d: events.append((n, d)),
         run_pipeline=run_pipeline, run_id=run_id, case_manifest=case_manifest,
         build_graph=(lambda *, run_id: {"nodes": [], "edges": []}),
         law_query=law_query, law_query_sources=["n2.classification.class.case_type"],
         case_query=case_query, case_query_sources=["n1.facts_excerpt[].text"],
     )
+
+
+class _ArchiveSpy:
+    """收下被歸檔的東西。真正的寫檔在 `chat_bridge.archive_adapter`，那支另有測試。"""
+
+    def __init__(self, boom: Exception | None = None) -> None:
+        self.calls: list[tuple[str, list[dict]]] = []
+        self._boom = boom
+
+    def __call__(self, group, items):
+        if self._boom is not None:
+            raise self._boom
+        self.calls.append((group, [dict(x) for x in items]))
+        return items
+
+    def group(self, name):
+        return [items for g, items in self.calls if g == name]
+
+
+def _unverified_lawtable_hit(law="訴願法", article="77"):
+    """查表的**非命中**：`verified=False`、`score=0.0`。本檔後面另有一個同名的
+    命中版 `_lawtable_hit`（:1918），所以這支刻意換名字——同名的後者會蓋掉前者。"""
+    return Hit(
+        id=f"L-{law}-{article}", title=f"{law}第{article}條",
+        score=0.0, source=f"laws-snapshot.json／{law}", verified=False, note="",
+        payload={"law": law, "article": article, "in_snapshot_law": True})
+
+
+def _kb_decision_hit(kind="public", source="新北訴願決定書/1151090848_駁回.txt"):
+    return Hit(id="kb-1", title=source.rsplit("/", 1)[-1].rsplit(".", 1)[0],
+               score=0.71, source=source,
+               payload={"kb_kind": kind, "outcome": "駁回",
+                        "provenance": "public_crawl", "category": None,
+                        "text": "（這是命中的 chunk，不是全文）"})
+
+
+def test_what_the_chips_find_actually_lands_in_the_dossier():
+    """契約 §3.0 的「歸檔到」那一欄 2026-09-13 之前**從來沒有被實作**。
+
+    後端唯二寫卷宗的地方都在 REST 端點裡，所以整條 demo 動線是斷的：
+    chip 查到東西 → 東西沒落地 → `generate_decision_draft` 的前置條件 3 讀 manifest
+    讀到空的 → 正確地拒絕生成。承辦人看到的是「生成草稿永遠都是空的」。
+    """
+    spy = _ArchiveSpy()
+    calls, events = [], []
+    t = _hint_tools(calls, events, retriever=_RecordingRetriever([_kb_decision_hit()]))
+    t.archive = spy
+    t.run_tool_hint("search_similar_decisions")
+    t.run_tool_hint("search_regulations")
+
+    assert spy.group("references"), "相似案查到了卻沒有進卷宗"
+    assert spy.group("laws"), "法條查到了卻沒有進卷宗"
+
+
+def test_archived_ids_are_stable_not_the_per_turn_refbook_numbers():
+    """`id` 不得是 `c1`／`c2`——那是 RefBook **每回合重配**的序號。
+
+    存進 manifest 的話下一輪就對不上，同一條法規會被當成新的一筆重複加入，
+    右欄會越按越長。這條是硬條件。
+    """
+    spy = _ArchiveSpy()
+    calls, events = [], []
+    t = _hint_tools(calls, events, retriever=_RecordingRetriever([_kb_decision_hit()]))
+    t.archive = spy
+    t.run_tool_hint("search_regulations")
+    t.run_tool_hint("search_similar_decisions")
+
+    for group, items in spy.calls:
+        for item in items:
+            assert not re.fullmatch(r"c\d+", str(item["id"])), \
+                f"{group} 用了 RefBook 的回合序號當 id：{item['id']}"
+    # 法條：法名＋條號推導，同一條每次都一樣
+    law_ids = [i["id"] for items in spy.group("laws") for i in items]
+    assert law_ids == ["lawtable:訴願法-77"], law_ids
+    # 相似案：就是 S3 key，跟 REST 那條路存的同一個值（同一份文件只會有一筆）
+    ref_ids = [i["id"] for items in spy.group("references") for i in items]
+    assert ref_ids == ["kb/public/新北訴願決定書/1151090848_駁回.txt"], ref_ids
+
+
+def test_the_two_law_channels_are_told_apart_in_the_dossier():
+    """條號查表與母庫全文**不是同一種東西**，卷宗裡要分得出來（契約 §4.2）。
+
+    `laws-snapshot.json` 只有條號清單、沒有條文原文，所以查表來的那筆
+    `body_cached` 必然是空的——**`note` 要說清楚它是什麼等級的東西**，
+    假裝有全文比沒有更糟。
+    """
+    spy = _ArchiveSpy()
+    calls, events = [], []
+    t = _hint_tools(calls, events, retriever=_RecordingRetriever([]))
+    t.archive = spy
+    t.run_tool_hint("search_regulations")
+
+    item = spy.group("laws")[0][0]
+    assert item["channel"] == chat_mod.ARCHIVE_CHANNEL_LAWTABLE
+    assert item["body_cached"] == "", "快照裡沒有條文原文，不得憑空生一份"
+    assert "非法條全文" in item["note"], f"沒說清楚它是什麼等級的東西：{item['note']}"
+    assert item["retrieval_status"] == chat_mod.PICK_FOUND_BY_TOOL, \
+        "用了一個在寫的那一刻不成立的狀態值"
+
+
+def test_a_hit_the_lawtable_could_not_verify_is_not_filed_as_a_legal_basis():
+    """查表的非命中不得歸檔。
+
+    它會回兩種非命中：條號寫法無法無歧義解析、法規不在快照涵蓋範圍內——
+    兩種的 `score` 都是 0、`note` 都在說「本系統驗不了」。
+    把它們當成「相關法規」歸檔，等於把一句「我不知道」畫成一筆依據。
+    """
+    assert chat_mod.ChatTools._law_items([_unverified_lawtable_hit()]) == []
+    assert chat_mod.ChatTools._law_items(
+        [Hit(id="L-訴願法-?", title="訴願法第？條", score=0.0, source="無法解析",
+             verified=False, payload={"law": "訴願法", "article": None})]) == []
+
+
+def test_a_decision_whose_s3_key_cannot_be_rebuilt_is_not_filed():
+    """拿不到 `kb_kind` 就不歸檔，**不猜前綴**。
+
+    `Hit.source` 是 `kb/<kind>/` 底下的相對路徑，`kind` 原本在 Hit 上留不下來。
+    猜（先試 official 再試 public）在猜錯時會讀到另一份文件，而那個錯看起來完全正常。
+    """
+    no_kind = Hit(id="kb-1", title="x", score=0.5, source="某目錄/某檔.txt", payload={})
+    assert chat_mod.ChatTools._reference_items([no_kind]) == []
+    unknown = Hit(id="kb-1", title="x", score=0.5, source="某檔.txt",
+                  payload={"kb_kind": "unknown"})
+    assert chat_mod.ChatTools._reference_items([unknown]) == []
+
+
+def test_the_chunk_text_is_never_passed_off_as_the_full_document():
+    """`payload["text"]` 是**這一次命中的 chunk**，不是全文。
+
+    拿它塞 `full_cached` 就是假資料：右欄會出現一份看起來完整、其實只有一段的決定書。
+    全文由 `archive_adapter` 那一側決定要不要去 S3 抓。
+    """
+    item = chat_mod.ChatTools._reference_items([_kb_decision_hit()])[0]
+    assert item["full_cached"] == "", "把 chunk 當成全文存進去了"
+    assert "（這是命中的 chunk，不是全文）" not in json.dumps(item, ensure_ascii=False)
+
+
+def test_archiving_failure_does_not_turn_a_good_search_into_a_failed_one():
+    """歸檔是**副作用**，不是這次查詢的結果。
+
+    寫檔失敗不該讓一次成功的檢索變成「查詢失敗」——那會把使用者的注意力導到錯的地方。
+    """
+    calls, events = [], []
+    t = _hint_tools(calls, events, retriever=_RecordingRetriever([_kb_decision_hit()]))
+    t.archive = _ArchiveSpy(boom=RuntimeError("磁碟滿了"))
+    t.run_tool_hint("search_similar_decisions")
+
+    result = [d for n, d in events if n == "tool_result"][-1]
+    assert result["status"] == "ok", f"歸檔失敗把檢索結果吃掉了：{result}"
+    assert result["hits"], "hits 也被吃掉了"
+
+
+def test_a_tier_with_no_dossier_just_does_not_archive():
+    """乙案容器裡沒有卷宗目錄，`archive` 是 `None`——檢索照跑，只是不歸檔。
+
+    那是真的沒有地方可寫，不是靜默失敗。
+    """
+    calls, events = [], []
+    t = _hint_tools(calls, events, retriever=_RecordingRetriever([_kb_decision_hit()]))
+    assert t.archive is None
+    t.run_tool_hint("search_similar_decisions")
+    assert [d for n, d in events if n == "tool_result"][-1]["status"] == "ok"
 
 
 def test_a_tool_chip_runs_the_tool_it_is_named_after():
@@ -1016,7 +1184,7 @@ def test_the_two_chips_use_the_two_different_queries_n4_uses():
     t.run_tool_hint("search_regulations")
     # 法條走內建的 LawTableRetriever（吃 snapshot），所以看送進事件的 args
     args = [d["args"]["query"] for n, d in events if n == "tool_call"]
-    assert args == ["法A；法B"], f"法條用錯查詢句：{args}"
+    assert args == ["訴願法第77條"], f"法條用錯查詢句：{args}"
 
 
 def test_a_chip_with_no_derivable_query_says_why_instead_of_inventing_one():

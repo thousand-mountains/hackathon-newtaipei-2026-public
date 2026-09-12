@@ -419,8 +419,8 @@ wire 格式：`event: <名稱>\ndata: <一行 JSON>\n\n`。共通欄位：`seq`�
 | `tool` | `label`（後端會帶） | 後端狀態 | 發 `tool_step` | 歸檔到 |
 |---|---|---|---|---|
 | `extract_case_document` | 解析卷證檔案 | **包 pipeline**（`run_case(to_node="n3")`） | ✅ n1–n3 | 不歸檔，更新 `latest_run_id` |
-| `search_regulations` | 查法條 | 已實作 | — | `laws` 群組 |
-| `search_similar_decisions` | 查相似訴願決定 | 已實作 | — | `cases` 群組 |
+| `search_regulations` | 查法條 | 已實作 | — | `laws` 群組（**2026-09-13 才真的接上**，見下） |
+| `search_similar_decisions` | 查相似訴願決定 | 已實作 | — | `cases` 群組（同上） |
 | `retrieve_refs` | 查判解與函釋 | 已實作 | — | 不歸檔 |
 | `generate_decision_draft` | 生成草稿 | **包 pipeline**（`run_case(from_node="n4")`） | ✅ n4–n6 | `out` 群組 |
 | `refine_text` | 潤稿 | 已實作 | — | 不歸檔 |
@@ -434,6 +434,13 @@ wire 格式：`event: <名稱>\ndata: <一行 JSON>\n\n`。共通欄位：`seq`�
 > **它不歸檔**（與上表其他「有產出」的工具不同）：關聯圖是同一份 run 的**視圖**，
 > 不是新的產出物。每次呼叫都從當下的 run payload 重算，所以不會有「圖跟草稿不同步」
 > 這種狀態。前端從 `tool_result.graph` 直接拿，形狀見 §3.7。
+>
+> ⚠️ **「歸檔到」這一欄在 2026-09-13 之前是一句空話。** 後端唯二寫卷宗的地方都在
+> REST 端點裡，聊天那條路徑一行都沒有。後果是整條 demo 動線斷掉：chip 查到了東西、
+> 東西沒落地、`generate_decision_draft` 的前置條件 3（§3.5.1）讀 `manifest.json`
+> 讀到空的，於是正確地拒絕生成——承辦人看到的是「生成草稿永遠都是空的」。
+> 現在兩支檢索工具查完會把結果寫進 `manifest.json`（形狀見 §4.0 的 `channel` 那段），
+> 而且**歸檔失敗不會讓檢索變成失敗**（歸檔是副作用，不是這次查詢的結果）。
 >
 > 八列，因為 `read_case` 是 agent 內部的追問用工具，使用者不會主動點它——
 > **`tool_hint` 的值域是前七支**，`read_case` 由 agent 自己決定要不要用。
@@ -620,6 +627,14 @@ run_case(case_id, from_node="n4", base_run_id=…,
 | `query_only` | **只**進了相似案檢索（**多數情形**） | 已用於相似案檢索；未進法條查表——查表只認「法名第N條」，純法規名查不到。要讓它成為草稿可引用的依據，請指定到條（例：訴願法第14條） |
 | `unused` | 兩條通道都沒有 | 本次生成未送進任何檢索通道 |
 | `unknown` | 還沒跑過草稿，或該筆資料的名稱空白 | （不標） |
+| `found_by_tool` | **由「查法條」chip 自己查到並歸檔的那批**（2026-09-13 新增） | 由「查法條」在法條查表找到（條號存在性驗證，非法條全文）；還沒跑過草稿，生成之後才知道草稿有沒有引用它 |
+
+> **為什麼要第五個值。** 前四種沒有一種在寫的那一刻是真的：`unknown` 的語意是
+> 「還沒查過」，而這批**正是查出來的**；`matched` 的文案是「已進入法條查表，
+> 草稿可引用本法條」，但草稿還沒跑。硬套任何一個都是說反話。
+>
+> 它是**短命的**：下一次 `record_run()` 會用 `classify_law_retrieval()` 重算成上面
+> 三態之一。但那個空窗正是承辦人按完 chip 盯著右欄看的時候，所以它得說得出實話。
 
 > **原本寫的「檢索未命中，未進入草稿」是錯的。**「未進入草稿」對，「未命中」把
 > 「有被用到」講成「沒被用到」。**它假在誠實的方向，所以一直沒被抓到**——
@@ -778,8 +793,8 @@ backend/output/cases/{case_id}/manifest.json
   "case_id": "upload-…", "name": "吉○實業 廢清法案", "created_at": "2026-09-12T21:40:00+08:00",
   "latest_run_id": "run-…",                    // 最後一次成功的 run，chat 的 run_id 用它
   "files":      [ {id,name,ext,note,readable} ],
-  "laws":       [ {id,t,src,note,verified,relevance,body_cached} ],
-  "references": [ {id,t,src,note,score,provenance,doc_kind,full_cached} ],
+  "laws":       [ {id,t,src,note,verified,relevance,body_cached,channel,retrieval_status,retrieval_note} ],
+  "references": [ {id,t,src,note,score,provenance,doc_kind,verdict,category,full_cached,channel} ],
   "artifacts":  [ {id,name,kind,note,created_at,run_id} ]
 }
 ```
@@ -788,7 +803,22 @@ backend/output/cases/{case_id}/manifest.json
 
 - **單檔不拆四檔**：開案首載本來就要一次全拿，單檔一次讀完最省。增刪＝read-modify-write。
 - **加入時就把全文快取進去**（`body_cached`／`full_cached`），不要留到讀取時再打 KB／S3
-  ——demo 當下不依賴外部服務還活著。
+  ——demo 當下不依賴外部服務還活著。**抓不到不得讓加入失敗**：留空並在 `note` 說明
+  （「全文未快取（讀母庫失敗）」／「全文未快取（這個檔位沒有母庫全文來源）」）。
+  把「加進來了、只是沒快取全文」變成「加不進去」是兩件不同的事。
+- **`channel`：這一筆是從哪條通道來的**（2026-09-13 新增，落實 §4.2 的
+  「畫面上要分得出來」）。兩種東西的保證等級不同，而 `id` 的形狀也跟著不同：
+
+  | `channel` | 來源 | `id` 長什麼樣 | `body_cached`／`full_cached` |
+  |---|---|---|---|
+  | `corpus` | 母庫全文檔（REST `POST …/laws｜references`，或聊天查到的相似案） | S3 key，例 `kb/public/相關法規_全量/訴願法.txt` | 有（抓得到的話） |
+  | `lawtable` | 條號查表（聊天的「查法條」chip） | `lawtable:{法名}-{條號}`，例 `lawtable:訴願法-77` | **必然是空的** |
+
+  `laws-snapshot.json` **只有條號清單，沒有條文原文**，所以查表那條通道拿不到全文；
+  它的 `note` 直接寫「條號存在性驗證，非法條全文（快照只索引條號）」。
+  **`id` 不得用 `tool_result.hits[].id`（`c1`／`c2`）**——那是 RefBook 每回合重配的
+  序號，存進 manifest 下一輪就對不上，同一條會被當成新的一筆重複加入。
+  兩種 `id` 移除端點都吃（`store.remove_item` 是字串比對，不做 key 驗證）。
 - **不引 RDS／DynamoDB**：要動 VPC、IAM、CDK、migration 與本地開發環境，是 30 小時內風險最高、
   收益最低的一件事；而要存的東西是單案幾 KB 的書籤。這份檔跟 `runstore`（`backend/output/runs/{run_id}.json`）
   同一個目錄樹、同一套 gitignore、同一個部署單元。

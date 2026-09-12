@@ -39,6 +39,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import re
+import sys
 from typing import Any
 
 from backend.config import settings
@@ -494,6 +495,32 @@ _MANIFEST_SECTIONS = {"laws": "laws", "cases": "references"}
 #: 這一輪檢索那兩個分區 → run payload 的鍵。
 _RETRIEVED_SECTIONS = {"retrieved_laws": "laws", "retrieved_cases": "cases"}
 
+#: 由「查法條」chip 歸檔進卷宗的法規，`id` 的前綴。**不用 `hits[].id`**
+#: （`c1`／`c2`）：那是 RefBook 每回合重配的序號，存進 manifest 下一輪就對不上，
+#: 同一條會被當成新的一筆重複加入。這個前綴由「法名＋條號」推導，同一條永遠一樣。
+#:
+#: 不用 `#` 當分隔（原提案是 `lawtable:訴願法#77`）：`#` 在 URL 是 fragment 分隔符，
+#: 移除路徑 `DELETE …/laws/{lawId}` 要靠呼叫端記得 percent-encode 才活得下來。
+#: 用連字號沒有這個依賴。
+ARCHIVE_LAWTABLE_PREFIX = "lawtable:"
+
+#: 卷宗 `laws[].channel` 的兩個值。契約 §4.2 要求「KB 全文通道與查表通道畫面上要分得出來」，
+#: 這是把那句話落實到資料上——兩種東西的保證等級不同：
+#: - `lawtable`：條號**存在性**驗證（`laws-snapshot.json` 只有條號清單，沒有條文原文）
+#: - `corpus`：母庫全文檔（S3 上有 body）
+ARCHIVE_CHANNEL_LAWTABLE = "lawtable"
+ARCHIVE_CHANNEL_CORPUS = "corpus"
+
+#: 第五種 `retrieval_status`（2026-09-13 新增，契約 §3.5.2）。
+#:
+#: **前四種沒有一種在寫的那一刻是真的**：`unknown` 說「還沒查過」，而這批**正是查出來的**；
+#: `matched` 的文案是「已進入法條查表，草稿可引用本法條」，但草稿還沒跑。
+#: 硬套任何一個都是說反話，所以新增一個。
+#:
+#: 它是**短命的**：下一次 `record_run()` 會用 `classify_law_retrieval()` 重算成三態之一。
+#: 但那個空窗正是承辦人按完 chip 盯著右欄看的時候，所以它得說得出實話。
+PICK_FOUND_BY_TOOL = "found_by_tool"
+
 #: 承辦人挑的法規在這一輪檢索裡的三種下場（契約 v2 §3.5.2 末段，2026-09-13 Ci 改判）。
 #:
 #: **原本只有 hit／miss 兩態，而那個 miss 是一句假話。** 實測（2026-09-13）：
@@ -521,6 +548,10 @@ PICK_NOTES = {
         "純法規名查不到。要讓它成為草稿可引用的依據，請指定到條（例：訴願法第14條）"
     ),
     PICK_UNUSED: "本次生成未送進任何檢索通道",
+    PICK_FOUND_BY_TOOL: (
+        "由「查法條」在法條查表找到（條號存在性驗證，非法條全文）；"
+        "還沒跑過草稿，生成之後才知道草稿有沒有引用它"
+    ),
 }
 
 #: 比對法規名時要抹掉的空白。全形空白（U+3000）在法規名裡真的會出現
@@ -673,6 +704,7 @@ class ChatTools:
                  run_id: str | None = None,
                  case_manifest: dict[str, Any] | None = None,
                  build_graph: Any = None,
+                 archive: Any = None,
                  law_query: str = "",
                  law_query_sources: list[str] | None = None,
                  case_query: str = "",
@@ -699,6 +731,10 @@ class ChatTools:
         #: 這一層只碰得到 dict，runstore 與 `build_payload` 都在另一側。
         #:   build_graph(*, run_id) -> dict（契約 v2 §3.7 的形狀）
         self.build_graph = build_graph
+        #: 把檢索結果寫進本案卷宗的 callable，由呼叫端注入（見 `_archive_hits`）：
+        #:   archive(group: "laws"|"references", items: list[dict]) -> Any
+        #: `None` ＝ 這個檔位沒有卷宗可寫（乙案容器），檢索照跑但不歸檔。
+        self.archive = archive
         #: 本案最後一次成功的 run。extract 跑完會換成新的，generate 拿它當 base。
         self.run_id = run_id
         #: 本案卷宗清單（`manifest.json`，契約 v2 §4.0）。由呼叫端唯讀帶進來。
@@ -809,6 +845,9 @@ class ChatTools:
             # 訊息本身也不寫「查無」二字：模型很容易照抄回覆裡出現過的詞。
             return f"{note}。請告訴使用者這次查詢失敗了，不要說成資料庫裡沒有這筆資料。"
         entries = self.refbook.add_all(hits, _score_kind(retriever))
+        # 歸檔在**發事件之前**：前端收到 `tool_result` 就會去重載右欄那一組
+        # （`refreshGroupIds`），寫在事件之後會讓它讀到還沒寫進去的舊清單。
+        self._archive_hits(name, hits)
         self._result(name, entries, "" if entries else f"{which}查無結果。",
                      status="ok" if entries else "empty")
         if not entries:
@@ -818,6 +857,119 @@ class ChatTools:
             text = (getattr(h, "payload", None) or {}).get("text", "")
             lines.append(f"[{entry['id']}] {entry['t']}（{entry['src']}）\n{text}".rstrip())
         return "\n\n".join(lines)
+
+    # ── 歸檔（契約 §3.0「歸檔到」那一欄）────────────────────────────
+
+    def _archive_hits(self, name: str, hits: list[Any]) -> None:
+        """把檢索到的東西寫進本案卷宗。**失敗不得讓工具失敗。**
+
+        ## 為什麼要有這一段
+
+        契約 §3.0 寫著 `search_regulations` → `laws` 群組、`search_similar_decisions`
+        → `cases` 群組，但 2026-09-13 之前**從來沒有人實作它**：後端唯二寫卷宗的地方
+        都在 REST 端點裡。後果是整條 demo 動線斷掉——chip 查到了東西，東西沒落地，
+        `generate_decision_draft` 的前置條件 3 讀 manifest 讀到空的，正確地拒絕生成。
+        承辦人看到的是「生成草稿永遠都是空的」。
+
+        ## 為什麼是注入的 callable
+
+        寫檔與讀 S3 都是 I/O，這一層不碰（spec §4.0，理由同 `run_pipeline`）。
+        乙案（AgentCore Runtime）容器裡沒有卷宗目錄，`archive` 就是 `None`，
+        檢索照跑、只是不歸檔——那是真的沒有地方可寫，不是靜默失敗。
+
+        ## 為什麼吞掉例外
+
+        歸檔是**副作用**，不是這次查詢的結果。寫檔失敗不該讓一次成功的檢索
+        變成「查詢失敗」——那會把使用者的注意力導到錯的地方。失敗印進伺服器 log。
+        """
+        if self.archive is None:
+            return
+        group = {"search_regulations": "laws",
+                 "search_similar_decisions": "references"}.get(name)
+        if group is None:
+            return
+        try:
+            items = (self._law_items(hits) if group == "laws"
+                     else self._reference_items(hits))
+            if items:
+                self.archive(group, items)
+        except Exception as e:  # noqa: BLE001 — 見 docstring：歸檔失敗不等於檢索失敗
+            print(f"[warn] 歸檔 {group} 失敗（檢索結果仍然有效）：{type(e).__name__}: {e}",
+                  file=sys.stderr)
+
+    @staticmethod
+    def _law_items(hits: list[Any]) -> list[dict[str, Any]]:
+        """法條查表的 hit → 卷宗 `laws[]` 的一筆。
+
+        **只收 `verified` 的那些**（條號存在於快照）。查表還會回兩種非命中：
+        條號寫法無法無歧義解析、以及法規不在快照涵蓋範圍內——兩種的 `score` 都是 0、
+        `note` 都在說「本系統驗不了」。把它們當成「相關法規」歸檔進去，等於把一句
+        「我不知道」畫成一筆依據。
+
+        `body_cached` 一律空字串：**快照裡根本沒有條文原文**
+        （`laws-snapshot.json` 只有條號清單與 `max`）。假裝有全文比沒有更糟，
+        所以 `note` 直接說明它是什麼等級的東西。
+        """
+        items: list[dict[str, Any]] = []
+        for h in hits or []:
+            if not getattr(h, "verified", False):
+                continue
+            payload = getattr(h, "payload", None) or {}
+            law, article = payload.get("law"), payload.get("article")
+            if not law or article is None:
+                continue
+            items.append({
+                "id": f"{ARCHIVE_LAWTABLE_PREFIX}{law}-{article}",
+                "t": getattr(h, "title", "") or f"{law}第{article}條",
+                "src": getattr(h, "source", ""),
+                "note": "條號存在性驗證，非法條全文（快照只索引條號）",
+                "verified": True,
+                "relevance": "unknown",
+                "body_cached": "",
+                "channel": ARCHIVE_CHANNEL_LAWTABLE,
+                "retrieval_status": PICK_FOUND_BY_TOOL,
+                "retrieval_note": PICK_NOTES[PICK_FOUND_BY_TOOL],
+            })
+        return items
+
+    @staticmethod
+    def _reference_items(hits: list[Any]) -> list[dict[str, Any]]:
+        """母庫相似決定的 hit → 卷宗 `references[]` 的一筆。
+
+        **`id` 就是 S3 key**，跟 REST 那條路存的一模一樣：同一份文件從兩條路加進來
+        要落在同一筆（`store.add_items` 依 `id` 去重），移除端點也就不必認兩種 id。
+
+        key 要 `kb/<kind>/<source>` 才完整，而 `kind` 原本在 `Hit` 上留不下來——
+        2026-09-13 在 `backend/retrieval/kb.py` 把它補進 `payload["kb_kind"]`。
+        **拿不到就不歸檔這一筆**：猜一個前綴（先試 official 再試 public）在猜錯時
+        會讀到另一份文件，而那個錯看起來完全正常。
+
+        `full_cached` 留空，由 `archive` 那一側決定要不要去 S3 抓
+        （`payload["text"]` 是**這一次命中的 chunk**，不是全文，拿它充數就是假資料）。
+        """
+        items: list[dict[str, Any]] = []
+        for h in hits or []:
+            payload = getattr(h, "payload", None) or {}
+            kind, source = payload.get("kb_kind"), getattr(h, "source", "")
+            if not kind or not source or kind == "unknown":
+                continue
+            items.append({
+                "id": f"kb/{kind}/{source}",
+                "t": getattr(h, "title", ""),
+                "src": source,
+                "note": "",
+                # 分數是**某一次查詢**的相似度，不是這份決定書的屬性。加進卷宗之後
+                # 它就沒有對應的查詢了，填一個舊分數會讓人以為那是「跟本案的相似度」。
+                # 與 REST 那條路同一個判斷（`backend/api/dossier.py` 的 add_case_references）。
+                "score": None,
+                "provenance": payload.get("provenance"),
+                "doc_kind": "decision",
+                "verdict": payload.get("outcome"),
+                "category": payload.get("category"),
+                "full_cached": "",
+                "channel": ARCHIVE_CHANNEL_CORPUS,
+            })
+        return items
 
     def _retriever_for(self, name: str) -> Any:
         if name == "search_regulations":
@@ -1328,6 +1480,7 @@ def build_chat_agent(case_payload: dict[str, Any], refbook: RefBook,
                      run_id: str | None = None,
                      case_manifest: dict[str, Any] | None = None,
                      build_graph: Any = None,
+                     archive: Any = None,
                      law_query: str = "",
                      law_query_sources: list[str] | None = None,
                      case_query: str = "",
@@ -1348,6 +1501,7 @@ def build_chat_agent(case_payload: dict[str, Any], refbook: RefBook,
     tools = ChatTools(case_payload, refbook, retriever, snapshot, emit,
                       run_pipeline=run_pipeline, run_id=run_id,
                       case_manifest=case_manifest, build_graph=build_graph,
+                      archive=archive,
                       law_query=law_query, law_query_sources=law_query_sources,
                       case_query=case_query, case_query_sources=case_query_sources)
     agent = Agent(
@@ -1370,6 +1524,10 @@ __all__ = [
     "PIPELINE_NODE_LABELS",
     "build_chat_agent",
     "cited_ids",
+    "ARCHIVE_CHANNEL_CORPUS",
+    "ARCHIVE_CHANNEL_LAWTABLE",
+    "ARCHIVE_LAWTABLE_PREFIX",
+    "PICK_FOUND_BY_TOOL",
     "degraded_summary",
     "classify_answer",
     "is_numeric_question",
