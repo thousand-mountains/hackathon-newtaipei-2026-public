@@ -1519,6 +1519,36 @@ def test_the_two_chips_use_the_two_different_queries_n4_uses():
     assert args == ["訴願法第77條"], f"法條用錯查詢句：{args}"
 
 
+def test_every_status_the_backend_emits_is_in_the_contract_value_domain():
+    """實際發出去的 `status` 不得超出契約 §2.3 的值域。
+
+    **用 AST 掃 `_result(...)` 的呼叫**，不是 grep：grep 會被註解與 docstring
+    裡的示例字串騙（這個檔的註解裡到處都是 `status:"empty"`）。
+    """
+    tree = ast.parse(pathlib.Path(chat_mod.__file__).read_text(encoding="utf-8"))
+    seen: set[str] = set()
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "_result"):
+            continue
+        for kw in node.keywords:
+            if kw.arg != "status":
+                continue
+            if isinstance(kw.value, ast.Constant):
+                seen.add(kw.value.value)
+            elif isinstance(kw.value, ast.Name):
+                seen.add(getattr(chat_mod, kw.value.id))
+            elif isinstance(kw.value, ast.IfExp):  # `"ok" if entries else "empty"`
+                seen.update(b.value for b in (kw.value.body, kw.value.orelse)
+                            if isinstance(b, ast.Constant))
+    assert seen, "一個 status 都沒掃到，這條檢查的前提壞了"
+    stray = sorted(seen - set(chat_mod.TOOL_RESULT_STATUSES))
+    assert not stray, f"發出了契約值域以外的 status：{stray}"
+    # 四個值都要真的有人在用——列了一個沒人發的值等於契約說謊
+    assert set(chat_mod.TOOL_RESULT_STATUSES) - seen == set(), \
+        f"契約列了但後端從來不發：{sorted(set(chat_mod.TOOL_RESULT_STATUSES) - seen)}"
+
+
 def test_a_chip_with_no_derivable_query_says_why_instead_of_inventing_one():
     """導不出查詢詞時**不得編一個去查**（CONSTITUTION §1 紅線）。
 
@@ -1532,7 +1562,11 @@ def test_a_chip_with_no_derivable_query_says_why_instead_of_inventing_one():
 
     assert kb.queries == [], f"沒有查詢詞卻還是去查了：{kb.queries}"
     result = [d for n, d in events if n == "tool_result"][0]
-    assert result["status"] == "empty", "還沒查過不是 failed 也不是 ok"
+    # **`not_attempted` 不是 `empty`**（2026-09-13 加的第四個值）：檢索層一次都沒被
+    # 呼叫過。講成「查無」是在報告一件沒發生的事——而兩者的 note 都非空，
+    # 前端在資料上分不出來，只能比對中文字串，那種比對下次改字就悄悄失效。
+    assert result["status"] == chat_mod.STATUS_NOT_ATTEMPTED, \
+        f"還沒查被講成查無了：{result['status']}"
     assert "還導不出查詢詞" in result["note"], result["note"]
     assert "要先解析卷證" in out, out
     assert "不要自己想一個查詢詞" in out, out
@@ -2262,15 +2296,37 @@ def test_relation_graph_tool_without_an_adapter_fails_loudly():
     assert "不要自己描述" in note, note
 
 
-def test_relation_graph_tool_without_a_run_is_empty_not_failed():
-    """還沒跑過任何一次 run → `empty`，不是 `failed`：資料還沒到那一步，不是壞了。"""
+def test_relation_graph_tool_without_a_run_is_not_attempted_not_failed_not_empty():
+    """還沒跑過任何一次 run → `not_attempted`。
+
+    不是 `failed`（資料還沒到那一步，不是壞了），也不是 `empty`
+    （2026-09-13 拆開：`empty` 的前提是**真的畫過了**，而這裡 `build_graph`
+    一次都沒被呼叫——測試用一個被呼叫就爆炸的假 adapter 釘住這件事）。
+    """
     calls: list = []
     events: list = []
     boom = lambda *, run_id: (_ for _ in ()).throw(AssertionError("不該被呼叫"))
     note = _tools(calls, events=events, build_graph=boom).build_relation_graph()
     result = [d for n, d in events if n == "tool_result"][0]
-    assert result["status"] == "empty", result
+    assert result["status"] == chat_mod.STATUS_NOT_ATTEMPTED, result
     assert "extract_case_document" in note, note
+
+
+def test_a_graph_that_really_was_drawn_stays_empty_not_not_attempted():
+    """**做了但結果不完整 → `empty`**，不得因為「還沒到那一步」就改標 not_attempted。
+
+    只跑到程序審查的 run 畫得出圖（`graph` 就在事件裡），只是沒有結論句所以只有前半。
+    工作確實發生了——這正是 `empty` 與 `not_attempted` 的分界。
+    """
+    calls: list = []
+    events: list = []
+    graph = _graph_ok(status="empty", note="要先生成草稿才畫得出完整關聯",
+                      nodes=[], edges=[])
+    _tools(calls, events=events, run_id="run-x",
+           build_graph=(lambda *, run_id: graph)).build_relation_graph()
+    result = [d for n, d in events if n == "tool_result"][0]
+    assert result["status"] == "empty", f"圖真的畫了卻標成沒做：{result['status']}"
+    assert result["graph"] is not None, "圖沒有帶出去"
 
 
 def test_relation_graph_tool_passes_empty_status_through():

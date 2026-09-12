@@ -893,6 +893,28 @@ _CURRENT_CALL_ID: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "chat_current_call_id", default=None)
 
 
+#: `tool_result.status` 的值域（契約 §2.3 ②）。
+#:
+#: **`not_attempted` 是 2026-09-13 新增的第四個。** 在那之前 `empty` 同時承載兩件事：
+#:
+#:   「查過了，沒有這筆資料」        ← 真的查無
+#:   「還沒去查，因為前置條件不成立」  ← 根本還沒發生
+#:
+#: 兩者的 `note` 都非空，所以前端在**資料上**分不出來——要分只剩「比對後端那串中文」
+#: 一條路，而那種比對下次改字就悄悄失效。
+#:
+#: **系統說「沒有」跟系統說「我還沒去看」是兩種不同的誠實等級**，而後者講成前者
+#: 是在報告一件沒發生的事（CONSTITUTION §1，同 `WHY_DROPPED`／`WHY_NUMERIC` 那一族）。
+#:
+#: 判準：**做了、結果是沒有 → `empty`；沒做、因為前置條件不成立 → `not_attempted`。**
+#: 「做了但結果不完整」算 `empty`（工作確實發生了），不算 `not_attempted`。
+STATUS_OK = "ok"
+STATUS_EMPTY = "empty"
+STATUS_NOT_ATTEMPTED = "not_attempted"
+STATUS_FAILED = "failed"
+TOOL_RESULT_STATUSES = (STATUS_OK, STATUS_EMPTY, STATUS_NOT_ATTEMPTED, STATUS_FAILED)
+
+
 _NO_RETRIEVER = "目前沒有可用的檢索來源，這個工具查不了。請直接說明查不到，不要改用推測作答。"
 
 #: 分數**不是相似度**的檢索器。`LawTableRetriever.name`（`backend/retrieval/lawtable.py:21`）
@@ -1605,9 +1627,12 @@ class ChatTools:
         if not query:
             _throttle()
             self._call(name, {"query": None})
-            note = ("這件案子還導不出查詢詞：查詢詞由卷證解析的結果組出來"
-                    "（案型、程序不受理事由、期間依據的法條），目前這些都還是空的。")
-            self._result(name, [], note, status="empty")
+            note = ("這件案子還導不出查詢詞，所以這次**沒有去查**："
+                    "查詢詞由卷證解析的結果組出來（案型、程序不受理事由、"
+                    "期間依據的法條），目前這些都還是空的。")
+            # **`not_attempted` 不是 `empty`**：檢索層一次都沒被呼叫過。
+            # 說成「查無」是在報告一件沒發生的事。
+            self._result(name, [], note, status=STATUS_NOT_ATTEMPTED)
             return (f"{note}請告訴承辦人**要先解析卷證**，跑完之後這個按鈕才查得到東西；"
                     f"或者他可以直接打字把爭點、處分依據告訴你，你再用那些字去查。"
                     f"**不要自己想一個查詢詞去查**，也不要說查無相似案例"
@@ -1637,7 +1662,9 @@ class ChatTools:
             self._result("build_relation_graph", [], _NO_GRAPH, status="failed")
             return _NO_GRAPH
         if not self.run_id:
-            self._result("build_relation_graph", [], _NO_RUN_FOR_GRAPH, status="empty")
+            # 同上：沒有 run 就沒有東西可畫，`build_graph` 一次都沒被呼叫。
+            self._result("build_relation_graph", [], _NO_RUN_FOR_GRAPH,
+                         status=STATUS_NOT_ATTEMPTED)
             return _NO_RUN_FOR_GRAPH
         try:
             graph = self.build_graph(run_id=self.run_id)
@@ -1649,6 +1676,9 @@ class ChatTools:
         stats = graph.get("stats") or {}
         if graph.get("status") == "empty":
             # `empty` 不是 `failed`：資料還沒到那一步，不是東西壞了（契約 v2 §2.3 ②）。
+            # **也不是 `not_attempted`**：圖真的畫了（`graph` 就在下面帶出去），
+            # 只是這個 run 只跑到程序審查、沒有結論句，所以畫出來的只有前半。
+            # 做了但結果不完整 → `empty`；沒做 → `not_attempted`。
             note = str(graph.get("note") or "")
             self._result("build_relation_graph", [], note, status="empty", graph=graph)
             return f"{note}（這不是失敗，是還沒生成草稿。）"
@@ -1859,6 +1889,8 @@ __all__ = [
     "PIPELINE_NODE_LABELS",
     "build_chat_agent",
     "cited_ids",
+    "TOOL_RESULT_STATUSES",
+    "STATUS_NOT_ATTEMPTED",
     "WHY_NUMERIC_NO_REDIRECT",
     "token_callback_handler",
     "ARCHIVE_CHANNEL_CORPUS",
