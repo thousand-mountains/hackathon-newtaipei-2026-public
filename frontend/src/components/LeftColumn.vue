@@ -3,6 +3,7 @@ import {
   state, lawCards, caseCards, factCards, showAddLaw,
   openTab, linkToSentences, lawUsedCount,
 } from '../store/workbench.js'
+import IntakePanel from './IntakePanel.vue'
 import ProcPanel from './ProcPanel.vue'
 import ChatPanel from './ChatPanel.vue'
 
@@ -34,6 +35,7 @@ function tabClick(t) {
       <div class="tabbody">
         <!-- 案情與爭點 -->
         <div v-show="state.activeTab === 'fact'">
+          <IntakePanel />
           <ProcPanel />
           <div
             v-for="f in factCards"
@@ -71,19 +73,27 @@ function tabClick(t) {
               <span class="nm">{{ l.law }}　{{ l.art }}</span>
               <span v-if="l.users" class="tag n">引用 {{ l.users }} 句</span>
               <span v-if="l.mine" class="tag k2">自行加入</span>
-              <span v-else class="tag ai">AI 建議</span>
-              <button class="del" title="移除" @click.stop="emit('remove-law', l.id, lawUsedCount(l.id))">×</button>
             </div>
             <div style="padding: 0 12px 11px; font-size: 13px; color: var(--ink-2); line-height: 1.7">
-              <div style="color: var(--ink); font-weight: 500; margin-bottom: 2px">{{ l.tag }}</div>
               {{ l.keyPoint }}
-              <div class="aiwhy">
-                <b>AI 採用理由</b>{{ l.mine ? '由承辦人手動加入，未經 AI 評估。' : l.why }}
+              <!-- US-8：兩件事分開講。綠燈只代表字號可對回快照，不代表與本案相關。 -->
+              <div class="dims">
+                <div class="dim">
+                  <span class="dk">字號可驗性</span>
+                  <span class="dv" :class="l.verify.lampClass">{{ l.verify.label }}</span>
+                  <span class="dw">{{ l.verify.why }}</span>
+                </div>
+                <div class="dim">
+                  <span class="dk">與本案相關性</span>
+                  <span class="dv none">{{ l.relevance.label }}</span>
+                  <span class="dw">{{ l.relevance.why }}</span>
+                </div>
               </div>
               <div style="margin-top: 8px; text-align: right">
                 <span class="seefull" @click.stop="emit('open-law', l.id)">
                   看全文<span class="mi" style="font-size: 16px; vertical-align: -3px">chevron_right</span>
                 </span>
+                <button class="del" title="移除" @click.stop="emit('remove-law', l.id, lawUsedCount(l.id))">移除</button>
               </div>
             </div>
           </div>
@@ -103,13 +113,30 @@ function tabClick(t) {
             <div class="row">
               <span class="nm">{{ c.t }}</span>
               <span v-if="c.users" class="tag n">引用 {{ c.users }} 句</span>
-              <span class="tag ai">AI 建議</span>
+              <span class="tag k">{{ c.provenanceLabel }}</span>
             </div>
             <div style="padding: 0 12px 11px; font-size: 13px; color: var(--ink-2); line-height: 1.7">
-              {{ c.d }}
-              <div class="aiwhy"><b>AI 採用理由</b>{{ c.why }}</div>
+              <div v-if="c.outcome" style="color: var(--ink); font-weight: 500">主文：{{ c.outcome }}</div>
+              <div class="excerpt">{{ c.d }}</div>
+              <div class="dims">
+                <div class="dim">
+                  <span class="dk">與本案相關性</span>
+                  <span class="dv none">{{ c.relevance.label }}</span>
+                  <span class="dw">{{ c.relevance.why }}</span>
+                </div>
+                <div v-if="c.verify && c.verify.why" class="dim">
+                  <span class="dk">來源查核</span>
+                  <span class="dv" :class="c.verify.verified ? 'ok' : 'none'">
+                    {{ c.verify.verified ? '已對資料集實檔驗證' : '未對實檔驗證' }}
+                  </span>
+                  <span class="dw">{{ c.verify.why }}</span>
+                </div>
+              </div>
               <div style="margin-top: 8px; display: flex; align-items: center; gap: 9px">
-                <span class="sim"><span class="simbar"><i :style="{ width: c.sim + '%' }"></i></span>相似度 {{ c.sim }}%</span>
+                <span v-if="c.sim !== null" class="sim">
+                  <span class="simbar"><i :style="{ width: c.sim + '%' }"></i></span>{{ c.sim }}%
+                  <em class="simnote">{{ c.simLabel }}</em>
+                </span>
                 <span style="margin-left: auto">
                   <span class="seefull" @click.stop="emit('open-case', c.id)">
                     看全文<span class="mi" style="font-size: 16px; vertical-align: -3px">chevron_right</span>
@@ -125,3 +152,19 @@ function tabClick(t) {
     <ChatPanel />
   </div>
 </template>
+
+<style scoped>
+.dims { margin-top: 8px; border-top: 1px dashed var(--line, #e3e0d8); padding-top: 7px; }
+.dim { display: grid; grid-template-columns: 92px 1fr; gap: 4px 8px; margin-bottom: 6px; font-size: 12.5px; }
+.dim .dk { color: var(--ink-3); }
+.dim .dv { font-weight: 600; }
+.dim .dv.ok { color: #2e5e3f; }
+.dim .dv.warn { color: #8a6320; }
+.dim .dv.bad { color: #a03028; }
+.dim .dv.none { color: #8a6320; }
+.dim .dw { grid-column: 2; color: var(--ink-3); line-height: 1.7; }
+.excerpt { margin-top: 4px; max-height: 7.2em; overflow: hidden; }
+.simnote { font-style: normal; color: var(--ink-3); font-size: 11.5px; margin-left: 6px; }
+.del { margin-left: 10px; background: none; border: 0; color: var(--ink-3); cursor: pointer; font-size: 12.5px; }
+.del:hover { color: #a03028; }
+</style>

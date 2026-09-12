@@ -31,23 +31,52 @@ function pickPdf() {
   downloadPdf()
 }
 
+const esc = (s) => String(s || '').replace(/[&<>]/g, (m) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[m]))
+
 function openLaw(id) {
+  // 有後端 payload 時一律用後端給的。**快照只索引條號、不含條文原文**，
+  // 後端明講不代為補寫——前端也不拿內建 mock 的條文頂替（那會變成編造條文）。
+  const card = state.payload && state.payload.laws.find((x) => x.id === id)
+  if (card) {
+    full.value = {
+      open: true,
+      title: card.law + '　' + card.art,
+      meta: '<span style="font-size:12.5px;color:var(--ink-3)">' + esc(card.src) + '</span>',
+      body: card.hasText
+        ? '<div class="lawdoc">' + esc(card.keyPoint) + '</div>'
+        : '<div class="lawdoc" style="color:#8a6320">' + esc(card.keyPoint) +
+          '<p style="margin-top:10px">本系統不代為補寫條文文字。請對照全國法規資料庫確認。</p></div>',
+      isCase: false,
+    }
+    return
+  }
   const l = lawById(id)
   if (!l) return
   const { body, count } = lawFullHTML(l)
   full.value = {
     open: true,
     title: l.law,
-    meta: '<span style="font-size:12.5px;color:var(--ink-3)">' + (l.src || '全國法規資料庫') + '　·　共 ' + count + ' 條（資料庫收錄）</span>',
+    meta: '<span style="font-size:12.5px;color:var(--ink-3)">' + (l.src || '全國法規資料庫') + '　·　共 ' + count + ' 條（資料庫收錄，離線示範）</span>',
     body,
     isCase: false,
   }
 }
 function openCase(id) {
+  const card = state.payload && state.payload.cases.find((x) => x.id === id)
+  if (card) {
+    full.value = {
+      open: true,
+      title: card.t,
+      meta: '<span style="font-size:12.5px;color:var(--ink-3)">' + esc(card.src) +
+            '　·　' + esc(card.provenanceLabel) + '　·　' + esc(card.simLabel) + ' ' + (card.sim ?? '—') + '%</span>',
+      body: '<div class="lawdoc">' + esc(card.d || '（後端未回傳內文摘錄）') + '</div>',
+      isCase: true,
+    }
+    return
+  }
   const c = caseById(id)
   const d = CASETEXT[id]
   if (!c || !d) return
-  const esc = (str) => str.replace(/[&<>]/g, (m) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[m]))
   let t = esc(d.text)
   ;(d.hl || []).forEach((k) => {
     const kk = esc(k)
@@ -144,6 +173,17 @@ onBeforeUnmount(() => {
 
 <template>
   <section class="page">
+    <!-- 三個誠實維度：**分三句講，不合併**（合併正是今天修掉的 bug） -->
+    <div v-if="state.provenance" class="prov">
+      <div class="pv"><span class="pk">執行模式</span><span>{{ state.provenance.execution }}</span></div>
+      <div class="pv"><span class="pk">資料性質</span><span>{{ state.provenance.data }}</span></div>
+      <div class="pv"><span class="pk">檢索範圍</span><span>{{ state.provenance.retrieval }}</span></div>
+      <div v-if="state.run.runId" class="pv"><span class="pk">本次執行</span><span class="mono">{{ state.run.runId }}</span></div>
+    </div>
+    <div v-if="state.conn.usingMock" class="prov mock">
+      <b>離線示範資料</b>——畫面內容取自前端內建的假資料，<b>不是任何一次真實執行的結果</b>，且不提供下載。
+    </div>
+
     <div class="wbar">
       <h1>訴願決定書草稿</h1>
       <span class="caseno">{{ state.caseno }}</span>
@@ -187,6 +227,32 @@ onBeforeUnmount(() => {
       </div>
     </div>
 
+    <!-- 送出守門結果（US-4）：**submit_allowed 只認後端**，409 帶著理由 -->
+    <div v-if="state.gate.checking" class="gate busy">
+      正在請後端重跑六節點複核可否送出…（約 1 分鐘，後端不採信前端的判斷）
+    </div>
+    <div v-else-if="state.gate.checked && !state.gate.allowed" class="gate bad">
+      <div class="gh">
+        <span class="mi">block</span>
+        <b>後端拒絕送出，已阻擋下載</b>
+      </div>
+      <div v-if="state.gate.error" class="gm">{{ state.gate.error }}</div>
+      <ul class="bl">
+        <li v-for="(b, i) in state.gate.blockers" :key="i">
+          <span class="sev">{{ b.severity || 'P0' }}</span>
+          <code>{{ b.reason }}</code>
+          <span v-if="b.sentence_id" class="sid">{{ b.sentence_id }}</span>
+          <div class="bd2">{{ b.detail }}</div>
+        </li>
+      </ul>
+      <div class="gm">
+        此判斷由後端重跑六節點得出，回應原文：「未採信前端送來的任何判斷」。改 DOM 或直接打 API 都繞不過去。
+      </div>
+    </div>
+    <div v-else-if="state.gate.checked && state.gate.allowed" class="gate ok">
+      <b>後端允許送出</b>——本動作僅寫入本機紀錄，<b>沒有寄送任何郵件、沒有排入任何議程、沒有呼叫任何外部系統</b>。
+    </div>
+
     <AddLawModal :open="addLawOpen" @close="addLawOpen = false" @confirm-discard="askDiscardPicked" />
     <FullTextModal
       :open="full.open"
@@ -206,3 +272,23 @@ onBeforeUnmount(() => {
     />
   </section>
 </template>
+
+<style scoped>
+.prov { display: grid; gap: 4px; background: #f7f6f1; border: 1px solid #e3e0d8; border-radius: 8px;
+  padding: 10px 13px; margin-bottom: 10px; font-size: 12.5px; line-height: 1.8; }
+.prov.mock { background: #fdf7ea; border-color: #ecdcbb; }
+.pv { display: grid; grid-template-columns: 74px 1fr; gap: 10px; }
+.pk { color: var(--ink-3); }
+.mono { font-family: var(--mono); }
+.gate { margin-top: 12px; border-radius: 8px; padding: 12px 14px; font-size: 13px; line-height: 1.8; }
+.gate.busy { background: #f7f6f1; border: 1px solid #e3e0d8; }
+.gate.ok { background: #f0f5f0; border: 1px solid #cfe0cf; }
+.gate.bad { background: #fdf3f2; border: 1px solid #e9c9c5; }
+.gh { display: flex; align-items: center; gap: 6px; font-size: 14px; }
+.gm { color: var(--ink-3); font-size: 12.5px; margin-top: 6px; }
+.bl { margin: 8px 0 0; padding-left: 0; list-style: none; }
+.bl li { background: #fff; border: 1px solid #ecd9d5; border-radius: 6px; padding: 8px 10px; margin-bottom: 6px; }
+.sev { background: #a03028; color: #fff; border-radius: 4px; padding: 1px 6px; font-size: 11px; margin-right: 6px; }
+.sid { color: var(--ink-3); font-family: var(--mono); margin-left: 6px; }
+.bd2 { margin-top: 4px; color: var(--ink-2); }
+</style>

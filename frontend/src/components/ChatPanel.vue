@@ -1,6 +1,6 @@
 <script setup>
 import { ref, watch, nextTick, computed } from 'vue'
-import { state, CHIP_LABEL, chatChip, chatSend, selectedSentText } from '../store/workbench.js'
+import { state, CHIP_LABEL, chatChip, chatSend, selectedSentText, REWRITE_ENABLED, REWRITE_DISABLED_NOTE } from '../store/workbench.js'
 
 const input = ref('')
 const chatBox = ref(null)
@@ -11,7 +11,8 @@ const chips = [
   { q: '語氣', label: '改為公文正式語氣' },
 ]
 
-const disabled = computed(() => state.mode !== 'edit')
+// 本版改寫未接後端：舊版那四個動作是前端寫死的正則字串替換，不是模型產出。
+const disabled = computed(() => !REWRITE_ENABLED || state.mode !== 'edit')
 
 const ctxLabel = computed(() => {
   if (!state.chatAll && state.selId) return null // 顯示選取句
@@ -41,6 +42,7 @@ watch(
 </script>
 
 <template>
+  <div v-if="!REWRITE_ENABLED" class="notwired">改寫功能未接後端，本版停用。<div>{{ REWRITE_DISABLED_NOTE }}</div></div>
   <div class="pane">
     <div class="hd">
       <span class="ttl">撰稿 AI</span>
@@ -70,3 +72,9 @@ watch(
     </div>
   </div>
 </template>
+
+<style scoped>
+.notwired { background: #fdf7ea; border: 1px solid #ecdcbb; border-radius: 6px;
+  padding: 8px 10px; margin: 8px; font-size: 12.5px; line-height: 1.75; }
+.notwired div { color: var(--ink-3); margin-top: 3px; }
+</style>
