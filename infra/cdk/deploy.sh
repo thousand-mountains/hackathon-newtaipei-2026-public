@@ -6,6 +6,9 @@
 #   ./deploy.sh deploy      # 實際部署
 #   ./deploy.sh destroy     # 收攤
 #
+# `deploy` 與 `check` 會**自動建前端**（frontend/dist 不進 git，見 build_frontend）。
+# 已經在別處建好可以 HACK_SKIP_FRONTEND_BUILD=1 跳過。
+#
 # 模型 id 與 KB id 從 .env 讀（.env 不進 git）。
 # 找不到 .env 就停——不要讓它靜默退化成離線重播。
 set -euo pipefail
@@ -45,16 +48,96 @@ export CDK_DEFAULT_ACCOUNT="$account"
 export CDK_DEFAULT_REGION=us-west-2
 echo "帳號：${account}／region：us-west-2／profile：${AWS_PROFILE}"
 
+# ── 前端建置 ──────────────────────────────────────────────────────
+# `backend/Dockerfile` 有 `COPY frontend/dist/`，但 `frontend/.gitignore` 排掉 dist，
+# 而 **git worktree 不共用未追蹤檔**——所以新 clone／新 worktree 第一次部署一定撞。
+# `check_context.sh` 確實會攔下來（具名說「frontend/dist 不在建置 context 裡」，
+# 那個守衛是對的、別動它），但攔下來之後人還要自己去翻 DEPLOY.md 才知道要跑什麼。
+# 這裡把那一步接進來。
+#
+# **用 pnpm 不用 npm**：`frontend/` 只有 `pnpm-lock.yaml`，**沒有 package-lock.json**，
+# 所以 `npm ci` 會直接報錯（它要求 lockfile 存在）。走 `npx --yes pnpm@9` 則只需要
+# node／npx——而那本來就是跑 `npx cdk` 的前提，不新增任何一項機器需求。
+# 版本鎖 9：lockfile 是 pnpm 9 產的，換 major 會重算依賴樹。
+frontend_dir="$repo_root/frontend"
+dist_dir="$frontend_dir/dist"
+
+build_frontend() {
+  if [[ "${HACK_SKIP_FRONTEND_BUILD:-}" == "1" ]]; then
+    # 明確的退出口：CI 先建好 dist 當 artifact 丟進來的情形。
+    # **仍然要檢查 dist 在不在**——跳過建置不等於可以沒有產物。
+    if [[ ! -f "$dist_dir/index.html" ]]; then
+      echo "HACK_SKIP_FRONTEND_BUILD=1 但 $dist_dir/index.html 不存在。" >&2
+      echo "要嘛先把 dist 準備好，要嘛拿掉這個環境變數讓腳本自己建。" >&2
+      exit 1
+    fi
+    echo "略過前端建置（HACK_SKIP_FRONTEND_BUILD=1），沿用既有的 $dist_dir"
+    return
+  fi
+
+  if ! command -v npx >/dev/null 2>&1; then
+    {
+      echo "找不到 npx（node）。部署需要它：cdk 本身就是 npx 跑的，前端也用"
+      echo "npx --yes pnpm@9 建置。請先裝 Node.js（建議 20 以上）再重跑。"
+      echo
+      echo "若你已經在別處建好 frontend/dist，可以：HACK_SKIP_FRONTEND_BUILD=1 $0 $*"
+    } >&2
+    exit 1
+  fi
+
+  echo "建置前端：$frontend_dir"
+  # **每次都重建**，不用「dist 已存在就跳過」。理由是這裡的失敗形狀特別壞：
+  # 跳過的話，改了前端再部署會**默默推上舊的 dist**，畫面看起來正常、只是不是你改的那版，
+  # 而且 `check_context.sh` 一樣全綠（它只看檔案在不在，不看新不新）。
+  # Vite 這個專案建置只要幾秒，省不到什麼；`install` 才慢，那個有 lockfile 可以快取。
+  (
+    cd "$frontend_dir"
+    npx --yes pnpm@9 install --frozen-lockfile
+    npx --yes pnpm@9 run build
+  )
+  [[ -f "$dist_dir/index.html" ]] || {
+    echo "前端建置跑完了，但 $dist_dir/index.html 不存在——建置沒有真的產出東西。" >&2
+    exit 1
+  }
+  echo "前端建置完成：$(find "$dist_dir" -type f | wc -l | tr -d ' ') 個檔"
+}
+
+# ── CDK 相依 ──────────────────────────────────────────────────────
+# `infra/cdk/node_modules/` 進 .gitignore，所以新 clone／新 worktree 一樣沒有。
+# 少了它 `npx cdk` 會去抓一個**裸的** aws-cdk，然後 `cdk.json` 的
+# `npx ts-node --prefer-ts-exts bin/app.ts` 會拿到一個沒有 typescript 的 ts-node，
+# 炸在 `TypeError: Cannot read properties of undefined (reading 'fileExists')`
+# ——那個錯誤訊息完全看不出根因是「相依沒裝」。
+#
+# **這裡是 `npm ci` 而前端是 pnpm，不是筆誤**：`infra/cdk/` 有 package-lock.json、
+# `frontend/` 只有 pnpm-lock.yaml。兩邊各用各的 lockfile 對應的工具，
+# 弄反的話兩邊都會報「找不到 lockfile」。
+ensure_cdk_deps() {
+  [[ -x "$here/node_modules/.bin/cdk" ]] && return
+  if ! command -v npm >/dev/null 2>&1; then
+    echo "找不到 npm（node）。部署需要它安裝 infra/cdk 的相依。請先裝 Node.js。" >&2
+    exit 1
+  fi
+  echo "安裝 CDK 相依：$here"
+  ( cd "$here" && npm ci )
+}
+
 cmd="${1:-deploy}"
 shift || true
 
 case "$cmd" in
   bootstrap)
+    ensure_cdk_deps
     exec npx cdk bootstrap "aws://$account/us-west-2" \
       --qualifier hackntpc \
       --toolkit-stack-name HackNtpcCDKToolkit "$@"
     ;;
   deploy)
+    # **順序有意義**：前端要在 `cdk synth` 之前建好。synth 會把建置 context staging
+    # 到 cdk.out，那一刻 dist 不在，之後再建也來不及——check_context.sh 會照實報錯，
+    # 但那時已經白跑一次 synth。
+    build_frontend "$@"
+    ensure_cdk_deps
     # 部署前先確認建置 context 與 Dockerfile 對得起來。
     # 這個不一致不會讓 docker build 失敗，只會讓映像檔默默少東西（見 check_context.sh），
     # 所以必須在這裡擋，不能靠人記得。
@@ -64,14 +147,20 @@ case "$cmd" in
     exec npx cdk deploy --toolkit-stack-name HackNtpcCDKToolkit "$@"
     ;;
   destroy)
+    ensure_cdk_deps
     exec npx cdk destroy --toolkit-stack-name HackNtpcCDKToolkit "$@"
     ;;
   check)
+    # `check` 就是「把 deploy 的前置檢查跑一遍」，所以也要建前端——否則它會報
+    # 「dist 不在 context 裡」，而那是 check 自己沒建造成的，不是真的設定錯誤。
+    build_frontend "$@"
+    ensure_cdk_deps
     npx cdk synth >/dev/null
     exec "$here/check_context.sh"
     ;;
   synth|diff|ls)
     # 這幾個子命令不吃 --toolkit-stack-name
+    ensure_cdk_deps
     exec npx cdk "$cmd" "$@"
     ;;
   *)

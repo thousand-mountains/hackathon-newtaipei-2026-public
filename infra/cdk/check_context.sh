@@ -21,9 +21,35 @@ outdir="$here/cdk.out"
 [[ -f "$dockerfile" ]] || { echo "找不到 $dockerfile" >&2; exit 1; }
 [[ -d "$outdir" ]] || { echo "找不到 $outdir，請先跑 cdk synth" >&2; exit 1; }
 
+# 下面那段 python 只用到 json／sys／pathlib，**3.6 以上都跑得動**，
+# 含 macOS 內建的 /usr/bin/python3（3.9）——實測過。
+#
+# 原本這裡寫死 `/opt/homebrew/bin/python3.14`。那在寫的人機器上永遠是對的，
+# 所以**本機永遠驗不出來**；而 `deploy.sh` 是 `set -euo pipefail`，
+# 直譯器不存在時 `$(...)` 失敗會**直接中止部署**，錯誤訊息還只是 command not found。
+# Claire／Pink 的 homebrew python 不是 3.14、brew 升到 3.15、或任何 Linux 環境都會中。
+#
+# 注意**不要**把它跟 `backend/tests/run_all.py` 的需求搞混：那支需要 3.10+
+# （它用 `sys.stdlib_module_names`，而且自己會擋並說明）。**這支不需要。**
+# 兩支腳本對直譯器的要求不一樣，套同一個版本要求只會逼人多裝一個 python。
+py="${PYTHON:-}"
+if [[ -z "$py" ]]; then
+  for candidate in python3 python; do
+    if command -v "$candidate" >/dev/null 2>&1; then py="$candidate"; break; fi
+  done
+fi
+if [[ -z "$py" ]]; then
+  {
+    echo "找不到 python3。這支腳本用它解析 cdk.out 的 *.assets.json（只用 stdlib 的"
+    echo "json／sys／pathlib，3.6+ 都可以，macOS 內建的 /usr/bin/python3 就夠）。"
+    echo "請安裝 python3，或指定：PYTHON=/path/to/python3 $0"
+  } >&2
+  exit 1
+fi
+
 # 從 assets.json 找出 docker image asset 被 staging 到哪個目錄
 asset_dir="$(
-  /opt/homebrew/bin/python3.14 - "$outdir" <<'PY'
+  "$py" - "$outdir" <<'PY'
 import json, sys, pathlib
 out = pathlib.Path(sys.argv[1])
 for f in out.glob('*.assets.json'):
