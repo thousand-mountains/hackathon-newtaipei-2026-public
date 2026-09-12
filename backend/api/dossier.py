@@ -26,6 +26,7 @@ from backend.config import settings
 from backend.dossier import corpus, runlink, store
 from backend.intake.uploads import MAX_BYTES, UPLOADS_DIR, _safe_name
 from backend.orchestrator.artifact_sections import build_sections
+from backend.orchestrator.case_view import blocks_from_latest_run
 from backend.orchestrator.graph import build_payload
 from backend.orchestrator.runstore import RunNotFound, load_run
 
@@ -94,9 +95,10 @@ class AddReferencesIn(BaseModel):
 
 @router.get("/api/cases/{case_id}")
 def get_case(case_id: str) -> dict:
-    """開案首載的**彙整版**：一次回 `{case, files, laws, references, artifacts}`（契約 §4）。
+    """開案首載的**彙整版**：一次回卷宗五鍵 ＋ 最後一次 run 的四塊（契約 §4、§3.3）。
 
-    四個群組合起來畫右欄，分四支打會多三趟往返，而右欄是開案就要整片出現的。
+    右欄四個群組合起來畫，分四支打會多三趟往返，而右欄是開案就要整片出現的；
+    中欄的工具卡與左欄的程序審查則要 `RUN_BLOCKS` 那四塊（見上面的說明）。
     """
     try:
         m = store.ensure(case_id)
@@ -109,6 +111,8 @@ def get_case(case_id: str) -> dict:
         "laws": m["laws"],
         "references": m["references"],
         "artifacts": m["artifacts"],
+        # 既有五鍵的形狀一個字都沒動——前端已經接好了（team-lead 2026-09-13 交代）。
+        **blocks_from_latest_run(m["latest_run_id"]),
     }
 
 
