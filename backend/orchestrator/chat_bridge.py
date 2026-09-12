@@ -27,6 +27,7 @@ from typing import Any, Callable
 
 from backend.dossier import store
 from backend.graph.relation import build_relation_graph
+from backend.orchestrator.artifact_sections import build_sections
 from backend.orchestrator.graph import build_payload, run_case
 from backend.orchestrator.runstore import load_run
 
@@ -116,7 +117,16 @@ def pipeline_adapter(case_id: str, cases_dir: pathlib.Path | None = None,
             "run_id": payload.get("run_id"),
             "state": run_meta.get("final_state") or payload.get("state"),
             "node_timings": dict(run_meta.get("node_timings") or {}),
-            "cite_count": len(payload.get("citations") or []),
+            # **走 `build_sections()` 這把尺，不自己數**（2026-09-13 修）。
+            # 原本是 `len(payload["citations"])`，跟 JSON 檢視（`GET …/artifacts/{id}`）
+            # 與匯出的 `X-Cite-Count` 對不起來——同一份草稿兩個數字。
+            # 差別在**數的是不同的東西**：`citations[]` 是 N6 的逐句驗證紀錄
+            # （含對不回來、被清掉的那些），`sections[].blocks[].cites` 才是
+            # 「實際帶進文件、使用者在匯出檔裡看得到」的引註。後者才是這個欄位的語意。
+            # 實測 `synthetic-blocked-01`：舊算法 3、這把尺 2——被清掉的那一筆
+            # 不會出現在草稿裡，卻被舊算法算進去了。
+            # 契約 §4.4：這個轉換全系統只能有一份實作。
+            "cite_count": build_sections(payload).get("cite_count", 0),
             # 真值：登記到的那一筆。沒有草稿可登記就是 None——
             # 隨手編一個 `art-…` 會讓前端拿去打一支查不到的端點。
             "artifact_id": artifact_id,
