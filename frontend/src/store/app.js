@@ -381,6 +381,29 @@ export function newCaseInFolder(f) {
 }
 
 // ── 右欄卷宗 ──
+//: 工具結果狀態 → 畫面文字。**全前端唯一一份**，工具卡頭（Chat.vue）與結果區
+//: （ToolOut.vue）共用。
+//:
+//: **`empty` 刻意不說「查無」。** 契約 §2.3 把 `empty` 定義成「查無，hits[] 為空」，
+//: 但後端同一個值也拿來表示「這次**根本還沒查**」——查詢詞導不出來時
+//: （`backend/llm/chat.py:1424`），而它在同一段還特地叫模型
+//: 「不要說查無相似案例——這次根本還沒查」。前端把徽章寫死成「查無結果」，
+//: 等於在大標把後端的實話原地推翻，而承辦人先看到的是大標。
+//:
+//: 兩者**在 `status` 上分不出來，靠 `note` 也分不出來**：真的查無時後端的 note
+//: 就是「…查無結果。」（`chat.py:947`），兩種情況的 note 都非空。唯一的區分方式
+//: 是比對後端那串中文，下次改字就悄悄失效——那種比對不做。
+//: 所以這裡用一句**兩種情況都成立**的話，具體原因交給後端的 note 逐字講
+//: （它本來就每種情況都寫得很具體，而且就顯示在正下方）。
+//:
+//: 真正的修法是契約多一個態（例如 `not_attempted`），要動後端與契約，已回報。
+export const TOOL_STATUS = {
+  failed: { head: '工具執行失敗', chip: '失敗' },
+  empty: { head: '未取得結果', chip: '未取得結果' },
+  ok: { head: '完成', chip: '完成' },
+}
+export const toolStatusText = (status, where) => (TOOL_STATUS[status] || TOOL_STATUS.ok)[where]
+
 export { GROUPS }
 //: 匯出產出在右欄用的 ext。寫在一處，`fillDocsFromServer` 與 `flags.out` 共用——
 //: 分開寫的結果是 `flags.out` 拿彙整版的「檔／稿／圖」去比 'pdf'／'docx'，恆為 false。
@@ -558,7 +581,13 @@ async function driveChat(c, payload, uiTool) {
         if (data.status === 'running' && stepIdx[key] == null) {
           stepIdx[key] = card.steps.push({ label: data.label, t: '', degraded: !!data.degraded }) - 1
         } else if (data.status === 'done') {
-          const row = { label: data.label, t: data.elapsed_ms ? (data.elapsed_ms / 1000).toFixed(1) : '', degraded: !!data.degraded }
+          // **`0` 是一個真的值，不是「沒有值」。** n2（案件分類）與 n3（程序審查）
+          // 是純規則運算，後端實測回的就是 `elapsed_ms: 0`（QA 雲上存檔 r05）。
+          // 用 falsy 判斷會把那兩行的秒數吃成空白，看起來像「這一步沒跑」——
+          // 而那正是這個產品要秀的東西：規則層零毫秒、零模型。
+          // 真的沒有這個鍵時（running 事件）才留白，用 `== null` 分。
+          const ms = data.elapsed_ms
+          const row = { label: data.label, t: ms == null ? '' : (ms / 1000).toFixed(1), degraded: !!data.degraded }
           if (stepIdx[key] != null) card.steps[stepIdx[key]] = row
           else card.steps.push(row)
         }

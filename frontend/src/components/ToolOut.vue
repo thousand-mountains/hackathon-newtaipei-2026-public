@@ -8,7 +8,7 @@
 import RelationGraph from './RelationGraph.vue'
 import ProcedureCheck from './ProcedureCheck.vue'
 import { scoreCaption, scoreNote, rankerOf, showsPercent } from '../api/ranker.js'
-import { active } from '../store/app.js'
+import { active, toolStatusText } from '../store/app.js'
 
 // 解析卷證的四塊（案由／事實摘錄／爭點／程序審查）**不在 tool_result 裡**——
 // `tool_result` 只帶 run_id 與 state，內容要跑完之後打彙整版拿（契約 §3.3）。
@@ -224,7 +224,9 @@ const provLabel = (p) => PROV[p] || '出處未標示'
   <!-- 工具回 empty / failed（契約 §2.3）：兩者畫面上要分得出來 -->
   <template v-else-if="out.type === 'status'">
     <div class="sec">
-      <div class="sec-h">{{ out.status === 'failed' ? '工具執行失敗' : out.status === 'empty' ? '查無結果' : '完成' }}</div>
+      <!-- 文案走 store 的 TOOL_STATUS（全前端唯一一份）。`empty` 不說「查無」的
+           理由寫在那裡：後端同一個值也代表「還沒查」，而它正下方的 note 會逐字說明。 -->
+      <div class="sec-h">{{ toolStatusText(out.status, 'head') }}</div>
       <!-- 只顯示後端的 note，**不要再加一句固定的解釋**。契約 §2.3 把 failed 描述成
            「工具本身失敗（KB 打不到、快照載不動、pipeline 炸了）」，但後端也用 failed
            回前置條件沒滿足（實測「還沒有解析過卷證。」）。對那種情況說
