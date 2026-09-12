@@ -124,6 +124,10 @@ REDIRECT_DEADLINE = {
 #: 也掛著這句話。那是在描述一件沒有發生的拒絕（同 `WHY_DROPPED` 的毛病）。
 WHY_NUMERIC = ("問到期限、日期或金額的回合一律請人工覆核："
                "期間計算由規則引擎負責，同輸入必同輸出、可逐步覆核，聊天不代算。")
+#: 沒有附 redirect 時（金額，或答案裡根本沒有要擋的東西）用這句：
+#: 講「期間計算由規則引擎負責」會是**非所問**——那個回合根本不是期間問題。
+WHY_NUMERIC_NO_REDIRECT = ("問到期限、日期或金額的回合一律請人工覆核："
+                           "這類數字系統不代算，也不替模型講的數字背書。")
 
 #: 答案裡「真的有東西要擋」的兩種形狀。**規則 1 的紅燈不看這個**（紅燈維持保守，
 #: 只看問題的關鍵字），只有 `redirect` 附不附看它。
@@ -144,10 +148,43 @@ WHY_NUMERIC = ("問到期限、日期或金額的回合一律請人工覆核："
 #: 卻是一句期間結論），多列的代價只是多一次正確的攔截。
 _PERIOD_CONCLUSION = (
     "逾期", "未逾", "屆滿", "期滿", "到期", "過期",
-    "來得及", "來不及", "不受理", "期間內", "期限內",
+    "來得及", "來不及", "期間內", "期限內",
 )
-#: 帶數字的期間／金額表述：數字＋量詞。
-_AMOUNT_UNITS = ("天", "日", "月", "年", "元", "%", "％")
+# ⚠️ **`不受理` 曾經在這個清單裡，2026-09-13 拿掉。**
+# 訴願法 §77 有八款，只有第 2 款是關於期間的（「提起訴願逾法定期間者」）；
+# 其餘各款（非行政處分、無代理權、訴願書不合法定程式……）都會導向不受理，
+# 但跟期間無關。留著它，承辦人問「§77 有哪幾款」的正常回答會被整則吃掉。
+#
+# 拿掉不會漏掉真的期間結論——**系統自己的結論句都含上面那幾個詞**，逐句查證過：
+#   n3_procedure.py:56   「提起訴願**逾**法定期間者…**逾期**由期間引擎直接算出」
+#   n3_procedure.py:76   「期間**未逾**越（或無法判定）」
+#   settings.py:712      「**期滿**日 {deadline}…**逾期**屬…第2款之不受理事由」
+#   settings.py:738      「**未逾**訴願法第14條之30日法定期間」
+# §77-3（當事人適格）那些含「不受理」卻不含期間詞的句子，本來就不是期間結論。
+#
+# ⚠️ **但「一定含逾期／期滿／屆滿」這個前提不完全成立**（2026-09-13 實測補）：
+# 系統自己的結論句是「提起訴願**逾法定期間**者，應為不受理之決定」——那裡面
+# 既沒有「逾期」也沒有「期滿」，只有一個「逾」字加「期間」。模型轉述那一句時，
+# 上面的清單一個都比不中。所以另外加一條樣式把「逾…期間／期限」收進來。
+_PERIOD_PHRASE = re.compile(r"逾[^。\n]{0,6}(期間|期限)")
+#: **期間**的量詞。redirect 只看這一組。
+_PERIOD_UNITS = ("天", "日", "月", "年")
+#: **金額**的量詞。紅燈看得到它（`NUMERIC_Q` 有「金額」「罰鍰」），但 **redirect 不看**。
+#:
+#: 為什麼金額只紅燈不 redirect（2026-09-13 Ci 拍板走 (c)）：
+#: **`redirect` 的語意是「別看模型講的，去看規則引擎算的」，而罰鍰沒有規則引擎。**
+#: 它指向 `/api/deadline`，那是期間計算的端點——對一個罰鍰問題不是「誤判的程度問題」，
+#: 是**目的地根本不存在**。而前端拿到 redirect 會把答案整則丟掉，換來一個按了沒有
+#: 意義的 CTA。
+#:
+#: 實測（本機接雲上 Bedrock）：問「訴願人是誰、處分日期是哪一天」，答案裡的
+#: 「裁處罰鍰 6 萬元」就足以讓整則答案被吃掉。而那筆罰鍰是**卷內記載的**。
+#:
+#: **「引述裁處書的 6 萬元」與「模型自己算的加倍罰鍰」在文字上分不出來**——
+#: 但那正說明 redirect 不是這裡該用的工具。對這種分不出來的不確定性，
+#: 正確的反應是紅燈（請人工覆核），不是把答案藏起來。
+#: **下一個人看到「金額紅燈但不 redirect」會覺得不一致想補上去——不要補。**
+_MONEY_UNITS = ("元", "%", "％")
 
 #: **完整的日期寫法**（`113 年 6 月 11 日`、`6 月 11 日`）。判斷「答案裡有沒有東西要擋」
 #: 之前先把它們拿掉。
@@ -177,7 +214,9 @@ def answer_states_a_period_conclusion(answer: str) -> bool:
 
     **只收結論詞，不收裸數字**，理由見 `answer_carries_a_number_to_suppress`。
     """
-    return any(kw in (answer or "") for kw in _PERIOD_CONCLUSION)
+    text = answer or ""
+    return (any(kw in text for kw in _PERIOD_CONCLUSION)
+            or bool(_PERIOD_PHRASE.search(text)))
 
 
 def answer_carries_a_number_to_suppress(answer: str) -> bool:
@@ -187,19 +226,22 @@ def answer_carries_a_number_to_suppress(answer: str) -> bool:
 
     1. 出現期間結論詞（`_PERIOD_CONCLUSION`）——**不需要數字**。
        「已經逾期了」沒有任何數字，卻是一句期間結論，這是單看數字會漏掉的那一類。
-    2. 同時出現數字與量詞（天／日／月／年／元／%），**扣掉完整的日期寫法**
+    2. 同時出現數字與**期間**量詞（天／日／月／年），**扣掉完整的日期寫法**
        （見 `_DATE_LIKE`：卷內記載的日期不是模型算出來的期間）。
 
-    第 2 條沿用 `is_numeric_question` 的第二條規則，**刻意一樣**：兩邊判的是同一件
-    「這段文字在講數量」，用兩套判準遲早會出現「問題算數字類、答案不算」的矛盾。
-    差別只有日期那一步——那一步是這裡才需要的，因為只有這裡的誤判會吃掉答案。
+    **金額（元／%）不在內**，見 `_MONEY_UNITS`：redirect 指向的是期間計算端點，
+    對罰鍰而言那個目的地根本不存在。金額照樣紅燈，只是不把答案藏起來。
+
+    第 2 條的骨架沿用 `is_numeric_question` 的第二條規則，**刻意一樣**：兩邊判的是
+    同一件「這段文字在講數量」。差別是日期與金額那兩步——**只有這裡的誤判會吃掉答案**，
+    所以只有這裡需要把「不該擋的」挑出去。
     """
     text = answer or ""
-    if any(kw in text for kw in _PERIOD_CONCLUSION):
+    if any(kw in text for kw in _PERIOD_CONCLUSION) or _PERIOD_PHRASE.search(text):
         return True
     without_dates = _DATE_LIKE.sub(" ", text)
     return (bool(_HAS_DIGIT.search(without_dates))
-            and any(u in without_dates for u in _AMOUNT_UNITS))
+            and any(u in without_dates for u in _PERIOD_UNITS))
 WHY_REFINE = "本則為模型改寫的文字，系統不替其內容背書，請覆核後採用。"
 #: `ranked_by` → **那個分數是什麼**。契約 §3.2 把「一律說成向量相似度」列為不實陳述：
 #: 開了重排之後 `score` 是 cross-encoder 判的語意相關性（實測同一批命中
@@ -511,9 +553,10 @@ def classify_answer(
     # 紅燈只看問題、維持保守（誤判＝多一次覆核）；`redirect` 要看答案裡有沒有真的
     # 要擋的東西（誤判＝前端把整則答案丟掉，承辦人什麼都拿不到）。
     if is_numeric_question(question):
-        redirect = (dict(REDIRECT_DEADLINE)
-                    if answer_carries_a_number_to_suppress(answer) else None)
-        return _verdict("r", "human_required", WHY_NUMERIC, redirect=redirect)
+        if answer_carries_a_number_to_suppress(answer):
+            return _verdict("r", "human_required", WHY_NUMERIC,
+                            redirect=dict(REDIRECT_DEADLINE))
+        return _verdict("r", "human_required", WHY_NUMERIC_NO_REDIRECT)
 
     # 規則 1b：**問題沒問期限，但答案自己下了期間結論**（2026-09-13 補的破口）。
     # 「這個案子怎麼樣？」→「距離期滿還有幾天」以前完全不受攔：規則 1 只看問題，
@@ -1228,6 +1271,18 @@ class ChatTools:
         "retrieved_cases": "**這一輪檢索**查到的相似決定，不是承辦人挑的那份",
     }
 
+    #: 給**承辦人**看的分區短名。`_SECTION_WHAT` 那份是給模型看的（長、帶提醒），
+    #: 直接端到畫面上又長又有英文鍵名。兩份用途不同，不是重複。
+    _SECTION_WHAT_SHORT = {
+        "intake": "收文欄位",
+        "facts_excerpt": "事實段原文摘錄",
+        "screen": "程序審查結果",
+        "laws": "案件卷宗裡的相關法規",
+        "cases": "案件卷宗裡的相關案例",
+        "retrieved_laws": "這一輪檢索到的法條",
+        "retrieved_cases": "這一輪檢索到的相似決定",
+    }
+
     def _section_value(self, section: str) -> Any:
         """分區 → 值。兩個來源：卷宗清單（manifest）與這一輪的 run payload。
 
@@ -1247,8 +1302,10 @@ class ChatTools:
         不講的話最糟的形狀會回來：卷宗是空的、但這一輪檢索到 5 條，模型回一句
         「卷內沒有法規」，承辦人看著右欄的檢索結果一頭霧水。兩份各自的空滿要分開說。
         """
-        what = self._SECTION_WHAT.get(section, section)
-        note = f"「{section}」是空的（{what}）。"
+        # **這條路徑的 note 現在就會上畫面**（前端 `applyToolResult` 的第一個分支
+        # 處理 `status:'empty'`），所以它一個英文鍵名都不能有——用短名那份。
+        what = self._SECTION_WHAT_SHORT.get(section, section)
+        note = f"{what}是空的。"
         pair = {"laws": "retrieved_laws", "cases": "retrieved_cases",
                 "retrieved_laws": "laws", "retrieved_cases": "cases"}.get(section)
         if not pair:
@@ -1256,9 +1313,8 @@ class ChatTools:
         other = self._section_value(pair)
         n = len(other) if isinstance(other, list) else 0
         if n:
-            note += (f"但另外那一份不是空的：「{pair}」有 {n} 筆"
-                     f"（{self._SECTION_WHAT.get(pair, pair)}）。"
-                     f"**不要說成「卷內什麼都沒有」**，兩份是不同的東西。")
+            note += (f"但另外那一份不是空的：{self._SECTION_WHAT_SHORT.get(pair, pair)}"
+                     f"有 {n} 筆。不要說成「卷內什麼都沒有」，兩份是不同的東西。")
         elif section in _MANIFEST_SECTIONS:
             note += "請承辦人先把法規／案例加進本案卷宗，或先查一次再加。"
         return note
@@ -1293,12 +1349,15 @@ class ChatTools:
         if isinstance(value, list) and section in _RETRIEVED_SECTIONS:
             registered = self.refbook.add_case_refs(
                 [v for v in value if isinstance(v, dict) and v.get("id")])
-        note = f"已讀取「{section}」（{self._SECTION_WHAT.get(section, section)}）。"
-        if registered:
-            note += f"可引用的卷內編號：{'、'.join(registered)}。"
-        elif section in _MANIFEST_SECTIONS:
-            note += ("這份是承辦人挑的卷宗清單，**沒有可引用的編號**——"
-                     "要引用請讀 retrieved_laws／retrieved_cases。")
+        # `note` **只進事件、模型看不到**（模型拿的是下面 `return` 的 JSON），
+        # 所以它是一個**純粹給承辦人看的欄位**——2026-09-13 之前寫的卻是給模型看的話：
+        # 分區鍵名（`laws`）、引用編號（`L1`、`C3`）、另外兩個分區的英文名。
+        # 那三樣都是紅線 5 要擋的識別字，只是它們躲在一個當時沒有被渲染的欄位裡。
+        #
+        # 模型需要的那兩件事都沒有因此消失：可引用的編號印在它拿到的 JSON 內容裡
+        # （每一筆都有 `id`），分區的語意也在 JSON 的「是什麼」欄位裡。
+        what = self._SECTION_WHAT_SHORT.get(section, section)
+        note = f"已讀取{what}（{len(value) if isinstance(value, list) else 1} 筆）。"
         # hits 仍為 []：spec §4.0／§4.2 明訂 read_case 不產生引用事件，前端照這個寫。
         # 白名單是後端內部狀態，不走事件。
         self._result("read_case", [], note)
@@ -1604,8 +1663,14 @@ class ChatTools:
             raws = "、".join(str(f.get("raw")) for f in flagged)
             parts.append(f"**有 {len(flagged)} 處引用在檢索結果裡查無：{raws}。**"
                          f"這一項請務必告訴使用者——草稿引了我們沒檢索到的法條。")
+        # 法規論「條」、相似訴願決定論「件」——與 `backend/graph/relation.py:392,394`
+        # 的量詞一致。`fix-graph` 把 `unlinked` 拆成兩鍵之後這裡只剩法規那半，
+        # 相似案的件數在聊天摘要裡**靜默消失**（圖與契約裡都還在，只是模型不會提）。
         if unlinked.get("laws"):
             parts.append(f"另有 {len(unlinked['laws'])} 條檢索到的法規沒有被任何句子引用。")
+        if unlinked.get("cases"):
+            parts.append(f"另有 {len(unlinked['cases'])} 件檢索到的相似訴願決定"
+                         f"沒有被任何句子引用。")
         if unlinked.get("issues"):
             parts.append(str(unlinked.get("note") or ""))
         # **不要寫「回給畫面了」這種話**（2026-09-13 修）：後端不知道承辦人的畫面
@@ -1794,6 +1859,7 @@ __all__ = [
     "PIPELINE_NODE_LABELS",
     "build_chat_agent",
     "cited_ids",
+    "WHY_NUMERIC_NO_REDIRECT",
     "token_callback_handler",
     "ARCHIVE_CHANNEL_CORPUS",
     "ARCHIVE_CHANNEL_LAWTABLE",

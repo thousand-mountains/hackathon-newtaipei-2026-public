@@ -721,6 +721,58 @@ def test_read_case_does_not_call_the_dossier_empty_when_the_screen_shows_two():
         assert title in out, f"讀出來的不是承辦人挑的那筆：{out[:120]}"
 
 
+def test_the_read_case_note_is_written_for_the_operator_not_the_model():
+    """`note` 只進事件、**模型看不到**，所以它是一個純粹給承辦人看的欄位。
+
+    2026-09-13 之前寫的卻是給模型看的話——分區鍵名（`laws`）、引用編號（`L1`）、
+    另外兩個分區的英文名。那三樣都是紅線 5 要擋的識別字，只是躲在一個當時沒有被
+    渲染的欄位裡（前端 `applyToolResult` 沒有 `read_case` 分支）。
+
+    **沒有被渲染不等於可以寫錯**：前端補上分支的那一天它就會上畫面。
+    """
+    calls: list = []
+    events: list = []
+    t = _tools(calls, payload={"laws": [{"id": "L1", "t": "訴願法第 14 條"},
+                                        {"id": "L2", "t": "行政程序法第 74 條"}]},
+               case_manifest={"laws": [{"id": "kb/…/訴願法.txt", "t": "訴願法"}],
+                              "references": []},
+               events=events)
+    for section in ("retrieved_laws", "laws", "intake"):
+        events.clear()
+        t.read_case(section)
+        note = [d for n, d in events if n == "tool_result"][-1]["note"]
+        for leaked in ("retrieved_laws", "retrieved_cases", "L1", "L2", "「laws」",
+                       "「intake」", "**"):
+            assert leaked not in note, f"note 漏出給模型看的東西（{section}）：{note!r}"
+        assert note, f"{section} 的 note 是空的，卡片會只剩一個打勾"
+
+    # 模型需要的兩件事沒有因此消失：編號在它拿到的 JSON 內容裡，白名單照樣註冊
+    events.clear()
+    body = t.read_case("retrieved_laws")
+    assert "L1" in body and "L2" in body, "模型拿不到可引用的編號了"
+    assert "L1" in t.refbook.whitelist(), "白名單沒註冊"
+
+
+def test_the_graph_summary_counts_similar_cases_not_just_statutes():
+    """關聯圖摘要只講法規不講相似案，相似案的件數在聊天裡**靜默消失**。
+
+    `unlinked` 被拆成 `laws`／`cases` 兩鍵之後，這行只剩一半——圖與契約裡都還在，
+    只是模型不會提。量詞要分：法規論「條」、相似訴願決定論「件」
+    （與 `backend/graph/relation.py:392,394` 一致）。
+    """
+    calls: list = []
+    events: list = []
+    graph = {"nodes": [], "edges": [], "sentences": [],
+             "unlinked": {"laws": ["L1", "L2", "L3"], "cases": ["C1", "C2"]},
+             "stats": {"nodes": 0, "edges": 0}}
+    t = _tools(calls, events=events, run_id="run-1",
+               build_graph=(lambda *, run_id: graph))
+    out = t.build_relation_graph()
+    assert "3 條檢索到的法規" in out, out
+    assert "2 件檢索到的相似訴願決定" in out, f"相似案的件數消失了：{out}"
+    assert "2 條檢索到的相似" not in out, "相似訴願決定的量詞用錯了（應為「件」）"
+
+
 def test_the_dossier_and_this_turn_s_retrieval_are_two_different_sections():
     """兩份都要讀得到，而且名字要說得出自己是哪一份。
 
@@ -753,16 +805,18 @@ def test_an_empty_section_says_whether_the_other_one_has_anything():
     t = _tools(calls, payload={"laws": [{"id": "L1", "t": "訴願法第 14 條"}]},
                case_manifest={"laws": [], "references": []}, events=events)
     note = t.read_case("laws")
-    assert "retrieved_laws" in note and "1 筆" in note, \
+    assert "這一輪檢索到的法條" in note and "1 筆" in note, \
         f"卷宗空的時候沒說「檢索到的那份有東西」：{note}"
     assert "不要說成" in note, "沒有擋掉「卷內什麼都沒有」這種講法"
+    # 這條路徑的 note 現在就會上畫面，英文鍵名一個都不能有
+    assert "retrieved_laws" not in note and "laws" not in note, f"漏出鍵名：{note}"
 
     # 反過來：兩份都空的時候不要無中生有地說另一份有東西
     events2: list = []
     t2 = _tools(calls, payload={}, case_manifest={"laws": [], "references": []},
                 events=events2)
     note2 = t2.read_case("laws")
-    assert "retrieved_laws" not in note2, f"兩份都空卻說另一份有東西：{note2}"
+    assert "這一輪檢索到的法條" not in note2, f"兩份都空卻說另一份有東西：{note2}"
     assert "加進本案卷宗" in note2, "沒告訴承辦人下一步怎麼做"
 
 
@@ -1142,10 +1196,51 @@ def test_redirect_still_fires_when_the_answer_really_does_state_a_number():
     for answer in ("從送達日起算 30 天，到 6 月 13 日屆滿。",
                    "這件已經逾期了。",
                    "還來得及，期間內。",
-                   "罰鍰 6000 元。"):
+                   "期間還有 5 天。"):
         v = classify_answer("期限怎麼算？", answer, None)
         assert v.lamp == "r", answer
         assert v.redirect is not None, f"答案講了要擋的東西卻沒攔：{answer}"
+
+
+def test_money_goes_red_but_does_not_get_the_deadline_redirect():
+    """金額只紅燈、不 redirect（2026-09-13 Ci 拍板走 (c)）。
+
+    `redirect` 的語意是「別看模型講的，去看規則引擎算的」，而**罰鍰沒有規則引擎**。
+    它指向 `/api/deadline`——對一個罰鍰問題不是誤判的程度問題，是**目的地根本
+    不存在**，而前端會為此把整則答案丟掉。
+
+    實測（本機接雲上 Bedrock）：問「訴願人是誰、處分日期是哪一天」，答案裡的
+    「裁處罰鍰 6 萬元」就足以讓整則答案被吃掉——而那筆罰鍰是卷內記載的。
+    """
+    for answer in ("裁處罰鍰 6 萬元。", "罰鍰 6000 元。", "減輕百分之 20。"):
+        v = classify_answer("罰鍰多少錢？", answer, None)
+        assert v.lamp == "r", f"金額仍然要紅燈：{answer}"
+        assert v.redirect is None, f"金額被導去期間計算端點了：{answer}"
+        assert "期間計算由規則引擎負責" not in v.why, \
+            f"非期間問題卻講期間計算，是非所問：{v.why}"
+
+    # 但**金額句裡若同時有期間結論**，照樣攔——不得因為有「元」就整句放行
+    v = classify_answer("罰鍰多少錢？", "罰鍰 6 萬元，而且這件已經逾期了。", None)
+    assert v.redirect is not None, "金額句裡的期間結論被放過了"
+
+
+def test_section_77_clauses_are_not_eaten_just_for_saying_not_admissible():
+    """`不受理` 不再單獨觸發——§77 八款只有第 2 款關於期間。
+
+    其餘各款（非行政處分、無代理權、訴願書不合法定程式…）都會導向不受理但跟期間無關。
+    留著它，承辦人問「§77 有哪幾款」的正常回答會被整則吃掉。
+
+    拿掉不會漏掉真的期間結論：系統自己的結論句都含「逾／期滿／屆滿」
+    （`n3_procedure.py:56,76`、`settings.py:712,738`，逐句查證過）。
+    """
+    v = classify_answer("訴願法第 77 條有哪幾款？",
+                        "共八款，包括非行政處分、無代理權等，均應為不受理之決定。", None)
+    assert v.redirect is None, "講到不受理就被當成期間結論了"
+
+    # 真的期間結論仍然攔得到——它一定帶著「逾」
+    v2 = classify_answer("這個案子怎麼樣？",
+                         "提起訴願逾法定期間，應為不受理之決定。", None)
+    assert v2.redirect is not None, "真的期間結論漏掉了"
 
 
 def test_a_period_conclusion_is_caught_even_when_the_question_never_asked():
@@ -1178,7 +1273,7 @@ def test_the_numeric_reason_describes_the_rule_not_this_turn():
     """
     why = classify_answer("期限？", "收文欄位是空的。", None).why
     assert "一律請人工覆核" in why, why
-    assert "聊天不代算" in why, why
+    assert "不代算" in why, why
 
 
 def test_the_redirect_cta_does_not_promise_a_calculation_that_may_not_exist():
