@@ -65,6 +65,7 @@ import backend.llm.client as llm_client  # noqa: E402  健康檢查用：只看 
 import backend.retrieval.kb as retrieval_kb  # noqa: E402  健康檢查用：只看 boto3 在不在，不打任何 API
 from backend.api.chat import router as chat_router  # noqa: E402
 from backend.api.events import BUS  # noqa: E402
+from backend.api.export import router as export_router  # noqa: E402
 from backend.config import settings  # noqa: E402
 from backend.config.settings import load_snapshot, provenance, run_mode  # noqa: E402
 from backend.engine.deadline import compute  # noqa: E402
@@ -157,6 +158,9 @@ app = FastAPI(
 # 聊天追問（spec 2026-09-12-chat-honesty-lamps）。閘門與事件都在該檔，
 # 這裡只掛一行——回滾就是把這行拿掉。
 app.include_router(chat_router)
+
+# 草稿匯出（契約 §1.5 #23、§4.4）。同樣只掛一行——回滾就是把這行拿掉。
+app.include_router(export_router)
 
 # 本機開發用 CORS：只放行 localhost／127.0.0.1 的任意 port。
 # 不用 allow_origins=["*"]——那會讓任何網站都能打這支 API。
