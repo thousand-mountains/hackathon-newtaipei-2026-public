@@ -10,12 +10,17 @@
 ## 這件事有兩半，兩半都要在，但比對規則只有一份
 
 - **Epic C 那半**（`backend/llm/chat.py:unmatched_picks`）：chat 回合**當下**
-  在 `tool_result.unmatched_laws` 告訴使用者哪幾條沒命中。一次性。
-- **這一半**：右欄那一項**持續**標著未命中。契約 §3.5.2 末段的原文就是
-  「右欄該項標『檢索未命中，未進入草稿』」——關掉對話再打開狀態還要在，
+  在 `tool_result.picked_laws` 告訴使用者每一條走到哪。一次性。
+- **這一半**：右欄那一項**持續**標著狀態。關掉對話再打開狀態還要在，
   那就得寫進 `manifest.json`。
 
-**比對規則不在本檔，在 `unmatched_picks`。** 兩份比對就是兩套判準，遲早出現
+> **2026-09-13 Ci 改判：兩態改三態。** 契約 §3.5.2 末段原文是「右欄該項標
+> 『檢索未命中，未進入草稿』」，**那句是錯的**：純法規名對法條查表必然零命中
+> （查表只認「法名第N條」），但那個詞確實進了相似案檢索。說它「未進入草稿」
+> 對，說它「未命中」把「有被用到」講成「沒被用到」。契約待改，語意以本檔與
+> `chat.py` 的 `PICK_*` 為準。
+
+**比對規則不在本檔，在 `classify_picks`。** 兩份比對就是兩套判準，遲早出現
 「chat 回合說這條沒命中、右欄卻標著命中」，而使用者無從判斷哪個是真的。
 這與契約 §4.4 要求 `sections[]` 只能有一份實作是同一個道理。
 
@@ -31,41 +36,66 @@ from __future__ import annotations
 
 from typing import Any
 
-from backend.llm.chat import UNMATCHED_LAW_NOTE, unmatched_picks
+from backend.llm.chat import (
+    PICK_MATCHED,
+    PICK_NOTES,
+    PICK_QUERY_ONLY,
+    PICK_UNUSED,
+    classify_picks,
+)
 
-#: `laws[].retrieval_status` 的值域。
-RETRIEVAL_HIT = "hit"
-RETRIEVAL_MISS = "miss"
-#: 還沒跑過草稿的法規是第三種狀態，**不是 miss**：沒查過與查不到是兩件事，
-#: 合成一個值會讓剛加入的法規當場被標成「檢索未命中」。
+#: `laws[].retrieval_status` 的值域（2026-09-13 Ci 改判成三態，見 chat.py 的 PICK_*）。
+#:
+#: 舊版只有 hit／miss，而那個 miss 是**一句假話**：純法規名對法條查表必然零命中
+#: （查表只認「法名第N條」），但那個詞確實進了相似案檢索。說它「未命中、未進入草稿」
+#: 把「有被用到」講成「沒被用到」——假在誠實的方向，所以一直沒人抓到。
+RETRIEVAL_HIT = PICK_MATCHED
+RETRIEVAL_QUERY_ONLY = PICK_QUERY_ONLY
+RETRIEVAL_MISS = PICK_UNUSED
+#: 還沒跑過草稿的法規是第四種狀態，**不是 miss**：沒查過與查不到是兩件事，
+#: 合成一個值會讓剛加入的法規當場被標成「沒用到」。
 RETRIEVAL_UNKNOWN = "unknown"
 
-#: 未命中那句**直接沿用 `backend/llm/chat.py` 的常數**，不在這裡另寫一份字串——
+#: 三種文案**直接沿用 `backend/llm/chat.py` 的 `PICK_NOTES`**，不在這裡另寫一份——
 #: 右欄的標記與 chat 回合裡講的話必須逐字相同，兩處各寫一句，
 #: 哪天改了一邊就會出現「畫面說 A、對話說 B」。
-NOTE_MISS = UNMATCHED_LAW_NOTE
-NOTE_HIT = "已作為檢索查詢詞，N4 有命中"
+NOTE_HIT = PICK_NOTES[PICK_MATCHED]
+NOTE_QUERY_ONLY = PICK_NOTES[PICK_QUERY_ONLY]
+NOTE_MISS = PICK_NOTES[PICK_UNUSED]
 
 
 def classify_law_retrieval(manifest_laws: list[dict[str, Any]],
-                           payload_laws: list[dict[str, Any]]) -> list[dict[str, Any]]:
+                           payload_laws: list[dict[str, Any]],
+                           query_terms: Any = None) -> list[dict[str, Any]]:
     """回一份標好 `retrieval_status`／`retrieval_note` 的新清單。**不改傳入的物件。**
 
-    比對規則見檔頭：委託給 `backend/llm/chat.py:unmatched_picks`。那支多做了兩件事
+    比對規則見檔頭：委託給 `backend/llm/chat.py:classify_picks`。那支多做了三件事
     （抹掉全形空白——KB 檔名是人整理的真的會有；把空名字當成「manifest 那筆壞了」
-    而不是「檢索沒命中」——混著報會讓承辦人去查一個不存在的檢索問題），
-    這裡不重寫一份較弱的版本。
+    而不是「檢索沒命中」——混著報會讓承辦人去查一個不存在的檢索問題；
+    分得出「只進相似案檢索」與「完全沒用到」），這裡不重寫一份較弱的版本。
+
+    `query_terms` 來自 run payload 的 `retrieval_meta.case_query_extra_terms`
+    ——**這一輪真的送進通道 B 的詞**，不是推論。拿不到就退成兩態
+    （沒有依據就不宣稱「有用於相似案檢索」，那句話會變成沒有根據的安慰）。
     """
-    missed_ids = {str(x.get("id")) for x in unmatched_picks(manifest_laws, payload_laws)}
+    by_id = {str(p.get("id")): p
+             for p in classify_picks(manifest_laws, payload_laws, query_terms)}
     out: list[dict[str, Any]] = []
     for law in manifest_laws:
         entry = dict(law)
-        missed = str(entry.get("id")) in missed_ids
-        entry["retrieval_status"] = RETRIEVAL_MISS if missed else RETRIEVAL_HIT
-        entry["retrieval_note"] = NOTE_MISS if missed else NOTE_HIT
+        pick = by_id.get(str(entry.get("id")))
+        if pick is None:
+            # `classify_picks` 只略過「名字是空的」那種壞資料。那不是檢索的事，
+            # 所以標 unknown 而不是 miss——標 miss 會叫人去查一個不存在的檢索問題。
+            entry["retrieval_status"] = RETRIEVAL_UNKNOWN
+            entry["retrieval_note"] = ""
+        else:
+            entry["retrieval_status"] = pick["state"]
+            entry["retrieval_note"] = pick["note"]
         out.append(entry)
     return out
 
 
-__all__ = ["NOTE_HIT", "NOTE_MISS", "RETRIEVAL_HIT", "RETRIEVAL_MISS",
-           "RETRIEVAL_UNKNOWN", "classify_law_retrieval"]
+__all__ = ["NOTE_HIT", "NOTE_MISS", "NOTE_QUERY_ONLY", "RETRIEVAL_HIT",
+           "RETRIEVAL_MISS", "RETRIEVAL_QUERY_ONLY", "RETRIEVAL_UNKNOWN",
+           "classify_law_retrieval"]

@@ -13,17 +13,19 @@ Epic A 已經在 `test_chat.py` 用 `_FakePipeline` 釘住工具層的擋門與
    而 `{}` 會讓草稿被擋下：**這條路徑壞掉的樣子是「功能永遠不可用」**，值得實跑一次。
 2. **真的六節點流水線**（fixture 檔位）跑 `from_node="n4"`，不是假 adapter。
    假貨長得跟真貨不一樣的話，測試綠了也不代表接得上。
-3. **契約 §3.5.2 末段的「檢索未命中，未進入草稿」**——挑了但 N4 沒查到的法規。
-   這是我這一輪新加的（`chat.unmatched_picks`），Epic A 沒有做。
+3. **契約 §3.5.2 末段：挑的法規這一輪走到哪**（三態；2026-09-13 Ci 由兩態改判）。
+   這是我這一輪新加的（`chat.classify_picks`，2026-09-13 由兩態改三態），Epic A 沒有做。
 
 ## 這支最在意的那一條
 
-**「挑了五條、一條都沒引」不得靜默發生。** 契約把手動挑的法規當**查詢詞**餵回 N4，
-所以「挑了」不等於「會進草稿」——這是誠實不是 bug，但畫面要說得出來。
+**「挑了五條、一條都沒引」不得靜默發生，但也不得報成「完全沒用到」。**
+契約把手動挑的法規當**查詢詞**餵回 N4，而查表只認「法名第N條」——純法規名對
+通道 A 必然零命中、對通道 B 卻確實生效。舊的兩態把後者報成「檢索未命中」，
+**那是一句假話，只是假在誠實的方向，所以一直沒人抓到**。
 
-反過來也是紅線：**不得為了讓「未命中」不出現，就把挑的法規直接塞進 `laws[]`**。
+反過來也是紅線：**不得為了讓警語消失，就把挑的法規直接塞進 `laws[]`**。
 那會回到「檢索佐證的是自己」，正是 2026-09-05 改成 N4 獨立檢索要擋掉的事。
-`test_unmatched_law_is_not_smuggled_into_the_retrieved_list` 釘的就是這條。
+`test_unused_law_is_not_smuggled_into_the_retrieved_list` 釘的就是這條。
 
 ## manifest fixture 不是規格
 
@@ -39,7 +41,18 @@ import tempfile
 from typing import Any
 
 import backend.llm.chat as chat_mod
-from backend.llm.chat import UNMATCHED_LAW_NOTE, ChatTools, RefBook, unmatched_picks
+from backend.config.settings import load_snapshot
+from backend.dossier import runlink
+from backend.llm.chat import (
+    PICK_MATCHED,
+    PICK_NOTES,
+    PICK_QUERY_ONLY,
+    PICK_UNUSED,
+    ChatTools,
+    RefBook,
+    classify_picks,
+)
+from backend.retrieval.lawtable import LawTableRetriever
 from backend.orchestrator.chat_bridge import load_case_manifest, pipeline_adapter
 from backend.orchestrator.graph import run_case
 from backend.tests.harness import TestFailure
@@ -179,58 +192,128 @@ def test_draft_is_blocked_when_the_case_was_never_extracted() -> None:
         _fail("給模型的回覆沒有擋住它代為執行解析")
 
 
-# ── §3.5.2 末段：挑了但沒查到（純函式）──────────────────────────────
-def test_unmatched_picks_matches_on_statute_name() -> None:
-    picked = [{"id": "a", "t": "訴願法"}, {"id": "b", "t": "水污染防治法"}]
-    retrieved = [{"id": "L1", "t": "訴願法第14條", "law": "訴願法"}]
-    got = unmatched_picks(picked, retrieved)
-    if [u["id"] for u in got] != ["b"]:
-        _fail(f"應只報「水污染防治法」未命中，實得 {got}")
-    if got[0]["note"] != UNMATCHED_LAW_NOTE:
-        _fail(f"note 字樣不是契約寫的那句：{got[0]['note']!r}")
+# ── §3.5.2 末段：挑的法規走到哪，三態（2026-09-13 Ci 改判）──────────
+#
+# 舊版只有 hit／miss，而那個 miss 是**一句假話**：純法規名對法條查表必然零命中
+# （查表只認「法名第N條」），但那個詞確實進了相似案檢索。說它「未命中、未進入草稿」
+# 把「有被用到」講成「沒被用到」——假在誠實的方向，所以一直沒人抓到。
+def test_channel_a_really_cannot_hit_a_bare_statute_name() -> None:
+    """**這條是整個三態的根因，用真的 `LawTableRetriever` 驗，不是 mock。**
+
+    這件事若不成立，三態就沒有存在的必要；而它只在真的查表器上成立
+    ——mock 一個「查什麼都回 0」的假貨，驗到的是自己寫的假設不是系統的行為。
+    """
+    r = LawTableRetriever(load_snapshot())
+    for bare in ("廢棄物清理法", "訴願法", "空氣污染防制法"):
+        if r.search(bare):
+            _fail(f"前提不成立：查表對純法規名 {bare!r} 竟然有命中，三態要重新設計")
+    for full in ("廢棄物清理法第2條", "訴願法第14條"):
+        if not r.search(full):
+            _fail(f"前提不成立：查表對 {full!r} 沒有命中，比對鍵要重新看")
 
 
-def test_unmatched_picks_falls_back_to_title_when_law_field_is_absent() -> None:
+def test_pick_that_reached_the_lawtable_is_matched() -> None:
+    got = classify_picks([{"id": "a", "t": "訴願法"}],
+                         [{"id": "L1", "t": "訴願法第14條", "law": "訴願法"}],
+                         "訴願法")
+    if got[0]["state"] != PICK_MATCHED:
+        _fail(f"進了法條查表卻沒判成 matched：{got}")
+
+
+def test_pick_that_only_went_to_the_similar_case_channel_is_not_called_a_miss() -> None:
+    """**這條是本次改判的核心。**
+
+    詞有送出（`query_terms` 收得到）、但法條查表沒有它 → `query_only`，**不是 miss**。
+    報 miss 等於告訴使用者「你挑的東西沒被用到」，而那是假的。
+    """
+    got = classify_picks([{"id": "a", "t": "水污染防治法"}],
+                         [{"id": "L1", "t": "訴願法第14條", "law": "訴願法"}],
+                         "水污染防治法；訴願法")
+    if got[0]["state"] != PICK_QUERY_ONLY:
+        _fail(f"有送進通道 B 卻被判成 {got[0]['state']}：{got}")
+    note = got[0]["note"]
+    if "未命中" in note:
+        _fail(f"舊文案殘留：{note!r}")
+    for must in ("相似案檢索", "第N條"):
+        if must not in note:
+            _fail(f"文案沒講清楚它被用在哪／下一步怎麼做（缺 {must!r}）：{note!r}")
+
+
+def test_pick_that_was_never_sent_anywhere_is_unused() -> None:
+    """兩邊都沒有才是真的沒用到。沒有 `query_terms` 依據時也不得硬說「用於相似案檢索」
+    ——那會變成一句沒有根據的安慰。"""
+    got = classify_picks([{"id": "a", "t": "水污染防治法"}],
+                         [{"id": "L1", "t": "訴願法第14條", "law": "訴願法"}],
+                         "訴願法")
+    if got[0]["state"] != PICK_UNUSED:
+        _fail(f"沒送出也沒命中，應為 unused，實得 {got[0]['state']}")
+    if classify_picks([{"id": "a", "t": "水污染防治法"}], [], None)[0]["state"] != PICK_UNUSED:
+        _fail("沒有 query_terms 依據時不得宣稱進了通道 B")
+
+
+def test_every_pick_is_accounted_for() -> None:
+    """三態要回**每一筆**，不是只回沒中的。只回沒中的話，畫面無從分辨
+    「這條進了查表」與「這條我根本沒算」。"""
+    picked = [{"id": "a", "t": "訴願法"}, {"id": "b", "t": "水污染防治法"},
+              {"id": "c", "t": "冷門法規"}]
+    got = classify_picks(picked, [{"id": "L1", "law": "訴願法"}], "訴願法；水污染防治法")
+    if [g["id"] for g in got] != ["a", "b", "c"]:
+        _fail(f"沒有逐筆回報：{got}")
+    if [g["state"] for g in got] != [PICK_MATCHED, PICK_QUERY_ONLY, PICK_UNUSED]:
+        _fail(f"三態判錯：{[(g['id'], g['state']) for g in got]}")
+
+
+def test_classify_falls_back_to_title_when_law_field_is_absent() -> None:
     """KB 來源的法規沒有 `law` 欄位，退回比 `t`。"""
-    picked = [{"id": "a", "t": "廢棄物清理法"}]
-    if unmatched_picks(picked, [{"id": "L1", "t": "廢棄物清理法"}]):
+    got = classify_picks([{"id": "a", "t": "廢棄物清理法"}], [{"id": "L1", "t": "廢棄物清理法"}])
+    if got[0]["state"] != PICK_MATCHED:
         _fail("`law` 缺席時沒有退回比 `t`")
 
 
-def test_unmatched_picks_normalises_spaces_and_txt_suffix() -> None:
+def test_classify_normalises_spaces_and_txt_suffix() -> None:
     """全形空白在 KB 檔名裡真的會出現；不一起抹掉會把同一部法規判成兩部。"""
-    picked = [{"id": "a", "t": "廢棄物　清理法.txt"}]
-    if unmatched_picks(picked, [{"id": "L1", "law": "廢 棄物清理法"}]):
+    got = classify_picks([{"id": "a", "t": "廢棄物　清理法.txt"}],
+                         [{"id": "L1", "law": "廢 棄物清理法"}])
+    if got[0]["state"] != PICK_MATCHED:
         _fail("空白／副檔名的差異被當成不同法規")
 
 
-def test_unmatched_picks_does_not_do_substring_matching() -> None:
-    """**這條是全檔最重要的一條。**
-
-    「包含」比對會讓「訴願法施行細則」被「訴願法」吃掉，於是**任何**挑選看起來
-    都命中了——那會把一個誠實問題變成一個永遠成立的問題。
-    寧可報未命中讓人自己看，也不要用相似度湊出一個「有命中」。
-    """
-    got = unmatched_picks([{"id": "a", "t": "訴願法施行細則"}],
-                          [{"id": "L1", "t": "訴願法第14條", "law": "訴願法"}])
-    if not got:
+def test_classify_does_not_do_substring_matching() -> None:
+    """「包含」比對會讓「訴願法施行細則」被「訴願法」吃掉，於是**任何**挑選看起來
+    都命中了——那會把一個誠實問題變成一個永遠成立的問題。查詢詞那側同理。"""
+    got = classify_picks([{"id": "a", "t": "訴願法施行細則"}],
+                         [{"id": "L1", "t": "訴願法第14條", "law": "訴願法"}], "訴願法")
+    if got[0]["state"] == PICK_MATCHED:
         _fail("「訴願法施行細則」被「訴願法」模糊比對吃掉了")
-    got2 = unmatched_picks([{"id": "a", "t": "訴願法"}],
-                           [{"id": "L1", "t": "訴願法施行細則第2條", "law": "訴願法施行細則"}])
-    if not got2:
+    if got[0]["state"] == PICK_QUERY_ONLY:
+        _fail("查詢詞那側也被子字串比對吃掉了")
+    got2 = classify_picks([{"id": "a", "t": "訴願法"}],
+                          [{"id": "L1", "law": "訴願法施行細則"}], "訴願法施行細則")
+    if got2[0]["state"] == PICK_MATCHED:
         _fail("反向的包含關係也被吃掉了")
 
 
-def test_unmatched_picks_ignores_entries_without_a_name() -> None:
-    """名字是空的是 manifest 那筆資料壞了，不是檢索沒命中。
+def test_classify_ignores_entries_without_a_name() -> None:
+    """名字是空的是 manifest 那筆資料壞了，不是檢索的事。
     混在一起報，承辦人會去查一個根本不存在的檢索問題。"""
-    if unmatched_picks([{"id": "a", "t": ""}, {"id": "b"}], []):
-        _fail("沒有名字的項目不該被報成「檢索未命中」")
+    if classify_picks([{"id": "a", "t": ""}, {"id": "b"}], []):
+        _fail("沒有名字的項目不該被列進檢索狀態")
 
 
-def test_unmatched_picks_is_empty_when_nothing_was_picked() -> None:
-    if unmatched_picks([], [{"id": "L1", "law": "訴願法"}]):
-        _fail("沒挑東西就不該有未命中")
+def test_classify_is_empty_when_nothing_was_picked() -> None:
+    if classify_picks([], [{"id": "L1", "law": "訴願法"}], "訴願法"):
+        _fail("沒挑東西就不該有任何狀態")
+
+
+def test_no_stale_miss_wording_anywhere() -> None:
+    """舊文案不得殘留（team-lead 驗收條件）。掃的是**實際會顯示給使用者的字串**
+    （`PICK_NOTES` 與 runlink 的三個常數），不是 grep 原始碼——
+    註解裡解釋「為什麼舊文案是錯的」不該被判成殘留。"""
+    shown = list(PICK_NOTES.values()) + [runlink.NOTE_HIT, runlink.NOTE_QUERY_ONLY,
+                                         runlink.NOTE_MISS]
+    for s in shown:
+        if "未命中" in s:
+            _fail(f"舊文案殘留在會顯示給使用者的字串裡：{s!r}")
 
 
 # ── §3.5.2 走真的六節點流水線（fixture 檔位）────────────────────────
@@ -242,11 +325,11 @@ def _real_pipeline_tools(events: list, manifest: dict[str, Any]):
                   run_pipeline=pipeline_adapter(ORDINARY, mode="fixture", persist=True))
 
 
-def test_picked_law_that_retrieval_never_hit_is_reported_not_swallowed() -> None:
+def test_picked_law_states_are_reported_through_the_real_pipeline() -> None:
     """契約 §3.5.2 末段，走真流水線。
 
-    `水污染防治法` 跟這個案子（空污、露天燃燒）無關，N4 查不到——
-    承辦人挑了它卻一條都沒引，畫面要說得出原因。
+    `水污染防治法` 跟這個案子（空污、露天燃燒）無關，法條查表查不到——
+    但它**確實**被送進了相似案檢索，所以是 `query_only` 不是 miss。
     """
     events: list = []
     t = _real_pipeline_tools(events, _MANIFEST)
@@ -254,18 +337,22 @@ def test_picked_law_that_retrieval_never_hit_is_reported_not_swallowed() -> None
     r = _result_of(events)
     if r.get("status") != "ok":
         _fail(f"前置都成立卻沒生出草稿：{r!r}")
-    names = [u.get("t") for u in (r.get("unmatched_laws") or [])]
-    if "水污染防治法" not in names:
-        _fail(f"挑了卻沒命中的法規沒有被回報：unmatched_laws={r.get('unmatched_laws')!r}")
-    if "訴願法" in names:
-        _fail("N4 明明查到了訴願法，卻被報成未命中")
+    by_name = {p.get("t"): p for p in (r.get("picked_laws") or [])}
+    if "水污染防治法" not in by_name:
+        _fail(f"挑的法規沒有逐筆回報：picked_laws={r.get('picked_laws')!r}")
+    if by_name["水污染防治法"]["state"] != PICK_QUERY_ONLY:
+        _fail(f"它有被送進相似案檢索，卻判成 {by_name['水污染防治法']['state']}")
+    if by_name["訴願法"]["state"] != PICK_MATCHED:
+        _fail(f"訴願法在查表結果裡，卻判成 {by_name['訴願法']['state']}")
     if "水污染防治法" not in out:
-        _fail("給模型的回覆沒有提到未命中，模型會說得像全部都引用了")
-    if "不要說它們已被引用" not in out:
-        _fail("給模型的回覆沒有擋住它把未命中說成已引用")
+        _fail("給模型的回覆沒有提到它，模型會說得像全部都引用了")
+    if "不要說它們已被引用" not in out or "不要說它們完全沒被用到" not in out:
+        _fail("給模型的回覆沒有同時擋住兩個方向的謊")
+    if "未命中" in out:
+        _fail(f"舊文案殘留在給模型的回覆裡：{out!r}")
 
 
-def test_unmatched_law_is_not_smuggled_into_the_retrieved_list() -> None:
+def test_unused_law_is_not_smuggled_into_the_retrieved_list() -> None:
     """**誠實紅線。** 不得為了讓「未命中」不出現，就把挑的法規塞進 `laws[]`——
     那會回到「檢索佐證的是自己」，正是 2026-09-05 改成 N4 獨立檢索要擋掉的事。
     """
@@ -285,10 +372,11 @@ def test_all_picked_laws_hit_means_no_warning() -> None:
     t = _real_pipeline_tools(events, manifest)
     out = t.generate_decision_draft()
     r = _result_of(events)
-    if r.get("unmatched_laws"):
-        _fail(f"兩條都該命中，卻報了未命中：{r['unmatched_laws']}")
-    if "檢索沒有命中" in out:
-        _fail("沒有未命中卻對模型講了未命中")
+    bad = [p for p in (r.get("picked_laws") or []) if p["state"] != PICK_MATCHED]
+    if bad:
+        _fail(f"兩條都該進法條查表，卻判成 {[(b['t'], b['state']) for b in bad]}")
+    if "沒有進入法條查表" in out:
+        _fail("兩條都命中，卻還是對模型講了那段警語——狼來了")
 
 
 def test_picked_laws_are_fed_back_as_a_single_joined_query_string() -> None:

@@ -19,9 +19,9 @@ ROOT = pathlib.Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+import backend.llm.chat as chat_mod  # noqa: E402
 import backend.retrieval.kb as kb_module  # noqa: E402
 from backend.dossier import corpus, runlink, store  # noqa: E402
-from backend.llm.chat import UNMATCHED_LAW_NOTE  # noqa: E402
 from backend.orchestrator.artifact_sections import build_sections  # noqa: E402
 from backend.orchestrator.graph import build_payload, run_case  # noqa: E402
 from backend.tests.harness import assert_eq, assert_in, assert_true  # noqa: E402
@@ -760,7 +760,7 @@ def test_an_unreadable_file_always_carries_a_reason():
     assert_true(d.exists())
 
 
-# ── B4.3：檢索未命中要說出來，而且不得偷塞進 laws[] ────────────────
+# ── B4.3：挑的法規走到哪要說出來（三態），而且不得偷塞進 laws[] ──────
 
 
 def test_a_manually_picked_law_that_n4_found_is_marked_hit():
@@ -771,13 +771,31 @@ def test_a_manually_picked_law_that_n4_found_is_marked_hit():
     assert_eq(marked[0]["retrieval_note"], runlink.NOTE_HIT)
 
 
-def test_a_manually_picked_law_that_n4_missed_says_so():
-    """**這條驗的是誠實不是功能**（proposal B4.3）。"""
+def test_a_law_that_only_reached_the_similar_case_channel_is_not_marked_miss():
+    """**2026-09-13 Ci 改判：兩態改三態。**
+
+    純法規名對法條查表必然零命中（查表只認「法名第N條」），但那個詞確實被送進了
+    相似案檢索。舊版標 `miss`／「檢索未命中，未進入草稿」是**把有說成沒有**——
+    假在誠實的方向，所以一直沒人抓到。有送出就是 `query_only`。
+    """
     marked = runlink.classify_law_retrieval(
         [{"id": "kb/public/相關法規_全量/冷門法規.txt", "t": "冷門法規"}],
-        [{"id": "L1", "t": "訴願法第14條", "law": "訴願法", "article": "14"}])
+        [{"id": "L1", "t": "訴願法第14條", "law": "訴願法", "article": "14"}],
+        ["冷門法規；訴願法"])
+    assert_eq(marked[0]["retrieval_status"], runlink.RETRIEVAL_QUERY_ONLY)
+    assert_eq(marked[0]["retrieval_note"], runlink.NOTE_QUERY_ONLY)
+    assert_true("未命中" not in marked[0]["retrieval_note"], "舊文案殘留")
+
+
+def test_a_manually_picked_law_that_went_nowhere_says_so():
+    """**這條驗的是誠實不是功能**（proposal B4.3）。
+    兩條通道都沒有才是真的沒用到；沒有查詢詞依據時也不得硬說「用於相似案檢索」。"""
+    marked = runlink.classify_law_retrieval(
+        [{"id": "kb/public/相關法規_全量/冷門法規.txt", "t": "冷門法規"}],
+        [{"id": "L1", "t": "訴願法第14條", "law": "訴願法", "article": "14"}],
+        ["訴願法"])
     assert_eq(marked[0]["retrieval_status"], runlink.RETRIEVAL_MISS)
-    assert_eq(marked[0]["retrieval_note"], "檢索未命中，未進入草稿")
+    assert_eq(marked[0]["retrieval_note"], runlink.NOTE_MISS)
 
 
 def test_marking_never_injects_the_missed_law_into_the_payload_laws():
@@ -833,9 +851,32 @@ def test_record_run_writes_latest_run_id_artifact_and_law_marks():
     assert_eq(m["latest_run_id"], "run-abc")
     assert_eq([x["retrieval_status"] for x in m["laws"]],
               [runlink.RETRIEVAL_HIT, runlink.RETRIEVAL_MISS])
-    assert_eq([x["retrieval_note"] for x in m["laws"]][1], "檢索未命中，未進入草稿")
+    assert_eq([x["retrieval_note"] for x in m["laws"]][1], runlink.NOTE_MISS)
     assert_eq(len(m["artifacts"]), 1)
     assert_eq(art, m["artifacts"][0]["id"])
+
+
+def test_record_run_marks_query_only_when_the_run_recorded_the_query_terms():
+    """三態的分水嶺在 payload 有沒有 `retrieval_meta.case_query_extra_terms`。
+
+    同一筆「冷門法規」：沒有那個紀錄 → `unused`（上一條測的）；
+    有那個紀錄 → `query_only`，因為它**確實**被送進了相似案檢索。
+    沒有這條的話，三態在 store 這一層可能整條塌回兩態而沒有症狀。
+    """
+    d = _tmp()
+    case_id = "upload-0123456789ac"
+    _seed(d, case_id)
+    store.add_items(case_id, "laws",
+                    [{"id": "a", "t": "訴願法"}, {"id": "b", "t": "冷門法規"}], d)
+    payload = {"run_id": "run-abd",
+               "laws": [{"id": "L1", "t": "訴願法第14條", "law": "訴願法"}],
+               "retrieval": {"retrieval_meta": {
+                   "case_query_extra_terms": ["訴願法；冷門法規"]}},
+               "doc": [{"ty": "p", "ss": [{"t": "一句話", "refs": []}]}]}
+    store.record_run(case_id, payload, cases_dir=d)
+    m = store.load(case_id, d)
+    assert_eq([x["retrieval_status"] for x in m["laws"]],
+              [runlink.RETRIEVAL_HIT, runlink.RETRIEVAL_QUERY_ONLY])
 
 
 def test_record_run_returns_the_existing_artifact_id_on_a_repeat():
@@ -882,7 +923,8 @@ def test_the_draft_query_terms_join_into_a_single_string():
     chat_src = (ROOT / "backend" / "llm" / "chat.py").read_text(encoding="utf-8")
     body = chat_src[chat_src.index("def generate_decision_draft"):]
     body = body[:body.index("def ", 40)]
-    assert_in('"；".join(', body, "多條法規要 join 成單一字串，不是送陣列")
+    assert_in("PICK_QUERY_SEP.join(", body, "多條法規要 join 成單一字串，不是送陣列")
+    assert_eq(chat_mod.PICK_QUERY_SEP, "；", "分隔符換了的話，通道 B 的判定也要跟著換")
     assert_in('{"n4_query": terms}', body)
     graph_src = (ROOT / "backend" / "orchestrator" / "graph.py").read_text(encoding="utf-8")
     assert_in("cited_laws=[q] if q else None, extra_case_terms=[q] if q else None", graph_src,
@@ -933,24 +975,28 @@ def test_the_case_law_list_endpoint_never_builds_a_kb_client():
                     f"GET /cases/{{id}}/laws 碰了 {forbidden}——它應該只讀 manifest（B3.5）")
 
 
-def test_the_miss_wording_is_shared_with_the_chat_layer_not_retyped():
+def test_the_state_wording_is_shared_with_the_chat_layer_not_retyped():
     """右欄標的字樣與 chat 回合裡講的話必須**逐字相同**。
 
     兩處各寫一句的話，哪天改了一邊就會出現「畫面說 A、對話說 B」，
-    而使用者無從判斷哪個是真的。
+    而使用者無從判斷哪個是真的。三態都要對，不是只對其中一個。
     """
-    assert_eq(runlink.NOTE_MISS, UNMATCHED_LAW_NOTE)
-    assert_eq(runlink.NOTE_MISS, "檢索未命中，未進入草稿")
+    assert_eq(runlink.NOTE_HIT, chat_mod.PICK_NOTES[chat_mod.PICK_MATCHED])
+    assert_eq(runlink.NOTE_QUERY_ONLY, chat_mod.PICK_NOTES[chat_mod.PICK_QUERY_ONLY])
+    assert_eq(runlink.NOTE_MISS, chat_mod.PICK_NOTES[chat_mod.PICK_UNUSED])
+    for note in (runlink.NOTE_HIT, runlink.NOTE_QUERY_ONLY, runlink.NOTE_MISS):
+        assert_true("未命中" not in note,
+                    f"舊文案殘留在會顯示給使用者的字串裡：{note!r}")
 
 
 def test_the_comparison_rule_lives_in_one_place_only():
-    """比對規則只有一份（`llm/chat.py:unmatched_picks`）。
+    """比對規則只有一份（`llm/chat.py:classify_picks`）。
 
     兩份比對就是兩套判準，遲早出現「chat 回合說沒命中、右欄卻標著命中」
     ——那正是 B4.3 要防的那種「使用者搞不清楚系統有沒有用他挑的東西」。
     """
     src = (ROOT / "backend" / "dossier" / "runlink.py").read_text(encoding="utf-8")
-    assert_in("unmatched_picks", src)
+    assert_in("classify_picks", src)
     for own_rule in ("hit_names", ".strip()", "in hit_names"):
         assert_true(own_rule not in src,
                     f"runlink 又自己寫了一份比對規則（{own_rule}）")
@@ -966,8 +1012,13 @@ def test_full_width_space_in_a_statute_name_does_not_cause_a_false_miss():
 
 
 def test_a_manifest_entry_with_a_blank_name_is_not_reported_as_a_retrieval_miss():
-    """名字是空的代表 manifest 那筆壞了，不是檢索沒命中。兩件事混著報，
-    承辦人會去查一個根本不存在的檢索問題。"""
+    """名字是空的代表 manifest 那筆壞了，不是檢索的事。兩件事混著報，
+    承辦人會去查一個根本不存在的檢索問題。
+
+    **2026-09-13 改成 `unknown` 而不是 `hit`**：舊值把一筆壞資料標成「已進入法條查表」
+    ——那是另一個方向的假話（把沒有說成有）。`unknown` 才是實話：這筆算不了。
+    """
     marked = runlink.classify_law_retrieval([{"id": "a", "t": ""}], [])
-    assert_eq(marked[0]["retrieval_status"], runlink.RETRIEVAL_HIT,
-              "空名字不該被報成未命中（Epic C 的規則刻意這樣）")
+    assert_eq(marked[0]["retrieval_status"], runlink.RETRIEVAL_UNKNOWN,
+              "空名字不該被算成任何一種檢索結果（Epic C 的規則刻意這樣）")
+    assert_eq(marked[0]["retrieval_note"], "")
