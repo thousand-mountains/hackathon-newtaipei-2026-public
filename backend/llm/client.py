@@ -40,7 +40,7 @@ _STRANDS_MISSING = (
 PROMPTS = pathlib.Path(__file__).parent / "prompts"
 INTAKE_FIELDS = (
     "no", "type", "person", "org", "d1", "d2", "d3", "agent", "note",
-    "service_method", "transit_days", "interested_party",
+    "service_method", "transit_days", "interested_party", "respondent_name",
 )
 SERVICE_METHODS = ("personal", "deposit", "public")
 # 文字欄＝十二欄扣掉兩個有容錯轉換的（transit_days／interested_party）。

@@ -90,6 +90,9 @@ def _fake_extraction() -> dict:
     }
     return {
         **{k: {"value": v, "conf": c, "quote": f"quote-{k}"} for k, (v, c) in fields.items()},
+        # 原處分相對人：卷證裡沒有寫出姓名（裁處書以「訴願人」代稱），依 prompt 給 null。
+        # **這是這一欄的常態，不是假資料偷懶**——它結構上不在訴願書裡。
+        "respondent_name": {"value": None, "conf": 0.0, "quote": None},
         "facts_excerpt": [{"text": "訴願人於農地露天燃燒稻稈。", "page": 2, "quote_ref": "synthetic-原處分裁處書.pdf#p2"}],
     }
 

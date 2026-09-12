@@ -381,6 +381,18 @@ BLOCK_DECISION_INPUT_FIELDS = DEADLINE_INPUT_FIELDS + ("note",)
 CONFIRMABLE_INTAKE_FIELDS = (
     "no", "type", "person", "org", "d1", "d2", "d3", "agent", "note",
     "service_method", "transit_days", "interested_party",
+    # 原處分相對人（2026-09-12 Ci 拍板：收文表單加這一欄）。它是 §77-3 當事人適格
+    # 唯一的關鍵輸入，而**結構上不在訴願書裡**，只記載於原處分書——所以它的正常來源
+    # 是承辦人手填，不是抽取器。
+    #
+    # ⚠️ 刻意**不**放進 `n1_extract.REQUIRED_FIELDS`。2026-09-12 實測：放進去之後
+    # `run_case()` 停在 NEEDS_INPUT、N2–N6 一個都不跑；而 `_apply_confirmed_intake()`
+    # 跑在 N1 之後（`orchestrator/graph.py`），承辦人就算填了、`origin` 也翻成 human，
+    # N1 仍用自己的抽取結果重算 missing → 再次 NEEDS_INPUT。前端只從 n1 起跑、
+    # 不帶 `from_node`，沒有逃生口，等於永久卡死。
+    # 「必填」改在真正會痛的地方生效：拿不到就 §77-3 回「需人工認定」，不猜
+    # （見 `nodes/n3_procedure.check_party_standing`）。
+    "respondent_name",
 )
 
 UNCONFIRMED_INTAKE_SIGNAL = (

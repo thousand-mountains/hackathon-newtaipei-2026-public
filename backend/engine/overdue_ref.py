@@ -69,6 +69,24 @@ def _holidays():
 
 HOLIDAYS = _holidays()
 
+#: 假日表**權威涵蓋**的年份區間（閉區間）。取「春節字典」與「固定節日展開範圍」的
+#: 交集——固定節日展到 2027，但 `_LUNAR_NEW_YEAR` 只到 2026，所以 2027 的春節整段
+#: 缺漏。超出這個區間時，本表對「該日是不是行政機關休息日」**沒有意見**，
+#: 而不是「該日不是休息日」。這兩者差很多：
+#: 前者要標示未知，後者會讓兩套引擎一起漏順延卻回報彼此一致。
+HOLIDAY_TABLE_YEARS = (min(_LUNAR_NEW_YEAR), max(_LUNAR_NEW_YEAR))
+
+
+def holiday_table_covers(d: dt.date) -> bool:
+    """該日是否落在假日表的權威涵蓋期內。
+
+    ⚠️ 即使回 True 也**不代表這張表是對的**——它只有節日本日、沒有補假日
+    （例：2021-02-28 落在週日，實際補假 3/1，本表沒有），春節起訖亦為概估。
+    正解是改讀行政院人事行政總處 open data。
+    """
+    lo, hi = HOLIDAY_TABLE_YEARS
+    return lo <= d.year <= hi
+
 
 def _is_rest_day(d: dt.date) -> bool:
     return d.weekday() >= 5 or d in HOLIDAYS

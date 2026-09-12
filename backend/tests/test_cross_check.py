@@ -16,7 +16,13 @@ from __future__ import annotations
 import datetime as dt
 
 from backend.engine.deadline import compute
-from backend.engine.overdue_ref import _FIXED_MMDD, _is_rest_day
+from backend.engine.overdue_ref import (
+    _FIXED_MMDD,
+    HOLIDAY_TABLE_YEARS,
+    HOLIDAYS,
+    _is_rest_day,
+    holiday_table_covers,
+)
 from backend.nodes.n3_procedure import (
     cross_check_deadline,
     derive_procedure_conclusion,
@@ -242,3 +248,77 @@ def test_deadline_refusal_asymmetry_is_recorded_not_silently_dropped():
     fields = [r["field"] for r in cc["refusal_asymmetry"]]
     assert_in("deadline", fields)
     assert_eq(cc["agree"], None)
+
+
+# ── 共用盲點：比到了，但兩個比對對象不獨立（2026-09-12 稽核 #6）──────────────
+
+def test_agree_is_none_when_both_engines_share_the_holiday_blind_spot():
+    """**這一種是前幾條修不掉的**：兩維都確實比對過（`compared` 滿的），
+    但第二意見在「屆滿日順延」的全部優勢來自一張硬編假日表，表沒涵蓋的年份
+    它退化成跟本系統一樣的「只認週末」——兩套用同一份錯誤知識算出同一個
+    錯答案，`agree` 分不出「獨立算出同一答案」與「共用同一個盲點」。
+
+    不必等到 2028：`_LUNAR_NEW_YEAR` 只到 2026，2027 春節今天就已經缺漏，
+    而 2026-12 送達的案子屆滿日就落在 2027-01。
+    """
+    for target in ("2027-02-08", "2028-10-10"):
+        t = dt.date.fromisoformat(target)
+        d2 = (t - dt.timedelta(days=30)).isoformat()
+        d3 = (t + dt.timedelta(days=5)).isoformat()
+        cc = _run(d2, d3, "personal")
+        assert_eq(cc["engines"]["primary"]["deadline"], target, "前提：屆滿日在涵蓋期外")
+        assert_eq(
+            cc["engines"]["second_opinion"]["deadline"],
+            target,
+            "前提：兩套算出同一個（未順延的）屆滿日",
+        )
+        assert_in("overdue", cc["compared"])
+        assert_true(cc["shared_blind_spot"], f"{target}：共用盲點必須被標出")
+        assert_eq(cc["agree"], None, f"{target}：共用盲點時不得回報一致")
+        assert_in("共用同一個盲點", cc["shared_blind_spot"][0]["why"])
+
+
+def test_in_coverage_years_still_report_real_agreement():
+    """守住反向：涵蓋期內不得因為這條守衛而全都變成 None。"""
+    cc = _run("2025-02-18", "2025-03-25", "personal")
+    assert_eq(cc["shared_blind_spot"], [], "涵蓋期內不該觸發共用盲點")
+    assert_eq(cc["agree"], True)
+
+
+def test_holiday_table_coverage_is_the_intersection_of_both_sources():
+    """涵蓋期要取兩個來源的交集：固定節日展到 2027，但春節字典只到 2026，
+    所以 2027 的春節整段缺漏——涵蓋期若寫成 2027 就是自己騙自己。
+    """
+    lo, hi = HOLIDAY_TABLE_YEARS
+    assert_eq((lo, hi), (2021, 2026))
+    assert_true(
+        not holiday_table_covers(dt.date(2027, 2, 6)),
+        "2027 春節不在表內，不得宣稱涵蓋 2027",
+    )
+    assert_true(holiday_table_covers(dt.date(2025, 1, 1)))
+    assert_true(
+        dt.date(2027, 2, 6) not in HOLIDAYS,
+        "前提：2027 春節確實不在假日集合裡",
+    )
+
+
+def test_second_opinion_name_states_what_the_251_sample_cannot_measure():
+    """251 件全是逾期案，只量得到漏抓率、量不到誤判率。
+    無條件的「已驗證」是「可驗但不相干」——數字是真的，它支撐的結論不是它量到的。
+    """
+    cc = _run("2025-03-03", "2025-03-20", "personal")
+    name = cc["engines"]["second_opinion"]["name"]
+    assert_in("未涵蓋誤判率", name)
+    assert_true("已驗證引擎" not in name, "不得無條件宣稱已驗證")
+
+
+def test_personal_service_carries_the_supplementary_delivery_legal_ref_caveat():
+    """personal 涵蓋同居人／受僱人代收（§73），但第二意見一律印 §72。
+    答案不變、引用會錯，必須讓承辦人知道換法源不換答案。
+    """
+    cc = _run("2025-03-03", "2025-03-20", "personal")
+    caveat = cc["engines"]["second_opinion"]["legal_ref_caveat"]
+    assert_in("§73", caveat)
+    assert_in("換法源不換答案", caveat)
+    dep = _run("2025-03-03", "2025-03-20", "deposit")
+    assert_eq(dep["engines"]["second_opinion"]["legal_ref_caveat"], None, "寄存不適用")

@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field
 
 INTAKE_FIELDS = (
     "no", "type", "person", "org", "d1", "d2", "d3", "agent", "note",
-    "service_method", "transit_days", "interested_party",
+    "service_method", "transit_days", "interested_party", "respondent_name",
 )
 SERVICE_METHODS = ("personal", "deposit", "public")  # 對齊 backend/engine/deadline.py 的 SERVICE_METHODS
 
@@ -65,6 +65,17 @@ class ExtractionResult(BaseModel):
     service_method: FieldValue
     transit_days: LooseFieldValue
     interested_party: LooseFieldValue
+    #: 原處分相對人。**結構上不在訴願書裡**，只記載於原處分書——設計時就假設多半抽不到，
+    #: 抽不到是常態不是失敗，由承辦人在收文表單填（2026-09-12 Ci 拍板）。
+    #:
+    #: 唯一一個給 default 的收文欄位：其餘十二欄都是必填，模型漏給就 schema 驗證失敗、
+    #: 重試三次後整次 run 失敗。這一欄「卷證裡本來就沒有」是常態，讓模型漏給整批炸掉
+    #: 不合比例；而 default 的語意（value=None、conf=0.0）跟模型照 prompt 回 null
+    #: 完全相同，補上去不會掩蓋任何資訊。
+    respondent_name: FieldValue = Field(
+        default_factory=lambda: FieldValue(value=None, conf=0.0),
+        description="原處分相對人（原處分書上的受處分人）；訴願書裡通常沒有，抽不到給 null",
+    )
     facts_excerpt: list[FactsExcerpt] = Field(default_factory=list)
 
 

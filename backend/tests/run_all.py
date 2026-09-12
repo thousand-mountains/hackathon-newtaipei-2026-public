@@ -25,6 +25,7 @@ from backend.tests import (  # noqa: E402
     test_gate_hardening,
     test_live_plumbing,
     test_nodes,
+    test_party_standing,
 )
 
 BACKEND = ROOT / "backend"
@@ -434,6 +435,7 @@ def main() -> int:
         ("CASE payload 契約（architecture §6.2）", [test_contract]),
         ("守門加固對抗測試", [test_gate_hardening]),
         ("期間第二意見交叉比對", [test_cross_check]),
+        ("當事人適格 §77-3（規則引擎意見，不作成決定）", [test_party_standing]),
         ("live 分支管線（settings／llm client／kb／續跑，全部 monkeypatch）", [test_live_plumbing]),
     ]
     total_pass = total = 0

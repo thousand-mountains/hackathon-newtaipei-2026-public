@@ -4,7 +4,9 @@
 1. **期間計算**：薄殼包一層 `engine.deadline.compute`，一行計算邏輯都不在這裡實作。
    引擎是唯一規則來源（architecture §8.3），本節點只負責把 intake 的欄位翻譯成引擎參數。
 2. **訴願法 77 條款篩選**：只判定「可由日期直接算出」的 77-2（逾期不受理）。
-   當事人不適格（77-3）等其他款屬法律判斷，**不自動判**，列為人工項。
+   當事人適格（77-3）另由 `check_party_standing()` 以純規則引擎提出**意見**
+   （三態：適格／不適格／需人工認定），但**不作成決定**——不寫 `clause`、
+   不驅動 `procedure_conclusion`、不解除任何封鎖。其餘各款仍列為人工項。
 3. **fact_issues 事實認定爭點偵測**：純字串比對，刻意保守（寧可多攔）。
    漏攔一個 C 型案是 P0，多攔一個只是多一段紅區佔位（architecture §4.3）。
 
@@ -27,8 +29,9 @@ from backend.config.settings import (
 )
 from backend.engine.deadline import compute
 from backend.engine.overdue_ref import TimelinessInput as RefInput
-from backend.engine.overdue_ref import _is_rest_day
+from backend.engine.overdue_ref import HOLIDAY_TABLE_YEARS, _is_rest_day, holiday_table_covers
 from backend.engine.overdue_ref import check_timeliness as ref_check
+from backend.engine.party_ref import StandingInput, check_standing
 from backend.gate.lamps import requires_human_conclusion
 from backend.orchestrator.state import CaseState, NodeCtx, NodeResult
 
@@ -51,8 +54,19 @@ def screen_art77(deadline_result: dict[str, Any]) -> dict[str, Any]:
             "clause": "77-2",
             "basis": "訴願法 77 條第 2 款：提起訴願逾法定期間者，應為不受理之決定。逾期由期間引擎直接算出，屬可驗算層。",
             "requires_substantive_review": False,
-            "not_auto_screened": ["77-1", "77-3", "77-4", "77-5", "77-6", "77-7", "77-8"],
-            "not_auto_screened_reason": "其餘各款（當事人不適格、非行政處分、標的消滅等）屬法律判斷，本系統不自動判定，請承辦人審認。",
+            "rule_assisted": ["77-3"],
+            "rule_assisted_reason": (
+                "當事人適格（§77 第 3 款）已由純規則引擎逐步比對並提出意見，"
+                "見 `screen.party_standing`（三態：適格／不適格／需人工認定）。"
+                "**引擎意見不作成不受理決定**——它不寫進 `clause`、不驅動 "
+                "`procedure_conclusion`，§77-3 仍由承辦人認定。"
+            ),
+            "not_auto_screened": ["77-1", "77-4", "77-5", "77-6", "77-7", "77-8"],
+            "not_auto_screened_reason": (
+                "其餘各款（非行政處分、標的消滅等）屬法律判斷，本系統不自動判定，請承辦人審認。"
+                "§77 第 3 款（當事人不適格）已改由規則引擎提出意見（見 `screen.party_standing`），"
+                "但同樣不由系統作成決定。"
+            ),
         }
     return {
         "screened": ["77-2"],
@@ -60,14 +74,34 @@ def screen_art77(deadline_result: dict[str, Any]) -> dict[str, Any]:
         "clause": None,
         "basis": "期間未逾越（或無法判定），77 條第 2 款不成立；是否有其他不受理事由需人工審認。",
         "requires_substantive_review": True,
-        "not_auto_screened": ["77-1", "77-3", "77-4", "77-5", "77-6", "77-7", "77-8"],
-        "not_auto_screened_reason": "其餘各款屬法律判斷，本系統不自動判定，請承辦人審認。",
+        "rule_assisted": ["77-3"],
+        "rule_assisted_reason": (
+            "當事人適格（§77 第 3 款）已由純規則引擎逐步比對並提出意見，"
+            "見 `screen.party_standing`（三態：適格／不適格／需人工認定）。"
+            "**引擎意見不作成不受理決定**——它不寫進 `clause`、不驅動 "
+            "`procedure_conclusion`，§77-3 仍由承辦人認定。"
+        ),
+        "not_auto_screened": ["77-1", "77-4", "77-5", "77-6", "77-7", "77-8"],
+        "not_auto_screened_reason": (
+            "其餘各款屬法律判斷，本系統不自動判定，請承辦人審認。"
+            "§77 第 3 款（當事人不適格）已改由規則引擎提出意見（見 `screen.party_standing`），"
+            "但同樣不由系統作成決定。"
+        ),
     }
 
 
 #: 本系統的送達方式 → 第二意見引擎的用語。補充送達（行程§73）生效日＝送達動作日，
 #: 與本人簽收同語意，故同映射到 personal 那一側。
 _METHOD_TO_REF = {"personal": "本人", "deposit": "寄存", "public": "公示"}
+
+#: `deadline.py` 的 `personal` 字面是「本人（**或同居人／受僱人**）簽收」，涵蓋補充送達；
+#: 映到第二意見的「本人」後它會印出行政程序法 §72，而同居人代收的法源其實是 §73。
+#: **生效日相同、答案不變，但引用會錯**——CONSTITUTION 的「引用必可驗」在此有缺口。
+_PERSONAL_LEGAL_REF_CAVEAT = (
+    "第二意見的法源以「本人簽收」計（行政程序法 §72）；"
+    "**如本案為同居人／受僱人代收，法源應為 §73**（補充送達）。"
+    "兩者送達生效日相同，故屆滿日與逾期結論不受影響——換法源不換答案。"
+)
 
 
 def cross_check_deadline(
@@ -91,6 +125,7 @@ def cross_check_deadline(
         return {
             "agree": None,
             "compared": [],
+            "shared_blind_spot": [],
             "engines": {},
             "disagreement": [],
             "not_comparable": [],
@@ -219,6 +254,27 @@ def cross_check_deadline(
                 "why": "屆滿日不同，成因未歸因——請承辦人對照兩套算式逐步說明。",
             })
 
+    #: **兩套引擎在該維度上塌縮成同一套**時，相符不構成佐證。
+    #: 第二意見在「屆滿日順延」這一維的全部優勢，來自一張硬編的國定假日表；
+    #: 表沒涵蓋的年份，它的假日知識退化成跟本系統一樣的「只認週末」——
+    #: 兩套於是用同一份錯誤知識算出同一個錯答案，而 `agree` 分不出
+    #: 「兩套獨立算出同一答案」與「兩套共用同一個盲點」。
+    #: 這不是「沒比到」（那是 `compared` 管的），是「比到了但比對對象不獨立」。
+    shared_blind_spot: list[dict[str, Any]] = []
+    _dl_indep = ours_deadline or ref_out.deadline_date
+    if _dl_indep and not holiday_table_covers(dt.date.fromisoformat(_dl_indep)):
+        lo, hi = HOLIDAY_TABLE_YEARS
+        shared_blind_spot.append({
+            "field": "deadline",
+            "why": (
+                f"本案屆滿日在 {_dl_indep[:4]} 年，**超出第二意見假日表的權威涵蓋期"
+                f"（{lo}–{hi}）**。該年度的國定假日順延未經任何一套引擎驗證——"
+                "第二意見在此維度退化為與本系統相同的「只認週末」，"
+                "**兩套相符不代表算對，只代表共用同一個盲點**。"
+                "請承辦人對照行政院人事行政總處辦公日曆表自行認定。"
+            ),
+        })
+
     return {
         # 一方拒答時 agree 必須是 None（未知），不能是 True。**True 代表「兩套都算過
         # 且結論相同」**，而拒答的那一方根本沒有結論可比。
@@ -227,12 +283,15 @@ def cross_check_deadline(
         # 前端會渲染成綠燈「兩套引擎一致」，而那個承辦人最在意的問題根本沒被回答。
         # （案件剛進來、還沒填提起日，就是這個狀態，也是最常見的畫面。）
         # 屆滿日層級的相符仍然看得到——讀 `compared`。
+        # 共用盲點時也必須是 None：屆滿日若算錯，逾期結論可能跟著錯，
+        # 而「兩套相符」在此情況下不是證據。
         "agree": (
             None
-            if (refusal_asymmetry or "overdue" not in compared)
+            if (refusal_asymmetry or shared_blind_spot or "overdue" not in compared)
             else not diffs
         ),
         "compared": compared,
+        "shared_blind_spot": shared_blind_spot,
         "not_comparable": not_comparable,
         "refusal_asymmetry": refusal_asymmetry,
         "engines": {
@@ -242,13 +301,20 @@ def cross_check_deadline(
                 "overdue": ours_overdue,
             },
             "second_opinion": {
-                "name": "backend/engine/overdue_ref.py（外部已驗證引擎，251 件真實決定書）",
+                "name": (
+                    "backend/engine/overdue_ref.py（外部引擎；比對語料 251 件"
+                    "**皆為逾期案**，故該比對涵蓋漏抓率、**未涵蓋誤判率**——"
+                    "測不到把未逾期誤判為逾期）"
+                ),
                 "deadline": ref_out.deadline_date,
                 "overdue": ref_out.is_overdue,
                 "verdict": ref_out.verdict,
                 "steps": ref_out.steps,
                 "legal_refs": ref_out.legal_refs,
                 "missing": ref_out.missing,
+                "legal_ref_caveat": (
+                    _PERSONAL_LEGAL_REF_CAVEAT if method == "本人" else None
+                ),
             },
         },
         "disagreement": diffs,
@@ -287,6 +353,189 @@ def derive_procedure_conclusion(art77: dict[str, Any]) -> dict[str, Any]:
             "本系統只自動判定訴願法 §77 第 2 款（逾期）這一種程序不合事由。"
             "其餘各款與訴願有無理由屬法律判斷，**本系統不代為認定**，"
             "請承辦人自行審認——此處留白不是失敗，是刻意不猜。"
+        ),
+    }
+
+
+#: 抽取器可能回進來、但不是姓名／名稱的代稱。原處分書常以「訴願人」「受處分人」
+#: 指涉相對人，模型照抄回來就會變成一個跟訴願人姓名不同的字串，
+#: 進引擎後比對成「不是同一人」→ **憑一個代稱判不適格**。視同未填。
+_PARTY_PLACEHOLDER_NAMES = frozenset({
+    "訴願人", "受處分人", "受文者", "相對人", "當事人", "本人", "如主旨", "如上",
+    "同上", "略", "無", "不詳", "未載明", "未記載", "-", "—",
+})
+
+_PARTY_LEGAL_REFS = ("訴願法 §18", "訴願法 §77 第 3 款")
+_PARTY_ENGINE = (
+    "backend/engine/party_ref.py（外部規則引擎，28 件真實 §77-3 決定書調校；純規則、零 LLM）"
+)
+#: 引擎驗證成績裡**必須一起講**的限制，而且要講給承辦人看、不是只寫在報告裡。
+#:
+#: 來源 `party/validate.py:70-71` 的 200 件負樣本是
+#: `StandingInput(appellant_name=c["appellant"], respondent_name=c["appellant"])`——
+#: **同一個字串餵兩次**，只證明了 `_same_party(x, x) is True`。那個「100% 判對」
+#: 幾乎是恆真的，它沒有量到任何一件「兩造姓名不同、但訴願人仍然適格」的案子。
+#:
+#: 這跟逾期引擎的 167/167 是同一個形狀的洞：251 件全是逾期案，量得到「該判逾期的
+#: 沒漏」，量不到「把未逾期誤判成逾期」。**兩套引擎測不到的是同一個方向——
+#: 我們有多常錯誤地擋住一個人**，而那正是唯一會傷到民眾的方向。
+_PARTY_VALIDATION_CAVEAT = (
+    "⚠️ **本引擎的誤擋率未經量測。** 它在 28 件真實 §77-3 案上「該判不適格的抓到 86%」，"
+    "但用來證明「不會誤判成不適格」的 200 件負樣本，是把同一個姓名同時當作訴願人與"
+    "原處分相對人餵進去比對——那個 100% 幾乎是恆真的，**沒有量到任何一件"
+    "「兩造姓名不同、但訴願人仍然適格」的案子**（法人代表人、繼受人、共同訴願、"
+    "同一造在兩份文書上寫法不同，都屬這一類）。"
+    "誤判不適格會把人擋在訴願門外且無從救濟，故本引擎的意見不得逕行作成不受理決定。"
+)
+#: `不適格` 是唯一會傷到民眾的那個方向，所以它另外再講一次、講在最前面——
+#: 承辦人不該需要讀到 note 的第三句才知道這個數字沒被量過。
+_PARTY_DISQUALIFIED_WARNING = (
+    "**引擎判「不適格」——這是會讓本件不受理的方向，請務必自行核對卷證。**"
+)
+
+
+def check_party_standing(
+    intake: dict[str, Any], intake_origin: dict[str, str] | None = None
+) -> dict[str, Any]:
+    """當事人適格（訴願法 §18／§77 第 3 款）：純規則，三態如實回報。
+
+    三態是**三件事，不是布林**：「判定適格」／「判定不適格」／「無法判定」。
+    `verdict` 一律是這三個中文字串之一，`is_qualified` 對應 True／False／None，
+    而 `None` 的意思是「沒有答案」，不是「否」。
+
+    本節點在引擎之外自己加了兩道閘——引擎沒有，但我們的資料條件需要：
+
+    1. **拿不到原處分相對人就不呼叫引擎。** 引擎的反射利益／法律上利害關係／檢舉人
+       三個分支只看 `appellant_capacity`，`respondent_name` 為空也照樣下結論，
+       等於在**從未比對過姓名**的情況下判不適格。
+    2. **輸入未經承辦人確認時，決斷的結論降級為「需人工認定」**，引擎意見改放
+       `engine_opinion` 供對照。沿用判斷卡 7 的既有慣例
+       （`settings.DEADLINE_INPUT_FIELDS`：模型抽的欄位不得驅動結論），
+       而這裡的風險不對稱更陡——誤判「不適格」是把人擋在訴願門外，
+       誤判「適格」只是案件照樣進實體審查。
+
+    **本函式的任何 verdict 都不驅動自動不受理決定**：它不寫 `art77.clause`、
+    不進 `derive_procedure_conclusion()`、也不解除任何結論封鎖（US-5）。
+
+    回傳的 key 集合**不因走哪條分支而變**（早退路徑少給 key 會讓前端讀到
+    undefined，這在 `cross_check_deadline` 上踩過一次）。
+    """
+    origins = intake_origin or {}
+    appellant = str(intake.get("person") or "").strip()
+    raw = str(intake.get("respondent_name") or "").strip()
+    respondent = "" if raw in _PARTY_PLACEHOLDER_NAMES else raw
+    origin = "absent" if not respondent else (origins.get("respondent_name") or "llm")
+
+    base: dict[str, Any] = {
+        "verdict": "需人工認定",
+        "is_qualified": None,
+        "standing_as": "",
+        "confidence": "low",
+        "legal_refs": list(_PARTY_LEGAL_REFS),
+        "steps": [],
+        "missing": [],
+        "inputs": {
+            "appellant_name": appellant,
+            "respondent_name": respondent,
+            # 訴願人自述身分（代表人／代理人／員工／承租人…）是引擎判斷力的另一半，
+            # 但本系統的抽取欄位沒有這一欄，永遠餵空字串——引擎因此只做姓名比對。
+            "appellant_capacity": "",
+        },
+        "respondent_name_origin": origin,
+        "engine_opinion": None,
+        "engine": _PARTY_ENGINE,
+        "note": "",
+    }
+
+    if not appellant or not respondent:
+        lacking = [
+            label
+            for label, value in (
+                ("person（訴願人）", appellant),
+                ("respondent_name（原處分相對人）", respondent),
+            )
+            if not value
+        ]
+        steps = []
+        if raw and not respondent:
+            steps.append(f"原處分相對人欄位填的是「{raw}」，那是代稱不是姓名或名稱，視同未填。")
+        steps.append(f"缺少 {'、'.join(lacking)}，無從比對訴願人與原處分相對人是否同一人。")
+        steps.append(
+            "原處分相對人結構上不在訴願書裡、只記載於原處分書，"
+            "請承辦人於收文表單填入後，本項才判得出來。"
+        )
+        return {
+            **base,
+            "steps": steps,
+            "missing": lacking,
+            "note": (
+                "§77-3 當事人適格未判定。**「需人工認定」是正當結果，不是失敗**——"
+                "資料不足時本系統不猜，也不以任一方推定。"
+            ),
+        }
+
+    out = check_standing(
+        StandingInput(
+            appellant_name=appellant,
+            respondent_name=respondent,
+            appellant_capacity="",
+        )
+    ).to_dict()
+    lead = f"比對訴願人「{appellant}」與原處分相對人「{respondent}」。"
+    # 引擎自己就會把 appellant_capacity 列進 missing 的那幾條分支不要再加一次，
+    # 同一件事講兩遍會讓承辦人以為是兩個不同的缺漏。
+    engine_missing = list(out["missing"])
+    if not any("appellant_capacity" in m for m in engine_missing):
+        engine_missing.append(
+            "appellant_capacity（訴願人自述身分）：本系統未擷取此欄，"
+            "引擎僅依姓名比對，未及代理人／代表人／法律上利害關係人各類型。"
+        )
+
+    if origin != "human":
+        return {
+            **base,
+            "steps": [
+                lead,
+                f"但原處分相對人「{respondent}」由模型抽取、尚未經承辦人於收文表單確認"
+                f"（intake_origin.respondent_name = {origin!r}）。",
+                "§77-3 的結論會把人擋在訴願門外，不得建立在未確認的姓名上——"
+                "**本項降級為需人工認定**，引擎意見另列於 engine_opinion 供對照。",
+            ],
+            "missing": ["respondent_name 尚未經承辦人確認"] + engine_missing,
+            "engine_opinion": {
+                "verdict": out["verdict"],
+                "is_qualified": out["is_qualified"],
+                "standing_as": out["standing_as"],
+                "confidence": out["confidence"],
+                "steps": [lead, *out["steps"]],
+                "legal_refs": out["legal_refs"],
+                "engine": _PARTY_ENGINE,
+                "caveat": (
+                    (_PARTY_DISQUALIFIED_WARNING if out["is_qualified"] is False else "")
+                    + "此為**未確認輸入**下的引擎意見，不是本系統的認定，不得逕採。"
+                    + _PARTY_VALIDATION_CAVEAT
+                ),
+            },
+            "note": (
+                "§77-3 未判定：引擎算得出結論，但它依據的原處分相對人還是模型抽的。"
+                "請承辦人在收文表單確認該欄後重跑，本項才會給出三態中的決斷結果。"
+            ),
+        }
+
+    return {
+        **base,
+        "verdict": out["verdict"],
+        "is_qualified": out["is_qualified"],
+        "standing_as": out["standing_as"],
+        "confidence": out["confidence"],
+        "legal_refs": out["legal_refs"],
+        "steps": [lead, *out["steps"]],
+        "missing": engine_missing,
+        "note": (
+            (_PARTY_DISQUALIFIED_WARNING if out["is_qualified"] is False else "")
+            + "原處分相對人已由承辦人確認，規則引擎依訴願法 §18／§77 第 3 款逐步比對。"
+            "**這是引擎意見，不是系統的不受理決定**——§77-3 不進 `art77.clause`、"
+            "不驅動 `procedure_conclusion`，仍由承辦人認定。" + _PARTY_VALIDATION_CAVEAT
         ),
     }
 
@@ -354,6 +603,7 @@ def run(state: CaseState, ctx: NodeCtx, digest: str = "") -> NodeResult:
         degrade_reason = "期間引擎拒答（公示送達等情形），交人工確認" if degraded else None
 
     art77 = screen_art77(deadline_result)
+    party_standing = check_party_standing(intake, state.intake_origin)
     case_type = (state.classification.get("class") or {}).get("case_type", "")
     signals = load_fact_issue_signals()
     fact_issues = detect_fact_issues(
@@ -382,6 +632,8 @@ def run(state: CaseState, ctx: NodeCtx, digest: str = "") -> NodeResult:
         "human_conclusion_signals": block_signals,
         # 第二意見：獨立引擎再算一次，不覆寫 deadline，只回報差異（US-1）
         "deadline_cross_check": cross_check_deadline(intake, deadline_result),
+        # 當事人適格（§77-3）：純規則三態，**只是意見**，不作成不受理決定（US-2／US-5）
+        "party_standing": party_standing,
         # 程序審查結論：只有「程序不合→不受理」由規則給出，實體判斷一律留白（US-4）
         "procedure_conclusion": derive_procedure_conclusion(art77),
         # 稽核用：這一次的程序判斷建立在哪些未確認欄位上
@@ -408,6 +660,14 @@ def run(state: CaseState, ctx: NodeCtx, digest: str = "") -> NodeResult:
                 "logs": [
                     [f"期間計算共 {len(deadline_result['steps'])} 個步驟，每步附法源", ""],
                     [f"訴願法 77 條自動篩選：{art77['clause'] or '無命中'}", ""],
+                    [
+                        (
+                            f"當事人適格（§77-3，規則引擎意見）：{party_standing['verdict']}"
+                            f"——{party_standing['steps'][-1] if party_standing['steps'] else ''}"
+                            "（意見供對照，不作成不受理決定）"
+                        ),
+                        "" if party_standing["verdict"] == "適格" else "y",
+                    ],
                     [
                         f"結論段{'封鎖（由承辦人判斷）' if needs_human else '可由模板組稿'}",
                         "r" if needs_human else "",
