@@ -21,7 +21,8 @@ from backend.config.settings import (
 import backend.llm.chat as chat_mod
 from backend.dossier import store
 from backend.orchestrator import chat_bridge
-from backend.nodes import n1_extract
+from backend.config.settings import load_snapshot
+from backend.nodes import n1_extract, n4_retrieval
 from backend.orchestrator.graph import build_payload, list_synthetic_cases, load_case, run_case
 from backend.orchestrator.runstore import load_run
 from backend.tests.harness import assert_eq, assert_in, assert_true
@@ -634,6 +635,33 @@ def test_node_done_events_report_degradation_from_the_node_not_from_a_guess():
 # 這一段跑的是**真的 adapter 配真的 run_case**（fixture 檔位）。
 # adapter 原本寫在 `backend/api/chat.py` 裡，那個檔頂層 import fastapi，
 # 於是這段 `CaseState` → dict 的轉換一行都跑不到——而它正是 Epic C 要接的東西。
+
+def test_the_chip_query_is_the_same_string_n4_actually_searched_with():
+    """工具 chip 的查詢句必須是 **N4 真的送出去的那一串**，不是另外組的。
+
+    這是這輪最容易悄悄壞掉的地方：聊天層與 N4 各組一份查詢句，兩邊都「從案情組出來」、
+    看起來都合理，但**畫面上的相似案會跟 N4 卡片裡的是兩批東西，兩邊都說自己是
+    本案的相似案**。這個專案已經因為同一件事兩份實作踩過兩次（`sections[]`、`cite_count`）。
+
+    所以 `build_case_query()` 是 2026-09-13 從 N4 的函式體裡**抽出來**的，
+    不是新寫的——這條測試釘的就是「它還是同一串」。
+    """
+    state = run_case(ORDINARY, mode="fixture", persist=False)
+    # N4 通道 B 實際用的查詢句：跑完之後記在 retrieval 的 log 裡拿不到原字串，
+    # 所以直接比對函式——重點是**只有一個實作**，不是比對兩份結果。
+    from_n4 = n4_retrieval.build_case_query(state)
+    assert_true(bool(from_n4.strip()), "合成案跑完卻組不出通道 B 的查詢句，測試前提不成立")
+
+    # 通道 A 與通道 B 不得是同一串（混用就是用錯查詢句）
+    law_names = list((load_snapshot().get("laws") or {}).keys())
+    assert_true(n4_retrieval.build_query(state, law_names) != from_n4,
+                "兩條通道的查詢句變成一樣了——其中一條在用錯的查詢句查東西")
+
+    # 出處常數要跟函式實際讀的欄位對得上（它會被拿去跟承辦人說「這串字從哪來」）
+    for field in ("facts_excerpt", "note", "case_type"):
+        assert_true(any(field in src for src in n4_retrieval.CASE_QUERY_SOURCES),
+                    f"CASE_QUERY_SOURCES 沒有提到 {field}，但 build_case_query 讀了它")
+
 
 def test_a_rerun_from_n4_does_not_launder_needs_input_into_verified():
     """缺必填欄位的案子，續跑草稿之後終態不得變成 VERIFIED（2026-09-13 雲上抓到）。

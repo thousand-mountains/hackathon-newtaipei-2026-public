@@ -57,6 +57,12 @@ from backend.api.events import BUS
 from backend.config import settings
 from backend.config.settings import load_snapshot, run_mode
 from backend.llm.chat import RefBook, build_chat_agent, classify_answer
+from backend.nodes.n4_retrieval import (
+    CASE_QUERY_SOURCES,
+    build_case_query,
+    build_query,
+    build_query_sources,
+)
 from backend.orchestrator.chat_bridge import (
     PAYLOAD_SECTIONS,
     load_case_manifest,
@@ -157,12 +163,25 @@ def _load_case_payload(case_id: str, run_id: str) -> tuple[dict[str, Any], dict[
             detail=f"run_id {run_id} 屬於案件 {payload.get('case_id')}，不是 {case_id}",
         )
     run_meta = payload.get("run_meta") or {}
+    # 工具 chip（`tool_hint`）按下去要查東西，但 chip 沒帶查詢詞，而模型不准自己編一個。
+    # 查詢詞由**本案案情**確定性地組出來——**用 N4 用的那一支**，不另寫一份：
+    # 這個專案已經因為「同一件事兩份實作」踩過兩次（`sections[]`、`cite_count`）。
+    # 這裡是 `backend/api/`，允許 import orchestrator 與六節點；組完只把**字串**
+    # 往下傳給聊天層，`CaseState` 不過那條線（spec §4.0）。
+    law_names = list((load_snapshot().get("laws") or {}).keys())
+    query_sources = build_query_sources(state, law_names)
     run_info = {
         "run_id": payload.get("run_id"),
         "final_state": run_meta.get("final_state") or payload.get("state"),
         "to_node": run_meta.get("to_node"),
         # 有沒有草稿看實際內容，不看狀態名：狀態名之後可能再加一個，`doc` 有沒有東西不會。
         "has_draft": bool(payload.get("doc")),
+        # 兩串，對應 N4 的兩條通道（法條查表／相似案語意檢索）。**用 N4 的同兩支函式**，
+        # 不在這裡重組：漂掉的症狀是畫面上的相似案與 N4 卡片裡的是兩批東西。
+        "law_query": build_query(state, law_names),
+        "law_query_sources": [str(q.get("from")) for q in query_sources if q.get("from")],
+        "case_query": build_case_query(state),
+        "case_query_sources": list(CASE_QUERY_SOURCES),
     }
     return {k: payload.get(k) for k in PAYLOAD_SECTIONS}, run_info
 
@@ -239,8 +258,21 @@ def _run_turn(case_id: str, body: ChatIn, emit: Any,
         run_id=(run_info or {}).get("run_id"),
         case_manifest=load_case_manifest(case_id),
         build_graph=relation_graph_adapter(case_id),
+        law_query=(run_info or {}).get("law_query") or "",
+        law_query_sources=(run_info or {}).get("law_query_sources") or [],
+        case_query=(run_info or {}).get("case_query") or "",
+        case_query_sources=(run_info or {}).get("case_query_sources") or [],
     )
-    answer = str(agent(_user_message(body, history)))
+    # 工具 chip 是**明確指令**，不是給模型的暗示（2026-09-13 修）。
+    # 原本 `tool_hint` 收下來就丟掉，全 backend 只有欄位宣告那一行提到它；
+    # 模型只看到 `/查找相似案例` 這串文字，自己決定做什麼，於是按「查找相似案例」
+    # 跑的是 `read_case`，回一句「卷內還沒有相似案例的資料」。
+    # 自由打字的問句不帶 hint，走原本那條路由模型自己判斷（契約 §2.1）。
+    hint_note = tools.run_tool_hint(body.tool_hint or "")
+    message = _user_message(body, history)
+    if hint_note:
+        message = f"{message}\n\n{hint_note}"
+    answer = str(agent(message))
 
     # 模型講完才判燈。判定的輸入只有四樣，沒有一樣是問模型「你這句可不可信」。
     verdict = classify_answer(body.message, answer, refbook,

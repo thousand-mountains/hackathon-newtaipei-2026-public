@@ -417,6 +417,15 @@ PIPELINE_NODE_LABELS = {
     "n6": "引用守門",
 }
 
+#: 查詢句節錄的長度。相似案那條吃的是整段卷證原文，可以很長。
+_QUERY_CLIP = 60
+
+
+def _clip(text: str, limit: int = _QUERY_CLIP) -> str:
+    one_line = " ".join(str(text).split())
+    return one_line if len(one_line) <= limit else one_line[:limit] + "…（節錄）"
+
+
 def degraded_summary(out: dict[str, Any]) -> str:
     """流水線回報的降級原因 → 一句給承辦人的話。沒有降級就回 `""`。
 
@@ -639,7 +648,11 @@ class ChatTools:
                  emit: Any = None, *, run_pipeline: Any = None,
                  run_id: str | None = None,
                  case_manifest: dict[str, Any] | None = None,
-                 build_graph: Any = None) -> None:
+                 build_graph: Any = None,
+                 law_query: str = "",
+                 law_query_sources: list[str] | None = None,
+                 case_query: str = "",
+                 case_query_sources: list[str] | None = None) -> None:
         self.case_payload = case_payload or {}
         self.refbook = refbook
         self.retriever = retriever
@@ -666,6 +679,21 @@ class ChatTools:
         self.run_id = run_id
         #: 本案卷宗清單（`manifest.json`，契約 v2 §4.0）。由呼叫端唯讀帶進來。
         self.case_manifest = case_manifest or {}
+        #: 工具 chip 要用的兩串查詢句，由呼叫端注入（`backend/api/chat.py` 呼叫
+        #: `n4_retrieval` 的 `build_query()` 與 `build_case_query()`——**跟 N4 的兩條
+        #: 通道用的是同兩支**，不另寫一份）。chip 沒帶查詢詞，而模型**不准自己編一個**
+        #: （紅線 1），所以缺的那一格必須由案情確定性地補上，補不出來就照實說。
+        #:
+        #: **兩串刻意不同**，理由與 N4 相同：`law_query` 給法條查表（吃條號與法規名），
+        #: `case_query` 給相似案語意檢索（吃卷證原文與案型，不吃改寫句——改寫句會漏
+        #: 撤銷案）。混用的話畫面上的相似案會跟 N4 卡片裡的是兩批東西。
+        self.law_query = (law_query or "").strip()
+        self.case_query = (case_query or "").strip()
+        #: 兩串各自的出處（payload 欄位路徑）。給模型用：承辦人要看得出那幾個字
+        #: 從哪裡來的。**兩串的出處不一樣**，共用一份就會講錯——相似案那串根本
+        #: 沒讀過 `screen.art77`，卻說它是來源，那就是在陳述一件不成立的事。
+        self.law_query_sources = list(law_query_sources or [])
+        self.case_query_sources = list(case_query_sources or [])
         self._call_n = 0
         self._current_call_id: str | None = None
 
@@ -996,6 +1024,78 @@ class ChatTools:
                 f"引用 {out.get('cite_count')} 處）。草稿全文請由承辦人在產出區檢視，"
                 f"不要在這裡整份複述。{stuck_note}{note}")
 
+    # ── 工具 chip（`tool_hint`）──────────────────────────────────────
+
+    def run_tool_hint(self, hint: str) -> str | None:
+        """前端工具 chip 指定的那一支，**這一回合就把它跑掉**。
+
+        回傳要塞進 user message 的一段話（已經跑完、結果如下、不要再跑一次）；
+        `hint` 不在白名單就回 `None`，由模型照原本的方式自己判斷。
+
+        ## 為什麼不能只是「提示」模型
+
+        2026-09-13 實測：Ci 按了 chip「/查找相似案例」，畫面上跑的是 `read_case`，
+        然後回「卷內還沒有相似案例的資料」。**按鈕寫查找，它去讀已經有的東西。**
+
+        而模型的選擇其實有道理：`search_similar_decisions(query)` 要一個查詢字串，
+        chip 沒帶，它**不願意編一個**——紅線 1 就是這樣要求的。它退而求其次去讀卷內，
+        然後老實說是空的。**問題不在模型，在沒有人給它查詢詞。**
+
+        所以解法是兩半，缺一不可：
+        1. chip 是**明確指令**不是暗示 → 後端直接執行，不留給模型決定。
+        2. 缺的參數由**案情確定性導出**（`self.case_query`，來源是 N4 的
+           `build_query()`，同一支不另寫），導不出來就照實說，**不編一個詞去查**。
+
+        ## 自由打字的問句不走這裡
+
+        那條路徑不帶 `tool_hint`，維持原樣由模型自己判斷（契約 §2.1）。
+        把它也變成強制的話，「幫我看一下這件案子」會被硬塞成某一支工具。
+        """
+        runner = {
+            "extract_case_document": self.extract_case_document,
+            "generate_decision_draft": self.generate_decision_draft,
+            "build_relation_graph": self.build_relation_graph,
+            "search_similar_decisions":
+                lambda: self._search_from_case("search_similar_decisions", "相似訴願決定",
+                                               self.case_query, self.case_query_sources),
+            "search_regulations":
+                lambda: self._search_from_case("search_regulations", "法規快照",
+                                               self.law_query, self.law_query_sources),
+        }.get(hint)
+        if runner is None:
+            return None
+        out = runner()
+        return (f"【已代為執行】承辦人按的是工具「{TOOL_LABELS.get(hint, hint)}」，"
+                f"系統已經替他跑完了，結果如下。**不要再呼叫一次同一支工具**，"
+                f"直接根據這個結果回答：\n{out}")
+
+    def _search_from_case(self, name: str, which: str, query: str,
+                          sources: list[str]) -> str:
+        """用**本案案情**組出來的查詢句跑檢索。查詢句是空的就照實說，不編一個。
+
+        空的原因一定是上游還沒有東西可組（沒解析過卷證、或 N1–N3 的結果裡沒有
+        案型／不受理事由／法規名）。那時候唯一誠實的做法是停下來講清楚——
+        隨手丟一個「行政處分」之類的通用詞進去，會查回一堆跟本案無關的決定書，
+        而且看起來很像查到了（CONSTITUTION §1）。
+        """
+        if not query:
+            _throttle()
+            self._call(name, {"query": None})
+            note = ("這件案子還導不出查詢詞：查詢詞由卷證解析的結果組出來"
+                    "（案型、程序不受理事由、期間依據的法條），目前這些都還是空的。")
+            self._result(name, [], note, status="empty")
+            return (f"{note}請告訴承辦人**要先解析卷證**，跑完之後這個按鈕才查得到東西；"
+                    f"或者他可以直接打字把爭點、處分依據告訴你，你再用那些字去查。"
+                    f"**不要自己想一個查詢詞去查**，也不要說查無相似案例"
+                    f"——這次根本還沒查。")
+        out = self._search(name, query, None, which)
+        # 查詢句可能很長（相似案那條吃整段卷證原文），回給模型的話裡只放節錄——
+        # 整串貼進對話等於把卷證再複述一遍，而模型只需要知道「這是系統組的、不是它想的」。
+        froms = "、".join(str(x) for x in sources if x)
+        return (f"（查詢詞「{_clip(query)}」是系統從本案案情組出來的"
+                f"{'，來源：' + froms if froms else ''}，不是承辦人打的，也不是你想的。"
+                f"要講查詢詞就講來源，不要把它整串唸出來。）\n{out}")
+
     def build_relation_graph(self) -> str:
         """畫本案的關聯圖：卷證 → 事實 → 爭點 → 法規依據 → 結論（契約 v2 §3.7）。
 
@@ -1141,6 +1241,10 @@ def build_chat_agent(case_payload: dict[str, Any], refbook: RefBook,
                      run_id: str | None = None,
                      case_manifest: dict[str, Any] | None = None,
                      build_graph: Any = None,
+                     law_query: str = "",
+                     law_query_sources: list[str] | None = None,
+                     case_query: str = "",
+                     case_query_sources: list[str] | None = None,
                      ) -> tuple[Any, ChatTools]:
     """建一個聊天 agent。回傳 `(agent, tools)`——`tools` 帶著本回合的狀態。
 
@@ -1156,7 +1260,9 @@ def build_chat_agent(case_payload: dict[str, Any], refbook: RefBook,
         raise LLMError(_STRANDS_MISSING)
     tools = ChatTools(case_payload, refbook, retriever, snapshot, emit,
                       run_pipeline=run_pipeline, run_id=run_id,
-                      case_manifest=case_manifest, build_graph=build_graph)
+                      case_manifest=case_manifest, build_graph=build_graph,
+                      law_query=law_query, law_query_sources=law_query_sources,
+                      case_query=case_query, case_query_sources=case_query_sources)
     agent = Agent(
         model=_load_model(model_kind="draft"),
         system_prompt=_prompt("chat_ask"),

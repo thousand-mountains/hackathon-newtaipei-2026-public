@@ -218,6 +218,40 @@ def build_query(state: CaseState, law_names: list[str] | None = None) -> str:
     return "；".join(parts)
 
 
+#: `build_case_query()` 實際讀的欄位，照順序。**跟下面那支函式綁在一起，改一個要改另一個**
+#: ——它是拿去跟承辦人說「這串字是從哪來的」，寫錯就是在陳述一件不成立的事。
+#: 通道 A 的出處由 `build_query_sources()` 自己逐項帶著走（那支回的是 dict 含 `from`），
+#: 這裡是常數是因為通道 B 的組法固定，沒有分支。
+CASE_QUERY_SOURCES = (
+    "n1.facts_excerpt[].text",
+    "n1.intake.note",
+    "n2.classification.class.case_type",
+)
+
+
+def build_case_query(state: CaseState, extra_case_terms: list[str] | None = None) -> str:
+    """通道 B（相似歷史案）的查詢句。**與通道 A 的 `build_query()` 不是同一串。**
+
+    只用**卷證原文**（事實段 + `intake.note`）加案型；不用改寫句——改寫句會漏撤銷案
+    （AppealAssist ask 模式實測）。通道 A 是法條查表，吃的是條號與法規名，
+    所以那邊用 `build_query()`，兩條通道查的東西不一樣，查詢句本來就該不一樣。
+
+    **抽成具名函式是 2026-09-13 為了給聊天層用**（工具 chip「查找相似案例」要同一串）。
+    抽出來而不是在聊天層再組一次：這個專案已經因為「同一件事兩份實作」踩過兩次
+    （`sections[]`、`cite_count`），而這一份漂掉的症狀特別難看——
+    畫面上的相似案與 N4 卡片裡的相似案會是兩批不同的東西，兩邊都說自己是「本案的相似案」。
+    """
+    record_terms = [str(x.get("text") or "") for x in (state.facts_excerpt or [])] + [
+        str((state.intake or {}).get("note") or "")
+    ]
+    return "；".join(
+        [t for t in record_terms if t]
+        + ([(state.classification.get("class") or {}).get("case_type") or ""] if state.classification else [])
+        # 承辦人指定的查詢詞附在尾端，標明它是人加的（logs 會寫出來）
+        + [t for t in (extra_case_terms or []) if t]
+    )
+
+
 def run(
     state: CaseState,
     ctx: NodeCtx,
@@ -288,16 +322,8 @@ def run(
         )
 
     # ── 通道 B：相似歷史案 ────────────────────────────────────────
-    # 查詢句只用卷證原文（事實段 + intake.note）+ 案型；不用改寫句（改寫句會漏撤銷案，AppealAssist ask 模式實測）。
-    record_terms = [str(x.get("text") or "") for x in (state.facts_excerpt or [])] + [
-        str((state.intake or {}).get("note") or "")
-    ]
-    case_query = "；".join(
-        [t for t in record_terms if t]
-        + ([(state.classification.get("class") or {}).get("case_type") or ""] if state.classification else [])
-        # 承辦人指定的查詢詞附在尾端，標明它是人加的（logs 會寫出來）
-        + [t for t in (extra_case_terms or []) if t]
-    )
+    # 查詢句的組法見 `build_case_query()`（聊天的「查找相似案例」chip 用同一支）。
+    case_query = build_case_query(state, extra_case_terms)
     # KB 呼叫失敗只降級通道 B，通道 A 照常（spec §7 第 2 列）。
     # 不包 try/except 的話 boto3 的 throttle／權限例外會一路冒到 run_case → run_failed → 502，
     # 「KB 抖一下」就等於整份分析失敗——而通道 A 明明已經算完了。

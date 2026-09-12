@@ -254,7 +254,34 @@ generate_decision_draft → run_case(from_node="n4", base_run_id=…)   約 24�
 > **`args.sources` 已移除。** 原本是 `["ev1","law3"]` 靠字串前綴分辨四種資源，而右欄四群組是四個不同 namespace，
 > 前綴約定沒寫在任何地方。草稿的來源控管改由 §4.0 的 manifest 決定（agent 只看本案已挑進來的卷宗）。
 
-前端命中工具的邏輯在 `store/app.js:matchTool`（先比 `/命令` 前綴，再比關鍵字）。**這是前端的體貼，不是契約**——後端仍應自己判斷；`tool_hint` 只是加速，後端可忽略或覆寫。
+前端命中工具的邏輯在 `store/app.js:matchTool`（先比 `/命令` 前綴，再比關鍵字）。
+
+**`tool_hint`：帶了就一定執行（2026-09-13 修訂，行為已變）。**
+
+原本這裡寫「只是加速，後端可忽略或覆寫」，而實作確實忽略了它——`tool_hint` 在整個
+backend 只出現在欄位宣告那一行，從來沒有被讀過。後果是 2026-09-13 實測到的：按
+chip「查找相似案例」，實際跑的是 `read_case`，回一句「卷內還沒有相似案例的資料」。
+**按鈕寫查找，它去讀已經有的東西。** 現在的行為是：
+
+- **帶 `tool_hint`（＝按了工具 chip）** → 後端在這一回合**直接執行那一支工具**，
+  不交給模型判斷；工具照常發 `tool_call`／`tool_result`，模型拿到結果才開口。
+  白名單：`extract_case_document`、`generate_decision_draft`、`build_relation_graph`、
+  `search_similar_decisions`、`search_regulations`。不在白名單的值一律忽略（等同沒帶）。
+- **沒帶 `tool_hint`（＝自由打字）** → **維持原狀**，模型自己判斷要用哪支工具。
+
+**兩支檢索工具缺的 `query` 由本案案情導出，不由模型想。** chip 不帶參數，而模型
+不准編一個查詢詞（那是紅線）。查詢詞來自六節點的結果，兩條通道各用各的，
+與 N4 共用同一份實作（`backend/nodes/n4_retrieval.py`）：
+
+| chip | 工具 | 查詢詞來源 |
+|---|---|---|
+| 查法條 | `search_regulations` | `build_query()`（案型、案型對應法規名、§77 款次、期間引擎逐步援引的法源、卷證原文） |
+| 查找相似案例 | `search_similar_decisions` | `build_case_query()`（`facts_excerpt[].text`、`intake.note`、案型） |
+
+**導不出查詢詞時不查**（例：還沒解析過卷證）：回一張 `status:"empty"` 的工具卡，
+`note` 說明「查詢詞由卷證解析的結果組出來，目前這些都還是空的」，並請承辦人先解析
+卷證或自己打字給關鍵字。**不會拿一個通用詞去查**——那會回一堆與本案無關的決定書，
+而且看起來很像查到了。
 
 ### 2.2 錯誤（全部 JSON，開串流前先擋）
 
