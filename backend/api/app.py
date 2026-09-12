@@ -55,6 +55,7 @@ if str(ROOT) not in sys.path:
 
 import anyio.to_thread  # noqa: E402
 from fastapi import BackgroundTasks, FastAPI, File, HTTPException, UploadFile  # noqa: E402
+from fastapi.exceptions import RequestValidationError  # noqa: E402
 from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse  # noqa: E402
 from fastapi.staticfiles import StaticFiles  # noqa: E402
@@ -212,6 +213,49 @@ app.add_middleware(
     allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["*"],
 )
+
+
+@app.exception_handler(RequestValidationError)
+async def _validation_error(request: Any, exc: RequestValidationError) -> JSONResponse:
+    """FastAPI 預設的 422 把 `detail` 送成**物件陣列**，這裡把它改成字串。
+
+    為什麼要改（2026-09-13 雲上實測）：其餘所有端點手寫的 `detail` 都是字串，
+    前端統一照字串渲染（`frontend/src/api/http.js:8` 的
+    `super((body && body.detail) || ...)` → `store/app.js:1135` 的 `errText`）。
+    物件陣列進去，承辦人畫面上看到的是 **`[object Object]`** ——一句話都沒有。
+    實際打得到的兩處：`POST /api/cases` 少 `files`、`PATCH /api/cases/{id}` 少 `name`。
+
+    **狀態碼仍是 422，結構化細節也不丟**（挪到 `errors`）：改狀態碼會動到契約，
+    丟細節會讓呼叫端少一份可程式判讀的資料。這裡只換 `detail` 的型別。
+    """
+    return JSONResponse(
+        status_code=422,
+        content={"detail": _validation_message(exc.errors()), "errors": _safe_errors(exc.errors())},
+    )
+
+
+def _validation_message(errors: list[dict[str, Any]]) -> str:
+    """把 pydantic 的錯誤清單攤成一句人看得懂的話。**逐條都講**，不只講第一條
+    ——少了兩個必填欄位卻只說一個，使用者會補完再送一次再被擋一次。"""
+    parts: list[str] = []
+    for err in errors or []:
+        loc = ".".join(str(x) for x in (err.get("loc") or ()) if x != "body")
+        msg = str(err.get("msg") or "").strip()
+        parts.append(f"{loc}：{msg}" if loc else msg)
+    if not parts:
+        return "請求內容不符合這支端點的規格。"
+    return "請求內容不符合這支端點的規格——" + "；".join(parts)
+
+
+def _safe_errors(errors: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """只留可序列化的三個鍵。pydantic 的 `ctx` 可能夾帶例外物件（不可 JSON 序列化），
+    原樣丟進 `JSONResponse` 會把 422 變成 500——那比原本的 `[object Object]` 更糟。"""
+    return [
+        {"loc": [str(x) for x in (e.get("loc") or ())],
+         "msg": str(e.get("msg") or ""),
+         "type": str(e.get("type") or "")}
+        for e in errors or []
+    ]
 
 
 class RunIn(BaseModel):

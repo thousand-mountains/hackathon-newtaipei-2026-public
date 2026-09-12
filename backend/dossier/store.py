@@ -271,6 +271,31 @@ def exists(case_id: str, cases_dir: pathlib.Path | None = None) -> bool:
     return manifest_path(case_id, cases_dir).exists()
 
 
+def source_exists(case_id: str, uploads_dir: pathlib.Path | None = None) -> bool:
+    """這個案子**真的存在**嗎——問的是案件來源，不是 manifest 有沒有落地。
+
+    跟 `exists()` 是兩件事，而混為一談出過事（2026-09-13 雲上實測）：
+    manifest 是**推導出來的書籤**，`ensure()` 遇到沒有的就依來源推一份並落地。
+    於是 GET 一個從來不存在的 case_id 會拿到 200 加一個空案（外加磁碟上一份
+    永久垃圾），而契約 §1.1 附註明講「沒有『先建空案』這個狀態」。
+    承辦人打錯一個字或開到舊書籤，看到的會是「這案子是空的」而不是「找不到」。
+
+    來源是什麼：上傳案＝`output/uploads/{case_id}/case.json`（`list_upload_cases`
+    認的也是這一份）；合成案＝`backend/data/synthetic/{case_id}.json`
+    （`graph.load_case` 認的那一份）。**不要改成掃 CASES_DIR**——那又繞回
+    manifest，等於沒問到「案子在不在」。
+
+    格式不合法回 False 而不是 raise：呼叫端要先用 `exists()`／`case_dir()` 驗格式，
+    那裡的 `ValueError` 會翻成 400（「id 格式不合法」），跟這裡的 404
+    （「格式對但沒這個案子」）是兩種不同的回答。
+    """
+    if not CASE_ID_RE.match(case_id or ""):
+        return False
+    if case_id.startswith("upload-"):
+        return ((uploads_dir or UPLOADS_DIR) / case_id / "case.json").is_file()
+    return (SYNTHETIC_DIR / f"{case_id}.json").is_file()
+
+
 def ensure(
     case_id: str,
     cases_dir: pathlib.Path | None = None,
