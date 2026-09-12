@@ -242,12 +242,35 @@ def check_ac5(p: dict) -> tuple[bool, str]:
 
 
 def check_ac7(p: dict) -> tuple[bool, str]:
+    """top-5 相似案裡同案型的筆數。
+
+    兩個訊號取聯集，因為**兩批來源的案型藏在不同地方**（2026-09-12 實測）：
+
+    - `category`（KB 側檔）：公開爬蟲那批唯一的案型來源，檔名只有「案號_結果」
+    - 標題：賽方那批的檔名帶案型（`04.114年-違反廢棄物清理法事件-77(2)-…`）
+
+    只看標題的話，公開那批**永遠算 0**——2026-09-12 首次量到的「cases=5、同案型=0」
+    就是這樣來的（5 筆事後查 manifest 全是空污案，與測試案同型）。
+
+    `norm` 吃掉「汙／污」的寫法差異：資料集兩種都有。
+    比對用雙向 `in`，因為兩邊的粒度不同：`category` 可能是法規名（`空氣污染防制法`），
+    `intake.type` 是案由（`違反空氣污染防制法事件`），前者是後者的子字串。
+    """
     def norm(s: str) -> str:
         return (s or "").replace("汙", "污")
 
-    same_type = sum(1 for c in p["cases"] if norm(p["intake"]["type"]) in norm(c.get("t", "")))
+    want = norm(p["intake"]["type"])
+
+    def same(c: dict) -> bool:
+        cat = norm(c.get("category") or "")
+        if cat and (cat in want or want in cat):
+            return True
+        return want in norm(c.get("t") or "")
+
+    same_type = sum(1 for c in p["cases"] if same(c))
     ok = len(p["cases"]) >= 3 and same_type >= 3
-    return ok, f"cases={len(p['cases'])}、同案型={same_type}、明細={[(c.get('t'), c.get('outcome')) for c in p['cases']]}"
+    detail = [(c.get("t"), c.get("category"), c.get("outcome")) for c in p["cases"]]
+    return ok, f"cases={len(p['cases'])}、同案型={same_type}、明細={detail}"
 
 
 def check_ac6(code: int, pb: dict | str) -> tuple[bool, str]:
