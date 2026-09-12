@@ -11,7 +11,7 @@ const themeTitle = computed(() => (dark.value ? '切換為淺色' : '切換為�
     <button class="icon-btn" aria-label="案件清單" @click="state.leftOpen = !state.leftOpen">☰</button>
     <div class="brand">
       <span class="mark" aria-hidden="true">
-        <i style="background: #5aa84f"></i><i style="background: #2f7fbf"></i><i style="background: #ffd400"></i><i style="background: #e0679a"></i>
+        <i style="border-color: #ffd400"></i><i style="border-color: #e5312b"></i><i style="border-color: #5aa84f"></i><i style="border-color: #2f7fbf"></i>
       </span>
       <span class="seal">新北市政府法制局</span>
       <span class="sys">訴願智慧輔助平台</span>
