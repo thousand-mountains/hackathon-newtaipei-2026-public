@@ -430,15 +430,32 @@ def _health_body() -> JSONResponse:
 
 @app.get("/api/cases")
 def cases() -> dict:
-    """左欄案件清單。`cases[]` 每筆是 `{id, name, created_at, kind}`（契約 v2 §1.1 #2）。
+    """左欄案件清單。`cases[]` 每筆是 `{id, name, created_at, latest_run_id, kind}`
+    （契約 v2 §1.1 #2）。
 
     **形狀變更（2026-09-12）**：`cases` 原本是 case_id 字串陣列，左欄只拿得到 id，
     畫不出案名與建立時間。`synthetic`／`uploaded` 兩個鍵**維持字串陣列不動**，
     既有呼叫端（`scripts/run_eval.py`、`scripts/live_acceptance.py`）不受影響。
 
-    `name` 與 `created_at` 從 manifest 來，沒有 manifest 的案子在這裡**順手建一份**
-    （`store.ensure`）——不是為了寫檔，是因為推導 name 要讀 case.json／測資檔，
-    讀都讀了就落地，下次列表就不必再推一次。
+    四個欄位全部從**同一份 manifest**（`m`）來，沒有 manifest 的案子在這裡
+    **順手建一份**（`store.ensure`）——不是為了寫檔，是因為推導 name 要讀
+    case.json／測資檔，讀都讀了就落地，下次列表就不必再推一次。
+    這裡的 `cid` 來自 `list_cases()`（掃的是真實來源），所以 `ensure` 在這支是
+    對的語意，**跟卷宗唯讀端點那邊不一樣**（那邊改走 `dossier._read`：
+    來源不存在就 404，不替一個不存在的案子建空案）。
+
+    **`latest_run_id`（2026-09-13 補）**：前端 `store/app.js` 的 `bootAsync` 讀它，
+    `api/mock.js` 的 `caseSummary` 也一直有回——只有真後端漏掉，於是 mock 跑起來正常、
+    真後端缺一個鍵，開發時完全看不出來。症狀平常被 `loadCase`（打彙整版）蓋掉，
+    但**在彙整版回來之前送出的 chat 會缺 `run_id`**，而缺 `run_id` 時 `read_case`
+    會回「卷內是空的」（契約 §2.1 ③）。
+
+    值與 `GET /api/cases/{id}` 彙整版是**同一個來源同一個值**（都是這份 manifest 的
+    `latest_run_id`），不是在這裡另算一份。成本也是零：這個迴圈本來就已經
+    逐件讀過 manifest 了（上一行的 `store.ensure`），原本只是把這個鍵丟掉不用。
+
+    manifest 壞掉走 except 分支時 `latest_run_id` 一樣**帶 `None` 而不是省略鍵**：
+    省略會讓前端拿到 `undefined` 而不是 `null`，跟契約 §2.3「值為 null 也要送」同理。
     """
     lst = list_cases()
     items = []
@@ -447,9 +464,10 @@ def cases() -> dict:
             try:
                 m = store.ensure(cid)
                 items.append({"id": cid, "name": m["name"], "created_at": m["created_at"],
-                              "kind": kind})
+                              "latest_run_id": m["latest_run_id"], "kind": kind})
             except Exception:  # noqa: BLE001 — 一個案子的 manifest 壞掉不該讓整個清單打不開
-                items.append({"id": cid, "name": cid, "created_at": None, "kind": kind})
+                items.append({"id": cid, "name": cid, "created_at": None,
+                              "latest_run_id": None, "kind": kind})
     return {
         "cases": items,
         "synthetic": lst["synthetic"],

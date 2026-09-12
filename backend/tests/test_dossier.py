@@ -643,12 +643,52 @@ def test_app_mounts_the_dossier_router():
     assert_in("dossier_router", mounted, "端點寫了但沒掛上去，等於沒有")
 
 
-def test_case_list_carries_name_and_created_at():
-    """契約 §1.1 #2：左欄要畫案名與建立時間，只回 id 字串陣列畫不出來。"""
-    src = (ROOT / "backend" / "api" / "app.py").read_text(encoding="utf-8")
-    body = src[src.index('@app.get("/api/cases")'):src.index('@app.post("/api/cases"')]
-    for field in ('"id": cid', '"name"', '"created_at"'):
-        assert_in(field, body, f"GET /api/cases 沒有帶 {field}")
+def test_case_list_carries_name_created_at_and_latest_run_id():
+    """契約 §1.1 #2：左欄要畫案名與建立時間，只回 id 字串陣列畫不出來。
+
+    `latest_run_id`（2026-09-13 補）：前端 `store/app.js:1376` 的 `bootAsync` 讀它，
+    `api/mock.js:482` 的 `caseSummary` 一直都有回——只有真後端漏掉，
+    於是 mock 跑起來正常、真後端缺一個鍵。缺 `run_id` 的 chat 會讓 `read_case`
+    回「卷內是空的」（契約 §2.1 ③）。
+
+    **2026-09-13 從「掃原始碼字串」改成實跑端點**：原本斷言 `'"name"' in 原始碼`，
+    那在註解裡寫過一次就會綠，而且它看不出**值對不對**——而這條要守的正是
+    「列表版與彙整版是同一個值」。
+    """
+    api = _api()
+    mod = _app_mod()
+    tmp = _tmp()
+    with _cases_dir(tmp):
+        state = run_case(ORDINARY_CASE, mode="fixture", persist=True)
+        store.record_run(ORDINARY_CASE, build_payload(state))
+        row = {c["id"]: c for c in mod.cases()["cases"]}[ORDINARY_CASE]
+        aggregate = api.get_case(ORDINARY_CASE)["case"]
+    assert_eq(sorted(row), ["created_at", "id", "kind", "latest_run_id", "name"],
+              "列表每筆的鍵變了——前端照這五個鍵畫左欄")
+    assert_eq(row["latest_run_id"], state.run_id,
+              "列表沒有帶上這件案子最後一次 run")
+    # **同一個來源同一個值**，不是兩份實作各算一次（今晚踩過三次的形狀）。
+    for key in ("name", "created_at", "latest_run_id"):
+        assert_eq(row[key], aggregate[key],
+                  f"列表版與彙整版的 {key} 對不起來——兩邊各算了一份")
+
+
+def test_the_case_list_still_carries_the_key_when_a_manifest_is_corrupt():
+    """一份壞掉的 manifest 走 except 分支。**鍵要在、值是 None**，不是省略。
+
+    省略會讓前端拿到 `undefined` 而不是 `null`（契約 §2.3「值為 null 也要送」同理），
+    而且 `cases[]` 每筆長得不一樣本身就是個會咬人的形狀。
+    """
+    mod = _app_mod()
+    tmp = _tmp()
+    (tmp / ORDINARY_CASE).mkdir(parents=True)
+    (tmp / ORDINARY_CASE / "manifest.json").write_text("{ 這不是 JSON", encoding="utf-8")
+    with _cases_dir(tmp):
+        row = {c["id"]: c for c in mod.cases()["cases"]}[ORDINARY_CASE]
+    assert_eq(sorted(row), ["created_at", "id", "kind", "latest_run_id", "name"],
+              "manifest 壞掉時少了鍵——前端會拿到 undefined")
+    assert_eq(row["latest_run_id"], None)
+    assert_eq(row["name"], ORDINARY_CASE, "讀不到名字就用 id，不要編一個")
 
 
 # ── 草稿結構：run payload → 契約 §4.4 的 sections[] ────────────────
