@@ -244,9 +244,13 @@ def conclusion_block_criterion(
     fact_issues = screen.get("fact_issues") or []
     case_type = ((classification or {}).get("class") or {}).get("case_type") or ""
 
-    substantive = bool(art77.get("requires_substantive_review")) and case_type in substantive_types
+    # 與 lamps.requires_human_conclusion 同一套比對，異體字處理必須一致——
+    # 兩邊漂掉的話，封鎖判準與它的說明就會各說各話（契約測試盯著這件事）。
+    _ct = settings.normalize_case_type(case_type)
+    _types = tuple(settings.normalize_case_type(t) for t in substantive_types)
+    substantive = bool(art77.get("requires_substantive_review")) and _ct in _types
     high = [i for i in fact_issues if i.get("severity") == "high"]
-    unknown_type = case_type not in substantive_types
+    unknown_type = _ct not in _types
     inputs_confirmed = bool(screen.get("procedural_inputs_confirmed"))
     unconfirmed_fields = list(screen.get("unconfirmed_procedural_fields") or [])
     procedurally_resolved = bool(art77.get("clause")) and inputs_confirmed
