@@ -276,8 +276,12 @@ Bedrock Converse stream
 
 - `InvokeAgentRuntime` 設 `Content-Type: text/event-stream` 即以 SSE 回傳
   `data: {"event": ...}`（`docs/research/2026-09-12-agentcore.md` §4，來源為官方 CLI reference 與 runtime-invoke-agent 文件）。
-- FastAPI proxy **照抄 `backend/api/app.py` 的 `run_events()`（`@app.get("/api/runs/{run_id}/events")`）既有的同步 `def` + threadpool 模式**，
-  並保留 `X-Accel-Buffering: no` header（甲案已這麼做）。
+- FastAPI proxy 的串流**照 `backend/api/chat.py` 的 `gen()`**：工作丟 `threading.Thread`、
+  generator 是 `async def` 只 await 佇列，並保留 `X-Accel-Buffering: no` header（甲案已這麼做）。
+  **本條 2026-09-13 改過。** 原本寫的是「照抄 `run_events()` 既有的同步 `def` + threadpool 模式」，
+  而那個模式已被實測推翻：starlette 迭代同步 generator 時阻塞多久就佔著一個 threadpool
+  token 多久，聊天一輪 10–72 秒，41 條並行就把預設池塞滿、其他端點 timeout。
+  proxy 正是長連線最多的那一層，照抄舊模式等於把這個缺陷搬進乙案。
 - **事件格式不因託管層改變**：`tool_call`／`tool_result`／`token`／`done`／`error`，
   `done` 的欄位集合與 `docs/spec/2026-09-12-chat-honesty-lamps.md` §4.4 **逐欄相同**（撰寫時 2026-09-12 是 16 個 key，**以該 spec 當下內容為準**），
   不是只帶 `lamp`／`tier`／`origin`／`refs[]`（詳 §4.4 的「燈號在哪裡算」）。本文件不自行定義燈號規則。

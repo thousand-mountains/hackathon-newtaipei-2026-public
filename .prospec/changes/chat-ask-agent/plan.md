@@ -97,6 +97,13 @@
 | 同回合多次 KB 查詢撞號，refs 指錯來源 | High | `RefBook` + 第 3 步的專屬測試。**這是引用必可驗的紅線**（CONSTITUTION §2），不是體驗問題 |
 | 模型自己算期限並講出一個天數 | High | 兩道：system prompt 禁止 + `classify_answer` 對**問題**偵測數字類即強制紅並帶 `redirect`。規則引擎的答案只從 `/api/deadline` 出（CONSTITUTION §4） |
 | SSE 佔用 threadpool thread（預設 40） | Low | demo 量級遠低於 40。**不改成 async**——改寫既有同步寫法的風險大於收益 |
+
+> **2026-09-13 後記：上面這格的風險評估被實測推翻，不要照它做。**
+> 「demo 量級遠低於 40」是沒有量過的猜測。實測 41 條並行的長 SSE 就把預設池塞滿，
+> 其他同步端點（`/api/cases`）timeout、`/api/health` 也曾一起打不開，接下來是
+> ALB 判 task 不健康 → 換掉 task → `backend/output/` 的卷證與 manifest 消失。
+> `gen()` 已改成 async generator（`backend/api/chat.py`），**收益遠大於風險**。
+> 教訓：容量假設寫進風險表時要標「未量測」，否則它讀起來就像一個已知結論。
 | 賽場網路使 SSE 中斷 | Medium | 前端收不到 `done` 時顯示「連線中斷，請重問」，**不得**把已收到的半截 token 當成一則完整回答標燈 |
 | 聊天把 Bedrock 呼叫量推高、吃到賽制 1 RPS 限制 | Medium | **已定做法：每個工具進入點各呼叫一次 `_throttle()`**（一輪多等約 3–5 秒，估計未量測）。不能只靠既有的閘——`backend/llm/client.py:76-79` 的 docstring 明說 agent loop 的內部工具往返不經過 `_throttle()`，而聊天正是 agent loop。**誠實限制**：這只保證單一進程不超速；乙案上線後聊天在另一個容器，兩邊各節各的，甲乙並存時全域仍可能超標。賽制是否把聊天算進去，待 Ci 確認（spec §8.3） |
 | 這個 change 推翻了 2026-09-07 spec 的「不做 ask agent」 | Low | 已在 proposal Background 明列並附行號。AgentCore 那條**沒有**被推翻——乙案另有一份放著的計畫（`.prospec/changes/agentcore-runtime-chat/`、`plans/2026-09-12-agentcore-runtime-chat.md`），`CHAT_BACKEND` 預設 `inproc`，且該計畫明訂事件與燈號契約以本 change 的 spec 為唯一真實來源 |

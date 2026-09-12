@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import io
 import json
+import ast
 import pathlib
 import shutil
 import subprocess
@@ -37,6 +38,7 @@ import tempfile
 import urllib.parse
 import zipfile
 
+from backend.orchestrator import chat_bridge
 from backend.orchestrator.artifact_sections import (
     UNRESOLVED_SUFFIX,
     build_sections,
@@ -620,3 +622,77 @@ def test_endpoint_mounted_on_app_with_contract_path() -> None:
     want = "/api/cases/{case_id}/artifacts/{artifact_id}/export"
     if want not in paths:
         _fail(f"app 上沒有 {want}（已掛：{sorted(q for q in paths if 'artifact' in q)}）")
+
+
+def test_chat_tool_result_reports_the_same_cite_count_as_the_json_view_and_the_export() -> None:
+    """**同一份草稿，三處的 `cite_count` 必須是同一個數字。**
+
+    前端 e2e（2026-09-13）抓到後端自己對不起來：`tool_result.cite_count` 報一個值，
+    `GET …/artifacts/{id}` 與匯出的 `X-Cite-Count` 報另一個。畫面上不會出錯
+    （前端兩處都用後者），但下一個人看到兩個數字會不知道信哪個。
+
+    根因是**數的東西不一樣**，不是算錯：
+      - `payload["citations"]` 是 N6 的逐句驗證紀錄，**含對不回來、被清掉的那些**。
+      - `sections[].blocks[].cites` 是實際帶進文件、使用者在匯出檔裡看得到的引註。
+    這個欄位的語意是後者（契約 §4.4：這個轉換全系統只能有一份實作）。
+
+    兩個案子一起驗**不是為了覆蓋率**：`ordinary` 兩種算法剛好都是 4，
+    只驗它的話換回舊實作照樣綠。`blocked` 才是分歧點（新 2、舊 3），
+    而且兩案的值不相等（4 vs 2），所以這條也抓得到「比較了兩個常數」的假測試。
+    """
+    api = _endpoint()
+    if dossier_api is None:  # pragma: no cover
+        raise TestSkipped(f"需要 fastapi（{DOSSIER_IMPORT_ERROR}）。")
+
+    seen: dict[str, int] = {}
+    for case_id in (ORDINARY, "synthetic-blocked-01"):
+        payload = build_payload(run_case(case_id, mode="fixture", persist=False))
+        with tempfile.TemporaryDirectory() as tmp:
+            run_pipeline = chat_bridge.pipeline_adapter(
+                case_id, pathlib.Path(tmp), mode="fixture")
+            chat_cite = run_pipeline(to_node="n6")["cite_count"]
+
+        json_cite = dossier_api.build_sections(payload, artifact_id="art-x")["cite_count"]
+        export_cite = api.build_sections(payload, artifact_id="art-x")["cite_count"]
+        if not (chat_cite == json_cite == export_cite):
+            _fail(
+                f"{case_id} 的 cite_count 三處對不起來——契約 §4.4 只能有一份實作。\n"
+                f"  tool_result（chat）      ：{chat_cite}\n"
+                f"  GET …/artifacts/{{id}}    ：{json_cite}\n"
+                f"  X-Cite-Count（匯出）      ：{export_cite}"
+            )
+        seen[case_id] = chat_cite
+
+        # 分歧點：`blocked` 的舊算法（數 `citations[]`）會多算被清掉的那一筆。
+        # 這條讓「改回 len(payload['citations'])」一定紅。
+        old_way = len(payload.get("citations") or [])
+        if case_id == "synthetic-blocked-01" and chat_cite == old_way:
+            _fail(
+                f"blocked 案的 cite_count 又回到數 citations[] 了（{old_way}）——"
+                f"那會把 N6 清掉、沒有進到草稿裡的引註也算進去"
+            )
+
+    if len(set(seen.values())) < 2:
+        _fail(f"兩個案子的 cite_count 相同（{seen}），這條比對抓不到「比了兩個常數」")
+
+
+def test_the_chat_bridge_does_not_count_citations_itself() -> None:
+    """反向：`chat_bridge` 不得自己數，必須指到同一個函式物件。
+
+    輸出剛好一樣不算數——下次有人改一邊就會分岔，而分岔的時候沒有任何燈會亮。
+    """
+    if dossier_api is None:  # pragma: no cover
+        raise TestSkipped(f"需要 fastapi（{DOSSIER_IMPORT_ERROR}）。")
+    if chat_bridge.build_sections is not dossier_api.build_sections:
+        _fail("chat_bridge 與 JSON 檢視端指到不同的 build_sections")
+
+    tree = ast.parse(
+        (ROOT / "backend" / "orchestrator" / "chat_bridge.py").read_text(encoding="utf-8"))
+    adapter = next(n for n in ast.walk(tree)
+                   if isinstance(n, ast.FunctionDef) and n.name == "run_pipeline")
+    for node in ast.walk(adapter):
+        if not (isinstance(node, ast.Call) and getattr(node.func, "id", "") == "len"):
+            continue
+        arg = ast.unparse(node.args[0]) if node.args else ""
+        if "citations" in arg:
+            _fail(f"chat_bridge 又自己數引註了：len({arg})")
