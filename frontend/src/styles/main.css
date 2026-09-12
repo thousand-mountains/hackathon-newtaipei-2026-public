@@ -244,6 +244,7 @@ button{font:inherit;color:inherit;cursor:pointer}
 .tag{font-size:11px;padding:1px 7px;border-radius:2px;background:var(--panel-2);color:var(--muted)}
 .tag.real{background:var(--acc-wash);color:var(--acc-2)}
 .tag.alert{background:var(--alert-wash);color:var(--alert)}
+.tag.none{background:transparent;border:1px dashed var(--line);color:var(--faint);letter-spacing:.04em}
 .simbar{height:2px;background:var(--line-soft);border-radius:2px;margin-top:8px;overflow:hidden}
 .simbar i{display:block;height:100%;background:var(--acc-2)}
 

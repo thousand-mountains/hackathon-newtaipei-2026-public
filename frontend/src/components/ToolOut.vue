@@ -28,6 +28,17 @@ const roc = (iso) => {
   const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(iso || ''))
   return m ? `${Number(m[1]) - 1911}/${Number(m[2])}/${Number(m[3])}` : iso
 }
+//: 空欄文案的**唯一**出處。這個檔是全前端唯一畫 intake 的地方（2026-09-13 grep 過），
+//: 要顯示空欄的第二個地方出現時，從這裡拿，不要再寫一份。
+//:
+//: 為什麼是「未取得」而不是「卷證未載」：`backend/llm/prompts/n1_extract.md:24` 規定
+//: 「卷證沒寫的欄位，value 給 null、conf 給 0.0，不要猜」，所以 null **應該**代表
+//: 卷證裡沒有依據。但那是對模型下的指令，不是保證——模型也可能只是沒抽到。
+//: 「未取得」說的是系統這一端確定的事（我沒拿到），沒有替卷證作保。
+const INTAKE_EMPTY = '未取得'
+const INTAKE_EMPTY_WHY =
+  '抽取時未從卷證取得此欄。依抽取規則，沒有原文依據就留空不猜——這不等於卷證裡一定沒有。'
+
 const intakeRows = () => {
   const it = cur().intake
   if (!it) return []
@@ -43,8 +54,15 @@ const intakeRows = () => {
                // auto_fields＝由卷證自動擷取、**還沒有人確認**。要標出來。
                auto: (it.auto_fields || []).includes(k) }
     })
-    .filter((r) => r.v !== null)
+  // **不要再把 v === null 的列濾掉。** 2026-09-13 之前這裡有一行 `.filter(r => r.v !== null)`，
+  // 抽不到的欄位整列從表格消失、沒有任何訊號。當時看不出問題，是因為抽不到必填欄位時
+  // 整條 run 會停在 NEEDS_INPUT，承辦人被別的地方擋住了；`no`（收文案號）降成非必填之後
+  // （它不進任何規則運算），案子會一路綠燈跑完，而表格**直接少一列案號**——
+  // 從「擋住你」變成「靜默丟棄」，而且這種更糟看起來像變好（紅燈不見了）。
 }
+
+//: 這一輪有幾欄是空的。0 時不顯示那句說明——沒有空欄還講一句「空欄不是略過」只是噪音。
+const emptyIntakeCount = () => intakeRows().filter((r) => r.v === null).length
 
 const props = defineProps({ out: Object })
 const emit = defineEmits(['view-case', 'view-graph', 'preview-paper', 'export-download'])
@@ -66,12 +84,21 @@ const provLabel = (p) => PROV[p] || '出處未標示'
       <dl v-if="intakeRows().length" class="kv">
         <template v-for="r in intakeRows()" :key="r.k">
           <dt>{{ r.label }}</dt>
-          <dd :class="{ mono: ['no', 'd1', 'd2', 'd3'].includes(r.k) }" :title="r.raw ? '原始值 ' + r.raw : null">
-            {{ r.v }}<span v-if="r.auto" class="tag">自動擷取．待確認</span>
+          <dd
+            :class="{ mono: r.v !== null && ['no', 'd1', 'd2', 'd3'].includes(r.k) }"
+            :title="r.v === null ? INTAKE_EMPTY_WHY : r.raw ? '原始值 ' + r.raw : null"
+          >
+            <span v-if="r.v === null" class="tag none">{{ INTAKE_EMPTY }}</span>
+            <template v-else>{{ r.v }}<span v-if="r.auto" class="tag">自動擷取．待確認</span></template>
           </dd>
         </template>
       </dl>
+      <!-- 這條 v-else 只在 intake 整包是 null 時走到（契約 §4：取不到是 null 不是省略）。
+           「有 intake 但某幾欄是空的」不走這裡——那些欄位上面照樣逐列畫出來。 -->
       <p v-else style="margin: 0; color: var(--muted); font-size: 12.5px">這次執行沒有收文欄位。</p>
+      <p v-if="emptyIntakeCount()" style="margin: 8px 0 0; color: var(--muted); font-size: 11.5px">
+        有 {{ emptyIntakeCount() }} 欄沒有值。<b>空欄是抽取沒拿到，不是系統略過不顯示</b>；要不要補、怎麼補由承辦人判斷。
+      </p>
       <p style="margin: 8px 0 0; color: var(--faint); font-size: 11.5px">
         run <span class="mono">{{ out.runId || '—' }}</span>．終態 <span class="mono">{{ out.state || '—' }}</span>．這個 run 只跑到程序審查，還沒有草稿。
       </p>
