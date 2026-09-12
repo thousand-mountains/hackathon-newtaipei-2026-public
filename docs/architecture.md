@@ -735,10 +735,10 @@ ORIGIN = {
 
 | 決策點 | 選擇 | 理由與出處 |
 |---|---|---|
-| Vector store | **S3 Vectors**（主案）／**Aurora PostgreSQL pgvector**（備援） | S3 Vectors 2025-12 GA、2026-03 擴至 31 區，官方宣稱比傳統方案省成本最多 90%，可直接整合進 KB Quick Create（[GA 公告](https://aws.amazon.com/about-aws/whats-new/2025/12/amazon-s3-vectors-generally-available/)、[擴區公告](https://aws.amazon.com/about-aws/whats-new/2026/03/s3-vectors-expands-17-regions)、[News Blog](https://aws.amazon.com/blogs/aws/amazon-s3-vectors-now-generally-available-with-increased-scale-and-performance)）。**東京是否在那 31 區內未驗證**，開工第一步 console 實查（§11 賽前清單 2） |
+| Vector store | **S3 Vectors**（主案）／**Aurora PostgreSQL pgvector**（備援） | S3 Vectors 2025-12 GA、2026-03 擴至 31 區，官方宣稱比傳統方案省成本最多 90%，可直接整合進 KB Quick Create（[GA 公告](https://aws.amazon.com/about-aws/whats-new/2025/12/amazon-s3-vectors-generally-available/)、[擴區公告](https://aws.amazon.com/about-aws/whats-new/2026/03/s3-vectors-expands-17-regions)、[News Blog](https://aws.amazon.com/blogs/aws/amazon-s3-vectors-now-generally-available-with-increased-scale-and-performance)）。**us-west-2 是否在那 31 區內未驗證**，開工第一步 console 實查（§11 賽前清單 2） |
 | 不用 OpenSearch Serverless | — | OCU 有分鐘計費底價，101 份文件的量級不划算（03 §3） |
 | 不用一般 RDS PostgreSQL | — | KB 只支援 Aurora PostgreSQL，一般 RDS + pgvector 不是支援選項（[KB setup 文件](https://docs.aws.amazon.com/bedrock/latest/userguide/knowledge-base-setup.html)） |
-| Embedding model | **Cohere Embed Multilingual v3**（主案）／**Titan Text Embeddings V2**（備援） | Cohere v3 官方標榜多語含中文；**兩者在東京／新加坡的逐區可用性未查到官方清單，未驗證**，需在 console model access 頁確認可勾選（03 §3） |
+| Embedding model | **Cohere Embed Multilingual v3**（主案）／**Titan Text Embeddings V2**（備援） | Cohere v3 官方標榜多語含中文；**兩者在 us-west-2 的可用性未查到官方清單，未驗證**，需在 console model access 頁確認可勾選（03 §3） |
 | Chunking | **改用 Managed Knowledge Base（2026-09-07 D2）**：chunking 由服務決定；每檔即一份決定書／函釋／判解，法規不入庫 | 原設計是「入庫前自己切好、每 chunk 一筆」（Claire POC 前提 1：法規一條一 chunk、決定書理由一項一 chunk）。D2 改為不自管 vector store 也不控制 chunking，換取 30 小時內建得起來；代價是「一條一段」的檢索結構不再由我們保證，所以 recall 要實測——門檻與備援見 §13 第 18 項。法規仍走 `laws-snapshot.json` 精確查表，**不入庫**（下方「法條精確查表」列不變）|
 | Metadata | `case_type`／`art77_clause`／`outcome`／`year`／`doc_kind`（`law`｜`decision`） | 檔名即標籤，regex 可拿到，101 筆免費標註（Claire POC） |
 | Metadata filter | 檢索時先用 `case_type` ＋ `art77_clause` 過濾再算相似度 | Claire 量測：加 77 條款過濾後 recall@5 從 41% 升到 68% |
@@ -889,7 +889,7 @@ flowchart LR
         AC["AgentCore Runtime<br/>託管 N1 與 N5 兩個 LLM 節點"]
     end
 
-    subgraph DATA["資料與模型 ap-northeast-1 東京"]
+    subgraph DATA["資料與模型 us-west-2 奧勒岡"]
         BRR["Bedrock Runtime"]
         KBB["Bedrock Knowledge Bases"]
         S3B["S3 私有 bucket"]
@@ -932,7 +932,7 @@ AgentCore Runtime microVM 由主服務呼叫。Runtime contract 是 **ARM64 容�
 計費為秒計、I/O wait 期間不計 CPU、無最低承諾（[pricing](https://aws.amazon.com/bedrock/agentcore/pricing/)），對黑客松友善。
 但 ARM64 ＋ 自訂 HTTP contract 是額外複雜度，**建議只在 Phase 3 有餘裕時做**（§13 待拍板 5）。
 
-### 9.2 Region 選擇：ap-northeast-1（東京）
+### 9.2 Region 選擇：us-west-2（奧勒岡）
 
 > **2026-09-12 更新（本節以下原文已過時，保留供追溯）**：
 > 實際部署鎖在 **us-west-2**（賽方僅允許 `us-east-1`／`us-west-2`，見 `infra/cdk/deploy.sh:38-40`）。
@@ -951,7 +951,13 @@ AgentCore Runtime microVM 由主服務呼叫。Runtime contract 是 **ARM64 容�
 本專案不需要即時網路搜尋也不需要付款，兩區都可以——**選東京，因為功能面較完整**（Agent Registry 與 Web Search 內建工具新加坡沒有，雖然本專案用不到）。地理上東京較近，但 03 沒有任何延遲數據，**不以延遲作為選擇理由**。
 **官方表格內沒有台北**（本次搜尋未查到 AWS 台北 region 存在的證據，標未驗證）。
 
-若賽場 9/12 公告指定其他 region，改的是 `.env` 一個變數與 KB ARN，不改程式。
+改動範圍：`.env` 的 `AWS_REGION`、KB 與 S3 bucket 的所在區、ECR/ECS/CloudWatch 的 `--region`。
+**程式碼不動**——`settings.aws_region()` 純讀環境變數，`llm/client.py` 與 `retrieval/kb.py` 都沒有寫死 region。
+
+**一個容易漏的連帶改動**：cross-region inference profile 的前綴由 `apac.` 變為 `us.`。
+只改 `AWS_REGION` 而沿用舊 model id 會直接 ValidationException，見 §11 賽前清單 4。
+
+若賽場另行公告指定 region，改的仍是 `.env` 一個變數與 KB ARN，不改程式。
 
 ### 9.3 本地 → AWS 搬遷步驟（目標 45 分鐘內，比 8/30 版的 30 分鐘保守）
 
@@ -1196,9 +1202,9 @@ Claire 那條線（1-3 → 1-9 → 1-5 → 1-4 → 2-4）從 H4 跑到 H12.5，�
 | # | 事項 | 人 | 時 | 期限 | 為什麼是必做 |
 |---|---|---|---|---|---|
 | 1 | **Bedrock model access 申請 ＋ 實跑一次 Converse 確認 quota 非 0** | Ci | 1.0 | 9/5 | 03 §7 最高風險：新帳號或少用帳號的 quota 可能卡在 0 TPM/0 RPM，有回報案例卡 15 天客服未解 |
-| 4 | 查 apac cross-region inference profile ID（不照抄 `us.` 前綴） | Ci | 0.5 | 9/5 | 03 §4：apac 前綴是通用命名慣例，未逐一核對 |
+| 4 | 查 **`us.` cross-region inference profile ID**（改 us-west-2 後前綴由 `apac.` 變 `us.`） | Ci | 0.5 | 9/12 | 只改 `AWS_REGION` 不改 model id 會直接 ValidationException；以 `list-inference-profiles` 實查，不照抄 |
 | 8 | 合併分支後補 `.gitignore` 的 `dist/` 一條 ＋ `git rm --cached` 既存 `__pycache__` 與 `dist/index.html` | Ci | 0.5 | 9/5 | 分支 commit `c344172` 已有 17 行 `.gitignore`，**不要重做一份** |
-| 2 | 東京 console 確認三件事：S3 Vectors 可用、Cohere Embed Multilingual v3／Titan v2 可勾選、**KB「不自動切 chunk」的參數名與值** | Claire | 1.0 | 9/6 | 03 §3 三項皆標未驗證；勾不到就要改 Aurora pgvector 或換 region |
+| 2 | us-west-2 console 確認三件事：S3 Vectors 可用、Cohere Embed Multilingual v3／Titan v2 可勾選、**KB「不自動切 chunk」的參數名與值** | Claire | 1.0 | 9/6 | 03 §3 三項皆標未驗證；勾不到就要改 Aurora pgvector 或改用 us-east-1（賽制只剩這兩區） |
 | 7 | 五步動線分支合併決策與執行 | Pink 0.75 ＋ Ci 0.75 | 1.5 | 9/6 | 02 §G-1 列為最高優先待決 |
 | 3 | **中文 PDF 抽取實測**：Claude Converse document input ＋ Citations vs BDA，用 2 份真實資料集 PDF | Ci 2.0 ＋ Jacky 2.0 | 4.0 | 9/7 | Textract 官方語言清單只有英西德法義葡六種，**不支援中文**；同時校準 §3.1 的 0.80 信心門檻 |
 | 5 | **洗防法修法日期翻原始 PDF 定案** ＋ 「書面告誡非罰鍰」勘誤 | Jacky | 2.0 | 9/7 | §8.2；不定案則 `consistency_check.py` 永遠 fail。**定案後 0-6 只要合入，不再翻 PDF** |
@@ -1220,7 +1226,7 @@ Claire 那條線（1-3 → 1-9 → 1-5 → 1-4 → 2-4）從 H4 跑到 H12.5，�
 | 1 | Bedrock quota 卡在 0 TPM／model access 未開 | 中 | **致命** | 賽前清單 1；`/api/health` | `RUN_MODE=fixture` 全線重播。（改用第二個 AWS 帳號跑交付路徑**是否合規未驗證**——賽場是「專屬黑客松競賽之開發環境」，需向賽方確認後才能當備援） | 9/5（賽前） |
 | 2 | 中文 PDF 抽取品質不足 | 中 | 高 | 賽前清單 3 實測 | BDA → `pdftotext -layout` ＋ LLM → 手動表單 | 9/7（賽前） |
 | 3 | Bedrock KB 建不起來或 recall 太低 | 中 | 中 | **1-9 快篩**的 recall@5 < 60% | 本地檢索：Bedrock 尚可用→離線向量檔；Bedrock 全掛→純 BM25（§7.3） | **H10**（隨 1-9 前移） |
-| 4 | S3 Vectors／embedding model 東京不可用 | 中 | 中 | 賽前清單 2 console 實查 | Aurora pgvector；或換新加坡 | 9/6（賽前） |
+| 4 | S3 Vectors／embedding model 在 us-west-2 不可用 | 中 | 中 | 賽前清單 2 console 實查 | Aurora pgvector；或改 us-east-1（賽制只剩這兩區） | 9/6（賽前） |
 | 5 | 主筆節點生成 C 型結論段 | 低 | **P0** | qa-legal 對抗餵食（2-5） | 結構性封鎖已在編排層（§4.3）；仍發生則當日修復否則砍該功能 | H20 |
 | 6 | 生成查無此號的判例 | 低 | **P0** | 引用守門 ✗ 態 ＋ submit 409 | 守門是純程式，不依賴模型 | 持續 |
 | 7 | 端到端超過 90 秒 | 中 | 中 | **2-6a**（H14 fixture 骨架量測）先報警，2-6b（H18.5）複測 | 相似案 5→3、關掉 rerank、prompt caching | **H14**（早期）／H18.5（確認） |
@@ -1251,7 +1257,7 @@ Claire 那條線（1-3 → 1-9 → 1-5 → 1-4 → 2-4）從 H4 跑到 H12.5，�
 | 9 | 相似案「同/異」說明用模板還是 LLM | **模板**（保住只有 2 個 LLM 節點） | 影響 LLM 節點數這條紅線 |
 | 10 | 檢索 recall@5 門檻 60% | 本文建議值 | 相對 Claire 68% 的保守門檻，需追認 |
 | 11 | 抽取信心門檻 0.80 | 本文建議值，**待實測校準** | 賽前清單 3 實測後回填 |
-| 12 | Region 東京 vs 新加坡 | **東京** | 兩區核心功能全綠，若賽場公告不同則改設定 |
+| 12 | Region | **us-west-2**（2026-09-12 定案） | 賽制指定主要區域為 us-east-1 與 us-west-2，原「東京 vs 新加坡」之比較整條作廢；見 §9.2 |
 | 13 | `dist/` 是否作為建置產物入庫 | 本文建議移出 track | 02 §G-2 |
 | 14 | 8/22「一致性守門員＋草稿工作台」雙亮點定位 | 沿用 | 01 §C：8/30 議程列入但**未見表態結果** |
 | 15 | **`case-demo.json` 進 git 算不算違反 CONSTITUTION §6** | **不判定**。現況：repo 內確有這份檔，`provenance.kind=de-identified`（非 synthetic），含真實案號 `1147061268`、處分文號 `11403210490-01`、條文原文，`src` 指向賽方資料集檔名 | CONSTITUTION §6 前半句「資料集不進 git」與後半句「demo 案件可用已去識別化的決定書原文」本身有張力。§6.3 還要求它變成「一次真實執行的輸出快照」，等於賽方 PDF 跑出來的內容入 git。**這是紅線解釋，不該由架構文件用白名單默默放行。** 若拍板為可留，建議附三個條件：(a) `provenance.kind` 必須是 `de-identified` 且 banner 常駐、(b) 條文原文引用長度設上限、(c) 匯出腳本強制遮罩人名與地址 |
@@ -1333,8 +1339,8 @@ Claire 那條線（1-3 → 1-9 → 1-5 → 1-4 → 2-4）從 H4 跑到 H12.5，�
 - 抽取信心門檻 0.80、檢索 recall@5 門檻 60% 都是**本文的建議值**，未經實測校準。
 - Claude 新型號（Fable 5.1／Opus 5／Sonnet 5）是否支援 PDF ＋ Citations **未經證實**；
   2025-06 公告的清單是 Opus 4／Sonnet 4／Sonnet 3.7／Sonnet 3.5v2。本文建議先用清單內型號，實測後再升級。
-- apac cross-region inference profile 的實際 ID **未逐一核對**。
-- S3 Vectors 與 embedding model 在東京的可用性 **未驗證**，賽前清單 2 要實查。
+- `us.` cross-region inference profile 的實際 ID **未逐一核對**（改 us-west-2 後前綴由 `apac.` 變 `us.`，賽前清單 4）。
+- S3 Vectors 與 embedding model 在 us-west-2 的可用性 **未驗證**，賽前清單 2 要實查。
 - Bedrock Guardrails 對中文的效果 **未經證實**，本文未把 Guardrails 放進關鍵路徑。
 - 「30 小時每人可工作 20 小時」是估計值，未依賽方作息表核對；§11.1 的輪休窗口是建議排班，未與團隊確認。
 - Bedrock KB「不讓它自動切 chunk」對應的 API 參數名稱與值 **未驗證**（03 §3 只提到 fixed／hierarchical／semantic 三種策略，且來源為第三方整理）。
