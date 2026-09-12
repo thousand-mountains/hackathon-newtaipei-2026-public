@@ -152,6 +152,12 @@ def export_artifact(
 
     view = build_sections(build_payload(state), artifact_id=artifact_id)
     if not has_body(view):
+        # ⚠️ **JSON 檢視端（#21）在同樣的情況回 200 ＋ 空 `sections[]`，那是刻意的。**
+        # 兩端共用的是 `artifact_id → run_id` 的解析，**不是回應碼**；409 只寫在
+        # 契約 §1.5 #23 的錯誤碼表裡，§4.4 #21 沒有這條。理由與實測見
+        # `backend/dossier/artifact_ref.py` 檔頭「共用的是解析，不是回應碼」那一段。
+        # **不要為了「兩邊一致」把這條 409 拿掉或搬過去**——它擋的是
+        # 「匯出一份只有抬頭的空白檔」被讀成「AI 認為本案無話可說」。
         raise HTTPException(
             status_code=409,
             detail=(
