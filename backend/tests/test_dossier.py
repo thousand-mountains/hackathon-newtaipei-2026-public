@@ -705,36 +705,6 @@ def test_a_synthetic_case_refuses_to_be_deleted_with_a_reason():
     raise AssertionError("合成測資應該拒絕刪除並說明理由")
 
 
-class FakeS3:
-    def __init__(self, objects: dict[str, bytes]):
-        self.objects = objects
-        self.keys_read: list[str] = []
-
-    def get_object(self, Bucket: str, Key: str):  # noqa: N803 - boto3 的參數名就是大寫
-        self.keys_read.append(Key)
-        if Key not in self.objects:
-            raise _NoSuchKey(Key)
-        return {"Body": _Body(self.objects[Key])}
-
-
-class _NoSuchKey(Exception):
-    pass
-
-
-_NoSuchKey.__name__ = "NoSuchKey"
-
-
-class _Body:
-    def __init__(self, data: bytes):
-        self.data = data
-
-    def read(self) -> bytes:
-        return self.data
-
-
-# ── 草稿結構：全系統只有一份 sections[] 實作 ──────────────────────
-
-
 def test_title_and_meta_are_document_header_not_sections():
     """把抬頭當成 section 的話，畫面最上面會多出兩個 `h` 是空字串的區塊（契約 §4.4）。"""
     view = build_sections(_payload_fixture(), "art-x")
