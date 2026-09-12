@@ -44,6 +44,17 @@ def normalize_name(name: str) -> str:
     return name.replace(" 的副本", "").replace(".pdf", "").strip() + ".txt"
 
 
+def safe_segment(s: str) -> str:
+    """把值裡的路徑分隔字元換掉，免得它在檔名裡長出一層目錄。
+
+    爬蟲的 `outcome` 有 21 筆長這樣：`部分不受理/駁回`、`不受理/駁回`、`部分不受理/撤銷`。
+    直接拼進檔名，S3 上會變成 `…/1141060373_不受理/駁回.txt`——多一層 key，
+    而 `retrieval/kb.py` 取檔名是 `rsplit("/", 1)[-1]`，拿到的是 `駁回.txt`，
+    **案號整個掉了**，相似案卡會出現一張標題只寫「駁回」、看不出是哪件案子的卡片。
+    """
+    return s.replace("/", "、").replace("\\", "、").strip()
+
+
 def roc_year_of(case_no: str) -> str | None:
     """爬蟲資料**沒有** `year` 欄位（2026-09-07 實測）。案號前三碼是民國年（例 `109`）。
 
@@ -91,7 +102,7 @@ def main() -> int:
                 outcome = (r.get("outcome") or "").strip()
                 if not case_no or not r.get("full_text"):
                     continue
-                rel = pathlib.Path("新北訴願決定書_全量") / f"{case_no}_{outcome or '未知'}.txt"
+                rel = pathlib.Path("新北訴願決定書_全量") / f"{safe_segment(case_no)}_{safe_segment(outcome) or '未知'}.txt"
                 out = stage / "public" / rel
                 out.parent.mkdir(parents=True, exist_ok=True)
                 out.write_text(r["full_text"], encoding="utf-8")
