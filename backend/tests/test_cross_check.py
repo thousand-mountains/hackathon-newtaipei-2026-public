@@ -139,3 +139,20 @@ def test_procedure_conclusion_never_emits_a_substantive_verdict():
         if c["value"] is None:
             assert_eq(c["by"], "unavailable")
             assert_in("不代為認定", c["why"])
+
+
+def test_early_return_keeps_the_same_contract_shape():
+    """送達方式不明時的早退路徑，三個分流欄位一律回滿（即使是空的）。
+
+    251 件實測有 67 件送達方式未知——這是常見情境不是邊界。少給 key 會讓
+    前端讀到 undefined，而契約的形狀不該因為走哪條分支而變。
+    """
+    early = cross_check_deadline({"service_method": "unknown"}, {})
+    normal = cross_check_deadline(
+        {"service_method": "deposit", "d2": "2025-03-03", "d3": "2025-05-01", "transit_days": 0},
+        {"deadline": "2025-04-02", "overdue": True},
+    )
+    assert set(early) == set(normal), f"早退路徑缺少 {set(normal) - set(early)}"
+    for field in ("disagreement", "not_comparable", "refusal_asymmetry"):
+        assert early[field] == [], f"{field} 應為空 list 而非 None／缺漏"
+    assert early["agree"] is None, "第二意見未執行時不得宣稱一致"

@@ -85,10 +85,15 @@ def cross_check_deadline(
     """
     method = _METHOD_TO_REF.get(intake.get("service_method") or "")
     if method is None or not intake.get("d2"):
+        # 三個分流欄位一律回滿，即使是空的。**早退路徑少給 key 會讓前端讀到
+        # undefined**，而「送達方式不明」是常見情境（251 件實測有 67 件），
+        # 不是罕見的邊界。契約的形狀不該因為走哪條分支而變。
         return {
             "agree": None,
             "engines": {},
             "disagreement": [],
+            "not_comparable": [],
+            "refusal_asymmetry": [],
             "note": "送達方式或送達日不足，第二意見引擎未執行——與本系統一樣不猜。",
         }
 
