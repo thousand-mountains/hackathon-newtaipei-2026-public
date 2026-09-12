@@ -284,6 +284,7 @@ npm install
 | target group | HTTP 8080，health check 打 `/api/health`（不是 `/`） |
 | task role | `hackntpc-appeal-task-role` |
 | log group | `/ecs/hack-appeal-backend`，保留 7 天 |
+| **EFS**（2026-09-13） | `OutputFs` ＋ access point `OutputAp`，掛在容器的 `/app/backend/output`。4 個 mount target（預設 VPC 每個 AZ 一個），專屬 SG 只放行**來自 service SG 的 2049**。`removalPolicy: DESTROY` |
 | ECR repository | CDK bootstrap 建的 `cdk-hackntpc-container-assets-…` |
 
 映像檔內容：`backend/`、`prototype/dist/`、以及 **`data/manifest.json`**。
@@ -454,6 +455,26 @@ aws cloudformation describe-stacks --stack-name hackntpc-appeal-backend \
   | 帳號 2026-09-15 08:00 收回 | 無一手來源，回推自 Workshop Studio 事件頁的 Duration 72 小時 | 本來就是推論 |
 
   ⚠️ 口頭確認的效力弱於書面。若賽後仍需長期可存取，需另備帳號——超出本 change 範圍，需 Ci 拍板。
+- **`backend/output/` 掛在 EFS 上，但「共享」不等於「可以多副本」**（2026-09-13）。
+
+  掛 EFS 解決的是**「task 被換掉就全沒」**：`desiredCount: 1` 不代表 task 不會被換，
+  health check 飽和、OOM、部署、AZ 事件都會換，而換一次評審上傳的卷證與卷宗就當場消失。
+  現在那些檔跨 task 存活。
+
+  ⚠️ **它沒有解決「同時寫」，而且併發窗口不是只有調高 count 才會出現。**
+  `minHealthyPercent: 100` 代表**每次部署**都先起新 task、健康了才停舊 task——
+  那段時間**兩個 task 同時掛著同一份 EFS**。卷宗的寫入是 read-modify-write
+  （讀整份 manifest → 改一個欄位 → 寫回整份），這種競賽**不是 `os.replace` 擋得住的**，
+  不管底下是本地檔案系統還是 NFS：後寫的會把先寫的整份蓋掉。
+
+  demo 期間沒人會在部署那幾十秒內按右欄，所以**接受**——但這是接受，不是不存在。
+  要調高 `desiredCount` 之前，`backend/dossier/store.py` 那一層要先有鎖
+  （最小可行：`O_EXCL` lock 檔，或改成 append-only 事件檔再摺疊）。
+  細節見該檔檔頭的「三條已知限制」第 2 條。
+
+- **`./deploy.sh destroy` 會連 EFS 一起刪掉**（`removalPolicy: DESTROY`）。
+  刻意的：短命競賽環境不留孤兒資源。**但這代表 destroy＝卷宗與上傳卷證一起沒**，
+  收攤前要確認沒有還需要的東西。
 - 前端換版後要重建映像檔：`./deploy.sh deploy` 會自己重建並推送（`fromAsset` 的 hash 變了）。
 - 換 KB 正本只要改 `.env` 的 `BEDROCK_KB_ID` 再 `./deploy.sh deploy`，**不需重建映像檔**。
 

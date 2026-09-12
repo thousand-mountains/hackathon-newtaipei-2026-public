@@ -11,15 +11,36 @@
 為什麼單檔不拆四檔：開案首載本來就要一次全拿（`GET /api/cases/{id}` 彙整版），
 單檔一次讀完最省。增刪＝read-modify-write。
 
-**三條已知限制。寫在這裡，不要讓人以為它是資料庫**（2026-09-12 Ci 拍板接受）：
+**三條已知限制。寫在這裡，不要讓人以為它是資料庫**（2026-09-12 Ci 拍板接受；
+第 2、3 條在 2026-09-13 掛上 EFS 之後有變動，逐條寫在下面）：
 
 1. **不原子——這一條已修。** 本檔一律 tmp + `os.replace`（見 `_atomic_write_json`）。
    `orchestrator/runstore.py:36` 的 `p.write_text` 是**既有的**債，**刻意不在這次動它**：
    那是已驗綠的續跑路徑，決賽期間不為了一個一般性的改善去動它。
-2. **多副本會分裂。** 兩個 process 各自 read-modify-write 同一份 manifest，後寫的贏。
-   chat session 本來就是進程內字典（`backend/api/chat.py`）、ECS 現在單台，不是新債。
-3. **容器重啟就沒了。** `backend/output/` 是容器本地磁碟。`runs` 已經是同一個問題，
-   **manifest 與 runs 一起接受，不搬 S3**——現在改儲存層等於在已驗綠的路徑上動刀。
+2. **多副本會分裂，而掛了 EFS 之後性質變了——變成「共享但沒有鎖」。**
+   兩個 process 各自 read-modify-write 同一份 manifest，後寫的贏。
+
+   2026-09-13 起 `backend/output/` 掛在 EFS 上（`infra/cdk/lib/appeal-backend-stack.ts`
+   的 `OutputFs`），所以它現在是**跨 task 共享的同一份檔**，不再是各寫各的。
+   `_atomic_write_json` 的 `os.replace` 在**本地檔案系統**上是 atomic rename；
+   在 NFS 上 rename 仍是單一 RPC，但「A 讀 → B 讀 → A 寫 → B 寫」這種
+   read-modify-write 競賽**本來就不是 rename 擋得住的**——不管檔案系統是什麼，
+   後寫的那份會把先寫的整份蓋掉（丟的是「加入一筆法規」這種整份改寫）。
+
+   ⚠️ **「`desiredCount: 1` 所以不會發生」是不夠精確的**：`minHealthyPercent: 100`
+   代表**每次部署**都會先起新 task、確認健康、再停舊 task——那段時間**兩個 task
+   同時掛著同一份 EFS**。所以併發寫不是「調高 count 才會有」，是**每次部署都有一個窗口**。
+   demo 期間沒人會在部署那幾十秒內按右欄，所以接受；但**這是接受，不是不存在**。
+
+   要調高 `desiredCount`（或想讓它在部署窗口也正確）之前，這一層需要先有鎖
+   ——最小可行是寫入時用 `O_EXCL` 的 lock 檔，或改成 append-only 事件檔再摺疊。
+   **不要因為「加了 EFS 所以安全了」就調高 count**：EFS 解決的是「重啟就沒了」，
+   不是「同時寫」。
+
+3. **容器重啟就沒了——這一條已修（2026-09-13）。** 原本 `backend/output/` 是容器本地
+   磁碟，task 被換掉（health check 飽和、OOM、部署、AZ 事件）時評審上傳的卷證與
+   卷宗會當場全沒。現在掛 EFS，跨 task 存活。**`deploy.sh destroy` 仍會一起刪掉**
+   （`removalPolicy: DESTROY`，刻意的：短命競賽環境不留孤兒資源）。
 
 `case_id` 走白名單 regex 才拼路徑（沿用 `runstore._path` 的做法）：這個值會從 HTTP path
 進來，不擋就等於讓呼叫端指定任意檔案路徑（`../../etc/x`）。格式不合直接 `ValueError`，
