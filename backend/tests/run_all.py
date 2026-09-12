@@ -39,6 +39,7 @@ from backend.tests import (  # noqa: E402
     test_cross_check,
     test_deadline,
     test_e2e,
+    test_export,
     test_gate_hardening,
     test_live_plumbing,
     test_nodes,
@@ -550,6 +551,7 @@ def main() -> int:
         ("live 分支管線（settings／llm client／kb／續跑，全部 monkeypatch）", [test_live_plumbing]),
         ("KB 知識圖抽取（regex + 查表，零 LLM）", [test_build_graph]),
         ("聊天誠實燈號（機械規則，零 LLM）", [test_chat]),
+        ("草稿匯出 .docx／.pdf（契約 §1.5 #23、§4.4）", [test_export]),
     ]
     total_pass = total = 0
     all_failures: list[str] = []
