@@ -1,0 +1,15 @@
+version: "1.0"
+project:
+  name: hackathon-newtaipei-2026
+paths:
+  base_dir: prospec
+exclude:
+  - "*.env*"
+  - "*credential*"
+  - "*secret*"
+  - node_modules
+  - .git
+agents:
+  - claude
+knowledge:
+  base_path: prospec/ai-knowledge

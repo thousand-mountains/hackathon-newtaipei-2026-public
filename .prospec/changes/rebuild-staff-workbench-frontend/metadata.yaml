@@ -1,0 +1,7 @@
+name: "rebuild-staff-workbench-frontend"
+created_at: "2026-09-12T04:21:05.824Z"
+status: story
+assignee: "Pink"
+authored_by: "-76 session"
+backend_verified_at: "2026-09-12T12:13+08:00"
+description: "把訴願審理 AI 輔助的前端從五步動線＋七張幕僚卡改成兩頁（上傳／工作台）新設計，前後端分離，並接上真後端 API"
