@@ -2678,3 +2678,88 @@ def test_rerank_skips_when_hits_have_no_text():
             hits = r.search("q", filters={"prefix": ["新北訴願決定書_環保局全量/"]}, top_k=3)
     assert_eq(fake.rerank_calls, [], "沒有內文就不得呼叫 rerank")
     assert_eq(len(hits), 1, "命中照樣回傳，只是沒有重排")
+
+
+class _FilterAwareRuntime:
+    """假 client：記下每次 retrieve 的 filter，並可指定「帶 filter 時回空」。"""
+
+    def __init__(self, results, empty_when_filtered=False):
+        self.results = results
+        self.empty_when_filtered = empty_when_filtered
+        self.calls = []
+
+    def retrieve(self, **kw):
+        self.calls.append(kw)
+        cfg = next(iter(kw["retrievalConfiguration"].values()))
+        if self.empty_when_filtered and cfg.get("filter"):
+            return {"retrievalResults": []}
+        return {"retrievalResults": self.results}
+
+
+def _one_ref():
+    return [_kb_result("行政函釋/法務部93年-寄存送達.txt", 0.9, "寄存送達自寄存之日起…")]
+
+
+def _filters_of(fake):
+    return [next(iter(c["retrievalConfiguration"].values())).get("filter") for c in fake.calls]
+
+
+def test_ref_channel_sends_no_metadata_filter_by_default():
+    """`REF_DOC_KINDS` 沒設就不篩——沒有側檔的 KB 一篩就全空。"""
+    with env(REF_DOC_KINDS=None, BEDROCK_RERANK_MODEL_ID=None):
+        fake = _FilterAwareRuntime(_one_ref())
+        r = KBRetriever(kb_id="k", region="r", min_score=0.15, client=fake)
+        r.search("q", filters={"prefix": ["行政函釋/"]}, top_k=5)
+    assert_eq(_filters_of(fake), [None], "預設不得帶 filter")
+
+
+def test_ref_channel_filters_doc_kind_server_side_when_configured():
+    """設了就要在伺服器端先篩——rerank 排不了沒撈到的東西。
+
+    2026-09-12 實測：「行政罰法 裁處權時效 三年」在 MANAGED KB 上，
+    retrieve 深度 50 的結果是 statute 24 ＋ decision 19，函釋一筆都沒進來，
+    路徑前綴事後過濾就剩 0 筆。加上 doc_kind filter 之後有 16 筆候選。
+    """
+    with env(REF_DOC_KINDS="ref_letter", BEDROCK_RERANK_MODEL_ID=None):
+        fake = _FilterAwareRuntime(_one_ref())
+        r = KBRetriever(kb_id="k", region="r", min_score=0.15, client=fake)
+        r.search("q", filters={"prefix": ["行政函釋/"]}, top_k=5)
+    assert_eq(_filters_of(fake), [{"equals": {"key": "doc_kind", "value": "ref_letter"}}])
+
+    with env(REF_DOC_KINDS="ref_letter,court_ruling", BEDROCK_RERANK_MODEL_ID=None):
+        fake = _FilterAwareRuntime(_one_ref())
+        r = KBRetriever(kb_id="k", region="r", min_score=0.15, client=fake)
+        r.search("q", filters={"prefix": ["行政函釋/"]}, top_k=5)
+    assert_eq(_filters_of(fake), [{"in": {"key": "doc_kind", "value": ["ref_letter", "court_ruling"]}}],
+              "多值要用 in")
+
+
+def test_ref_channel_falls_back_when_the_filter_returns_nothing():
+    """filter 撈到 0 筆就退回不篩再試一次。
+
+    這個 KB 的文件可能根本沒有 `doc_kind` 側檔——篩了全空、又不報錯，
+    就是今天已經被咬過一次的那種靜默失敗。寧可多打一次也不要假裝沒東西。
+    """
+    with env(REF_DOC_KINDS="ref_letter", BEDROCK_RERANK_MODEL_ID=None):
+        fake = _FilterAwareRuntime(_one_ref(), empty_when_filtered=True)
+        r = KBRetriever(kb_id="k", region="r", min_score=0.15, client=fake)
+        with _no_retrieve_interval():
+            hits = r.search("q", filters={"prefix": ["行政函釋/"]}, top_k=5)
+    assert_eq(len(fake.calls), 2, "第一次帶 filter 撈空，要再打一次不帶 filter 的")
+    assert_eq(_filters_of(fake)[1], None, "第二次不得帶 filter")
+    assert_eq(len(hits), 1, "退回之後要撈得到東西")
+
+
+def test_similar_case_channel_never_sends_the_ref_doc_kind_filter():
+    """`REF_DOC_KINDS` 是引用通道的設定，不得外溢到相似案通道。
+
+    相似案要的是決定書，把它篩成函釋等於整條通道報廢。
+    """
+    with env(REF_DOC_KINDS="ref_letter", BEDROCK_RERANK_MODEL_ID=None,
+             SIMILAR_CASE_QUOTA="歷史訴願決定書/:2,新北訴願決定書_全量/:3"):
+        fake = _FilterAwareRuntime([_kb_result("歷史訴願決定書/113年/x-駁回.txt", 0.9, "決定書")])
+        r = KBRetriever(kb_id="k", region="r", min_score=0.15, client=fake)
+        with _no_retrieve_interval():
+            r.search("q", top_k=5)      # 不傳 prefix → 相似案通道
+    assert_true(all(f is None for f in _filters_of(fake)),
+                f"相似案通道不得帶 doc_kind filter，實際={_filters_of(fake)}")

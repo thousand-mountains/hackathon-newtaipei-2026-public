@@ -123,6 +123,26 @@ def ref_prefixes() -> list[str]:
     return out
 
 
+def ref_doc_kinds() -> list[str]:
+    """引用通道要在**伺服器端**先篩哪些 `doc_kind`。空＝不篩（預設）。
+
+    **這跟 rerank 的分工要分清楚**（2026-09-12 實測）：
+
+    - rerank 負責「這筆相不相關」——它做得很好，語意無關的查詢會被壓到 0.00
+    - filter 負責「該類文件進不進得了候選池」——rerank 再強也排不了沒撈到的東西
+
+    實測「行政罰法 裁處權時效 三年」在 MANAGED KB 上回 0 筆，追下去發現
+    `retrieve` 深度 50 的結果是 statute 24 ＋ decision 19，**函釋一筆都沒進來**
+    （函釋只佔語料 27%），用路徑前綴事後過濾就剩 0。加上 `doc_kind=ref_letter`
+    的伺服器端 filter 之後有 16 筆候選，rerank 後 0.93–0.98 且內文確實在談時效。
+
+    預設關閉，因為**它依賴側檔**：沒有 `doc_kind` metadata 的 KB 一開就全篩成空。
+    需要的 corpus 在 `.env` 開，跟 KB id／門檻／前綴一樣屬於「跟著語料走」的設定。
+    """
+    raw = os.environ.get("REF_DOC_KINDS") or ""
+    return [x.strip() for x in raw.split(",") if x.strip()]
+
+
 def rerank_model_id() -> str | None:
     """重排模型的 arn。**沒設就不重排**，行為與加這個功能之前完全相同。
 

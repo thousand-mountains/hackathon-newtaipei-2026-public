@@ -117,7 +117,21 @@ def reset_search_key_cache() -> None:
     _SEARCH_KEY_CACHE.clear()
 
 
-def retrieve_raw(client: Any, kb_id: str, query: str, want: int) -> dict:
+def doc_kind_filter(kinds: list[str]) -> dict[str, Any] | None:
+    """`doc_kind` 的 metadata filter。空 list 回 None（不篩）。
+
+    單值用 `equals`、多值用 `in`——兩者在 MANAGED 與 S3 Vectors 上都實測可用
+    （2026-09-12，`orAll` 也可以，但 `in` 最短）。
+    """
+    if not kinds:
+        return None
+    if len(kinds) == 1:
+        return {"equals": {"key": "doc_kind", "value": kinds[0]}}
+    return {"in": {"key": "doc_kind", "value": list(kinds)}}
+
+
+def retrieve_raw(client: Any, kb_id: str, query: str, want: int,
+                 metadata_filter: dict[str, Any] | None = None) -> dict:
     """打一次 KB，自動選對搜尋設定鍵（見上方 SEARCH_KEYS 的說明）。
 
     刻意做成模組層函式而不是 `KBRetriever` 的私有方法：`scripts/` 底下的量測腳本
@@ -135,7 +149,8 @@ def retrieve_raw(client: Any, kb_id: str, query: str, want: int) -> dict:
             resp = client.retrieve(
                 knowledgeBaseId=kb_id,
                 retrievalQuery={"text": query},
-                retrievalConfiguration={key: {"numberOfResults": want}},
+                retrievalConfiguration={key: {"numberOfResults": want,
+                                              **({"filter": metadata_filter} if metadata_filter else {})}},
             )
         except Exception as e:  # noqa: BLE001 — 例外型別由 botocore 動態生成
             if type(e).__name__ != "ValidationException":
@@ -215,8 +230,10 @@ class KBRetriever:
         # 有重排時先多留候選給它排；沒有重排就維持原本「撈幾筆回幾筆」的行為。
         want_hits = RERANK_CANDIDATES if settings.rerank_model_id() else top_k
         if explicit:
+            # 伺服器端先篩文件種類，確保函釋／判解進得了候選池（see settings.ref_doc_kinds）
             hits = self._retrieve(query, explicit, exclude, want=REF_FETCH_DEPTH,
-                                  limit=want_hits, dedupe_by_source=True)
+                                  limit=want_hits, dedupe_by_source=True,
+                                  doc_kinds=settings.ref_doc_kinds())
         else:
             hits = self._quota_search(query, exclude, want_hits)
         hits = self._rerank(query, hits, top_k)
@@ -294,11 +311,13 @@ class KBRetriever:
             out.append(dataclasses.replace(h, score=rs, payload=payload))
         return out
 
-    def _retrieve_raw(self, query: str, want: int) -> dict:
-        return retrieve_raw(self._c(), self.kb_id, query, want)
+    def _retrieve_raw(self, query: str, want: int,
+                      metadata_filter: dict[str, Any] | None = None) -> dict:
+        return retrieve_raw(self._c(), self.kb_id, query, want, metadata_filter=metadata_filter)
 
     def _retrieve(self, query: str, prefixes: list[str], exclude: str | None, *,
-                  want: int, limit: int, dedupe_by_source: bool = False) -> list[Hit]:
+                  want: int, limit: int, dedupe_by_source: bool = False,
+                  doc_kinds: list[str] | None = None) -> list[Hit]:
         """打一次 KB 並做後過濾，回傳最多 limit 筆（`id` 是佔位值，由呼叫端重編）。
 
         `dedupe_by_source` **預設 False，只有判解／函釋通道開它**（2026-09-12）。
@@ -306,7 +325,13 @@ class KBRetriever:
         是當天實跑驗證過的行為，決賽期間不為了一個一般性的改善去動已驗證的路徑。
         相似案通道同樣有 chunk 重複的問題，是**已知且刻意未改**，不是漏看。
         """
-        resp = self._retrieve_raw(query, want)
+        flt = doc_kind_filter(doc_kinds or [])
+        resp = self._retrieve_raw(query, want, flt)
+        if flt and not resp.get("retrievalResults"):
+            # 防呆：這個 KB 的文件可能根本沒有 `doc_kind` 側檔，篩了就全空。
+            # 靜默回 0 筆比報錯難查（今天已經被同一類問題咬過一次），所以退回不篩再試。
+            time.sleep(RETRIEVE_INTERVAL_S)
+            resp = self._retrieve_raw(query, want)
         hits: list[Hit] = []
         # 同一份文件會被切成多個 chunk，各自以不同分數回來（2026-09-12 兩個 session
         # 各自實測：判解查詢命中 8 筆其實只有 6 份、命中 5 筆其實只有 2 份）。
