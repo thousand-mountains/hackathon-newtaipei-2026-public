@@ -15,7 +15,7 @@
 
 | # | 章節 | 改什麼 | 為什麼 |
 |---|---|---|---|
-| ① | §2.3 | `done` 恢復分層誠實燈號（`lamp`/`tier`/`origin`/`why`/`refs[]`/`dropped_refs[]`/`redirect`） | 初版漏掉，等於退掉 `CONSTITUTION` §1/§2 的實作與 AC5–AC12 |
+| ① | §2.4 | `done` 的燈號欄位**後端照送、契約不複製定義**（指回 spec §4.4）；**前端本期不做燈號 UI**，只讀 `redirect` 與 `dropped_refs` 兩項 | 初版把整組欄位漏掉等於退掉 AC5–AC12；但前端從來沒畫過這塊，30 小時內從零做不划算 |
 | ② | §2.3 | 加 `call_id`、`tool_result.status`；`session_id` 提前到 `ack`；`tool_step` **保留但改成真實來源** | 成對事件缺配對鍵；工具失敗會被畫成「查無」；斷線續不回；原本的 step 是前端 `sleep()` 假的 |
 | ③ | §0.1 §1.6 §3 | **維持「前端只打 chat 一支」**（Ci 拍板）。`extract`/`draft` 在 chat 內部觸發 pipeline，`tool_step` 轉發真實節點事件 | 介面已是「工具卡＋對話框」，統一入口對前端最省。後端要補 `to_node`、RefBook 重置、`gen()` 真串流 |
 | ④ | §2.1 §3 | chat 工具統一用後端長名，值域固定 **七支** | 原本四套命名互不相容，契約自己前後打架 |
@@ -319,33 +319,29 @@ wire 格式：`event: <名稱>\ndata: <一行 JSON>\n\n`。共通欄位：`seq`�
 > 一次湧出，使用者看到的是 10–72 秒全黑再一次跳出——那比沒有 `tool_step` 更糟，
 > 因為畫面會假裝剛才有過程。
 
-### 2.4 `done` 的完整形狀（① 修訂）
+### 2.4 `done`（① 修訂：本期前端只讀三個欄位）
 
-> **後端照送，本期前端不渲染燈號 UI（2026-09-12 Ci 拍板）。**
-> 欄位全部留在 payload 裡——它們已經實作、已由 AC5–AC12 驗過，拿掉沒有好處，
-> 之後要補燈號隨時能接。前端本期只讀 `answer`／`session_id`／`elapsed_ms`。
-> **但下面兩項不是燈號 UI 的一部分，是「系統會不會講假話」，見 §2.4.1。**
+**前端本期只需要這三個：**
 
 ```jsonc
 // event: done
-{
-  "seq": 17, "turn_id": "turn-…",
-  "session_id": "sess-…",
-  "answer": "依卷內資料，…[c1]…",  // 完整回答，前端可用它校正 token 串接
-  "lamp": "y",                   // "y" | "r"，永遠不會是 "g"
-  "tier": "有出處",               // "有出處" | "請人工判斷"
-  "origin": "retrieval",         // "retrieval" | "llm" | "human_required"
-  "why": "本則回答引用了 1 筆檢索命中；…請覆核後採用。",
-  "refs": [ {"id":"c1","t":"…","src":"…","verified":false,"note":"…","provenance":"official"} ],
-  "dropped_refs": [],            // 模型引了但不在白名單的編號
-  "redirect": null,              // 見 §2.4.1
-  "refine_used": false,
-  "memory": "on", "session_truncated": false,
-  "model_id": "…", "elapsed_ms": 4213
-}
+{ "session_id": "sess-…",      // 下一輪帶回來
+  "answer": "依卷內資料，…",     // 完整回答，可用來校正 token 串接
+  "elapsed_ms": 4213 }
 ```
 
-#### 2.4.1 兩項前端仍然要處理（不是裝飾）
+`done` 實際上還會帶分層誠實燈號的一整組欄位（`lamp`／`tier`／`origin`／`why`／`refs[]`／
+`dropped_refs[]`／`redirect`／`refine_used`／`memory`／`session_truncated`／`model_id`）。
+**完整定義在 `docs/spec/2026-09-12-chat-honesty-lamps.md` §4.4，這裡不複製**——
+兩份文件各寫一次，遲早會有一份走歪。
+
+**本期前端不做燈號 UI**（2026-09-12 Ci 拍板）。後端照送、欄位不動：它們已實作、
+已由 AC5–AC12 實跑驗過，為了少送幾個 JSON 欄位去改 `classify_answer` 與 `done` 的組裝，
+風險遠大於收益。之後要補燈號隨時能接。
+
+**但下面兩項要做。它們不是燈號 UI 的一部分。**
+
+#### 2.4.1 兩項例外：這不是「畫得好不好看」，是「會不會講假話」
 
 **一、`redirect` 非 null → 不得顯示 agent 講的任何天數。**
 
@@ -373,7 +369,8 @@ wire 格式：`event: <名稱>\ndata: <一行 JSON>\n\n`。共通欄位：`seq`�
 踩 `CONSTITUTION` §2（引用必可驗）。最小做法：該則下方一行灰字
 「此則含無法對應的引用，請勿直接採用」。
 
-> 這兩項合計大約十行 Vue。不用做三層燈、不用做 `refs[]` 展開清單。
+> 這兩項合計大約十行 Vue。**不用做三層燈、不用做 `refs[]` 展開清單、不用碰 `lamp`／`tier`／`origin`。**
+> 只讀 `redirect` 與 `dropped_refs` 兩個欄位。
 
 ## 3. 七支 chat 工具（`tool_result` 的形狀；④⑤⑨ 修訂）
 
