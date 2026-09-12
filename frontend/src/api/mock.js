@@ -110,6 +110,12 @@ function caseHits() {
     score: d.score,
     verified: false,
     note: 'KB 命中，未對資料集實檔驗證',
+    // **mock 也要帶 `ranked_by`。** 它扮演的是後端，形狀照契約走；
+    // 少帶這個欄位的話前端在 mock 下永遠走 RANKER.UNKNOWN 那條，
+    // 開發時看不到真正會上線的文案。線上 rerank 是開的，所以這裡也給 rerank。
+    // （這行註解刻意用狀態名而不是文案本身——文案只能存在 api/ranker.js 一份，
+    //   連註解引用都會被守衛測試判成第二份。）
+    ranked_by: 'rerank',
     provenance: d.provenance,
     origin: 'retrieval',
     _libId: d.id,
@@ -293,7 +299,9 @@ function buildToolResult(c, tool, callId, payload) {
           id: h.id,
           t: h.t,
           src: h.src,
-          note: `${h._category}．${h._verdict}．向量相似度 ${Math.round(h.score * 100)}%（非法律相似度）`,
+          // 這裡**不寫相似度說法**：那個數字是誰算的由 `ranked_by` 決定，
+          // 文案只存在 api/ranker.js 一份（見該檔檔頭）。
+          note: `${h._category}．${h._verdict}`,
           score: h.score,
           provenance: h.provenance,
           doc_kind: 'decision',
@@ -303,7 +311,7 @@ function buildToolResult(c, tool, callId, payload) {
       return {
         status: hits.length ? 'ok' : 'empty',
         hits,
-        answer: `撈到 ${hits.length} 筆相似訴願決定，都放進右側卷宗了，點卡片可看全文。相似度為向量相似度，非法律見解相似度。`,
+        answer: `撈到 ${hits.length} 筆相似訴願決定，都放進右側卷宗了，點卡片可看全文。分數不是法律見解的相似度，卡片上會標明它由哪一個排序器產生。`,
       }
     }
     case 'search_regulations': {
@@ -543,7 +551,7 @@ export const mock = {
             id: d.id,
             t: d.t,
             src: d.src,
-            note: `${d.category}．${d.verdict}．向量相似度 ${Math.round(d.score * 100)}%`,
+            note: `${d.category}．${d.verdict}`,
             score: d.score,
             provenance: d.provenance,
             doc_kind: 'decision',

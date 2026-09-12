@@ -6,6 +6,7 @@ import {
   searchHave, searchLibrary, addSearched, deleteCase, deleteFolder,
   viewLawFull, viewDecisionFull, viewArtifactFull,
 } from './store/app.js'
+import { scoreCaption, scoreNote } from './api/ranker.js'
 import TopBar from './components/TopBar.vue'
 import CaseTree from './components/CaseTree.vue'
 import FoldersRail from './components/FoldersRail.vue'
@@ -174,9 +175,11 @@ async function viewDoc(it) {
 // （c1／c2…），不是母庫 id，所以**這裡打不到 §4.3 的全文端點**。要看全文得從右欄
 // 「相關案例」開（那筆才帶得到母庫 id）。不要用 hit 拼一份看起來像全文的東西。
 function viewCase(h) {
+  // 這是 chat 的 hit，走 `KBRetriever._retrieve`——**開了重排它就是重排分數**，
+  // 不是向量距離。說法一律取自 api/ranker.js 那份唯一的文案表。
   const meta = [
     h.src ? '出處 ' + h.src : '',
-    typeof h.score === 'number' ? '向量相似度 ' + Math.round(h.score * 100) + '%（非法律相似度）' : '',
+    scoreCaption(h),
     h.provenance ? '來源 ' + h.provenance : '來源未標示',
   ].filter(Boolean).join('　·　')
   Object.assign(docView, {
@@ -184,6 +187,7 @@ function viewCase(h) {
     note: meta,
     full:
       (h.note ? '<p>' + h.note + '</p>' : '') +
+      '<p style="color:var(--muted);font-size:12.5px">' + scoreNote(h) + '</p>' +
       '<p style="color:var(--muted);font-size:12.5px">本回合檢索命中的摘要資訊。全文請從右欄「相關案例」開啟——那裡才有母庫識別碼。</p>',
     graph: false,
     loading: false,

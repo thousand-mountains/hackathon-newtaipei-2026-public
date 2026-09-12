@@ -7,6 +7,7 @@
 // 而且看起來跟真的一模一樣。示範資料一律移除，拿不到就說拿不到。
 import RelationGraph from './RelationGraph.vue'
 import ProcedureCheck from './ProcedureCheck.vue'
+import { scoreCaption, scoreNote, rankerOf, showsPercent } from '../api/ranker.js'
 import { active } from '../store/app.js'
 
 // 解析卷證的四塊（案由／事實摘錄／爭點／程序審查）**不在 tool_result 裡**——
@@ -48,8 +49,10 @@ const intakeRows = () => {
 const props = defineProps({ out: Object })
 const emit = defineEmits(['view-case', 'view-graph', 'preview-paper', 'export-download'])
 
-// 契約 §3.2：score 顯示為相似度時必標「向量相似度，非法律相似度」（誠實紅線 §6-2）。
-const pct = (s) => (typeof s === 'number' ? Math.round(s * 100) + '%' : '—')
+// 契約 §3.2：分數的說法一律走 api/ranker.js——那裡是全前端唯一一份文案，
+// 因為「這個數字是誰算的」開了重排前後是兩件事（見該檔檔頭）。
+// 進度條寬度：查表那種不顯示百分比，條也不畫。
+const barWidth = (h) => (showsPercent(rankerOf(h)) && typeof h.score === 'number' ? Math.round(h.score * 100) : 0)
 // provenance 可能是 null（法條查表的 Hit 沒有這個鍵），要處理。
 const PROV = { official: '賽方資料集', public_crawl: '市府公開爬蟲' }
 const provLabel = (p) => PROV[p] || '出處未標示'
@@ -114,18 +117,19 @@ const provLabel = (p) => PROV[p] || '出處未標示'
       <button v-for="h in out.hits" :key="h.id" class="ccard" @click="emit('view-case', h)">
         <div class="r1">
           <span class="no">{{ h.id }}</span>
-          <span class="sim">向量相似度 {{ pct(h.score) }}</span>
+          <span class="sim">{{ scoreCaption(h) }}</span>
         </div>
         <div class="ttl">{{ h.t }}</div>
         <div class="r2">
           <span class="tag">{{ provLabel(h.provenance) }}</span>
           <span v-if="h.note" class="tag">{{ h.note }}</span>
         </div>
-        <div class="simbar"><i :style="{ width: (typeof h.score === 'number' ? Math.round(h.score * 100) : 0) + '%' }"></i></div>
+        <div class="simbar"><i :style="{ width: barWidth(h) + '%' }"></i></div>
       </button>
-      <p style="margin: 10px 0 0; color: var(--muted); font-size: 12px">
-        分數是<b style="font-weight: 500">向量相似度，不是法律相似度</b>；KB 命中未對資料集實檔驗證。本欄為參考資料，不影響草稿生成。
+      <p v-for="n in [...new Set((out.hits || []).map(scoreNote))]" :key="n" style="margin: 10px 0 0; color: var(--muted); font-size: 12px">
+        {{ n }}
       </p>
+      <p style="margin: 6px 0 0; color: var(--muted); font-size: 12px">本欄為參考資料，不影響草稿生成。</p>
     </div>
   </template>
 
