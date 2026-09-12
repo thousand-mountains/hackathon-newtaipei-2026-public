@@ -23,6 +23,7 @@ prototype/data/dataset/
 backend/output/
 
 # 本機 KB 暫存與賽方資料（CONSTITUTION §6）
+# 也涵蓋 scripts/build_graph.py 產出的 data/local/kb-graph.json（1.5 MB，可重建）
 data/local/
 
 # §77-3 驗證語料：含未遮罩的自然人實名，一律不進 git（見 backend/tests/test_party_standing.py 檔頭）
