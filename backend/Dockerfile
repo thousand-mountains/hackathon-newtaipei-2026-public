@@ -37,6 +37,10 @@ RUN apt-get update \
 COPY backend/requirements.txt /app/backend/requirements.txt
 RUN pip install --no-cache-dir -r /app/backend/requirements.txt
 
+# 這一行**同時**帶進 `backend/assets/fonts/NotoSansTC-Regular.otf`（5.4 MiB），
+# PDF 匯出靠它。不要為了縮 context 把 `backend/assets` 加進 `.dockerignore`：
+# 沒有 CJK 字型時 PDF 是整片豆腐字（□□□）**而且不報錯**，本機有系統字型撐著測不出來。
+# 2026-09-12 在一個零系統字型的 python:3.12-slim 容器裡實測過這條路徑。
 COPY backend/ /app/backend/
 
 # 前端建置產物（2026-09-12 起帶進映像檔）：

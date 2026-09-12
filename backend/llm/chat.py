@@ -397,6 +397,67 @@ _NO_PIPELINE = ("這個檔位沒有六節點流水線，解析卷證與生成草
 #: `read_case` 讀得到的分區。值域固定，讓模型不能亂要一個不存在的欄位。
 CASE_SECTIONS = ("intake", "facts_excerpt", "screen", "laws", "cases")
 
+#: 承辦人挑了、但 N4 這一輪沒查到的法規要標的字樣（契約 v2 §3.5.2 末段）。
+UNMATCHED_LAW_NOTE = "檢索未命中，未進入草稿"
+
+#: 比對法規名時要抹掉的空白。全形空白（U+3000）在法規名裡真的會出現
+#: （KB 檔名是人整理的），不一起抹掉就會把同一部法規判成兩部。
+_SPACE_CHARS = " \t　 "
+
+
+def _statute_key(text: Any) -> str:
+    """法規名的比對鍵。**只做去空白與去副檔名，不做任何模糊比對。**
+
+    模糊比對（包含、前綴、編輯距離）在這裡特別危險：它讓「使用者挑的法規有沒有
+    影響草稿」這個誠實問題，變成一個**看起來總是成立**的問題。寧可報「未命中」
+    讓人自己看，也不要用相似度湊出一個「有命中」。
+    """
+    s = str(text or "")
+    for ch in _SPACE_CHARS:
+        s = s.replace(ch, "")
+    return s[:-4] if s.lower().endswith(".txt") else s
+
+
+def unmatched_picks(picked: list[dict[str, Any]],
+                    retrieved: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """承辦人手動挑進卷宗、但 N4 這一輪**沒有檢索到**的法規（契約 v2 §3.5.2 末段）。
+
+    契約把手動挑的法規當**查詢詞**餵回 N4（`overrides.n4_query`），所以「挑了」
+    不等於「會進草稿」——N4 查得到才會進 `laws[]`。這是誠實不是 bug，
+    **但畫面要說得出來**，否則承辦人挑了五條、一條都沒引，只會覺得系統吃掉了他的東西。
+
+    ⚠️ **不得為了讓它不出現而把挑的法規直接塞進 `laws[]`**——那就回到
+    「檢索佐證的是自己」，正是 2026-09-05 改成 N4 獨立檢索要擋掉的事。
+
+    比對鍵是**法規名**，兩邊同一個粒度（2026-09-12 實測）：
+      - 挑的那側（manifest `laws[].t`）＝ KB 文件標題，而 KB 的標題是檔名去副檔名
+        （`retrieval/kb.py:558`），所以是「廢棄物清理法」這種法規名。
+      - 查到那側（N4 `laws[].law`）＝「訴願法」。`law` 缺席時退回 `t`
+        （「訴願法第14條」），**那種情況比不上就是比不上**，照實報未命中。
+
+    Epic B 若把 manifest 的 `t` 改成別的東西（檔名、含條號的字串），這裡會開始
+    誤報未命中。**那時候要改的是比對鍵，不是把這個功能拿掉。**
+    """
+    hit_keys = set()
+    for r in retrieved or []:
+        if not isinstance(r, dict):
+            continue
+        for value in (r.get("law"), r.get("t")):
+            key = _statute_key(value)
+            if key:
+                hit_keys.add(key)
+    out: list[dict[str, Any]] = []
+    for p in picked or []:
+        if not isinstance(p, dict):
+            continue
+        key = _statute_key(p.get("t"))
+        # 名字是空的就**不報**：那是 manifest 那筆資料壞了，不是檢索沒命中。
+        # 兩件事混在一起報，承辦人會去查一個根本不存在的檢索問題。
+        if not key or key in hit_keys:
+            continue
+        out.append({"id": p.get("id"), "t": p.get("t"), "note": UNMATCHED_LAW_NOTE})
+    return out
+
 _NO_RETRIEVER = "目前沒有可用的檢索來源，這個工具查不了。請直接說明查不到，不要改用推測作答。"
 
 
@@ -705,13 +766,24 @@ class ChatTools:
             self._result("generate_decision_draft", [], note, status="failed")
             return f"{note}。請告訴使用者這次生成失敗了，不要自己寫一份草稿代替。"
         self._adopt_run(out)
+        # 契約 v2 §3.5.2 末段：挑了但 N4 沒查到的法規不會進草稿。**這是誠實不是 bug，
+        # 但畫面要說得出來**——不講的話承辦人挑了五條、一條都沒引，只會覺得系統
+        # 吃掉了他的東西。比對在 `_adopt_run` 之後做：那時 `case_payload["laws"]`
+        # 已經換成這一輪 N4 真的查到的東西。
+        unmatched = unmatched_picks(laws, self.case_payload.get("laws") or [])
         self._result("generate_decision_draft", [], "", status="ok",
                      run_id=out.get("run_id"), state=out.get("state"),
                      artifact_id=out.get("artifact_id"),
-                     cite_count=out.get("cite_count"))
+                     cite_count=out.get("cite_count"),
+                     unmatched_laws=unmatched)
+        note = ""
+        if unmatched:
+            names = "、".join(str(u.get("t") or u.get("id")) for u in unmatched)
+            note = (f"另外：你挑的法規中，{names} 這一輪檢索沒有命中，"
+                    f"因此沒有進入草稿——請照實告訴使用者，不要說它們已被引用。")
         return (f"已生成草稿（run {out.get('run_id')}，終態 {out.get('state')}，"
                 f"引用 {out.get('cite_count')} 處）。草稿全文請由承辦人在產出區檢視，"
-                f"不要在這裡整份複述。")
+                f"不要在這裡整份複述。{note}")
 
     # ── 給 Strands 的 @tool 包裝 ────────────────────────────────────
 

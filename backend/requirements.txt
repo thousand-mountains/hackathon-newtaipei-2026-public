@@ -14,6 +14,12 @@ uvicorn[standard]~=0.32.0
 pydantic~=2.9.0
 python-multipart~=0.0.9   # api/app.py：POST /api/cases 的 multipart 檔案上傳
 
+# ── 草稿匯出（api/export_render.py；契約 §1.5 #23）──────────────────
+# 兩個都**只在 backend/api/ 底下 import**（run_all.py 的具名豁免目錄）。
+# fpdf2 需要 CJK 字型檔才不會產出豆腐字，字型在 backend/assets/fonts/。
+python-docx~=1.2.0       # .docx 直接組段落（要能續編，不走 HTML 轉檔）
+fpdf2~=2.8.0             # .pdf 內嵌 CJK 字型
+
 # ── live 分支（RUN_MODE=bedrock / RETRIEVER=kb 才會 import；fixture 模式與測試路徑不需要）──
 boto3~=1.35.0            # retrieval/kb.py：bedrock-agent-runtime Retrieve
 strands-agents>=1.15.0   # llm/client.py：N1/N5 structured output（只有這個檔可以 import 它）

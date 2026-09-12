@@ -39,7 +39,9 @@ from backend.tests import (  # noqa: E402
     test_cross_check,
     test_deadline,
     test_dossier,
+    test_draft_preconditions,
     test_e2e,
+    test_export,
     test_gate_hardening,
     test_live_plumbing,
     test_nodes,
@@ -552,6 +554,8 @@ def main() -> int:
         ("KB 知識圖抽取（regex + 查表，零 LLM）", [test_build_graph]),
         ("聊天誠實燈號（機械規則，零 LLM）", [test_chat]),
         ("卷宗持久化與母庫查（manifest 原子寫／KB filter／端點形狀）", [test_dossier]),
+        ("草稿匯出 .docx／.pdf（契約 §1.5 #23、§4.4）", [test_export]),
+        ("生成草稿前置條件與挑選法規的誠實回報（契約 §3.5.1、§3.5.2）", [test_draft_preconditions]),
     ]
     total_pass = total = 0
     all_failures: list[str] = []
