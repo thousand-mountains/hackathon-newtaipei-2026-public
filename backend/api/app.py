@@ -19,7 +19,7 @@
 | GET  | `/`                         | 五步動線 UI（`prototype/dist/index.html`） |
 | GET  | `/api/health`               | 健康檢查：**實際**載入快照與合成案例       |
 | GET  | `/api/cases`                | 列出可用案例（合成 + 承辦人上傳）          |
-| POST | `/api/cases`                | 上傳卷證建案，回 `case_id`（只收 .pdf／.txt）|
+| POST | `/api/cases`                | 上傳卷證建案，回 `case_id`（**不限格式**，單檔 20 MB；讀不到的標 unreadable）|
 | POST | `/api/cases/{case_id}/runs` | 跑六節點：fixture 同步 200；bedrock 202 + run_id |
 | GET  | `/api/runs/{run_id}`        | 輪詢執行結果：200／409 執行中／502 失敗／404 |
 | GET  | `/api/runs/{run_id}/events` | SSE 節點事件流（bedrock 檔位的加值層）      |
@@ -310,7 +310,11 @@ def cases() -> dict:
 
 @app.post("/api/cases", status_code=201)
 async def create_case(files: list[UploadFile] = File(...)) -> dict:
-    """上傳卷證建案（spec 2026-09-07 §5.8）。只收 .pdf／.txt，單檔 20 MB。
+    """上傳卷證建案（spec 2026-09-07 §5.8）。**不限制格式**，單檔 20 MB。
+
+    2026-09-12 Ci 拍板拿掉副檔名白名單。收下不等於讀得到：讀不讀得到由
+    `intake/documents.route_documents` 決定，讀不到的會產出 kind="unreadable"
+    並在 notes 說明原因，**不會靜默跳過**。
 
     回 `case_id` 供 `POST /api/cases/{case_id}/runs` 使用。上傳案沒有可重播的 fixture，
     **只能在 RUN_MODE=bedrock 跑**；fixture 檔位下打 runs 會拿到 400 並附上原因。
