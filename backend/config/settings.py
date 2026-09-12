@@ -50,7 +50,7 @@ DEFAULT_KB_MIN_SCORE = 0.15
 # embedding 是 bi-encoder：查詢與文件各自變成向量再比距離，模型從來沒有「同時看過」
 # 兩者。rerank 是 cross-encoder：兩者一起餵進去，直接判斷「這份文件回答了這個查詢嗎」。
 #
-# 實測（ntpc-petition-kb，就是那個 embedding 分數完全沒有鑑別力的 KB）：
+# 實測（刻意挑 embedding 分數最沒有鑑別力的那個 KB；哪一個見證據文件）：
 #
 #              embedding top1      rerank top1
 #   真實案件     0.42–0.79          0.809–1.000      ← 生產形態的 case_digest 查詢
