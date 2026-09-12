@@ -26,6 +26,9 @@ from backend.config.settings import (
     load_fact_issue_signals,
 )
 from backend.engine.deadline import compute
+from backend.engine.overdue_ref import TimelinessInput as RefInput
+from backend.engine.overdue_ref import _is_rest_day
+from backend.engine.overdue_ref import check_timeliness as ref_check
 from backend.gate.lamps import requires_human_conclusion
 from backend.orchestrator.state import CaseState, NodeCtx, NodeResult
 
@@ -59,6 +62,180 @@ def screen_art77(deadline_result: dict[str, Any]) -> dict[str, Any]:
         "requires_substantive_review": True,
         "not_auto_screened": ["77-1", "77-3", "77-4", "77-5", "77-6", "77-7", "77-8"],
         "not_auto_screened_reason": "其餘各款屬法律判斷，本系統不自動判定，請承辦人審認。",
+    }
+
+
+#: 本系統的送達方式 → 第二意見引擎的用語。補充送達（行程§73）生效日＝送達動作日，
+#: 與本人簽收同語意，故同映射到 personal 那一側。
+_METHOD_TO_REF = {"personal": "本人", "deposit": "寄存", "public": "公示"}
+
+
+def cross_check_deadline(
+    intake: dict[str, Any], deadline_result: dict[str, Any]
+) -> dict[str, Any]:
+    """把期間計算交給第二套獨立引擎再算一次，兩套不一致就標出來給承辦人。
+
+    **不是用來取代 `deadline.py`**，也不用它的結果覆寫任何欄位——`screen.deadline`
+    永遠是本系統引擎的輸出。這裡只回報「另一套怎麼算、跟我們差在哪」。
+
+    為什麼並存而不是合併（2026-09-12 決定，實測依據見
+    `docs/2026-09-12-deadline-parity-251.md`）：兩套在 251 件真實決定書上的
+    14 件屆滿日差異裡，6 件是本系統未納入國定假日順延、8 件是在途期間取值不同。
+    **那些差異本身是要給承辦人看的資訊**，合併成單一答案就消失了。
+    """
+    method = _METHOD_TO_REF.get(intake.get("service_method") or "")
+    if method is None or not intake.get("d2"):
+        return {
+            "agree": None,
+            "engines": {},
+            "disagreement": [],
+            "note": "送達方式或送達日不足，第二意見引擎未執行——與本系統一樣不猜。",
+        }
+
+    ref_out = ref_check(
+        RefInput(
+            delivery_date=str(intake.get("d2")),
+            delivery_method=method,
+            appeal_filed_date=str(intake["d3"]) if intake.get("d3") else None,
+        )
+    )
+
+    ours_deadline = deadline_result.get("deadline")
+    ours_overdue = deadline_result.get("overdue")
+    diffs: list[dict[str, Any]] = []
+    not_comparable: list[dict[str, Any]] = []
+    #: 一方拒答、另一方給了答案。**這不是「一致」，也不是「分歧」**——分歧是兩個
+    #: 答案打架，這裡是只有一個答案。獨立成類，因為它的風險方向跟分歧相反：
+    #: 分歧會讓承辦人警覺，而「拒答 vs 有答案」若被折算成 agree=True，
+    #: 反而會讓那個唯一的答案看起來獲得背書。
+    refusal_asymmetry: list[dict[str, Any]] = []
+
+    if ours_overdue is None and ref_out.is_overdue is not None:
+        refusal_asymmetry.append({
+            "field": "overdue",
+            "ours": None,
+            "second_opinion": ref_out.is_overdue,
+            "why": (
+                "**本系統就此案型拒絕自動判定，第二意見卻給了確定答案——這不構成佐證。**"
+                "本系統拒答的理由（例：公示送達的生效日涉及公告方式與刊登日，須人工認定），"
+                "正是第二意見引擎逕自以送達日代替生效日所繞過的前提。"
+                "**不得以第二意見補上本系統刻意留白之處**，請承辦人自行認定生效日後重新輸入。"
+            ),
+        })
+    elif ours_overdue is not None and ref_out.is_overdue is None:
+        refusal_asymmetry.append({
+            "field": "overdue",
+            "ours": ours_overdue,
+            "second_opinion": None,
+            "why": (
+                "第二意見引擎因欄位不足未能判定（見 `missing`），本系統則已算出結論。"
+                "此時第二意見**未對本系統的結論表示任何意見**，不得讀作背書。"
+            ),
+        })
+    elif ours_overdue is not None and ref_out.is_overdue is not None:
+        if ours_overdue != ref_out.is_overdue:
+            diffs.append({
+                "field": "overdue",
+                "ours": ours_overdue,
+                "second_opinion": ref_out.is_overdue,
+                "why": "兩套引擎對是否逾期的結論不同，請承辦人以卷證認定。",
+            })
+    if ours_deadline and ref_out.deadline_date and ours_deadline != ref_out.deadline_date:
+        transit_ours = int(intake.get("transit_days") or 0)
+        if ref_out.in_transit_days != transit_ours:
+            # **輸入不對等，不是判斷分歧。** 第二意見引擎的 TimelinessInput 只收
+            # 住居所縣市、沒有在途天數欄位，而本系統的卷證沒有擷取縣市——兩邊在這一維
+            # 本來就餵不到同一個值。報成 disagreement 會讓真正的分歧（國定假日）被
+            # 雜訊淹沒：251 件實測有 25 件屬此類、僅 6 件是真分歧。
+            not_comparable.append({
+                "field": "deadline",
+                "ours": ours_deadline,
+                "second_opinion": ref_out.deadline_date,
+                "why": (
+                    f"在途期間輸入不對等（本系統採承辦人確認的 {transit_ours} 日，"
+                    f"第二意見引擎依住居所查表得 {ref_out.in_transit_days} 日）。"
+                    "第二意見引擎不接受在途天數輸入、本系統未擷取住居所縣市，"
+                    "**這一維無法對等比較，不代表任一方算錯**。"
+                ),
+            })
+        elif _is_rest_day(dt.date.fromisoformat(ours_deadline)):
+            diffs.append({
+                "field": "deadline",
+                "ours": ours_deadline,
+                "second_opinion": ref_out.deadline_date,
+                "why": (
+                    "本系統的屆滿日落在國定假日而未順延（v0 僅處理週六日），"
+                    "第二意見引擎含國定假日表。**此時第二意見較可能正確**，"
+                    "請承辦人對照行政機關辦公日曆確認。"
+                ),
+            })
+        else:
+            diffs.append({
+                "field": "deadline",
+                "ours": ours_deadline,
+                "second_opinion": ref_out.deadline_date,
+                "why": "屆滿日不同，成因未歸因——請承辦人對照兩套算式逐步說明。",
+            })
+
+    return {
+        # 一方拒答時 agree 必須是 None（未知），不能是 True。**True 代表「兩套都算過
+        # 且結論相同」**，而拒答的那一方根本沒有結論可比。
+        "agree": None if refusal_asymmetry else not diffs,
+        "not_comparable": not_comparable,
+        "refusal_asymmetry": refusal_asymmetry,
+        "engines": {
+            "primary": {
+                "name": "backend/engine/deadline.py",
+                "deadline": ours_deadline,
+                "overdue": ours_overdue,
+            },
+            "second_opinion": {
+                "name": "backend/engine/overdue_ref.py（外部已驗證引擎，251 件真實決定書）",
+                "deadline": ref_out.deadline_date,
+                "overdue": ref_out.is_overdue,
+                "verdict": ref_out.verdict,
+                "steps": ref_out.steps,
+                "legal_refs": ref_out.legal_refs,
+                "missing": ref_out.missing,
+            },
+        },
+        "disagreement": diffs,
+        "note": (
+            "兩套引擎獨立計算，本系統不自動採信任一方；"
+            "`screen.deadline` 一律是本系統引擎的輸出，第二意見僅供承辦人對照。"
+            "`agree` 只反映 `disagreement`（真正的判斷分歧）；"
+            "`not_comparable` 是兩邊輸入不對等造成的差異，不計入是否一致；"
+            "`refusal_asymmetry` 是一方拒答而另一方有答案，此時 `agree` 為 null（未知），"
+            "**不得把有答案的那一方當成另一方的佐證**。"
+        ),
+    }
+
+
+def derive_procedure_conclusion(art77: dict[str, Any]) -> dict[str, Any]:
+    """程序審查結論：只在「程序不合 → 不受理」這一種由規則直接給出。
+
+    訴願有無理由（駁回／撤銷）屬實體法律判斷，**本系統不代為認定**，
+    所以 value 只可能是 "A" 或 None，永遠不會出現 B／C／D。
+    """
+    if art77.get("clause") == "77-2":
+        return {
+            "value": "A",
+            "by": "rule",
+            "basis": art77.get("basis") or "",
+            "why": (
+                "逾期由期間引擎直接算出（純規則、零模型參與、同輸入必同輸出），"
+                "屬可驗算層，故程序審查結論由系統給出。"
+            ),
+        }
+    return {
+        "value": None,
+        "by": "unavailable",
+        "basis": "",
+        "why": (
+            "本系統只自動判定訴願法 §77 第 2 款（逾期）這一種程序不合事由。"
+            "其餘各款與訴願有無理由屬法律判斷，**本系統不代為認定**，"
+            "請承辦人自行審認——此處留白不是失敗，是刻意不猜。"
+        ),
     }
 
 
@@ -151,6 +328,10 @@ def run(state: CaseState, ctx: NodeCtx, digest: str = "") -> NodeResult:
         "fact_issues": fact_issues,
         "requires_human_conclusion": needs_human,
         "human_conclusion_signals": block_signals,
+        # 第二意見：獨立引擎再算一次，不覆寫 deadline，只回報差異（US-1）
+        "deadline_cross_check": cross_check_deadline(intake, deadline_result),
+        # 程序審查結論：只有「程序不合→不受理」由規則給出，實體判斷一律留白（US-4）
+        "procedure_conclusion": derive_procedure_conclusion(art77),
         # 稽核用：這一次的程序判斷建立在哪些未確認欄位上
         "procedural_inputs_confirmed": inputs_confirmed,
         "unconfirmed_procedural_fields": list(unconfirmed),

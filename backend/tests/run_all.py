@@ -19,6 +19,7 @@ if str(ROOT) not in sys.path:
 from backend.tests import (  # noqa: E402
     harness,
     test_contract,
+    test_cross_check,
     test_deadline,
     test_e2e,
     test_gate_hardening,
@@ -432,6 +433,7 @@ def main() -> int:
         ("端到端整合測試", [test_e2e]),
         ("CASE payload 契約（architecture §6.2）", [test_contract]),
         ("守門加固對抗測試", [test_gate_hardening]),
+        ("期間第二意見交叉比對", [test_cross_check]),
         ("live 分支管線（settings／llm client／kb／續跑，全部 monkeypatch）", [test_live_plumbing]),
     ]
     total_pass = total = 0
