@@ -34,6 +34,13 @@ COPY backend/ /app/backend/
 #   只複製 dist/（單檔全內嵌），不帶 static/ 原始碼、docs/、knowledge/。
 COPY prototype/dist/ /app/prototype/dist/
 
+# 入庫清單（2026-09-12 起帶進映像檔）：
+#   settings.py 的 kb_corpus_counts() 讀它來具名列出每一批語料的筆數。
+#   不帶的話雲上的 /api/health 只會說「本機讀不到 manifest，故不報各批筆數」——
+#   等於評審看到的版本少了那段誠實揭露。manifest 只記路徑、來源與 sha256，
+#   不含任何內容或人名（見 scripts/build_manifest.py 的說明），可以進映像檔。
+COPY data/manifest.json /app/data/manifest.json
+
 # 非 root 執行（ECS task 的最小權限原則）
 RUN useradd --create-home --uid 10001 appuser \
     && mkdir -p /app/backend/output \
