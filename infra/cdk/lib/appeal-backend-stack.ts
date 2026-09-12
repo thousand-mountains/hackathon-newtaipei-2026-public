@@ -153,6 +153,15 @@ export class AppealBackendStack extends cdk.Stack {
         'docs',
         'knowledge',
         'design',
+        // backend/output/ 是本機跑 run 的產物（runs/*.json），**不是程式碼**。
+        // 2026-09-12 實測：主工作樹這個目錄已長到 892 MB／16,260 檔，兩者都沒有時
+        // `cdk synth` 的 staging 是 **905 MB**；擋掉之後 4.8 MB。之前部署沒炸，
+        // 是因為部署走的是另一棵工作樹（那裡只有 7.5 MB），不是因為這裡擋住了。
+        //
+        // **實際在擋的是根目錄的 `.dockerignore`**（CDK 的 fromAsset 會讀它，實測
+        // 只留 .dockerignore 就已經是 4.8 MB／同一個 hash）。這一條是第二層保險：
+        // `.dockerignore` 被刪或改名時仍擋得住。兩邊都留著，改一邊記得看另一邊。
+        'backend/output',
         'prototype/static',
         'prototype/node_modules',
       ],

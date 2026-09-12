@@ -1,0 +1,19 @@
+# 直接 `docker build` 時的建置 context 排除清單。
+#
+# ⚠️ **CDK 也讀這個檔**（2026-09-12 實測，不是推論）。`cdk synth` 三種組合比對：
+#     兩者都沒有（HEAD 現況）  staging 905 MB   hash 94868f74…
+#     只有 .dockerignore       staging 4.8 MB   hash 054e9590…
+#     兩者都有                 staging 4.8 MB   hash 054e9590…（與上一列同）
+#   所以真正在擋的是這個檔；`infra/cdk/lib/appeal-backend-stack.ts` 的 exclude
+#   是第二層保險（這個檔被刪或改名時仍擋得住），不是主力。改一邊記得看另一邊。
+
+# 本機跑 run 的產物，不是程式碼。2026-09-12 實測已長到 892 MB／16,260 個檔，
+# 而 Dockerfile 的 `COPY backend/` 會整包複製進映像檔。
+backend/output/
+
+.git/
+**/node_modules/
+**/__pycache__/
+**/*.pyc
+cdk.out/
+.env
