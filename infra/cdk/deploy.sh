@@ -6,6 +6,7 @@
 #   ./deploy.sh deploy      # 實際部署
 #   ./deploy.sh destroy     # 收攤
 #
+# 從哪個目錄呼叫都可以（腳本會自己 cd 到 infra/cdk，`cdk.json` 在那裡）。
 # `deploy` 與 `check` 會**自動建前端**（frontend/dist 不進 git，見 build_frontend）。
 # 已經在別處建好可以 HACK_SKIP_FRONTEND_BUILD=1 跳過。
 #
@@ -36,6 +37,16 @@ set -a
 # shellcheck disable=SC1090
 . "$env_file"
 set +a
+
+# **從哪裡呼叫都要能跑。** `cdk.json`（裡面有 `--app`）在 `infra/cdk/`，而 `npx cdk`
+# 是從**當下工作目錄**找它的——所以從 repo 根目錄跑會得到
+# `--app is required either in command-line, in cdk.json or in ~/.cdk.json`，
+# 那句話完全看不出根因是「你站錯目錄」。這跟本檔修過的其他幾處是同一個家族：
+# 失敗訊息指不到真正的原因，人會往錯的方向查。
+#
+# **刻意放在讀完 .env 之後**：`HACK_ENV_FILE` 可能是相對路徑，那要相對於
+# 使用者原本的工作目錄解析，先 cd 會把它解到別的地方去。
+cd "$here"
 
 # 一律鎖在大會帳號與 us-west-2（賽方只允許 us-east-1／us-west-2）
 export AWS_PROFILE="${AWS_PROFILE:-hack-ntpc}"

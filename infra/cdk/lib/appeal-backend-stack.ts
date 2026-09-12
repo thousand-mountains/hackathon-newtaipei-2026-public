@@ -4,6 +4,7 @@ import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as ecr_assets from 'aws-cdk-lib/aws-ecr-assets';
 import * as ecs from 'aws-cdk-lib/aws-ecs';
 import * as ecs_patterns from 'aws-cdk-lib/aws-ecs-patterns';
+import * as efs from 'aws-cdk-lib/aws-efs';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as logs from 'aws-cdk-lib/aws-logs';
 import { Construct } from 'constructs';
@@ -238,6 +239,50 @@ export class AppealBackendStack extends cdk.Stack {
       ],
     });
 
+    // ── 持久層：EFS 掛在 backend/output/ ──────────────────────────────────
+    //
+    // **為什麼要有**：`backend/output/` 底下是 `runs/`、`cases/`（卷宗 manifest）、
+    // `uploads/`（評審上傳的卷證）、`submissions.jsonl`。它現在是容器的 ephemeral 磁碟，
+    // 而 `desiredCount: 1` 不代表那個 task 不會被換掉——**它會**：
+    // 對抗式審查實測到 SSE 吃光 threadpool → `/api/health` 15.96 秒 → ALB 判不健康 →
+    // 換 task，**評審剛上傳的卷證與卷宗當場全沒**。
+    // 那條「觸發原因」另外有人修，但觸發原因不只一種（OOM、部署、AZ 事件都會換 task），
+    // 所以「後果」也要修。這一段修的是後果。
+    //
+    // 賽制：9/8 賽方信原文是「僅限使用 Amazon Bedrock、SageMaker AI 所提供之基礎模型，
+    // **及 AWS 相關雲端服務**」——限制的是**基礎模型來源**，AWS 服務明文可用。
+    //
+    // ⚠️ **mount target 必須落在 task 所在的子網類型**。這個 stack 用帳號預設 VPC，
+    // 它**只有公有子網**；`efs.FileSystem` 的 `vpcSubnets` 預設是 PRIVATE_WITH_EGRESS，
+    // 不覆寫的話會找不到子網。
+    const fileSystem = new efs.FileSystem(this, 'OutputFs', {
+      vpc,
+      vpcSubnets: { subnetType: ec2.SubnetType.PUBLIC },
+      encrypted: true,
+      performanceMode: efs.PerformanceMode.GENERAL_PURPOSE,
+      throughputMode: efs.ThroughputMode.BURSTING,
+      // 跟 log group 一樣：短命的競賽環境，`deploy.sh destroy` 要收得乾淨。
+      // **代價講清楚**：destroy 會連同卷宗與上傳卷證一起刪掉，不留孤兒資源。
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
+
+    // **access point 不是可選的，是這個容器能不能寫檔的關鍵。**
+    // `backend/Dockerfile` 是 `USER appuser`（uid/gid 10001）。直接掛檔案系統根目錄的話
+    // 那個根是 root 所有、0755，容器**掛得起來但寫不進去**——症狀是上傳卷證時
+    // `PermissionError`，而 `cdk synth` 與 `cdk deploy` 全綠，本機也測不出來。
+    // access point 的 `createAcl` 讓 EFS 用這個 uid/gid 建根目錄，`posixUser` 讓所有
+    // 存取都以該身分進行，兩件事合起來才讓非 root 容器真的寫得了。
+    const POSIX_UID = '10001'; // 必須與 backend/Dockerfile 的 useradd --uid 一致
+    const accessPoint = fileSystem.addAccessPoint('OutputAp', {
+      path: '/output',
+      createAcl: {
+        ownerUid: POSIX_UID,
+        ownerGid: POSIX_UID,
+        permissions: '0755',
+      },
+      posixUser: { uid: POSIX_UID, gid: POSIX_UID },
+    });
+
     // ── 服務 ＋ ALB ───────────────────────────────────────────────────────
     const service = new ecs_patterns.ApplicationLoadBalancedFargateService(
       this,
@@ -260,6 +305,10 @@ export class AppealBackendStack extends cdk.Stack {
           cpuArchitecture: ecs.CpuArchitecture.X86_64,
           operatingSystemFamily: ecs.OperatingSystemFamily.LINUX,
         },
+        // EFS volume 需要 Fargate platform 1.4 以上。LATEST 目前就是 1.4，
+        // 但**明寫**才不會哪天 LATEST 變意思了才發現——這種漂移不會報錯，
+        // 只會在掛載時失敗。
+        platformVersion: ecs.FargatePlatformVersion.VERSION1_4,
         healthCheckGracePeriod: cdk.Duration.seconds(120),
         // 起不來就讓它失敗收場，不要卡三小時；rollback 關掉才讀得到現場 log。
         circuitBreaker: { rollback: false },
@@ -300,6 +349,48 @@ export class AppealBackendStack extends cdk.Stack {
         },
       },
     );
+
+    // ── 把 EFS 接到 task 上 ───────────────────────────────────────────────
+    //
+    // ① **security group**：EFS 第一次部署最常見的失敗就是漏這條。mount target 的 SG
+    //    要放行來自 task 的 **NFS 2049**；少了它的症狀是**容器起不來、卡在 mount**，
+    //    而且 ECS 事件裡的訊息看不出根因（只會說 task 停止）。
+    fileSystem.connections.allowDefaultPortFrom(
+      service.service,
+      // SG 規則描述只吃 ASCII（與上面 ALB 那條同理）
+      'ECS tasks mount the output filesystem over NFS',
+    );
+
+    // ② **volume ＋ mount point**：容器裡的 `/app/backend/output` 換成 EFS。
+    //    路徑要跟 `backend/config/settings.py` 的 `OUTPUT_DIR`（BACKEND_DIR/"output"）
+    //    對得起來——Dockerfile 的 WORKDIR 是 /app、程式碼 COPY 到 /app/backend/，
+    //    所以是 /app/backend/output。**掛錯路徑不會報錯，只會繼續寫進 ephemeral 磁碟。**
+    const OUTPUT_VOLUME = 'backend-output';
+    service.taskDefinition.addVolume({
+      name: OUTPUT_VOLUME,
+      efsVolumeConfiguration: {
+        fileSystemId: fileSystem.fileSystemId,
+        transitEncryption: 'ENABLED',
+        authorizationConfig: {
+          accessPointId: accessPoint.accessPointId,
+          // access point 已經把身分釘死在 uid/gid 10001，這裡不再疊一層 IAM 驗證：
+          // 開 IAM 就得同時給 task role `elasticfilesystem:ClientMount/ClientWrite`，
+          // 少給一個的症狀一樣是「掛不起來而且訊息不明顯」。
+          // 存取控制由「只有這個 service 的 SG 進得了 2049」把關（見 ①）。
+          iam: 'DISABLED',
+        },
+      },
+    });
+    service.taskDefinition.defaultContainer!.addMountPoints({
+      containerPath: '/app/backend/output',
+      sourceVolume: OUTPUT_VOLUME,
+      readOnly: false,
+    });
+
+    new cdk.CfnOutput(this, 'OutputFileSystemId', {
+      value: fileSystem.fileSystemId,
+      description: 'EFS backing backend/output (runs, cases, uploads)',
+    });
 
     // 打 /api/health 而不是 /：後者是前端單檔，回 200 不代表後端檔位正確。
     service.targetGroup.configureHealthCheck({
