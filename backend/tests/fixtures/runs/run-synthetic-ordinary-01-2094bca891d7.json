@@ -1,0 +1,391 @@
+{
+ "case_id": "synthetic-ordinary-01",
+ "run_mode": "fixture",
+ "state": "SCREENED",
+ "run_id": "run-synthetic-ordinary-01-2094bca891d7",
+ "files": [
+  {
+   "n": "synthetic-訴願書.pdf",
+   "s": "—",
+   "x": "訴願人 · 3 頁（合成）"
+  },
+  {
+   "n": "synthetic-原處分裁處書.pdf",
+   "s": "—",
+   "x": "原處分機關 · 2 頁（合成）"
+  }
+ ],
+ "provenance": {
+  "kind": "synthetic",
+  "declaration": "本檔為合成測資（synthetic）。案情結構自公開決定書之程序爭點型態反推改寫；案號、人名、地址、機關承辦資訊均為虛構，不對應任何真實案件，亦未使用賽方競賽資料集。",
+  "constitution": "CONSTITUTION §3（不編造測資背景）、§6（Demo 資產隔離）",
+  "why_this_case": "驗證『程序可由日期直接算出』的動線：期間引擎攤開算式（可驗算層）、法條引用全部可對回快照（有出處層）、引擎 caveats 與中度爭點交人工（請人工判斷層）。此案不觸發結論段封鎖，用來對照 synthetic-blocked-01。"
+ },
+ "intake": {
+  "no": "synthetic-1130000001",
+  "type": "違反空氣污染防制法事件",
+  "person": "（合成）吳○庭",
+  "org": "新北市政府（合成測資）",
+  "d1": "2024-06-11",
+  "d2": "2024-06-13",
+  "d3": "2024-07-20",
+  "agent": "無",
+  "service_method": "deposit",
+  "transit_days": 0,
+  "interested_party": false,
+  "note": "訴願人主張未實際收受處分書，遲至 113 年 7 月中旬始自派出所領取。"
+ },
+ "intake_conf": {
+  "no": 0.97,
+  "type": 0.93,
+  "person": 0.9,
+  "org": 0.95,
+  "d1": 0.88,
+  "d2": 0.94,
+  "d3": 0.96,
+  "service_method": 0.91
+ },
+ "intake_origin": {
+  "no": "llm",
+  "type": "llm",
+  "person": "llm",
+  "org": "llm",
+  "d1": "llm",
+  "d2": "llm",
+  "d3": "llm",
+  "agent": "llm",
+  "service_method": "llm",
+  "transit_days": "llm",
+  "interested_party": "llm",
+  "note": "llm"
+ },
+ "intake_confirmed": [],
+ "low_conf_fields": [],
+ "facts_excerpt": [
+  {
+   "text": "訴願人於本市土城區農地露天燃燒稻稈及廢棄物，經環境保護局於民國 113 年 6 月 5 日現場稽查查獲，並以民國 113 年 6 月 11 日裁處書處以罰鍰。（合成卷證原文摘錄）",
+   "page": 2,
+   "quote_ref": "synthetic-原處分裁處書.pdf#p2"
+  },
+  {
+   "text": "前開裁處書因未獲會晤應受送達人，於民國 113 年 6 月 13 日寄存於轄區派出所，並製作送達通知書兩份，一份黏貼於應受送達人住居所門首。（合成卷證原文摘錄）",
+   "page": 2,
+   "quote_ref": "synthetic-原處分裁處書.pdf#p2"
+  }
+ ],
+ "documents_text": "訴願書（合成測資）\n訴願人：（合成）吳○庭\n原處分機關：新北市政府（合成測資）\n處分文號：synthetic-1130000001\n案由：違反空氣污染防制法事件\n訴願人於民國113年7月20日提起訴願。\n理由：訴願人主張未實際收受處分書，遲至113年7月中旬始自派出所領取。\n具狀日：民國113年7月20日\n\n裁處書（合成測資）\n發文日期：民國 113 年 6 月 11 日\n事實：訴願人於本市土城區農地露天燃燒稻稈及廢棄物，經環境保護局於民國 113 年 6 月 5 日現場稽查查獲，並以民國 113 年 6 月 11 日裁處書處以罰鍰。（合成卷證原文摘錄）\n送達：前開裁處書因未獲會晤應受送達人，於民國 113 年 6 月 13 日寄存於轄區派出所，並製作送達通知書兩份，一份黏貼於應受送達人住居所門首。（合成卷證原文摘錄）",
+ "classification": {
+  "class": {
+   "case_type": "違反空氣污染防制法事件",
+   "basis": "採 N1 抽取之案由欄位（違反空氣污染防制法事件）",
+   "method": "rule_v0_fallback",
+   "method_note": "v0 fallback：規則式法規名比對。真正的 kNN 分類需要賽方 101 份歷史決定書向量庫，本機無此資料，待資料集到位後替換。",
+   "law_hits": [
+    "空氣污染防制法"
+   ],
+   "expected_outcome_prior": null,
+   "expected_outcome_prior_reason": "不就本案結果作推估：預期結果屬法律判斷，由承辦人認定（CONSTITUTION §1）。可據實提供的是知識庫的結果件數分布，見 retrieval.outcome_summary。"
+  },
+  "knn": [],
+  "knn_backend": "unavailable",
+  "agreement": {
+   "llm_type": "違反空氣污染防制法事件",
+   "knn_type": null,
+   "match": null,
+   "simulated": true,
+   "note": "kNN 通道不可用，LLM 判讀 vs kNN 投票之交叉比對未實際執行。"
+  }
+ },
+ "screen": {
+  "deadline": {
+   "effective_date": "2024-06-13",
+   "deadline": "2024-07-15",
+   "overdue": true,
+   "steps": [
+    {
+     "rule": "寄存送達自寄存之日起發生效力（不論實際何時領取）",
+     "basis": "行政程序法 74；最高行 108 判 531 意旨",
+     "value": "生效日 = 113/6/13"
+    },
+    {
+     "rule": "自送達生效之次日起算（始日不計入）",
+     "basis": "訴願法 14 I；民法 120 II",
+     "value": "起算日 = 113/6/14"
+    },
+    {
+     "rule": "法定期間 30 日",
+     "basis": "訴願法 14 I",
+     "value": "第 30 日 = 113/7/13"
+    },
+    {
+     "rule": "期滿日為星期六/日，以次一工作日代之",
+     "basis": "訴願法 17 → 民法 122",
+     "value": "順延後期滿日 = 113/7/15"
+    },
+    {
+     "rule": "期滿日確定",
+     "basis": "以上各步",
+     "value": "訴願期間至 113/7/15 屆滿"
+    },
+    {
+     "rule": "以受理機關收受訴願書之日為提起日",
+     "basis": "訴願法 14 III",
+     "value": "提起日 113/7/20 > 期滿日 → 逾期"
+    }
+   ],
+   "caveats": [
+    "國定假日順延未納入（v0 僅處理週六日），期滿日落在國定假日者請對照行政機關辦公日曆。",
+    "縱屬逾期，原處分顯屬違法或不當者，機關仍得依職權撤銷或變更（訴願法 80），逾期≠案件終結。",
+    "訴願人如有不可歸責事由，得申請回復原狀（訴願法 15），是否受理屬人工判斷。"
+   ]
+  },
+  "art77": {
+   "screened": [
+    "77-2"
+   ],
+   "hits": [
+    "77-2"
+   ],
+   "clause": "77-2",
+   "basis": "訴願法 77 條第 2 款：提起訴願逾法定期間者，應為不受理之決定。逾期由期間引擎直接算出，屬可驗算層。",
+   "requires_substantive_review": false,
+   "rule_assisted": [
+    "77-3"
+   ],
+   "rule_assisted_reason": "當事人適格（§77 第 3 款）已由純規則引擎逐步比對並提出意見，見 `screen.party_standing`（三態：適格／不適格／需人工認定）。**引擎意見不作成不受理決定**——它不寫進 `clause`、不驅動 `procedure_conclusion`，§77-3 仍由承辦人認定。",
+   "not_auto_screened": [
+    "77-1",
+    "77-4",
+    "77-5",
+    "77-6",
+    "77-7",
+    "77-8"
+   ],
+   "not_auto_screened_reason": "其餘各款（非行政處分、標的消滅等）屬法律判斷，本系統不自動判定，請承辦人審認。§77 第 3 款（當事人不適格）已改由規則引擎提出意見（見 `screen.party_standing`），但同樣不由系統作成決定。"
+  },
+  "fact_issues": [
+   {
+    "id": "I1",
+    "signal_id": "service_dispute",
+    "t": "爭點1：送達生效日之爭執",
+    "q": "訴願人是否爭執送達生效日？寄存送達之處所與應受送達處所是否相符？",
+    "severity": "medium",
+    "matched_keywords": [
+     "未實際收受"
+    ],
+    "src": "AI 不得代為認定，請承辦人核對卷證",
+    "origin": "rule"
+   }
+  ],
+  "requires_human_conclusion": true,
+  "human_conclusion_signals": [
+   "抽取欄位未經承辦人確認，結論段維持交人工（d2、d3、service_method、transit_days、interested_party、note 由模型抽取；這些欄位決定期間、訴願法 77 條款與事實爭點偵測，未經確認前不得用它們解除結論封鎖）"
+  ],
+  "deadline_cross_check": {
+   "agree": true,
+   "compared": [
+    "overdue",
+    "deadline"
+   ],
+   "shared_blind_spot": [],
+   "not_comparable": [],
+   "refusal_asymmetry": [],
+   "engines": {
+    "primary": {
+     "name": "backend/engine/deadline.py",
+     "deadline": "2024-07-15",
+     "overdue": true
+    },
+    "second_opinion": {
+     "name": "backend/engine/overdue_ref.py（外部引擎；比對語料 251 件**皆為逾期案**，故該比對涵蓋漏抓率、**未涵蓋誤判率**——測不到把未逾期誤判為逾期）",
+     "deadline": "2024-07-15",
+     "overdue": true,
+     "verdict": "逾期",
+     "steps": [
+      "寄存送達：以寄存日 2024-06-13 為收受送達日。",
+      "起算日＝送達生效日之次日＝2024-06-14。",
+      "訴願人住居所在新北市，無在途期間可扣除。",
+      "末日 2024-07-13 為例假日／國定假日，依行政程序法 §48 II 順延至 2024-07-15。",
+      "法定期間屆滿日＝起算日 + 30 日＝2024-07-15。",
+      "機關收受訴願書之日 2024-07-20 晚於屆滿日 2024-07-15，逾期 5 日。"
+     ],
+     "legal_refs": [
+      "行政程序法 §74；法務部 93.4.13 法律字第 0930014628 號函釋",
+      "訴願法 §14 I（次日起算）",
+      "訴願法 §14 III（以收受訴願書之日為準）"
+     ],
+     "missing": [],
+     "legal_ref_caveat": null
+    }
+   },
+   "disagreement": [],
+   "note": "兩套引擎獨立計算，本系統不自動採信任一方；`screen.deadline` 一律是本系統引擎的輸出，第二意見僅供承辦人對照。`agree` 只反映 `disagreement`（真正的判斷分歧）；`not_comparable` 是兩邊輸入不對等造成的差異，不計入是否一致；`refusal_asymmetry` 是一方拒答而另一方有答案，此時 `agree` 為 null（未知），**不得把有答案的那一方當成另一方的佐證**。"
+  },
+  "party_standing": {
+   "verdict": "需人工認定",
+   "is_qualified": null,
+   "standing_as": "",
+   "confidence": "low",
+   "legal_refs": [
+    "訴願法 §18",
+    "訴願法 §77 第 3 款"
+   ],
+   "steps": [
+    "缺少 respondent_name（原處分相對人），無從比對訴願人與原處分相對人是否同一人。",
+    "原處分相對人結構上不在訴願書裡、只記載於原處分書，請承辦人於收文表單填入後，本項才判得出來。"
+   ],
+   "missing": [
+    "respondent_name（原處分相對人）"
+   ],
+   "inputs": {
+    "appellant_name": "（合成）吳○庭",
+    "respondent_name": "",
+    "appellant_capacity": ""
+   },
+   "respondent_name_origin": "absent",
+   "engine_opinion": null,
+   "engine": "backend/engine/party_ref.py（外部規則引擎，28 件真實 §77-3 決定書調校；純規則、零 LLM）",
+   "note": "§77-3 當事人適格未判定。**「需人工認定」是正當結果，不是失敗**——資料不足時本系統不猜，也不以任一方推定。"
+  },
+  "procedure_conclusion": {
+   "value": "A",
+   "by": "rule",
+   "basis": "訴願法 77 條第 2 款：提起訴願逾法定期間者，應為不受理之決定。逾期由期間引擎直接算出，屬可驗算層。",
+   "why": "逾期由期間引擎直接算出（純規則、零模型參與、同輸入必同輸出），屬可驗算層，故程序審查結論由系統給出。"
+  },
+  "procedural_inputs_confirmed": false,
+  "unconfirmed_procedural_fields": [
+   "d2",
+   "d3",
+   "service_method",
+   "transit_days",
+   "interested_party",
+   "note"
+  ]
+ },
+ "retrieval": {},
+ "draft": {},
+ "gate": {},
+ "run_meta": {
+  "run_id": "run-synthetic-ordinary-01-2094bca891d7",
+  "base_run_id": null,
+  "from_node": "n1",
+  "to_node": "n3",
+  "overrides": {},
+  "run_id_note": "支援 base_run_id + from_node 續跑；同一份 body 重送仍會產生新的 run_id（不做冪等去重）。",
+  "run_mode": "fixture",
+  "started_at": "2026-09-12T15:47:27+00:00",
+  "elapsed_ms": 0,
+  "node_timings": {
+   "n1": 0,
+   "n2": 0,
+   "n3": 0
+  },
+  "degraded": [],
+  "model_ids": null,
+  "model_ids_note": "本次執行模式 fixture 未呼叫任何基礎模型，故無 model id。",
+  "kb_snapshot_date": "2026-08-22",
+  "final_state": "SCREENED",
+  "summary": "本次執行 3 個節點，共 0 ms，其中 0 個節點降級。"
+ },
+ "agents_narrative": {
+  "clerk": {
+   "k": "clerk",
+   "ico": "clerk",
+   "name": "卷證書記官",
+   "role": "抽取案件欄位與事實段原文",
+   "node": "n1",
+   "out": "自卷證擷取 12 個欄位，事實段原文 2 段。",
+   "logs": [
+    [
+     "必填欄位 4 項，信心門檻 0.80",
+     ""
+    ],
+    [
+     "低信心欄位：無",
+     ""
+    ],
+    [
+     "離線重播（fixture）：信心值為合成案例既有標註，非本次實測",
+     "y"
+    ]
+   ],
+   "prompt": null,
+   "prompt_note": "離線重播未呼叫模型，無提示詞可示"
+  },
+  "clf": {
+   "k": "clf",
+   "ico": "clf",
+   "name": "分類調查官",
+   "role": "判定案型與訴願法 77 條款",
+   "node": "n2",
+   "out": "分類為「違反空氣污染防制法事件」（採 N1 抽取之案由欄位（違反空氣污染防制法事件））。",
+   "logs": [
+    [
+     "分類方法：規則式法規名比對（v0 fallback，非 kNN）",
+     "y"
+    ],
+    [
+     "交叉比對安全網未實際執行：kNN 通道無資料集",
+     "y"
+    ],
+    [
+     "命中法規名：空氣污染防制法",
+     ""
+    ]
+   ],
+   "prompt": null,
+   "prompt_note": "規則／檢索節點，無提示詞（CONSTITUTION §4）"
+  },
+  "proc": {
+   "k": "proc",
+   "ico": "proc",
+   "name": "程序審查官",
+   "role": "期間計算與程序合法性",
+   "node": "n3",
+   "out": "期滿日 2024-07-15，逾期。偵測到 1 個事實認定爭點（高風險 0 個）。",
+   "logs": [
+    [
+     "期間計算共 6 個步驟，每步附法源",
+     ""
+    ],
+    [
+     "訴願法 77 條自動篩選：77-2",
+     ""
+    ],
+    [
+     "當事人適格（§77-3，規則引擎意見）：需人工認定——原處分相對人結構上不在訴願書裡、只記載於原處分書，請承辦人於收文表單填入後，本項才判得出來。（意見供對照，不作成不受理決定）",
+     "y"
+    ],
+    [
+     "結論段封鎖（由承辦人判斷）",
+     "r"
+    ],
+    [
+     "封鎖判斷的輸入欄位未經承辦人確認：d2、d3、service_method、transit_days、interested_party、note——不得用程序結果解除結論封鎖",
+     "y"
+    ],
+    [
+     "國定假日順延未納入（v0 僅處理週六日），期滿日落在國定假日者請對照行政機關辦公日曆。",
+     "y"
+    ],
+    [
+     "縱屬逾期，原處分顯屬違法或不當者，機關仍得依職權撤銷或變更（訴願法 80），逾期≠案件終結。",
+     "y"
+    ],
+    [
+     "訴願人如有不可歸責事由，得申請回復原狀（訴願法 15），是否受理屬人工判斷。",
+     "y"
+    ]
+   ],
+   "prompt": null,
+   "prompt_note": "規則／檢索節點，無提示詞（CONSTITUTION §4）"
+  }
+ },
+ "history": [
+  "CREATED -> EXTRACTING",
+  "EXTRACTING -> EXTRACTED",
+  "EXTRACTED -> CLASSIFIED",
+  "CLASSIFIED -> SCREENED"
+ ]
+}

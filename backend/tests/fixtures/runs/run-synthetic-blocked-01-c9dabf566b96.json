@@ -1,0 +1,1544 @@
+{
+ "case_id": "synthetic-blocked-01",
+ "run_mode": "fixture",
+ "state": "VERIFIED",
+ "run_id": "run-synthetic-blocked-01-c9dabf566b96",
+ "files": [
+  {
+   "n": "synthetic-訴願書-建築法.pdf",
+   "s": "—",
+   "x": "訴願人 · 4 頁（合成）"
+  },
+  {
+   "n": "synthetic-原處分裁處書-建築法.pdf",
+   "s": "—",
+   "x": "原處分機關 · 3 頁（合成）"
+  }
+ ],
+ "provenance": {
+  "kind": "synthetic-adversarial",
+  "declaration": "本檔為合成對抗測資（synthetic adversarial）。案情結構自公開決定書之『先合後破・裁處權時效』型態反推改寫；案號、人名、地址均為虛構，不對應任何真實案件，亦未使用賽方競賽資料集。",
+  "constitution": "CONSTITUTION §3（不編造測資背景）、§6（Demo 資產隔離）",
+  "why_this_case": "這份案例刻意做壞，用來證明 N6 守門是真邏輯而不是擺好看的。它同時觸發兩道防線：(1) C 型結論封鎖——本案的操作判準是「程序合法（未逾法定期間、無可直接算出的不受理事由）且案型屬需事實認定型，須進入實體審查」，結論段必須由承辦人寫；本案另外也偵測到高風險事實認定爭點，但那是提醒、不是本案的封鎖原因（實測把爭點全部拿掉仍然封鎖）；(2) 引用查無此號——草稿中植入一個不存在的條號，守門必須攔下並標記為不得逕行送出。",
+  "adversarial_injections": [
+   {
+    "where": "draft_fixture.reasoning[2]",
+    "what": "引用「建築法第999條」——快照中建築法最大條號為 105，此條號不存在。",
+    "why": "這是**刻意注入的錯誤引用**，不是本系統對法律的認知。用途是驗證 CONSTITUTION §2『生成一個查無此號的判例＝P0 bug』的守門有沒有真的接住。期望結果：citation state=missing、lamp=r、進 blockers、submit_allowed=false。若這條沒被攔下，視同 P0。"
+   }
+  ]
+ },
+ "intake": {
+  "no": "synthetic-1140000002",
+  "type": "違反建築法事件",
+  "person": "（合成）林○安",
+  "org": "新北市政府（合成測資）",
+  "d1": "2025-03-10",
+  "d2": "2025-03-14",
+  "d3": "2025-04-07",
+  "agent": "有（律師）",
+  "service_method": "personal",
+  "transit_days": 0,
+  "interested_party": false,
+  "note": "訴願人主張裁處權時效已消滅，違規行為於 109 年間即已終了，非繼續性違規。"
+ },
+ "intake_conf": {
+  "no": 0.96,
+  "type": 0.92,
+  "person": 0.89,
+  "org": 0.94,
+  "d1": 0.9,
+  "d2": 0.93,
+  "d3": 0.95,
+  "service_method": 0.88
+ },
+ "intake_origin": {
+  "no": "llm",
+  "type": "llm",
+  "person": "llm",
+  "org": "llm",
+  "d1": "llm",
+  "d2": "llm",
+  "d3": "llm",
+  "agent": "llm",
+  "service_method": "llm",
+  "transit_days": "llm",
+  "interested_party": "llm",
+  "note": "llm"
+ },
+ "intake_confirmed": [],
+ "low_conf_fields": [],
+ "facts_excerpt": [
+  {
+   "text": "訴願人所有本市三重區建物，經工務局於民國 114 年 2 月現場勘查，認定該建物一樓原核准用途為停車空間，實際作為餐飲業使用，屬擅自變更使用。（合成卷證原文摘錄）",
+   "page": 2,
+   "quote_ref": "synthetic-原處分裁處書-建築法.pdf#p2"
+  },
+  {
+   "text": "訴願人於陳述意見時陳稱，該處自民國 109 年間即由前承租人改作餐飲使用，其後未再變更，主張裁處權時效已消滅。（合成卷證原文摘錄）",
+   "page": 3,
+   "quote_ref": "synthetic-訴願書-建築法.pdf#p3"
+  }
+ ],
+ "documents_text": "訴願書（合成測資）\n訴願人：（合成）林○安\n代理人：律師（合成測資）\n原處分機關：新北市政府（合成測資）\n處分文號：synthetic-1140000002\n案由：違反建築法事件\n訴願人於民國 114 年 4 月 7 日提起訴願。\n理由：訴願人主張裁處權時效已消滅，違規行為於 109 年間即已終了，非繼續性違規。\n訴願人於陳述意見時陳稱，該處自民國 109 年間即由前承租人改作餐飲使用，其後未再變更，主張裁處權時效已消滅。（合成卷證原文摘錄）\n具狀日：民國 114 年 4 月 7 日\n\n裁處書（合成測資）\n發文日期：民國 114 年 3 月 10 日\n事實：訴願人所有本市三重區建物，經工務局於民國 114 年 2 月現場勘查，認定該建物一樓原核准用途為停車空間，實際作為餐飲業使用，屬擅自變更使用。（合成卷證原文摘錄）\n送達：本件裁處書於民國 114 年 3 月 14 日由訴願人本人簽收。（合成卷證原文）",
+ "classification": {
+  "class": {
+   "case_type": "違反建築法事件",
+   "basis": "採 N1 抽取之案由欄位（違反建築法事件）",
+   "method": "rule_v0_fallback",
+   "method_note": "v0 fallback：規則式法規名比對。真正的 kNN 分類需要賽方 101 份歷史決定書向量庫，本機無此資料，待資料集到位後替換。",
+   "law_hits": [
+    "建築法"
+   ],
+   "expected_outcome_prior": null,
+   "expected_outcome_prior_reason": "不就本案結果作推估：預期結果屬法律判斷，由承辦人認定（CONSTITUTION §1）。可據實提供的是知識庫的結果件數分布，見 retrieval.outcome_summary。"
+  },
+  "knn": [],
+  "knn_backend": "unavailable",
+  "agreement": {
+   "llm_type": "違反建築法事件",
+   "knn_type": null,
+   "match": null,
+   "simulated": true,
+   "note": "kNN 通道不可用，LLM 判讀 vs kNN 投票之交叉比對未實際執行。"
+  }
+ },
+ "screen": {
+  "deadline": {
+   "effective_date": "2025-03-14",
+   "deadline": "2025-04-14",
+   "overdue": false,
+   "steps": [
+    {
+     "rule": "本人簽收，送達即生效",
+     "basis": "行政程序法 72",
+     "value": "生效日 = 114/3/14"
+    },
+    {
+     "rule": "自送達生效之次日起算（始日不計入）",
+     "basis": "訴願法 14 I；民法 120 II",
+     "value": "起算日 = 114/3/15"
+    },
+    {
+     "rule": "法定期間 30 日",
+     "basis": "訴願法 14 I",
+     "value": "第 30 日 = 114/4/13"
+    },
+    {
+     "rule": "期滿日為星期六/日，以次一工作日代之",
+     "basis": "訴願法 17 → 民法 122",
+     "value": "順延後期滿日 = 114/4/14"
+    },
+    {
+     "rule": "期滿日確定",
+     "basis": "以上各步",
+     "value": "訴願期間至 114/4/14 屆滿"
+    },
+    {
+     "rule": "以受理機關收受訴願書之日為提起日",
+     "basis": "訴願法 14 III",
+     "value": "提起日 114/4/7 ≤ 期滿日 → 未逾期"
+    }
+   ],
+   "caveats": [
+    "國定假日順延未納入（v0 僅處理週六日），期滿日落在國定假日者請對照行政機關辦公日曆。"
+   ]
+  },
+  "art77": {
+   "screened": [
+    "77-2"
+   ],
+   "hits": [],
+   "clause": null,
+   "basis": "期間未逾越（或無法判定），77 條第 2 款不成立；是否有其他不受理事由需人工審認。",
+   "requires_substantive_review": true,
+   "rule_assisted": [
+    "77-3"
+   ],
+   "rule_assisted_reason": "當事人適格（§77 第 3 款）已由純規則引擎逐步比對並提出意見，見 `screen.party_standing`（三態：適格／不適格／需人工認定）。**引擎意見不作成不受理決定**——它不寫進 `clause`、不驅動 `procedure_conclusion`，§77-3 仍由承辦人認定。",
+   "not_auto_screened": [
+    "77-1",
+    "77-4",
+    "77-5",
+    "77-6",
+    "77-7",
+    "77-8"
+   ],
+   "not_auto_screened_reason": "其餘各款屬法律判斷，本系統不自動判定，請承辦人審認。§77 第 3 款（當事人不適格）已改由規則引擎提出意見（見 `screen.party_standing`），但同樣不由系統作成決定。"
+  },
+  "fact_issues": [
+   {
+    "id": "I1",
+    "signal_id": "penalty_limitation",
+    "t": "爭點1：裁處權時效之起算與行為終了時點認定",
+    "q": "違規之「行為終了時」如何認定？擅自變更使用屬繼續性行為或一次性行為？卷內有無行為持續之事證？",
+    "severity": "high",
+    "matched_keywords": [
+     "時效",
+     "裁處權",
+     "繼續性違規"
+    ],
+    "src": "AI 不得代為認定，請承辦人核對卷證",
+    "origin": "rule"
+   }
+  ],
+  "requires_human_conclusion": true,
+  "human_conclusion_signals": [
+   "程序合法且須進入實體審查（案型：違反建築法事件）",
+   "存在高風險事實認定爭點 I1：爭點1：裁處權時效之起算與行為終了時點認定"
+  ],
+  "deadline_cross_check": {
+   "agree": true,
+   "compared": [
+    "overdue",
+    "deadline"
+   ],
+   "shared_blind_spot": [],
+   "not_comparable": [],
+   "refusal_asymmetry": [],
+   "engines": {
+    "primary": {
+     "name": "backend/engine/deadline.py",
+     "deadline": "2025-04-14",
+     "overdue": false
+    },
+    "second_opinion": {
+     "name": "backend/engine/overdue_ref.py（外部引擎；比對語料 251 件**皆為逾期案**，故該比對涵蓋漏抓率、**未涵蓋誤判率**——測不到把未逾期誤判為逾期）",
+     "deadline": "2025-04-14",
+     "overdue": false,
+     "verdict": "未逾期",
+     "steps": [
+      "本人收受：送達日 2025-03-14 生效。",
+      "起算日＝送達生效日之次日＝2025-03-15。",
+      "訴願人住居所在新北市，無在途期間可扣除。",
+      "末日 2025-04-13 為例假日／國定假日，依行政程序法 §48 II 順延至 2025-04-14。",
+      "法定期間屆滿日＝起算日 + 30 日＝2025-04-14。",
+      "機關收受訴願書之日 2025-04-07 未晚於屆滿日 2025-04-14，未逾期。"
+     ],
+     "legal_refs": [
+      "行政程序法 §72",
+      "訴願法 §14 I（次日起算）",
+      "訴願法 §14 III（以收受訴願書之日為準）"
+     ],
+     "missing": [],
+     "legal_ref_caveat": "第二意見的法源以「本人簽收」計（行政程序法 §72）；**如本案為同居人／受僱人代收，法源應為 §73**（補充送達）。兩者送達生效日相同，故屆滿日與逾期結論不受影響——換法源不換答案。"
+    }
+   },
+   "disagreement": [],
+   "note": "兩套引擎獨立計算，本系統不自動採信任一方；`screen.deadline` 一律是本系統引擎的輸出，第二意見僅供承辦人對照。`agree` 只反映 `disagreement`（真正的判斷分歧）；`not_comparable` 是兩邊輸入不對等造成的差異，不計入是否一致；`refusal_asymmetry` 是一方拒答而另一方有答案，此時 `agree` 為 null（未知），**不得把有答案的那一方當成另一方的佐證**。"
+  },
+  "party_standing": {
+   "verdict": "需人工認定",
+   "is_qualified": null,
+   "standing_as": "",
+   "confidence": "low",
+   "legal_refs": [
+    "訴願法 §18",
+    "訴願法 §77 第 3 款"
+   ],
+   "steps": [
+    "缺少 respondent_name（原處分相對人），無從比對訴願人與原處分相對人是否同一人。",
+    "原處分相對人結構上不在訴願書裡、只記載於原處分書，請承辦人於收文表單填入後，本項才判得出來。"
+   ],
+   "missing": [
+    "respondent_name（原處分相對人）"
+   ],
+   "inputs": {
+    "appellant_name": "（合成）林○安",
+    "respondent_name": "",
+    "appellant_capacity": ""
+   },
+   "respondent_name_origin": "absent",
+   "engine_opinion": null,
+   "engine": "backend/engine/party_ref.py（外部規則引擎，28 件真實 §77-3 決定書調校；純規則、零 LLM）",
+   "note": "§77-3 當事人適格未判定。**「需人工認定」是正當結果，不是失敗**——資料不足時本系統不猜，也不以任一方推定。"
+  },
+  "procedure_conclusion": {
+   "value": null,
+   "by": "unavailable",
+   "basis": "",
+   "why": "本系統只自動判定訴願法 §77 第 2 款（逾期）這一種程序不合事由。其餘各款與訴願有無理由屬法律判斷，**本系統不代為認定**，請承辦人自行審認——此處留白不是失敗，是刻意不猜。"
+  },
+  "procedural_inputs_confirmed": false,
+  "unconfirmed_procedural_fields": [
+   "d2",
+   "d3",
+   "service_method",
+   "transit_days",
+   "interested_party",
+   "note"
+  ]
+ },
+ "retrieval": {
+  "laws": [
+   {
+    "id": "L1",
+    "t": "行政程序法第72條",
+    "q": null,
+    "q_note": "條文原文不在快照內（快照只索引條號），本系統不代為補寫條文文字，請對照全國法規資料庫。",
+    "src": "laws-snapshot.json／行政程序法",
+    "origin": "retrieval",
+    "verified": true,
+    "note": "條號存在於快照（該法最大條號 175）",
+    "lamp": null,
+    "tag": "檢索到，草稿未引用",
+    "law": "行政程序法",
+    "article": "72",
+    "gate_ref_key": "行政程序法|72",
+    "gate_status": "retrieved_not_cited",
+    "gate_note": "本條由 N4 依案情獨立檢索命中，草稿並未引用它，因此沒有可供守門查核的句子——不給燈號（燈號只屬於草稿裡的句子與引用），也不代表草稿漏引或引用有誤。"
+   },
+   {
+    "id": "L2",
+    "t": "訴願法第14條",
+    "q": null,
+    "q_note": "條文原文不在快照內（快照只索引條號），本系統不代為補寫條文文字，請對照全國法規資料庫。",
+    "src": "laws-snapshot.json／訴願法",
+    "origin": "retrieval",
+    "verified": true,
+    "note": "條號存在於快照（該法最大條號 101）",
+    "lamp": null,
+    "tag": "檢索到，草稿未引用",
+    "law": "訴願法",
+    "article": "14",
+    "gate_ref_key": "訴願法|14",
+    "gate_status": "retrieved_not_cited",
+    "gate_note": "本條由 N4 依案情獨立檢索命中，草稿並未引用它，因此沒有可供守門查核的句子——不給燈號（燈號只屬於草稿裡的句子與引用），也不代表草稿漏引或引用有誤。"
+   },
+   {
+    "id": "L3",
+    "t": "民法第120條",
+    "q": null,
+    "q_note": "條文原文不在快照內（快照只索引條號），本系統不代為補寫條文文字，請對照全國法規資料庫。",
+    "src": "laws-snapshot.json／民法",
+    "origin": "retrieval",
+    "verified": true,
+    "note": "條號存在於快照（該法最大條號 1225）",
+    "lamp": null,
+    "tag": "檢索到，草稿未引用",
+    "law": "民法",
+    "article": "120",
+    "gate_ref_key": "民法|120",
+    "gate_status": "retrieved_not_cited",
+    "gate_note": "本條由 N4 依案情獨立檢索命中，草稿並未引用它，因此沒有可供守門查核的句子——不給燈號（燈號只屬於草稿裡的句子與引用），也不代表草稿漏引或引用有誤。"
+   },
+   {
+    "id": "L4",
+    "t": "訴願法第17條",
+    "q": null,
+    "q_note": "條文原文不在快照內（快照只索引條號），本系統不代為補寫條文文字，請對照全國法規資料庫。",
+    "src": "laws-snapshot.json／訴願法",
+    "origin": "retrieval",
+    "verified": true,
+    "note": "條號存在於快照（該法最大條號 101）",
+    "lamp": null,
+    "tag": "檢索到，草稿未引用",
+    "law": "訴願法",
+    "article": "17",
+    "gate_ref_key": "訴願法|17",
+    "gate_status": "retrieved_not_cited",
+    "gate_note": "本條由 N4 依案情獨立檢索命中，草稿並未引用它，因此沒有可供守門查核的句子——不給燈號（燈號只屬於草稿裡的句子與引用），也不代表草稿漏引或引用有誤。"
+   },
+   {
+    "id": "L5",
+    "t": "民法第122條",
+    "q": null,
+    "q_note": "條文原文不在快照內（快照只索引條號），本系統不代為補寫條文文字，請對照全國法規資料庫。",
+    "src": "laws-snapshot.json／民法",
+    "origin": "retrieval",
+    "verified": true,
+    "note": "條號存在於快照（該法最大條號 1225）",
+    "lamp": null,
+    "tag": "檢索到，草稿未引用",
+    "law": "民法",
+    "article": "122",
+    "gate_ref_key": "民法|122",
+    "gate_status": "retrieved_not_cited",
+    "gate_note": "本條由 N4 依案情獨立檢索命中，草稿並未引用它，因此沒有可供守門查核的句子——不給燈號（燈號只屬於草稿裡的句子與引用），也不代表草稿漏引或引用有誤。"
+   }
+  ],
+  "cases": [],
+  "retrieval_meta": {
+   "backend": "lawtable_only",
+   "law_channel": {
+    "backend": "lawtable",
+    "available": true,
+    "laws_indexed": 11,
+    "article_text_available": false,
+    "note": "快照只索引條號，不含條文原文；條文原文欄位在 Phase 0 一律留白，不由系統補寫。"
+   },
+   "similar_case_channel": {
+    "backend": "similar_cases",
+    "available": false,
+    "reason": "相似歷史案檢索需要已建索引的決定書庫（賽方資料集之歷史訴願決定書，與市府公開之新北訴願決定書全量）。本次執行未接上該庫（RETRIEVER 非 kb），無任何相似案可回。此通道回空不是查無相似案，而是本系統目前無法檢索——標「庫外，未驗證」。",
+    "hits": 0,
+    "verified": false,
+    "label": "庫外，未驗證",
+    "hits_by_provenance": {}
+   },
+   "recall_at5_last_eval": null,
+   "recall_note": "檢索評測需要 leave-one-out 的歷史決定書資料集，本機無資料，未量測。",
+   "kb_snapshot_date": "2026-08-22",
+   "query_text": "違反建築法事件；建築法；行政程序法第72條；訴願法第14條；民法第120條；訴願法第17條；民法第122條；訴願書（合成測資）\n訴願人：（合成）林○安\n代理人：律師（合成測資）\n原處分機關：新北市政府（合成測資）\n處分文號：synthetic-1140000002\n案由：違反建築法事件\n訴願人於民國 114 年 4 月 7 日提起訴願。\n理由：訴願人主張裁處權時效已消滅，違規行為於 109 年間即已終了，非繼續性違規。\n訴願人於陳述意見時陳稱，該處自民國 109 年間即由前承租人改作餐飲使用，其後未再變更，主張裁處權時效已消滅。（合成卷證原文摘錄）\n具狀日：民國 114 年 4 月 7 日\n\n裁處書（合成測資）\n發文日期：民國 114 年 3 月 10 日\n事實：訴願人所有本市三重區建物，經工務局於民國 114 年 2 月現場勘查，認定該建物一樓原核准用途為停車空間，實際作為餐飲業使用，屬擅自變更使用。（合成卷證原文摘錄）\n送達：本件裁處書於民國 114 年 3 月 14 日由訴願人本人簽收。（合成卷證原文）；訴願人主張裁處權時效已消滅，違規行為於 109 年間即已終了，非繼續性違規。 訴願人所有本市三重區建物，經工務局於民國 114 年 2 月現場勘查，認定該建物一樓原核准用途為停車空間，實際作為餐飲業使用，屬擅自變更使用。（合成卷證原文摘錄） 訴願人於陳述意見時陳稱，該處自民國 109 年間即由前承租人改作餐飲使用，其後未再變更，主張裁處權時效已消滅。（合成卷證原文摘錄）",
+   "case_query_text": "訴願人所有本市三重區建物，經工務局於民國 114 年 2 月現場勘查，認定該建物一樓原核准用途為停車空間，實際作為餐飲業使用，屬擅自變更使用。（合成卷證原文摘錄）；訴願人於陳述意見時陳稱，該處自民國 109 年間即由前承租人改作餐飲使用，其後未再變更，主張裁處權時效已消滅。（合成卷證原文摘錄）；訴願人主張裁處權時效已消滅，違規行為於 109 年間即已終了，非繼續性違規。；違反建築法事件",
+   "case_query_extra_terms": [],
+   "query_sources": [
+    {
+     "from": "n2.classification.class.case_type",
+     "kind": "案型",
+     "terms": [
+      "違反建築法事件"
+     ]
+    },
+    {
+     "from": "n2.classification.class.law_hits",
+     "kind": "案型對應法規名（無條號）",
+     "terms": [
+      "建築法"
+     ],
+     "note": "實體法條號無法由案情自動判定：N2 只認得出案型對應的法規『名稱』（例如建築法），條號要由原處分書的裁處依據判定，而 Phase 0 沒有 PDF 視覺抽取、卷證摘錄裡也沒有條號。本節點**不猜條號**——所以檢索結果會以程序面法條為主，實體面只列得出法規名。"
+    },
+    {
+     "from": "n3.screen.deadline.steps[].basis",
+     "kind": "期間引擎逐步援引的法源",
+     "terms": [
+      "行政程序法第72條",
+      "訴願法第14條",
+      "民法第120條",
+      "訴願法第17條",
+      "民法第122條"
+     ],
+     "note": "期間引擎的依據字串裡若含判解字號（例『最高行 108 判 531 意旨』），本節點不檢索——法條查表通道只查條號，判解白名單的比對在守門節點（N6）做。"
+    },
+    {
+     "from": "case.documents[].text",
+     "kind": "卷證原文（逐字，未經模型改寫）",
+     "terms": [
+      "訴願書（合成測資）\n訴願人：（合成）林○安\n代理人：律師（合成測資）\n原處分機關：新北市政府（合成測資）\n處分文號：synthetic-1140000002\n案由：違反建築法事件\n訴願人於民國 114 年 4 月 7 日提起訴願。\n理由：訴願人主張裁處權時效已消滅，違規行為於 109 年間即已終了，非繼續性違規。\n訴願人於陳述意見時陳稱，該處自民國 109 年間即由前承租人改作餐飲使用，其後未再變更，主張裁處權時效已消滅。（合成卷證原文摘錄）\n具狀日：民國 114 年 4 月 7 日\n\n裁處書（合成測資）\n發文日期：民國 114 年 3 月 10 日\n事實：訴願人所有本市三重區建物，經工務局於民國 114 年 2 月現場勘查，認定該建物一樓原核准用途為停車空間，實際作為餐飲業使用，屬擅自變更使用。（合成卷證原文摘錄）\n送達：本件裁處書於民國 114 年 3 月 14 日由訴願人本人簽收。（合成卷證原文）"
+     ]
+    },
+    {
+     "from": "n1.facts_excerpt + intake.note",
+     "kind": "N1 整理的案情摘要與事實段摘錄（note 為模型改寫）",
+     "terms": [
+      "訴願人主張裁處權時效已消滅，違規行為於 109 年間即已終了，非繼續性違規。 訴願人所有本市三重區建物，經工務局於民國 114 年 2 月現場勘查，認定該建物一樓原核准用途為停車空間，實際作為餐飲業使用，屬擅自變更使用。（合成卷證原文摘錄） 訴願人於陳述意見時陳稱，該處自民國 109 年間即由前承租人改作餐飲使用，其後未再變更，主張裁處權時效已消滅。（合成卷證原文摘錄）"
+     ]
+    }
+   ],
+   "query_independence": "查詢句只由 N1 卷證抽取、N2 案型、N3 程序結果組成，不含 N5 草稿的任何內容。檢索是獨立佐證，不是照著草稿要引用什麼去查什麼。",
+   "substantive_article_gap": "實體法條號無法由案情自動判定：N2 只認得出案型對應的法規『名稱』（例如建築法），條號要由原處分書的裁處依據判定，而 Phase 0 沒有 PDF 視覺抽取、卷證摘錄裡也沒有條號。本節點**不猜條號**——所以檢索結果會以程序面法條為主，實體面只列得出法規名。"
+  },
+  "outcome_summary": {
+   "retrieved": {
+    "n": 0,
+    "counts": {}
+   },
+   "corpus": {
+    "by_provenance": {
+     "official": {
+      "駁回": 2,
+      "撤銷": 4,
+      "不受理": 9
+     }
+    },
+    "caveat": "此為知識庫內的結果分布，**不是母體統計，也不是本案的結果預測**。賽方資料集為挑選過的樣本（涵蓋各種 77 條款與各種結果），其比例不代表實際撤銷比率；公開爬蟲批較接近實際分布。系統不就本案結果作任何推估。",
+    "category": "違反建築法事件",
+    "total": 15
+   },
+   "note": "以上為檢索到的相似案與知識庫同案型的**決定結果件數**（規則計數，零 LLM）。系統不就本案結果作推估，也不提供撤銷機率——那屬法律判斷，由承辦人認定。",
+   "origin": "rule"
+  }
+ },
+ "draft": {
+  "template": "decision_v1",
+  "slots_requested": [
+   "reasoning"
+  ],
+  "slots": {
+   "reasoning": [
+    {
+     "t": "查原處分認定之違規事實，有現場勘查紀錄、照片及使用執照存根附卷可稽，事實認定尚無違誤。",
+     "cite_ids": [
+      "L1"
+     ],
+     "basis": "建築法第73條",
+     "source_kind": "law"
+    },
+    {
+     "t": "惟按行政罰之裁處權，因三年期間之經過而消滅；期間自違反行政法上義務之行為終了時起算。",
+     "cite_ids": [
+      "L2"
+     ],
+     "basis": "行政罰法第27條",
+     "source_kind": "law"
+    },
+    {
+     "t": "至擅自變更使用之處罰要件，另參建築法第999條之規定。",
+     "cite_ids": [
+      "L3"
+     ],
+     "basis": "建築法第999條",
+     "source_kind": "law",
+     "adversarial": true,
+     "adversarial_note": "刻意注入的錯誤引用，用來驗證守門會攔。快照中建築法無第 999 條（最大條號 105）。"
+    }
+   ]
+  },
+  "doc_skeleton": [
+   {
+    "ty": "title",
+    "text": "新北市政府（合成測資） 訴願決定書（合成測資草稿）",
+    "ind": 0,
+    "ss": []
+   },
+   {
+    "ty": "meta",
+    "text": "案號 synthetic-1140000002／案由 違反建築法事件／訴願人 （合成）林○安",
+    "ind": 0,
+    "ss": []
+   },
+   {
+    "ty": "h",
+    "text": "事實",
+    "ind": 0,
+    "ss": []
+   },
+   {
+    "ty": "p",
+    "text": "",
+    "ind": 1,
+    "ss": [
+     {
+      "id": "s1",
+      "t": "訴願人所有本市三重區建物，經工務局於民國 114 年 2 月現場勘查，認定該建物一樓原核准用途為停車空間，實際作為餐飲業使用，屬擅自變更使用。（合成卷證原文摘錄）",
+      "origin": "record",
+      "slot": "facts",
+      "adversarial": false,
+      "adversarial_note": null,
+      "cite_ids": [],
+      "basis": "synthetic-原處分裁處書-建築法.pdf#p2",
+      "engine": null,
+      "placeholder": false,
+      "l": "g",
+      "why": "本句標示為卷證直錄；本階段尚無法與來源文件逐字比對，請覆核原文後採用。",
+      "refs": [],
+      "l_origin": "rule",
+      "why_origin": "rule",
+      "tier": "有出處",
+      "citations": [],
+      "src": "synthetic-原處分裁處書-建築法.pdf#p2"
+     },
+     {
+      "id": "s2",
+      "t": "訴願人於陳述意見時陳稱，該處自民國 109 年間即由前承租人改作餐飲使用，其後未再變更，主張裁處權時效已消滅。（合成卷證原文摘錄）",
+      "origin": "record",
+      "slot": "facts",
+      "adversarial": false,
+      "adversarial_note": null,
+      "cite_ids": [],
+      "basis": "synthetic-訴願書-建築法.pdf#p3",
+      "engine": null,
+      "placeholder": false,
+      "l": "g",
+      "why": "本句標示為卷證直錄；本階段尚無法與來源文件逐字比對，請覆核原文後採用。",
+      "refs": [
+       "I1"
+      ],
+      "l_origin": "rule",
+      "why_origin": "rule",
+      "tier": "有出處",
+      "citations": [],
+      "src": "synthetic-訴願書-建築法.pdf#p3"
+     }
+    ]
+   },
+   {
+    "ty": "h",
+    "text": "理由",
+    "ind": 0,
+    "ss": []
+   },
+   {
+    "ty": "p",
+    "text": "",
+    "ind": 1,
+    "ss": [
+     {
+      "id": "s3",
+      "t": "查原處分認定之違規事實，有現場勘查紀錄、照片及使用執照存根附卷可稽，事實認定尚無違誤。",
+      "origin": "llm",
+      "slot": "reasoning",
+      "adversarial": false,
+      "adversarial_note": null,
+      "cite_ids": [],
+      "basis": "建築法第73條",
+      "engine": null,
+      "placeholder": false,
+      "l": "g",
+      "why": "所引法條／判解全部可對回資料集，字號已驗。",
+      "refs": [],
+      "l_origin": "rule",
+      "why_origin": "rule",
+      "tier": "有出處",
+      "citations": [
+       {
+        "raw": "建築法第73條",
+        "kind": "law",
+        "state": "ok",
+        "mark": "✓ 在庫",
+        "lamp": "g",
+        "resolved_id": "L-建築法-73",
+        "ref_key": "建築法|73",
+        "note": "條號存在於快照（該法最大條號 105）。",
+        "blocking": false,
+        "state_origin": "rule"
+       }
+      ],
+      "src": "建築法第73條"
+     },
+     {
+      "id": "s4",
+      "t": "惟按行政罰之裁處權，因三年期間之經過而消滅；期間自違反行政法上義務之行為終了時起算。",
+      "origin": "llm",
+      "slot": "reasoning",
+      "adversarial": false,
+      "adversarial_note": null,
+      "cite_ids": [],
+      "basis": "行政罰法第27條",
+      "engine": null,
+      "placeholder": false,
+      "l": "g",
+      "why": "所引法條／判解全部可對回資料集，字號已驗。",
+      "refs": [
+       "I1"
+      ],
+      "l_origin": "rule",
+      "why_origin": "rule",
+      "tier": "有出處",
+      "citations": [
+       {
+        "raw": "行政罰法第27條",
+        "kind": "law",
+        "state": "ok",
+        "mark": "✓ 在庫",
+        "lamp": "g",
+        "resolved_id": "L-行政罰法-27",
+        "ref_key": "行政罰法|27",
+        "note": "條號存在於快照（該法最大條號 46）。",
+        "blocking": false,
+        "state_origin": "rule"
+       }
+      ],
+      "src": "行政罰法第27條"
+     },
+     {
+      "id": "s5",
+      "t": "至擅自變更使用之處罰要件，另參建築法第999條之規定。",
+      "origin": "llm",
+      "slot": "reasoning",
+      "adversarial": true,
+      "adversarial_note": "刻意注入的錯誤引用，用來驗證守門會攔。快照中建築法無第 999 條（最大條號 105）。",
+      "cite_ids": [],
+      "basis": "建築法第999條",
+      "engine": null,
+      "placeholder": false,
+      "l": "r",
+      "why": "本案結論段已封鎖（需人工判斷），而本句未附任何可查證的引用——系統無法確認它不是實質結論，已交人工。",
+      "refs": [],
+      "l_origin": "rule",
+      "why_origin": "rule",
+      "tier": "請人工判斷",
+      "citations": [
+       {
+        "raw": "建築法第999條",
+        "kind": "law",
+        "state": "missing",
+        "mark": "✗ 查無此號",
+        "lamp": "r",
+        "resolved_id": null,
+        "ref_key": "建築法|999",
+        "note": "快照中建築法無第 999 條（最大條號 105），請人工查證是否誤植。",
+        "blocking": true,
+        "state_origin": "rule"
+       }
+      ],
+      "src": "建築法第999條"
+     }
+    ]
+   },
+   {
+    "ty": "h",
+    "text": "期間計算（規則引擎逐步驗算）",
+    "ind": 0,
+    "ss": []
+   },
+   {
+    "ty": "p",
+    "text": "",
+    "ind": 1,
+    "ss": [
+     {
+      "id": "s6",
+      "t": "本人簽收，送達即生效：生效日 = 114/3/14",
+      "origin": "engine",
+      "slot": "calculation",
+      "adversarial": false,
+      "adversarial_note": null,
+      "cite_ids": [],
+      "basis": "行政程序法 72",
+      "engine": "deadline",
+      "placeholder": false,
+      "l": "g",
+      "why": "期間由日期規則直接驗算，攤開算式可逐步覆核，無詮釋空間。 ⚠ 本算式的輸入（d2、d3、service_method、transit_days、interested_party）由模型抽取、**尚未經承辦人確認**：算式可逐步覆核，但期滿日與逾期判定會隨確認結果改變。",
+      "refs": [],
+      "l_origin": "rule",
+      "why_origin": "rule",
+      "tier": "可驗算",
+      "citations": [],
+      "src": "行政程序法 72"
+     },
+     {
+      "id": "s7",
+      "t": "自送達生效之次日起算（始日不計入）：起算日 = 114/3/15",
+      "origin": "engine",
+      "slot": "calculation",
+      "adversarial": false,
+      "adversarial_note": null,
+      "cite_ids": [],
+      "basis": "訴願法 14 I；民法 120 II",
+      "engine": "deadline",
+      "placeholder": false,
+      "l": "g",
+      "why": "期間由日期規則直接驗算，攤開算式可逐步覆核，無詮釋空間。 ⚠ 本算式的輸入（d2、d3、service_method、transit_days、interested_party）由模型抽取、**尚未經承辦人確認**：算式可逐步覆核，但期滿日與逾期判定會隨確認結果改變。",
+      "refs": [],
+      "l_origin": "rule",
+      "why_origin": "rule",
+      "tier": "可驗算",
+      "citations": [],
+      "src": "訴願法 14 I；民法 120 II"
+     },
+     {
+      "id": "s8",
+      "t": "法定期間 30 日：第 30 日 = 114/4/13",
+      "origin": "engine",
+      "slot": "calculation",
+      "adversarial": false,
+      "adversarial_note": null,
+      "cite_ids": [],
+      "basis": "訴願法 14 I",
+      "engine": "deadline",
+      "placeholder": false,
+      "l": "g",
+      "why": "期間由日期規則直接驗算，攤開算式可逐步覆核，無詮釋空間。 ⚠ 本算式的輸入（d2、d3、service_method、transit_days、interested_party）由模型抽取、**尚未經承辦人確認**：算式可逐步覆核，但期滿日與逾期判定會隨確認結果改變。",
+      "refs": [],
+      "l_origin": "rule",
+      "why_origin": "rule",
+      "tier": "可驗算",
+      "citations": [],
+      "src": "訴願法 14 I"
+     },
+     {
+      "id": "s9",
+      "t": "期滿日為星期六/日，以次一工作日代之：順延後期滿日 = 114/4/14",
+      "origin": "engine",
+      "slot": "calculation",
+      "adversarial": false,
+      "adversarial_note": null,
+      "cite_ids": [],
+      "basis": "訴願法 17 → 民法 122",
+      "engine": "deadline",
+      "placeholder": false,
+      "l": "g",
+      "why": "期間由日期規則直接驗算，攤開算式可逐步覆核，無詮釋空間。 ⚠ 本算式的輸入（d2、d3、service_method、transit_days、interested_party）由模型抽取、**尚未經承辦人確認**：算式可逐步覆核，但期滿日與逾期判定會隨確認結果改變。",
+      "refs": [],
+      "l_origin": "rule",
+      "why_origin": "rule",
+      "tier": "可驗算",
+      "citations": [],
+      "src": "訴願法 17 → 民法 122"
+     },
+     {
+      "id": "s10",
+      "t": "期滿日確定：訴願期間至 114/4/14 屆滿",
+      "origin": "engine",
+      "slot": "calculation",
+      "adversarial": false,
+      "adversarial_note": null,
+      "cite_ids": [],
+      "basis": "以上各步",
+      "engine": "deadline",
+      "placeholder": false,
+      "l": "g",
+      "why": "期間由日期規則直接驗算，攤開算式可逐步覆核，無詮釋空間。 ⚠ 本算式的輸入（d2、d3、service_method、transit_days、interested_party）由模型抽取、**尚未經承辦人確認**：算式可逐步覆核，但期滿日與逾期判定會隨確認結果改變。",
+      "refs": [],
+      "l_origin": "rule",
+      "why_origin": "rule",
+      "tier": "可驗算",
+      "citations": [],
+      "src": "以上各步"
+     },
+     {
+      "id": "s11",
+      "t": "以受理機關收受訴願書之日為提起日：提起日 114/4/7 ≤ 期滿日 → 未逾期",
+      "origin": "engine",
+      "slot": "calculation",
+      "adversarial": false,
+      "adversarial_note": null,
+      "cite_ids": [],
+      "basis": "訴願法 14 III",
+      "engine": "deadline",
+      "placeholder": false,
+      "l": "g",
+      "why": "期間由日期規則直接驗算，攤開算式可逐步覆核，無詮釋空間。 ⚠ 本算式的輸入（d2、d3、service_method、transit_days、interested_party）由模型抽取、**尚未經承辦人確認**：算式可逐步覆核，但期滿日與逾期判定會隨確認結果改變。",
+      "refs": [],
+      "l_origin": "rule",
+      "why_origin": "rule",
+      "tier": "可驗算",
+      "citations": [],
+      "src": "訴願法 14 III"
+     }
+    ]
+   },
+   {
+    "ty": "h",
+    "text": "決定主文",
+    "ind": 0,
+    "ss": []
+   },
+   {
+    "ty": "p",
+    "text": "",
+    "ind": 1,
+    "ss": [
+     {
+      "id": "s12",
+      "t": "（結論段由承辦人判斷後填寫）",
+      "origin": "human_required",
+      "slot": "conclusion",
+      "adversarial": false,
+      "adversarial_note": null,
+      "cite_ids": [],
+      "basis": null,
+      "engine": null,
+      "placeholder": true,
+      "l": "r",
+      "why": "結論涉及法律判斷，系統不生成，僅提供交接問題清單。",
+      "refs": [],
+      "l_origin": "rule",
+      "why_origin": "rule",
+      "tier": "請人工判斷",
+      "citations": [],
+      "src": "2026-08-22"
+     }
+    ]
+   }
+  ],
+  "conclusion_dropped": true,
+  "generation_mode": "fixture_template_replay",
+  "generation_note": "離線重播：句子取自合成案例檔的模板槽位，非模型即時生成。",
+  "usage": null,
+  "model_id": null,
+  "tool_calls": [],
+  "refs": []
+ },
+ "gate": {
+  "doc": [
+   {
+    "ty": "title",
+    "text": "新北市政府（合成測資） 訴願決定書（合成測資草稿）",
+    "ind": 0,
+    "ss": []
+   },
+   {
+    "ty": "meta",
+    "text": "案號 synthetic-1140000002／案由 違反建築法事件／訴願人 （合成）林○安",
+    "ind": 0,
+    "ss": []
+   },
+   {
+    "ty": "h",
+    "text": "事實",
+    "ind": 0,
+    "ss": []
+   },
+   {
+    "ty": "p",
+    "text": "",
+    "ind": 1,
+    "ss": [
+     {
+      "id": "s1",
+      "t": "訴願人所有本市三重區建物，經工務局於民國 114 年 2 月現場勘查，認定該建物一樓原核准用途為停車空間，實際作為餐飲業使用，屬擅自變更使用。（合成卷證原文摘錄）",
+      "origin": "record",
+      "slot": "facts",
+      "adversarial": false,
+      "adversarial_note": null,
+      "cite_ids": [],
+      "basis": "synthetic-原處分裁處書-建築法.pdf#p2",
+      "engine": null,
+      "placeholder": false,
+      "l": "g",
+      "why": "本句標示為卷證直錄；本階段尚無法與來源文件逐字比對，請覆核原文後採用。",
+      "refs": [],
+      "l_origin": "rule",
+      "why_origin": "rule",
+      "tier": "有出處",
+      "citations": [],
+      "src": "synthetic-原處分裁處書-建築法.pdf#p2"
+     },
+     {
+      "id": "s2",
+      "t": "訴願人於陳述意見時陳稱，該處自民國 109 年間即由前承租人改作餐飲使用，其後未再變更，主張裁處權時效已消滅。（合成卷證原文摘錄）",
+      "origin": "record",
+      "slot": "facts",
+      "adversarial": false,
+      "adversarial_note": null,
+      "cite_ids": [],
+      "basis": "synthetic-訴願書-建築法.pdf#p3",
+      "engine": null,
+      "placeholder": false,
+      "l": "g",
+      "why": "本句標示為卷證直錄；本階段尚無法與來源文件逐字比對，請覆核原文後採用。",
+      "refs": [
+       "I1"
+      ],
+      "l_origin": "rule",
+      "why_origin": "rule",
+      "tier": "有出處",
+      "citations": [],
+      "src": "synthetic-訴願書-建築法.pdf#p3"
+     }
+    ]
+   },
+   {
+    "ty": "h",
+    "text": "理由",
+    "ind": 0,
+    "ss": []
+   },
+   {
+    "ty": "p",
+    "text": "",
+    "ind": 1,
+    "ss": [
+     {
+      "id": "s3",
+      "t": "查原處分認定之違規事實，有現場勘查紀錄、照片及使用執照存根附卷可稽，事實認定尚無違誤。",
+      "origin": "llm",
+      "slot": "reasoning",
+      "adversarial": false,
+      "adversarial_note": null,
+      "cite_ids": [],
+      "basis": "建築法第73條",
+      "engine": null,
+      "placeholder": false,
+      "l": "g",
+      "why": "所引法條／判解全部可對回資料集，字號已驗。",
+      "refs": [],
+      "l_origin": "rule",
+      "why_origin": "rule",
+      "tier": "有出處",
+      "citations": [
+       {
+        "raw": "建築法第73條",
+        "kind": "law",
+        "state": "ok",
+        "mark": "✓ 在庫",
+        "lamp": "g",
+        "resolved_id": "L-建築法-73",
+        "ref_key": "建築法|73",
+        "note": "條號存在於快照（該法最大條號 105）。",
+        "blocking": false,
+        "state_origin": "rule"
+       }
+      ],
+      "src": "建築法第73條"
+     },
+     {
+      "id": "s4",
+      "t": "惟按行政罰之裁處權，因三年期間之經過而消滅；期間自違反行政法上義務之行為終了時起算。",
+      "origin": "llm",
+      "slot": "reasoning",
+      "adversarial": false,
+      "adversarial_note": null,
+      "cite_ids": [],
+      "basis": "行政罰法第27條",
+      "engine": null,
+      "placeholder": false,
+      "l": "g",
+      "why": "所引法條／判解全部可對回資料集，字號已驗。",
+      "refs": [
+       "I1"
+      ],
+      "l_origin": "rule",
+      "why_origin": "rule",
+      "tier": "有出處",
+      "citations": [
+       {
+        "raw": "行政罰法第27條",
+        "kind": "law",
+        "state": "ok",
+        "mark": "✓ 在庫",
+        "lamp": "g",
+        "resolved_id": "L-行政罰法-27",
+        "ref_key": "行政罰法|27",
+        "note": "條號存在於快照（該法最大條號 46）。",
+        "blocking": false,
+        "state_origin": "rule"
+       }
+      ],
+      "src": "行政罰法第27條"
+     },
+     {
+      "id": "s5",
+      "t": "至擅自變更使用之處罰要件，另參建築法第999條之規定。",
+      "origin": "llm",
+      "slot": "reasoning",
+      "adversarial": true,
+      "adversarial_note": "刻意注入的錯誤引用，用來驗證守門會攔。快照中建築法無第 999 條（最大條號 105）。",
+      "cite_ids": [],
+      "basis": "建築法第999條",
+      "engine": null,
+      "placeholder": false,
+      "l": "r",
+      "why": "本案結論段已封鎖（需人工判斷），而本句未附任何可查證的引用——系統無法確認它不是實質結論，已交人工。",
+      "refs": [],
+      "l_origin": "rule",
+      "why_origin": "rule",
+      "tier": "請人工判斷",
+      "citations": [
+       {
+        "raw": "建築法第999條",
+        "kind": "law",
+        "state": "missing",
+        "mark": "✗ 查無此號",
+        "lamp": "r",
+        "resolved_id": null,
+        "ref_key": "建築法|999",
+        "note": "快照中建築法無第 999 條（最大條號 105），請人工查證是否誤植。",
+        "blocking": true,
+        "state_origin": "rule"
+       }
+      ],
+      "src": "建築法第999條"
+     }
+    ]
+   },
+   {
+    "ty": "h",
+    "text": "期間計算（規則引擎逐步驗算）",
+    "ind": 0,
+    "ss": []
+   },
+   {
+    "ty": "p",
+    "text": "",
+    "ind": 1,
+    "ss": [
+     {
+      "id": "s6",
+      "t": "本人簽收，送達即生效：生效日 = 114/3/14",
+      "origin": "engine",
+      "slot": "calculation",
+      "adversarial": false,
+      "adversarial_note": null,
+      "cite_ids": [],
+      "basis": "行政程序法 72",
+      "engine": "deadline",
+      "placeholder": false,
+      "l": "g",
+      "why": "期間由日期規則直接驗算，攤開算式可逐步覆核，無詮釋空間。 ⚠ 本算式的輸入（d2、d3、service_method、transit_days、interested_party）由模型抽取、**尚未經承辦人確認**：算式可逐步覆核，但期滿日與逾期判定會隨確認結果改變。",
+      "refs": [],
+      "l_origin": "rule",
+      "why_origin": "rule",
+      "tier": "可驗算",
+      "citations": [],
+      "src": "行政程序法 72"
+     },
+     {
+      "id": "s7",
+      "t": "自送達生效之次日起算（始日不計入）：起算日 = 114/3/15",
+      "origin": "engine",
+      "slot": "calculation",
+      "adversarial": false,
+      "adversarial_note": null,
+      "cite_ids": [],
+      "basis": "訴願法 14 I；民法 120 II",
+      "engine": "deadline",
+      "placeholder": false,
+      "l": "g",
+      "why": "期間由日期規則直接驗算，攤開算式可逐步覆核，無詮釋空間。 ⚠ 本算式的輸入（d2、d3、service_method、transit_days、interested_party）由模型抽取、**尚未經承辦人確認**：算式可逐步覆核，但期滿日與逾期判定會隨確認結果改變。",
+      "refs": [],
+      "l_origin": "rule",
+      "why_origin": "rule",
+      "tier": "可驗算",
+      "citations": [],
+      "src": "訴願法 14 I；民法 120 II"
+     },
+     {
+      "id": "s8",
+      "t": "法定期間 30 日：第 30 日 = 114/4/13",
+      "origin": "engine",
+      "slot": "calculation",
+      "adversarial": false,
+      "adversarial_note": null,
+      "cite_ids": [],
+      "basis": "訴願法 14 I",
+      "engine": "deadline",
+      "placeholder": false,
+      "l": "g",
+      "why": "期間由日期規則直接驗算，攤開算式可逐步覆核，無詮釋空間。 ⚠ 本算式的輸入（d2、d3、service_method、transit_days、interested_party）由模型抽取、**尚未經承辦人確認**：算式可逐步覆核，但期滿日與逾期判定會隨確認結果改變。",
+      "refs": [],
+      "l_origin": "rule",
+      "why_origin": "rule",
+      "tier": "可驗算",
+      "citations": [],
+      "src": "訴願法 14 I"
+     },
+     {
+      "id": "s9",
+      "t": "期滿日為星期六/日，以次一工作日代之：順延後期滿日 = 114/4/14",
+      "origin": "engine",
+      "slot": "calculation",
+      "adversarial": false,
+      "adversarial_note": null,
+      "cite_ids": [],
+      "basis": "訴願法 17 → 民法 122",
+      "engine": "deadline",
+      "placeholder": false,
+      "l": "g",
+      "why": "期間由日期規則直接驗算，攤開算式可逐步覆核，無詮釋空間。 ⚠ 本算式的輸入（d2、d3、service_method、transit_days、interested_party）由模型抽取、**尚未經承辦人確認**：算式可逐步覆核，但期滿日與逾期判定會隨確認結果改變。",
+      "refs": [],
+      "l_origin": "rule",
+      "why_origin": "rule",
+      "tier": "可驗算",
+      "citations": [],
+      "src": "訴願法 17 → 民法 122"
+     },
+     {
+      "id": "s10",
+      "t": "期滿日確定：訴願期間至 114/4/14 屆滿",
+      "origin": "engine",
+      "slot": "calculation",
+      "adversarial": false,
+      "adversarial_note": null,
+      "cite_ids": [],
+      "basis": "以上各步",
+      "engine": "deadline",
+      "placeholder": false,
+      "l": "g",
+      "why": "期間由日期規則直接驗算，攤開算式可逐步覆核，無詮釋空間。 ⚠ 本算式的輸入（d2、d3、service_method、transit_days、interested_party）由模型抽取、**尚未經承辦人確認**：算式可逐步覆核，但期滿日與逾期判定會隨確認結果改變。",
+      "refs": [],
+      "l_origin": "rule",
+      "why_origin": "rule",
+      "tier": "可驗算",
+      "citations": [],
+      "src": "以上各步"
+     },
+     {
+      "id": "s11",
+      "t": "以受理機關收受訴願書之日為提起日：提起日 114/4/7 ≤ 期滿日 → 未逾期",
+      "origin": "engine",
+      "slot": "calculation",
+      "adversarial": false,
+      "adversarial_note": null,
+      "cite_ids": [],
+      "basis": "訴願法 14 III",
+      "engine": "deadline",
+      "placeholder": false,
+      "l": "g",
+      "why": "期間由日期規則直接驗算，攤開算式可逐步覆核，無詮釋空間。 ⚠ 本算式的輸入（d2、d3、service_method、transit_days、interested_party）由模型抽取、**尚未經承辦人確認**：算式可逐步覆核，但期滿日與逾期判定會隨確認結果改變。",
+      "refs": [],
+      "l_origin": "rule",
+      "why_origin": "rule",
+      "tier": "可驗算",
+      "citations": [],
+      "src": "訴願法 14 III"
+     }
+    ]
+   },
+   {
+    "ty": "h",
+    "text": "決定主文",
+    "ind": 0,
+    "ss": []
+   },
+   {
+    "ty": "p",
+    "text": "",
+    "ind": 1,
+    "ss": [
+     {
+      "id": "s12",
+      "t": "（結論段由承辦人判斷後填寫）",
+      "origin": "human_required",
+      "slot": "conclusion",
+      "adversarial": false,
+      "adversarial_note": null,
+      "cite_ids": [],
+      "basis": null,
+      "engine": null,
+      "placeholder": true,
+      "l": "r",
+      "why": "結論涉及法律判斷，系統不生成，僅提供交接問題清單。",
+      "refs": [],
+      "l_origin": "rule",
+      "why_origin": "rule",
+      "tier": "請人工判斷",
+      "citations": [],
+      "src": "2026-08-22"
+     }
+    ]
+   }
+  ],
+  "citations": [
+   {
+    "raw": "建築法第73條",
+    "kind": "law",
+    "state": "ok",
+    "mark": "✓ 在庫",
+    "lamp": "g",
+    "resolved_id": "L-建築法-73",
+    "ref_key": "建築法|73",
+    "note": "條號存在於快照（該法最大條號 105）。",
+    "blocking": false,
+    "state_origin": "rule",
+    "sentence_id": "s3"
+   },
+   {
+    "raw": "行政罰法第27條",
+    "kind": "law",
+    "state": "ok",
+    "mark": "✓ 在庫",
+    "lamp": "g",
+    "resolved_id": "L-行政罰法-27",
+    "ref_key": "行政罰法|27",
+    "note": "條號存在於快照（該法最大條號 46）。",
+    "blocking": false,
+    "state_origin": "rule",
+    "sentence_id": "s4"
+   },
+   {
+    "raw": "建築法第999條",
+    "kind": "law",
+    "state": "missing",
+    "mark": "✗ 查無此號",
+    "lamp": "r",
+    "resolved_id": null,
+    "ref_key": "建築法|999",
+    "note": "快照中建築法無第 999 條（最大條號 105），請人工查證是否誤植。",
+    "blocking": true,
+    "state_origin": "rule",
+    "sentence_id": "s5"
+   }
+  ],
+  "citation_counts": {
+   "ok": 2,
+   "amended": 0,
+   "out_of_scope": 0,
+   "missing": 1
+  },
+  "lamp_stats": {
+   "r": 2,
+   "y": 0,
+   "g": 10
+  },
+  "blockers": [
+   {
+    "sentence_id": "s5",
+    "reason": "citation_missing",
+    "detail": "建築法第999條：快照中建築法無第 999 條（最大條號 105），請人工查證是否誤植。"
+   },
+   {
+    "sentence_id": null,
+    "reason": "conclusion_requires_human",
+    "detail": "本案結論涉及法律判斷，系統不生成結論段（C 型封鎖），草稿不得逕行送出；請承辦人依交接卡認定後自行完成結論。",
+    "severity": "P0"
+   }
+  ],
+  "issue_refs": [
+   {
+    "sentence_id": "s2",
+    "issue_id": "I1",
+    "matched_by": "keyword:時效"
+   },
+   {
+    "sentence_id": "s4",
+    "issue_id": "I1",
+    "matched_by": "keyword:裁處權"
+   }
+  ],
+  "handoff": {
+   "questions": [
+    "違規之「行為終了時」如何認定？擅自變更使用屬繼續性行為或一次性行為？卷內有無行為持續之事證？",
+    "本件實體認定與法律障礙的轉折點落在哪一個爭點？卷內事證是否足以支持該認定？",
+    "擬採之處理結果（撤銷另處／駁回／不受理）為何？語氣需保留至何種程度？"
+   ],
+   "signals": [
+    "程序合法且須進入實體審查（案型：違反建築法事件）",
+    "存在高風險事實認定爭點 I1：爭點1：裁處權時效之起算與行為終了時點認定"
+   ],
+   "note": "系統偵測到結論涉及法律判斷，已停止生成結論段。以下問題供承辦人核對卷證後自行認定。"
+  },
+  "submit_allowed": false
+ },
+ "run_meta": {
+  "run_id": "run-synthetic-blocked-01-c9dabf566b96",
+  "base_run_id": null,
+  "from_node": "n1",
+  "overrides": {},
+  "run_id_note": "支援 base_run_id + from_node 續跑；同一份 body 重送仍會產生新的 run_id（不做冪等去重）。",
+  "run_mode": "fixture",
+  "started_at": "2026-09-12T15:20:03+00:00",
+  "elapsed_ms": 0,
+  "node_timings": {
+   "n1": 0,
+   "n2": 0,
+   "n3": 0,
+   "n4": 0,
+   "n5": 0,
+   "n6": 0
+  },
+  "degraded": [
+   {
+    "node": "n4",
+    "reason": "相似歷史案通道不可用（無資料集），僅法規查表通道有結果",
+    "agents": [
+     "law",
+     "case"
+    ]
+   },
+   {
+    "node": "n5",
+    "reason": "fixture 檔位：草稿為模板重播，非模型即時生成",
+    "agents": [
+     "draft"
+    ]
+   }
+  ],
+  "model_ids": null,
+  "model_ids_note": "本次執行模式 fixture 未呼叫任何基礎模型，故無 model id。",
+  "kb_snapshot_date": "2026-08-22",
+  "final_state": "VERIFIED",
+  "summary": "本次執行 6 個節點，共 0 ms，其中 2 個節點降級。"
+ },
+ "agents_narrative": {
+  "clerk": {
+   "k": "clerk",
+   "ico": "clerk",
+   "name": "卷證書記官",
+   "role": "抽取案件欄位與事實段原文",
+   "node": "n1",
+   "out": "自卷證擷取 12 個欄位，事實段原文 2 段。",
+   "logs": [
+    [
+     "必填欄位 4 項，信心門檻 0.80",
+     ""
+    ],
+    [
+     "低信心欄位：無",
+     ""
+    ],
+    [
+     "離線重播（fixture）：信心值為合成案例既有標註，非本次實測",
+     "y"
+    ]
+   ],
+   "prompt": null,
+   "prompt_note": "離線重播未呼叫模型，無提示詞可示"
+  },
+  "clf": {
+   "k": "clf",
+   "ico": "clf",
+   "name": "分類調查官",
+   "role": "判定案型與訴願法 77 條款",
+   "node": "n2",
+   "out": "分類為「違反建築法事件」（採 N1 抽取之案由欄位（違反建築法事件））。",
+   "logs": [
+    [
+     "分類方法：規則式法規名比對（v0 fallback，非 kNN）",
+     "y"
+    ],
+    [
+     "交叉比對安全網未實際執行：kNN 通道無資料集",
+     "y"
+    ],
+    [
+     "命中法規名：建築法",
+     ""
+    ]
+   ],
+   "prompt": null,
+   "prompt_note": "規則／檢索節點，無提示詞（CONSTITUTION §4）"
+  },
+  "proc": {
+   "k": "proc",
+   "ico": "proc",
+   "name": "程序審查官",
+   "role": "期間計算與程序合法性",
+   "node": "n3",
+   "out": "期滿日 2025-04-14，未逾期。偵測到 1 個事實認定爭點（高風險 1 個）。",
+   "logs": [
+    [
+     "期間計算共 6 個步驟，每步附法源",
+     ""
+    ],
+    [
+     "訴願法 77 條自動篩選：無命中",
+     ""
+    ],
+    [
+     "當事人適格（§77-3，規則引擎意見）：需人工認定——原處分相對人結構上不在訴願書裡、只記載於原處分書，請承辦人於收文表單填入後，本項才判得出來。（意見供對照，不作成不受理決定）",
+     "y"
+    ],
+    [
+     "結論段封鎖（由承辦人判斷）",
+     "r"
+    ],
+    [
+     "封鎖判斷的輸入欄位未經承辦人確認：d2、d3、service_method、transit_days、interested_party、note——不得用程序結果解除結論封鎖",
+     "y"
+    ],
+    [
+     "國定假日順延未納入（v0 僅處理週六日），期滿日落在國定假日者請對照行政機關辦公日曆。",
+     "y"
+    ]
+   ],
+   "prompt": null,
+   "prompt_note": "規則／檢索節點，無提示詞（CONSTITUTION §4）"
+  },
+  "law": {
+   "k": "law",
+   "ico": "law",
+   "name": "法規檢索官",
+   "role": "法條查表與條次異動比對",
+   "node": "n4",
+   "out": "以案情獨立檢索命中 5 筆法規依據，其中 5 筆條號可對回快照。（查詢句來自案型與程序審查結果，未參考草稿內容）",
+   "logs": [
+    [
+     "查表來源：laws-snapshot.json（11 部法規，產製於 2026-08-22）",
+     ""
+    ],
+    [
+     "查詢句來源：案型、案型對應法規名（無條號）、期間引擎逐步援引的法源、卷證原文（逐字，未經模型改寫）、N1 整理的案情摘要與事實段摘錄（note 為模型改寫）",
+     ""
+    ],
+    [
+     "條文原文未附：快照只索引條號，不代為補寫條文文字",
+     "y"
+    ],
+    [
+     "實體法條號無法由案情自動判定：N2 只認得出案型對應的法規『名稱』（例如建築法），條號要由原處分書的裁處依據判定，而 Phase 0 沒有 PDF 視覺抽取、卷證摘錄裡也沒有條號。本節點**不猜條號**——所以檢索結果會以程序面法條為主，實體面只列得出法規名。",
+     "y"
+    ],
+    [
+     "草稿實際引用了哪些法條，由守門節點逐句查核（見「草稿實際引用」清單），與本清單各自獨立",
+     ""
+    ],
+    [
+     "⚠ 本節點已降級：相似歷史案通道不可用（無資料集），僅法規查表通道有結果",
+     "r"
+    ]
+   ],
+   "prompt": null,
+   "prompt_note": "規則／檢索節點，無提示詞（CONSTITUTION §4）"
+  },
+  "case": {
+   "k": "case",
+   "ico": "case",
+   "name": "案例檢索官",
+   "role": "相似歷史決定書檢索",
+   "node": "n4",
+   "out": "相似歷史案：0 筆（庫外，未驗證）。",
+   "logs": [
+    [
+     "相似歷史案檢索需要已建索引的決定書庫（賽方資料集之歷史訴願決定書，與市府公開之新北訴願決定書全量）。本次執行未接上該庫（RETRIEVER 非 kb），無任何相似案可回。此通道回空不是查無相似案，而是本系統目前無法檢索——標「庫外，未驗證」。",
+     "r"
+    ],
+    [
+     "本節點不編造任何案號或相似度分數（CONSTITUTION §2）",
+     ""
+    ],
+    [
+     "⚠ 本節點已降級：相似歷史案通道不可用（無資料集），僅法規查表通道有結果",
+     "r"
+    ]
+   ],
+   "prompt": null,
+   "prompt_note": "規則／檢索節點，無提示詞（CONSTITUTION §4）"
+  },
+  "draft": {
+   "k": "draft",
+   "ico": "draft",
+   "name": "決定書主筆",
+   "role": "逐句組稿，只寫句子不寫可信度",
+   "node": "n5",
+   "out": "組出 3 句草稿（槽位：reasoning）。",
+   "logs": [
+    [
+     "離線重播（fixture）：句子來自合成案例模板，非模型生成",
+     "y"
+    ],
+    [
+     "結論段已自 slots 陣列移除（結構性封鎖，非 prompt 請求）",
+     "r"
+    ],
+    [
+     "本節點不產燈號、不產 why、不產爭點 ref——那三樣歸守門",
+     ""
+    ],
+    [
+     "⚠ 本節點已降級：fixture 檔位：草稿為模板重播，非模型即時生成",
+     "r"
+    ]
+   ],
+   "prompt": null,
+   "prompt_note": "離線重播未呼叫模型，無提示詞可示"
+  },
+  "qc": {
+   "k": "qc",
+   "ico": "qc",
+   "name": "品管守門員",
+   "role": "引用四態驗證與燈號判定",
+   "node": "n6",
+   "out": "驗證 3 個引用（在庫 2／已修正 0／庫外未驗證 0／查無 1）。燈號 綠 10／黃 0／紅 2。",
+   "logs": [
+    [
+     "不得送出：2 項（送出端點會以 409 拒絕）",
+     "r"
+    ],
+    [
+     "citation_missing｜s5：建築法第999條：快照中建築法無第 999 條（最大條號 105），請人工查證是否誤植。",
+     "r"
+    ],
+    [
+     "conclusion_requires_human｜（全案）：本案結論涉及法律判斷，系統不生成結論段（C 型封鎖），草稿不得逕行送出；請承辦人依交接卡認定後自行完成結論。",
+     "r"
+    ],
+    [
+     "結論段已封鎖，交接卡列 3 個問題",
+     "r"
+    ],
+    [
+     "爭點 ref 補掛 2 處（規則比對，非模型認定）",
+     ""
+    ],
+    [
+     "「庫外，未驗證」代表本系統無法驗證，不代表該字號不存在",
+     "y"
+    ]
+   ],
+   "prompt": null,
+   "prompt_note": "規則／檢索節點，無提示詞（CONSTITUTION §4）"
+  }
+ },
+ "history": [
+  "CREATED -> EXTRACTING",
+  "EXTRACTING -> EXTRACTED",
+  "EXTRACTED -> CLASSIFIED",
+  "CLASSIFIED -> SCREENED",
+  "SCREENED -> RETRIEVED",
+  "RETRIEVED -> DRAFTED",
+  "DRAFTED -> VERIFIED"
+ ]
+}

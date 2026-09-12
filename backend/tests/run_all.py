@@ -46,6 +46,7 @@ from backend.tests import (  # noqa: E402
     test_live_plumbing,
     test_nodes,
     test_party_standing,
+    test_relation_graph,
 )
 
 BACKEND = ROOT / "backend"
@@ -86,6 +87,17 @@ FORBIDDEN_CLOUD_PATTERNS = [
 # 實測 backend/ prototype/ scripts/ infra/ 全樹 0 誤中。
 KB_ID_RE = re.compile(r"\b[A-Z0-9]{10}\b")
 
+#: 同一行帶這個標記的命中會被放過。
+#:
+#: **為什麼需要一個出口**（2026-09-13 補）：中華民國身分證字號**剛好也是 10 碼
+#: 英數**（`[A-Z][12]\d{8}`），所以「測試去識別化有沒有把身分證字號抹掉」的
+#: 合成測資必然撞上這條掃描。上面「實測全樹 0 誤中」的說法從那天起不再成立。
+#:
+#: 出口刻意設計成**逐行、要寫理由的註解標記**，不是「某個檔整份豁免」：
+#: 整檔豁免會讓一個真的外洩躲在同一個檔裡沒人發現；逐行標記躲不掉——
+#: 每一個出口都看得見、grep 得到，而且是有人刻意寫上去的。
+KB_ID_SCAN_OPT_OUT = "NOT-A-KB-ID"
+
 
 def _kb_id_hits(text: str) -> list[tuple[int, str]]:
     """回傳 (行號, 命中字串)。抽成獨立函式的理由同 `_model_id_hits`：
@@ -103,6 +115,7 @@ def scan_kb_id_literals() -> list[str]:
 
     **本檔自己除外**（規則定義就在這裡）。`docs/` 與 `plans/` 不在範圍內，
     理由同 `scan_model_id_literals`：文件要記錄量測出處，靠人工覆核。
+    帶 `KB_ID_SCAN_OPT_OUT` 標記的那一行除外，理由見該常數的註解。
     """
     self_path = pathlib.Path(__file__).resolve()
     problems: list[str] = []
@@ -113,7 +126,10 @@ def scan_kb_id_literals() -> list[str]:
             text = p.read_text(encoding="utf-8")
         except UnicodeDecodeError:
             continue  # 非 UTF-8 已由 scan_redlines 報過，不重複
+        lines = text.splitlines()
         for line, hit in _kb_id_hits(text):
+            if KB_ID_SCAN_OPT_OUT in (lines[line - 1] if line <= len(lines) else ""):
+                continue
             problems.append(
                 f"{p.relative_to(ROOT)}:{line}：疑似 KB id 的實際值（{hit}）"
                 "——值只能在 .env，範例請寫 <kb-id>")
@@ -350,6 +366,14 @@ def scan_core_path_dependencies() -> list[str]:
 
 LLM_FORBIDDEN_NODES = ("n2_classify", "n3_procedure", "n4_retrieval", "n6_gate")
 
+#: 節點以外的零 LLM 模組：(檔案相對路徑, 絕對模組名)。
+#: `backend/graph/relation.py`（案件關聯圖）整支是 payload 欄位的字串比對，
+#: **本來就沒有模型呼叫，所以這條紅線是白拿的**——白拿的紅線更要釘住，
+#: 因為日後「順手在這裡叫一次模型補一條線」看起來會非常合理。
+LLM_FORBIDDEN_MODULES = (
+    ("backend/graph/relation.py", "backend.graph.relation"),
+)
+
 
 def _resolve_relative(module_name: str, level: int, module: str | None) -> str:
     """把相對 import 依「檔案所在 package」解析成絕對模組名。
@@ -481,7 +505,7 @@ def _check_forbidden_node(start_path: pathlib.Path, module_name: str) -> list[st
 
 
 def scan_llm_import_graph() -> list[str]:
-    """N2/N3/N4/N6 不得直接或間接 import backend.llm（CONSTITUTION §4）。
+    """N2/N3/N4/N6 與 `LLM_FORBIDDEN_MODULES` 不得直接或間接 import backend.llm（CONSTITUTION §4）。
 
     遞迴走 backend.* 的 import 邊；碰到 backend.llm 即違規。boto3 本身不在禁單裡
     （retrieval/kb.py 合法使用），禁的是 LLM 模組。相對 import 會被解析成絕對模組名，
@@ -495,6 +519,12 @@ def scan_llm_import_graph() -> list[str]:
             problems.append(f"找不到 {start.relative_to(ROOT)}，LLM 依賴檢查無從進行（清單與檔名已漂移）")
             continue
         problems.extend(_check_forbidden_node(start, f"backend.nodes.{node}"))
+    for rel_path, module_name in LLM_FORBIDDEN_MODULES:
+        start = ROOT / rel_path
+        if not start.exists():
+            problems.append(f"找不到 {rel_path}，LLM 依賴檢查無從進行（清單與檔名已漂移）")
+            continue
+        problems.extend(_check_forbidden_node(start, module_name))
     return problems
 
 
@@ -555,6 +585,7 @@ def main() -> int:
         ("聊天誠實燈號（機械規則，零 LLM）", [test_chat]),
         ("卷宗持久化與母庫查（manifest 原子寫／KB filter／端點形狀）", [test_dossier]),
         ("草稿匯出 .docx／.pdf（契約 §1.5 #23、§4.4）", [test_export]),
+        ("案件關聯圖（payload 欄位字串比對，零 LLM）", [test_relation_graph]),
         ("生成草稿前置條件與挑選法規的誠實回報（契約 §3.5.1、§3.5.2）", [test_draft_preconditions]),
     ]
     total_pass = total = 0
@@ -572,7 +603,7 @@ def main() -> int:
         ("secret／禁用雲端字樣（backend/ + prototype/）", scan_redlines),
         ("prototype/dist 可由 build.py 完全重現（不得手改建置產物）", scan_prototype_dist_reproducible),
         ("核心與測試路徑零外部依賴（具名例外：backend/api/、backend/llm/、backend/retrieval/kb.py）", scan_core_path_dependencies),
-        ("N2/N3/N4/N6 無 LLM 依賴（ast 遞迴，含 strands）", scan_llm_import_graph),
+        ("N2/N3/N4/N6 與案件關聯圖無 LLM 依賴（ast 遞迴，含 strands）", scan_llm_import_graph),
         ("所有 import 在模組頂層（spec D8）", scan_top_level_imports),
         ("model id 的實際值不進 backend/ prototype/ scripts/（值只由環境變數注入）", scan_model_id_literals),
         ("KB id 的實際值不進 backend/ prototype/ scripts/ infra/（值只由環境變數注入）", scan_kb_id_literals),
