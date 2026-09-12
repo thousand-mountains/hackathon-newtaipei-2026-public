@@ -116,3 +116,8 @@
 | SSE 被 ALB 緩衝，事件不即時 | Medium | 沿用既有端點的 `X-Accel-Buffering: no`（`app.py:459-463`）；ALB idle timeout 900 秒（`appeal-backend-stack.ts:256`）已足。第 5 段的 `curl -N` 會抓到 |
 | 第 5 段落地後忘了改兩處「四條」字樣 | Low | 步驟 4 明列 |
 | 聊天與六節點 SSE 併發撐爆 threadpool（uvicorn 預設 40 條，兩者共用） | Low（demo 量級） | 容量假設而非改動。不在本 change 解 |
+
+> **2026-09-13 後記：這條實際發生了，嚴重度不是 Low。**
+> 實測 41 條並行即飽和；且 `/api/health` 當時也在同一池，飽和會被 ALB 判成
+> task 不健康而換掉容器。已修：聊天 SSE 改 async generator、`/api/health` 走專用
+> 執行緒池、預設池上限提到 `THREADPOOL_LIMIT`。`GET /api/runs/{id}/events` 仍是同步。
