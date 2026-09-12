@@ -726,6 +726,15 @@ backend/output/cases/{case_id}/manifest.json
 
 - `GET /api/cases/{id}/artifacts` → `{ artifacts:[ {id,name,kind:"draft",note,created_at,run_id} ] }`
 - `GET /api/cases/{id}/artifacts/{artifactId}` → 草稿結構：
+
+  ⚠️ **`title` 與 `meta` 不是 section**（2026-09-13 釐清）。它們是**文件抬頭**，
+  與 `sections[]` 平行。把它們當成 section 的話，畫面最上面會多出兩個 `h` 是空字串的區塊。
+
+  **這個轉換全系統只能有一份實作。** JSON 檢視（本端點）與匯出（#23）**必須共用同一支**
+  ——同一份草稿從兩支端點出來長得不一樣，是使用者會當場看到的不一致。
+  共用那支要能：查 `payload["refs"]` 解析 `R*`（N5 的函釋／判解）標籤、
+  對不回來的引註標「（未解析）」並計數（`X-Unresolved-Cites` 靠它，否則那個標頭恆為 0）、
+  帶出處揭露與 `dataset_scope`。
   ```jsonc
   { "artifact_id":"art-…", "title":"訴願決定書草稿 v1", "run_id":"run-…",
     "sections":[ { "h":"主文", "blocks":[
@@ -746,10 +755,22 @@ backend/output/cases/{case_id}/manifest.json
   |---|---|---|
   | `X-Cite-Count` | 這份匯出檔實際帶出的引註數 | 顯示「本檔含 N 處引註」 |
   | `X-Unresolved-Cites` | 對不回本案 `laws`／`references` 的引註數 | **非 0 要警示**——這是 §2.4.1 第二項在匯出端的同一件事 |
-  | `X-Export-Warning` | 人類可讀的警語（可空） | 直接顯示 |
+  | `X-Export-Warning` | 人類可讀的警語（可空），**百分比編碼** | **`decodeURIComponent()` 之後**再顯示 |
 
   這三個是**加**不是改，端點形狀與參數完全照上面那行。`X-Unresolved-Cites` 特別有價值：
   「引用對不上」原本只在對話裡看得到，檔案離開系統之後就沒人知道了。
+
+  **三個標頭一律都帶**，包含 `0` 與空字串。省略鍵會讓前端拿到 `undefined` 而不是 `""`，
+  跟 §2.3「值為 null 也要送」同理。
+
+  ⚠️ **`X-Export-Warning` 必須百分比編碼**：HTTP 標頭只吃 latin-1，中文直接放進去
+  **在建構 response 的當下就 `UnicodeEncodeError`，整支匯出 500**。而它的觸發條件
+  （字型缺字、引註對不回來）在正常語料下都不會發生——**所以這個 500 在一般測試裡完全隱形**。
+
+  `X-Unresolved-Cites` 是**數字**，不是 id 清單。送 `"L9,L12"` 的話前端拿去比 `0` 會
+  **永遠成立**，警示恆亮＝等於沒有。計數單位是**出現次數**（與 `X-Cite-Count` 同一個計法，
+  兩個數字才能直接比：「14 處引註，其中 3 處對不回來」）；用相異 id 數會把
+  「同一個壞編號被引三次」算成 1。id 清單放 `X-Export-Warning`，那裡才是給人看的。
 
   **錯誤碼**：`format` 不在白名單 → `400`；case／artifact 不存在 → `404`；
   run 存在但 `doc[]` 是空的 → **`409`，不回一份空白檔**（回 200 空檔＝失敗看起來像成功）。
