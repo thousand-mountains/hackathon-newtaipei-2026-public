@@ -468,8 +468,30 @@ wire 格式：`event: <名稱>\ndata: <一行 JSON>\n\n`。共通欄位：`seq`�
 "state": "SCREENED"       // 停在 n3，**這個 run 沒有草稿**
 ```
 
-跑完之後前端打 **#4 彙整版**取內容：案由（`intake`）、事實摘錄（`facts_excerpt`）、
-爭點（`issues`）、程序審查（`screen`）。
+跑完之後前端打 **#4 彙整版**取內容。**2026-09-13 更正**：那四塊原本不在 #4 的回應裡
+（契約寫了、後端沒做），已補上。形狀是**九個鍵，四塊一律都在，取不到時是 `null` 不是省略**：
+
+```jsonc
+{ "case": {...}, "files": [...], "laws": [...], "references": [...], "artifacts": [...],
+  "intake": {...} | null,  "facts_excerpt": [...] | null,
+  "issues": [...] | null,  "screen": {...} | null }
+```
+
+- **`null` 不省略**，理由同 §2.3「值為 null 也要送」與 §4.4 的三個標頭：省略鍵會讓前端拿到
+  `undefined` 而不是 `null`，兩者要寫不同分支。
+- **「還沒跑過」vs「跑過但讀不到」用 `case.latest_run_id` 分**：它是 `null` ＝ 還沒跑過（正常）；
+  有值而四塊是 `null` ＝ run 讀不回來（異常，伺服器端會印警告）。**沒有為此加新鍵。**
+- **只有 `SCREENED` 的 run 也拿得到這四塊**（`doc`／`citations` 空但那四塊齊全）。
+- `screen` 是**整包**給（`deadline`／`art77`／`party_standing`／`procedure_conclusion` 等十個鍵），
+  前端自己挑要顯示什麼。
+- 這四塊來自**最後一次成功的 run**，不是「最後一次 extract」——跑完草稿之後 `latest_run_id`
+  指向 n4–n6 的 run，那個 payload 也有這四塊，行為一致。
+- `latest_run_id` 指向讀不到的 run 時回 **200 不是 500**：右欄的卷證在 manifest 裡、與 run 無關，
+  用一個區塊的失敗換掉整個畫面不划算。
+
+> ⚠️ **`screen.deadline.steps` 就是 `redirect` 的 CTA 要捲去看的算式**（§2.4.1）。
+> 那顆 CTA 是 `CONSTITUTION` §4 紅線的唯一出口——不給 AI 算的天數，給規則引擎算好的逐步算式。
+> **在這四塊補上之前，畫面上沒有算式可看，紅線的下半截是空的。**
 
 > **`procedure_checks` 的 `lamp` 值域是 `g`／`y`／`r`**（`backend/gate/lamps.py`），
 > 不是設計稿那組 `ok`／`warn`／`alert`——那是 CSS class 名。前端自己映射
