@@ -1,0 +1,5 @@
+name: chat-endpoint-deploy-impact
+created_at: 2026-09-12T09:26:21.952Z
+status: plan
+description: 盤點甲案聊天端點 POST /api/cases/{case_id}/chat（SSE 串流）對部署的改動範圍：IAM
+  條件、verify.sh 新增檢查、環境變數、以及 2026-09-13 交件前 ALB 白名單收窄
