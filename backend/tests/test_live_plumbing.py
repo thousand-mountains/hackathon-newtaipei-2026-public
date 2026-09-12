@@ -3295,3 +3295,79 @@ def test_frontend_similarity_caption_follows_the_ranker():
     assert_in("ranked_by", block, "相似度文案沒有依 ranked_by 切換，等於對數字的來歷說死話")
     assert_in("重排模型判定", block, "缺開了重排時的文案")
     assert_in("向量比對", block, "缺沒開重排時的文案（那一種仍然存在，不能整段換掉）")
+
+
+class _OldBotocoreRuntime:
+    """假 client：模擬**舊版 botocore**——它不認識 `managedSearchConfiguration`，
+    在客戶端就丟 `ParamValidationError`，請求根本沒送出去。
+
+    這正是 2026-09-12 線上踩到的形狀：容器 `boto3~=1.35.0`、開發機是最新版。
+    """
+
+    class ParamValidationError(Exception):
+        pass
+
+    def __init__(self, results):
+        self.results = results
+        self.keys_tried: list[str] = []
+
+    def retrieve(self, **kw):
+        key = next(iter(kw["retrievalConfiguration"]))
+        self.keys_tried.append(key)
+        if key == "managedSearchConfiguration":
+            raise self.ParamValidationError(
+                'Parameter validation failed:\nUnknown parameter in '
+                'retrievalConfiguration: "managedSearchConfiguration", '
+                'must be one of: vectorSearchConfiguration')
+        return {"retrievalResults": self.results}
+
+
+def test_a_client_side_param_rejection_still_falls_through_to_the_other_key():
+    """舊版 botocore 的 `ParamValidationError` 也要算「這個鍵不被接受」。
+
+    2026-09-12 線上實測：只認伺服器端的 `ValidationException` 時，試錯的第一把
+    就把例外拋出去，**永遠輪不到 `vectorSearchConfiguration`**，相似案通道在雲上
+    整條回 0 筆。本機測不出來——開發機的 botocore 認識那個鍵，容器的不認識。
+
+    症狀還特別誤導：AC7 紅字寫「cases=0」，看起來像檢索品質差，
+    實際上是 SDK 版本差。
+    """
+    kb_module.reset_search_key_cache()
+    fake = _OldBotocoreRuntime([_kb_public_result("新北訴願決定書_全量/a_駁回.txt", 0.8, "內文")])
+    with env(BEDROCK_RERANK_MODEL_ID=None):
+        r = KBRetriever(kb_id="kb-old-boto", region="r", min_score=0.15, client=fake)
+        with _no_retrieve_interval():
+            hits = r.search("q", filters={"prefix": ["新北訴願決定書_全量/"]}, top_k=3)
+    assert_eq(fake.keys_tried, ["managedSearchConfiguration", "vectorSearchConfiguration"],
+              "第一把被客戶端擋下之後要接著試第二把")
+    assert_eq(len(hits), 1, "退到對的鍵之後就該撈得到")
+    assert_eq(kb_module.search_key_for("kb-old-boto"), "vectorSearchConfiguration",
+              "成功的那把要被記住，之後不再浪費呼叫")
+    kb_module.reset_search_key_cache()
+
+
+def test_corpus_counts_are_withheld_when_the_manifest_describes_another_corpus():
+    """入庫清單跟這個庫不是同一批東西時，筆數與分項一律不報。
+
+    2026-09-12 線上真的發生：換 KB 只換了環境變數（`BEDROCK_KB_ID` 與
+    `SIMILAR_CASE_QUOTA`），而 `data/manifest.json` 是跟著映像檔走的靜態檔、沒換。
+    於是對外的「檢索範圍」報的是**另一個 corpus 的組成與筆數**——
+    清單寫 `新北訴願決定書_全量` 2347 筆，實際查的是 `新北訴願決定書_環保局全量/`。
+
+    報一個別的語料的組成比不報更糟：讀的人會拿它當本系統的檢索範圍（CONSTITUTION §1）。
+    """
+    # 設定要查的兩批都在清單裡 → 正常，照報
+    # `retrieval_note()` 只有在相似案通道真的接上時才會講到語料，所以檔位要擺對
+    with env(RETRIEVER="kb", SIMILAR_CASE_QUOTA="歷史訴願決定書/:2,新北訴願決定書_全量/:3"):
+        assert_eq(settings.manifest_corpus_mismatch(), None, "對得上就不該報異常")
+        assert_in("筆", settings.retrieval_note(), "對得上時分項要照報")
+
+    # 其中一批不在清單裡 → 對不上（**交集不足以證明同一批**：歷史訴願決定書兩邊都有，
+    # 但佔 95% 的那批不是我們在查的）
+    with env(RETRIEVER="kb", SIMILAR_CASE_QUOTA="歷史訴願決定書/:2,新北訴願決定書_環保局全量/:3"):
+        mismatch = settings.manifest_corpus_mismatch()
+        assert_true(mismatch is not None, "少一批就該算對不上")
+        assert_in("新北訴願決定書_環保局全量", mismatch, "要指名哪一批缺席，不是含糊帶過")
+        note = settings.retrieval_note()
+        assert_in("故不報各批筆數", note)
+        assert_true("2347" not in note, "對不上時不得把另一批語料的筆數報出去")

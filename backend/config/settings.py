@@ -309,6 +309,41 @@ KB_CORPUS_LABELS = {
 _manifest_cache: dict[str, Any] = {}
 
 
+def manifest_corpus_mismatch() -> str | None:
+    """入庫清單描述的語料，跟**本服務設定要查的目錄**對不對得上。對得上（或無從判斷）回 None。
+
+    **為什麼需要這條**（2026-09-12 線上實際發生）：`data/manifest.json` 是跟著
+    映像檔走的靜態檔，而 `BEDROCK_KB_ID` 與 `SIMILAR_CASE_QUOTA` 是環境變數。
+    換 KB 只換了環境變數、manifest 沒換，於是對外的「檢索範圍」那段報的是
+    **另一個 corpus 的組成與筆數**（清單寫 `新北訴願決定書_全量` 2347 筆，
+    實際查的是 `新北訴願決定書_環保局全量/`）。
+
+    這跟 `index_state()` 防的是同一類謊、不同形態：
+    那條防「清單筆數 ≠ 已索引筆數」，這條防「清單根本不是這個庫」。
+    數字對不對得上是次要的——**先確認在講同一批東西**。
+
+    判準：**設定要查的前綴只要有一個不在清單裡，就算對不上**。
+
+    一開始寫成「有任何交集就算同一批」，結果漏報了線上那個情形——
+    `歷史訴願決定書` 兩邊都有（101 筆），於是判成相符，而佔 95% 的
+    `新北訴願決定書_全量`（2347 筆）根本不是我們在查的那批。
+    交集不足以證明在講同一批東西；**缺任何一批，分項就已經描述不了檢索範圍**。
+    """
+    counts = kb_corpus_counts()
+    if not counts:
+        return None
+    listed = {g.rsplit("/", 1)[-1] for g in counts if g}
+    try:
+        wanted = {p.rstrip("/") for p in similar_case_prefixes()}
+    except ValueError:
+        return None            # 設定壞掉由 similar_case_quota() 自己 raise，這裡不搶著報
+    missing = wanted - listed
+    if not wanted or not missing:
+        return None
+    return (f"設定要查的「{'、'.join(sorted(missing))}」不在清單裡；"
+            f"清單描述的是「{'、'.join(sorted(listed))}」")
+
+
 def kb_corpus_counts() -> dict[str, int] | None:
     """入庫清單各類別的筆數。manifest 不存在或壞掉 → None（不猜、不報估計值）。"""
     try:
@@ -439,6 +474,11 @@ def retrieval_note(kind: str | None = None) -> str:
 
     counts = kb_corpus_counts()
     state = index_state()
+    # 清單跟這個庫根本不是同一批東西時，**筆數與分項一律不報**。
+    # 報一個別的 corpus 的組成，比不報更糟：讀的人會拿它當本系統的檢索範圍。
+    mismatch = manifest_corpus_mismatch()
+    if mismatch:
+        counts = None
     manifest_total = sum(counts.values()) if counts else None
     indexed = state["documents_indexed"] if state else None
 
@@ -459,7 +499,10 @@ def retrieval_note(kind: str | None = None) -> str:
             f"入庫清單（data/manifest.json）列了 {manifest_total} 筆——{breakdown}；"
             "但**清單不等於已索引**——清單是「打算讓它檢索什麼」，不是「現在檢索得到什麼」。"
             if manifest_total is not None else
-            "入庫清單（data/manifest.json）本機也讀不到，故不報各批筆數。"
+            (f"入庫清單（data/manifest.json）與本服務要查的語料對不上"
+             f"（{mismatch}），故不報各批筆數——那份清單描述的是另一批語料。"
+             if mismatch else
+             "入庫清單（data/manifest.json）本機也讀不到，故不報各批筆數。")
         )
         return (
             f"{head}。本機沒有任何成功入庫的紀錄（找不到 data/index-state.json），"
@@ -468,9 +511,11 @@ def retrieval_note(kind: str | None = None) -> str:
 
     when = state.get("completed_at") or "時間未記錄"
     if manifest_total is None:
+        why = (f"與本服務要查的語料對不上（{mismatch}），故不報各批筆數"
+               if mismatch else "本機讀不到，故不報各批筆數")
         return (
             f"{head}，向量庫已索引 {indexed} 筆（依 data/index-state.json，最近一次成功入庫於 {when}）。"
-            f"入庫清單（data/manifest.json）本機讀不到，故不報各批筆數。{tail}"
+            f"入庫清單（data/manifest.json）{why}。{tail}"
         )
 
     if indexed == manifest_total:

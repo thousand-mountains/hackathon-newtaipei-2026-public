@@ -114,6 +114,18 @@ RERANK_DOC_CHARS = 1500
 MANAGED_SEARCH_KEY = "managedSearchConfiguration"
 VECTOR_SEARCH_KEY = "vectorSearchConfiguration"
 SEARCH_KEYS = (MANAGED_SEARCH_KEY, VECTOR_SEARCH_KEY)
+# 「這個鍵不被接受」有**兩種**講法，兩種都要當成「換另一個鍵再試」：
+#
+#   ValidationException    AWS 伺服器端拒絕（KB 型態不對）
+#   ParamValidationError   **botocore 在客戶端就擋下來**——這個版本的 botocore
+#                          根本不認識那個鍵，請求連送都沒送出去
+#
+# **第二種是 2026-09-12 線上實際踩到的**，而且本機測不出來：容器裝的是
+# `boto3~=1.35.0`（不認識 `managedSearchConfiguration`），開發機用
+# `uv run --with boto3` 抓最新版（認識）。只認第一種的話，試錯的第一把就
+# 拋出去、永遠輪不到第二個鍵，整條相似案通道在雲上回 0 筆——
+# 而 AC7 紅字看起來像「檢索品質差」，不像「SDK 版本差」。
+KEY_REJECTED_EXCEPTIONS = ("ValidationException", "ParamValidationError")
 _SEARCH_KEY_CACHE: dict[str, str] = {}
 
 
@@ -164,7 +176,7 @@ def retrieve_raw(client: Any, kb_id: str, query: str, want: int,
                                               **({"filter": metadata_filter} if metadata_filter else {})}},
             )
         except Exception as e:  # noqa: BLE001 — 例外型別由 botocore 動態生成
-            if type(e).__name__ != "ValidationException":
+            if type(e).__name__ not in KEY_REJECTED_EXCEPTIONS:
                 raise      # throttle、權限、網路問題不在這裡處理，直接往上丟
             last_exc = e
             continue
