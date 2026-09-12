@@ -441,6 +441,7 @@ wire 格式：`event: <名稱>\ndata: <一行 JSON>\n\n`。共通欄位：`seq`�
     "verified": false,
     "note": "KB 命中，未對資料集實檔驗證",
     "provenance": "official",          // official | public_crawl | unknown | **null**
+    "ranked_by": "rerank",             // "rerank" | "embedding" | **null**（見下）
     "origin": "retrieval" }
 ]
 ```
@@ -448,7 +449,19 @@ wire 格式：`event: <名稱>\ndata: <一行 JSON>\n\n`。共通欄位：`seq`�
 - `hits` 可以是空陣列。**空陣列不是錯誤**，用 `status` 區分 `empty` 還是 `failed`。
 - **`provenance` 可能是 `null`**——它只存在於 KB hit 的 metadata，法條查表的 Hit 沒有這個鍵
   （`backend/retrieval/base.py:30-40`）。**前端要處理 `null`。**
-- **`score` 顯示為相似度時必標「向量相似度，非法律相似度」**（誠實紅線，§6）。
+- **`score` 顯示為相似度時，文案必須依 `ranked_by` 切換**（2026-09-13 新增）：
+
+  | `ranked_by` | `score` 是什麼 | 畫面該說 |
+  |---|---|---|
+  | `"rerank"` | **重排模型給的分數** | 重排模型判定（**不得說成向量相似度**） |
+  | `"embedding"` | 向量相似度 | 向量相似度，非法律相似度 |
+  | `null` | **1.0／0.0 的二元命中**（法條查表、卷內既有引用） | **不顯示百分比**——顯示 100% 會被讀成「完全相似」 |
+
+  > ⚠️ **這不是措辭偏好，是不實陳述。** 實測（rerank 開著）：查「違章建築 拆除 訴願」
+  > 畫面上的數字是 **0.950**，而該筆實際的 embedding 分數是 **0.732**——**差 22 個
+  > 百分點，而且往高報**。承辦人看到 95% 會認為「這件幾乎一樣」。
+  >
+  > **沒重排時 `ranked_by` 也會送**（值是 `"embedding"`），不省略——同 §2.3／§4.4 的紀律。
 - **`search_regulations` 的 `verified` 不是恆 true。** `LawTableRetriever` 造四種 Hit，只有
   「條號存在於快照」那種是 `true`；條號無法無歧義解析、法規不在快照涵蓋範圍、條號查無，
   **三種都是 `false`**。後端原樣帶出，前端**不得**把 `verified:false` 畫成「字號已驗」。
