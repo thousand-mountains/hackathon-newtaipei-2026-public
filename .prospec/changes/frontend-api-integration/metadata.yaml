@@ -1,0 +1,6 @@
+name: "frontend-api-integration"
+created_at: "2026-09-12T06:05:00.000Z"
+status: story
+assignee: "未指派"
+authored_by: "-72 session（後端與 AWS）"
+description: "把 Pink 的 Vue 前端從純 mock 接上真後端 API：新增 API 層、把 src/data/* 的寫死資料換成 payload 映射、並把後端的守門與誠實標示如實帶到畫面上"
