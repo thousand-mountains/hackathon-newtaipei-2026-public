@@ -375,6 +375,13 @@ def _run_kwargs(body: RunIn | None) -> dict[str, Any]:
     真正的 `base_state` 是後端拿它去 `load_run()` 讀回來的（見 `RunIn` 的安全邊界說明）。
     """
     body = body or RunIn()
+    # `from_node != n1` 卻沒有 `base_run_id` 是錯誤（沒有上游可沿用）。
+    # 這條規則 `run_case()` 也有（graph.py，那裡才是權威），但**在 bedrock 檔位
+    # 它來不及**：run_case 跑在背景，202 早就回出去了，前端要輪詢到 run_failed
+    # 才知道自己送錯——而那是個 502，看起來像系統壞了，不像參數錯了。
+    # 錯在請求就該回 4xx，而且要在發 202 之前（2026-09-12 AC8b 實測：實際回 202）。
+    if body.from_node and body.from_node != "n1" and not body.base_run_id:
+        raise ValueError("from_node 不是 n1 時必須提供 base_run_id（沒有上游可沿用）")
     kw: dict[str, Any] = {
         "confirmed_intake": body.confirmed_intake,
         "from_node": body.from_node,

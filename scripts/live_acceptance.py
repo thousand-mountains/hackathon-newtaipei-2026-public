@@ -380,12 +380,29 @@ def check_ac8b(base: str, case: str) -> tuple[bool, str]:
 
 
 def check_ac15(pu: dict, want: dict) -> tuple[bool, str]:
-    keys = ("no", "d2", "d3", "service_method")
+    """上傳 txt 的抽取要與 fixture 一致——**但 `no` 例外，它應該是 null**。
+
+    2026-09-12 查證：合成卷證的訴願書寫的是「處分文號：synthetic-1130000001」，
+    那是**原處分的文號**，不是收文案號（訴願機關收到訴願書後自己編的號）。
+    `backend/llm/prompts/n1_extract.md` 明文禁止把原處分字號填進 `no`，
+    所以 N1 回 null 是**照規則做對**，不是抽漏。
+
+    fixture 的 `extraction.intake.no` 仍留著舊值，那是 fixture 檔位的**重播資料**，
+    不是「live 抽取的正確答案」；而且 `no` 在 `n1_extract.REQUIRED_FIELDS` 裡，
+    改成 null 會讓合成案停在 NEEDS_INPUT，改變 demo 動線。
+
+    抽不到收文案號時停下來請承辦人補，正是這個系統要的行為——
+    所以這裡改成**斷言它是 null**，把「不得拿原處分字號充數」這條規則釘住。
+    """
+    keys = ("d2", "d3", "service_method")
     got = {k: pu["intake"].get(k) for k in keys}
     expect = {k: want[k] for k in keys}
     same = all(str(got[k]) == str(expect[k]) for k in keys)
+    no_is_null = pu["intake"].get("no") in (None, "")
     type_ok = pu["classification"]["class"]["case_type"] == want["type"]
-    return same and type_ok, f"got={got}、want={expect}、案型一致={type_ok}"
+    return (same and no_is_null and type_ok,
+            f"got={got}、want={expect}、no 為 null（不得拿處分文號充數）={no_is_null}、"
+            f"案型一致={type_ok}")
 
 
 def main() -> int:
