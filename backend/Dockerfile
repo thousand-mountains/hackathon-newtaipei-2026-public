@@ -6,7 +6,7 @@
 #
 #   docker build -f backend/Dockerfile -t hack-appeal-backend:phase0 .
 #
-# 這樣才抓得到 backend/ 與 prototype/dist/。
+# 這樣才抓得到 backend/ 與 frontend/dist/。
 
 FROM python:3.12-slim
 
@@ -31,8 +31,8 @@ COPY backend/ /app/backend/
 
 # 前端建置產物（2026-09-12 起帶進映像檔）：
 #   不帶的話容器的 GET / 回 503，評審打開部署網址只看得到 API 文件。
-#   只複製 dist/（單檔全內嵌），不帶 static/ 原始碼、docs/、knowledge/。
-COPY prototype/dist/ /app/prototype/dist/
+#   只複製 Vite 的 dist/，不帶 frontend/src、node_modules、docs/、knowledge/。
+COPY frontend/dist/ /app/frontend/dist/
 
 # 入庫清單（2026-09-12 起帶進映像檔）：
 #   settings.py 的 kb_corpus_counts() 讀它來具名列出每一批語料的筆數。

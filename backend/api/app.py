@@ -38,6 +38,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import pathlib
+import re
 import sys
 import uuid
 from typing import Any
@@ -75,9 +76,55 @@ from backend.orchestrator.graph import (  # noqa: E402
 )
 from backend.orchestrator.runstore import RunNotFound, load_run  # noqa: E402
 
-# 五步動線前端的建置產物。由 `python3 prototype/build.py` 產生（單檔全內嵌）。
-FRONTEND_DIST = ROOT / "prototype" / "dist"
+# 前端建置產物。由 `npm run build`（Vite）產生在 `frontend/dist/`。
+#
+# 2026-09-12 從 `prototype/dist` 切到 `frontend/dist`：`prototype/` 已退役。
+# **切換不是只改這個路徑**——Vite 產物的 index.html 引用的是 `/assets/index-*.js`，
+# 而舊版只掛 `/static`，所以光改指向會得到「畫面全白但 /api/health 的
+# frontend_served 照樣回 true」。掛載點必須一起改（見本檔末的 mount）。
+FRONTEND_DIST = ROOT / "frontend" / "dist"
 FRONTEND_INDEX = FRONTEND_DIST / "index.html"
+#: Vite 把 JS/CSS 都放在 dist/assets/ 並以絕對路徑 /assets/… 引用。
+FRONTEND_ASSETS = FRONTEND_DIST / "assets"
+
+#: index.html 裡形如 src="/assets/x.js" / href="/assets/x.css" 的絕對路徑引用。
+_ASSET_REF_RE = re.compile(r'(?:src|href)="(/assets/[^"]+)"')
+
+
+def _frontend_check() -> dict[str, Any]:
+    """前端建置產物是否**完整**——不只 index.html 在不在。
+
+    把 index.html 引用的每個 `/assets/…` 逐一對到實體檔案。少一個就回 ok=False，
+    因為那正是「頁面回 200 但畫面全白」的成因，而只檢查 index.html 的舊版看不見它。
+    """
+    if not FRONTEND_INDEX.exists():
+        return {
+            "name": "frontend_dist",
+            "ok": False,
+            "detail": "未建置，請在 frontend/ 跑 `npm ci && npm run build`",
+            "blocking": False,
+        }
+    try:
+        refs = set(_ASSET_REF_RE.findall(FRONTEND_INDEX.read_text(encoding="utf-8")))
+    except OSError as e:
+        return {"name": "frontend_dist", "ok": False, "detail": f"index.html 讀取失敗：{e}",
+                "blocking": False}
+    missing = sorted(r for r in refs if not (FRONTEND_DIST / r.lstrip("/")).is_file())
+    if missing:
+        return {
+            "name": "frontend_dist",
+            "ok": False,
+            "detail": f"index.html 引用了 {len(refs)} 個資源，其中 {len(missing)} 個不存在："
+                      f"{', '.join(missing)}。建置產物不完整，畫面會是空白的。",
+            "blocking": False,
+        }
+    return {
+        "name": "frontend_dist",
+        "ok": True,
+        "detail": f"{FRONTEND_INDEX.relative_to(ROOT)}（引用 {len(refs)} 個資源，全部存在）",
+        "blocking": False,
+    }
+
 
 app = FastAPI(
     title="訴願案件審理 AI 輔助（v2 六節點 + 五步動線）",
@@ -169,14 +216,13 @@ def _health_checks() -> list[dict]:
         checks.append({"name": "synthetic_cases", "ok": False, "detail": f"{type(e).__name__}: {e}"})
 
     # 3. 前端建置產物在不在（不在也還能跑 API，所以這項失敗不擋整體 ok）
-    checks.append(
-        {
-            "name": "frontend_dist",
-            "ok": FRONTEND_INDEX.exists(),
-            "detail": str(FRONTEND_INDEX.relative_to(ROOT)) if FRONTEND_INDEX.exists() else "未建置，請跑 python3 prototype/build.py",
-            "blocking": False,
-        }
-    )
+    #
+    # **只檢查 index.html 在不在是不夠的。** Vite 產物的 index.html 引用
+    # `/assets/index-<hash>.js`，少了那些檔案頁面會回 200 但畫面全白——而舊版的
+    # 這項檢查照樣回 true。所以這裡改成把 index.html 引用的每個 /assets/ 路徑
+    # 逐一對到實體檔案。擋不了「檔案被手改」，但擋得住「建置產物不完整就部署」，
+    # 而後者才是會讓人打開網址看到空白畫面的那一種。
+    checks.append(_frontend_check())
 
     # 4. live 檔位真的跑得起來嗎：缺環境變數、或缺第三方套件，都要在這裡就說出來。
     #    套件檢查不能省——`missing_live_settings()` 只看環境變數，設定齊全但沒裝
@@ -547,23 +593,27 @@ def api_deadline(body: DeadlineIn) -> dict:
     return result
 
 
-# ── 前端：同一個 process serve 五步動線 ────────────────────────────
-# 沿用 v0 `prototype/app.py:40-45` 的慣例（FileResponse `/` + StaticFiles `/static`）。
-# dist/index.html 是單檔全內嵌（CSS/JS/fixture 都在裡面），所以 `/static` 掛著是為了
-# 跟 v0 的路徑相容，不是頁面渲染的必要條件。
+# ── 前端：同一個 process serve 工作台 ────────────────────────────
 @app.get("/")
 def index() -> FileResponse:
     if not FRONTEND_INDEX.exists():
         raise HTTPException(
             status_code=503,
-            detail=f"前端尚未建置：找不到 {FRONTEND_INDEX.relative_to(ROOT)}。請先跑 `python3 prototype/build.py`。",
+            detail=(
+                f"前端尚未建置：找不到 {FRONTEND_INDEX.relative_to(ROOT)}。"
+                "請先在 `frontend/` 跑 `npm ci && npm run build`。"
+            ),
         )
     # 前端建置產物每次 build 都會變，不讓瀏覽器快取住舊版
     return FileResponse(FRONTEND_INDEX, headers={"Cache-Control": "no-store"})
 
 
-if FRONTEND_DIST.is_dir():
-    app.mount("/static", StaticFiles(directory=FRONTEND_DIST), name="static")
+# **`/assets` 是必要的，不是相容用的。** Vite 產物的 index.html 以絕對路徑引用
+# `/assets/index-<hash>.js`；少了這個 mount，頁面會回 200 但畫面全白，而
+# `/api/health` 的 `frontend_served`（只看 index.html 在不在）照樣回 true——
+# 靜態健檢看不見「資源載不載得到」。切換前端時這兩件事必須一起做。
+if FRONTEND_ASSETS.is_dir():
+    app.mount("/assets", StaticFiles(directory=FRONTEND_ASSETS), name="assets")
 
 
 if __name__ == "__main__":
