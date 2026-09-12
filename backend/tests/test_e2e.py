@@ -512,3 +512,75 @@ def test_cli_exit_codes():
     assert_eq(cli.main(["--case", ORDINARY, "--quiet"]), 0, "正常案例 CLI 必須 exit 0")
     assert_eq(cli.main(["--case", BLOCKED, "--quiet"]), 0, "對抗案例流程本身跑完，也是 exit 0（攔下是正確行為）")
     assert_eq(cli.main(["--case", "synthetic-does-not-exist"]), 1, "找不到案例要 exit 1")
+
+
+# ── `to_node`：停在中途的部分執行（契約 v2 §0.1）──────────────────────
+
+def test_to_node_n3_stops_at_screened_and_leaves_no_draft():
+    """聊天的「解析卷證」工具只跑 n1–n3。
+
+    釘住三件事，換一個看似合理的實作就會紅：
+    - 終態是 `SCREENED`（不是 `VERIFIED`，也不是失敗）——`STATE_AFTER` 的映射本來就在，
+      這條驗的是迴圈真的有上界。
+    - **沒有草稿**。停在 n3 卻生得出草稿，代表上界沒生效。
+    - `node_timings` 只含跑過的節點：多一個 key 就是虛報一次沒發生的執行。
+    """
+    state = run_case(ORDINARY, mode="fixture", to_node="n3")
+    assert_eq(state.run_meta["final_state"], "SCREENED", "停在 n3 的終態")
+    assert_true(not state.draft, f"停在 n3 不該有草稿，實得 {state.draft!r}")
+    assert_eq(sorted(state.run_meta["node_timings"]), ["n1", "n2", "n3"], "只跑 n1–n3")
+    assert_eq(state.run_meta["to_node"], "n3", "run_meta 要記下上界")
+    # 沒跑 N5 就不該報草稿的 model id（fixture 檔位本來就全 None，這裡驗的是不虛報）
+    assert_true(state.screen, "n3 的程序審查結果要在")
+
+
+def test_to_node_n5_is_refused_because_it_would_leave_an_unguarded_draft():
+    """紅線：停在 N5 ＝ 有草稿但沒過 N6 引用守門。
+
+    `graph.py` 的既有不變量是「續跑的終態一定經過守門」。`to_node` 開了一個能繞過它的
+    口子，所以這個值必須被拒絕——**不是**靜默改跑到 n6，那會讓呼叫端以為自己要到了 n5。
+    """
+    try:
+        run_case(ORDINARY, mode="fixture", to_node="n5")
+    except ValueError as e:
+        assert_true("n5" in str(e), f"錯誤訊息要指出是 n5：{e}")
+        return
+    raise AssertionError("to_node='n5' 必須拋 ValueError")
+
+
+def test_to_node_must_be_a_real_node_and_must_not_precede_from_node():
+    """兩種壞輸入都要當場炸，不要跑出一個空的 run。"""
+    for bad in ("n7", "N3", ""):
+        try:
+            run_case(ORDINARY, mode="fixture", to_node=bad)
+        except ValueError:
+            continue
+        raise AssertionError(f"to_node={bad!r} 必須拋 ValueError")
+    probe = run_case(ORDINARY, mode="fixture", to_node="n3")
+    try:
+        run_case(ORDINARY, mode="fixture", base_state=probe, from_node="n4", to_node="n3")
+    except ValueError as e:
+        assert_true("早於" in str(e), f"要說清楚是順序問題：{e}")
+        return
+    raise AssertionError("to_node 早於 from_node 必須拋 ValueError")
+
+
+def test_default_to_node_still_runs_all_six_nodes():
+    """不傳 `to_node` 的既有行為一個字都不變（這是所有既有呼叫端的保護網）。"""
+    state = run_case(ORDINARY, mode="fixture")
+    assert_eq(sorted(state.run_meta["node_timings"]), ["n1", "n2", "n3", "n4", "n5", "n6"],
+              "預設仍跑滿六節點")
+    assert_eq(state.run_meta["to_node"], "n6", "預設上界是 n6")
+
+
+def test_resume_from_n4_after_a_screened_run_reaches_verified_without_rerunning_n1_n3():
+    """聊天的「生成草稿」工具：接著 SCREENED 的 run 續跑 n4–n6。
+
+    這條同時驗「部分執行的 run 可以當 base_state 續跑」——若 `to_node` 讓 run 少了
+    某個續跑必需的上游欄位，這裡會炸。
+    """
+    base = run_case(ORDINARY, mode="fixture", to_node="n3")
+    state = run_case(ORDINARY, mode="fixture", base_state=base, from_node="n4")
+    assert_eq(state.run_meta["final_state"], "VERIFIED", "續跑要跑到守門")
+    assert_eq(sorted(state.run_meta["node_timings"]), ["n4", "n5", "n6"], "不得重跑 n1–n3")
+    assert_eq(state.run_meta["base_run_id"], base.run_id, "要指得回上一次")
