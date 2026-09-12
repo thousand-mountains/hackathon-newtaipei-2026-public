@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import pathlib
+import sys
 from typing import Any
 
 from fastapi import APIRouter, File, HTTPException, Response, UploadFile
@@ -24,6 +25,7 @@ from pydantic import BaseModel, ConfigDict
 
 from backend.config import settings
 from backend.dossier import corpus, runlink, store
+from backend.dossier.redact import redact
 from backend.intake.uploads import MAX_BYTES, UPLOADS_DIR, _safe_name
 from backend.orchestrator.artifact_sections import build_sections
 from backend.orchestrator.case_view import blocks_from_latest_run
@@ -62,17 +64,30 @@ def _s3_client() -> Any:
 
 
 def _translate(e: Exception) -> HTTPException:
-    """卷宗層的例外 → HTTP。**每一種都說得出是哪一種**，不包成一句「系統忙碌中」。"""
+    """卷宗層的例外 → HTTP。**每一種都說得出是哪一種**，不包成一句「系統忙碌中」。
+
+    每一條出口都過 `redact()`——包含我們自己丟的那幾種。它們現在不含雲端識別資訊，
+    但「現在不含」不是可以依賴的性質（`CorpusUnavailable` 的訊息就長在會提到設定的地方）。
+    """
     if isinstance(e, (corpus.OutOfScope, store.CaseNotDeletable)):
         # 「存在但本期不供應／不可刪」≠「找不到」。回 404 會讓人去找一份其實存在的東西。
-        return HTTPException(status_code=400, detail=str(e))
+        return HTTPException(status_code=400, detail=redact(str(e), settings.kb_bucket))
     if isinstance(e, (store.CaseManifestNotFound, corpus.DocumentNotFound, RunNotFound)):
-        return HTTPException(status_code=404, detail=str(e))
+        return HTTPException(status_code=404, detail=redact(str(e), settings.kb_bucket))
     if isinstance(e, corpus.CorpusUnavailable):
-        return HTTPException(status_code=503, detail=str(e))
+        return HTTPException(status_code=503, detail=redact(str(e), settings.kb_bucket))
     if isinstance(e, ValueError):
-        return HTTPException(status_code=400, detail=str(e))
-    return HTTPException(status_code=502, detail=f"{type(e).__name__}: {e}")
+        return HTTPException(status_code=400, detail=redact(str(e), settings.kb_bucket))
+    # 到這裡的是**沒有被分類過的**例外（雲端 SDK 的原始錯誤多半落在這裡）。
+    # 原文一律不出去，但要進伺服器 log——那裡可以有帳號資訊，而且我們需要它：
+    # 真正的權限故障若只剩一句「上游錯誤」，我們自己會查不下去。
+    print(f"[warn] 卷宗端點未分類的例外（原文只進 log，不進 HTTP 回應）："
+          f"{type(e).__name__}: {e}", file=sys.stderr)
+    return HTTPException(
+        status_code=502,
+        detail=(f"母庫這次沒有回應（{type(e).__name__}）。這不是你的操作問題，"
+                f"請稍後再試；若持續發生請把時間點告訴維運，詳細錯誤在伺服器紀錄裡。"),
+    )
 
 
 class RenameIn(BaseModel):

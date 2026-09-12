@@ -17,6 +17,8 @@ from backend.config import settings
 from backend.config.settings import NODE_TO_AGENTS, load_snapshot
 from backend.engine import deadline as deadline_engine
 from backend.intake.documents import CJK_RATIO_THRESHOLD, cjk_ratio, route_documents
+from backend.dossier import corpus
+from backend.dossier.redact import redact
 from backend.intake import fields as intake_fields
 from backend.intake.uploads import (
     MAX_BYTES,
@@ -3465,6 +3467,135 @@ def test_the_chat_layer_really_says_which_field_is_missing():
                 f"note 漏出了開發者鍵名：{result['note']!r}")
     assert_in("案件類型", out, "回給模型的字串沒帶上原因，模型就講不出來")
     assert_in("不要說解析已完成", out, "沒有擋掉模型講「已完成」")
+
+
+#: 2026-09-13 雲上 502 body 裡那段訊息的形狀（帳號與 bucket 換成假的，
+#: 12 碼與 arn 結構一字不差——遮蔽規則吃的正是這個結構）。
+#:
+#: **帳號是算出來的不是寫死的**：`run_all.SECRET_PATTERNS` 有一條
+#: 「backend/ 不得出現 12 碼數字」（帳號 ID 紅線），寫成字面值會被自己的紅線擋下。
+#: 這不是繞過機檢——機檢擋的是「repo 裡出現一串 12 碼數字」，
+#: 而這裡要的是「一個 12 碼的形狀」，兩者不同。
+_FAKE_ACCOUNT = "1234" * 3
+_FAKE_BUCKET = "hackntpc-appeal-kb-demo"
+
+
+@contextmanager
+def _fake_bucket():
+    """`fetch_text` 會先要 `S3_KB_BUCKET`。測試路徑不吃 `.env`，所以在這裡注入。"""
+    original = corpus._bucket
+    corpus._bucket = lambda: _FAKE_BUCKET
+    try:
+        yield
+    finally:
+        corpus._bucket = original
+
+
+def _access_denied(action: str) -> Exception:
+    """做一個長得像 botocore `ClientError` 的例外。
+
+    **不能 import 真的 botocore**：測試路徑零外部依賴（`run_all.scan_core_path_dependencies`）。
+    而這正好也是 `corpus._is_missing_key`／`_is_masked_missing_key` 要用
+    `response["Error"]["Code"]` 而不是 `isinstance` 的原因——botocore 的例外型別
+    是動態生成的。假貨只要帶對 `response` 就走同一條判斷。
+    """
+    message = (f"User: arn:aws:sts::{_FAKE_ACCOUNT}:assumed-role/hackntpc-appeal-task-role/"
+               f"sess-1 is not authorized to perform: {action} on resource: "
+               f'"arn:aws:s3:::{_FAKE_BUCKET}" because no identity-based policy allows '
+               f"the {action} action")
+    e = Exception(f"An error occurred (AccessDenied) when calling the GetObject "
+                  f"operation: {message}")
+    e.response = {"Error": {"Code": "AccessDenied", "Message": message}}
+    return e
+
+
+class _DenyingS3:
+    def __init__(self, action: str) -> None:
+        self.action = action
+
+    def get_object(self, Bucket, Key):  # noqa: N803 - boto3 的參數名就是大寫
+        raise _access_denied(self.action)
+
+
+def test_a_wrong_document_id_reads_as_not_found_not_as_a_permission_error():
+    """S3 把「key 不存在」偽裝成 403 時，要翻成「找不到這份文件」。
+
+    本服務的 task role 只有 `GetObject` 沒有 `ListBucket`，而 **S3 對沒有
+    `ListBucket` 的呼叫者，不存在的物件回 403 而不是 404**（否則可以用狀態碼差異
+    去列舉 bucket 內容）。於是 2026-09-13 雲上打一個不存在的法規 id 拿到的是
+    一句講權限的錯——**照著它去查權限會查一整晚**，而真正的原因是 id 打錯了。
+    """
+    try:
+        with _fake_bucket():
+            corpus.fetch_text("kb/public/相關法規_全量/不存在的法.txt",
+                              _DenyingS3("s3:ListBucket"))
+    except corpus.DocumentNotFound as e:
+        assert_in("母庫沒有這份文件", str(e))
+    except Exception as e:  # noqa: BLE001
+        raise AssertionError(f"應該翻成 DocumentNotFound，實際是 {type(e).__name__}: {e}")
+    else:
+        raise AssertionError("讀一個不存在的 key 竟然成功了")
+
+
+def test_a_real_permission_failure_is_not_swallowed_as_not_found():
+    """**反向的錯一樣嚴重**：真的權限壞掉不得被說成「查無」。
+
+    那樣整個母庫掛掉會長得像「每一份法規都查不到」，我們自己會瞎掉。
+    判準是被拒的動作：`ListBucket` 是「我不告訴你它在不在」，
+    `GetObject` 是「你不准讀」——後者往上丟。
+    """
+    try:
+        with _fake_bucket():
+            corpus.fetch_text("kb/public/相關法規_全量/訴願法.txt", _DenyingS3("s3:GetObject"))
+    except corpus.DocumentNotFound:
+        raise AssertionError("真正的權限故障被吞成 404 了——母庫掛掉會看起來像資料不存在")
+    except Exception:  # noqa: BLE001 - 期望它原樣往上丟
+        pass
+    else:
+        raise AssertionError("權限被拒竟然成功了")
+
+
+def test_an_unparseable_access_denied_is_not_guessed_to_be_a_missing_key():
+    """挖不出被拒動作時，往「還是錯誤」那一邊倒，不猜成「找不到」。
+
+    猜錯的代價不對稱：把權限故障說成「查無」會讓人去找一份其實存在的檔案。
+    """
+    e = Exception("AccessDenied")
+    e.response = {"Error": {"Code": "AccessDenied", "Message": "Access Denied"}}
+    assert_true(not corpus._is_masked_missing_key(e),
+                "挖不出動作就當成 key 不存在，等於把所有權限錯誤都吞掉")
+
+
+def test_no_cloud_identifier_survives_redaction():
+    """帳號 ID／bucket 名／arn／role **一個都不准進 HTTP 回應**（CLAUDE.md 紅線）。
+
+    這一條是最後一道防線：上游該分類的分類掉了，但下一個人新增一種例外時
+    不會記得這條紅線。餵的是雲上那段訊息的原形。
+    """
+    raw = str(_access_denied("s3:ListBucket"))
+    # 先確認素材裡真的有那些東西——否則這條斷言是恆真的
+    for probe in (_FAKE_ACCOUNT, _FAKE_BUCKET, "arn:", "assumed-role"):
+        assert_in(probe, raw, f"測試素材裡沒有 {probe}，這條檢查沒有在驗東西")
+
+    safe = redact(raw, lambda: _FAKE_BUCKET)
+    for leaked in (_FAKE_ACCOUNT, _FAKE_BUCKET, "arn:", "assumed-role"):
+        assert_true(leaked not in safe, f"遮蔽後仍含 {leaked}：{safe}")
+
+    # bucket 名沒設定時也不能炸（本機沒有 .env 的情形）
+    assert_true(_FAKE_ACCOUNT not in redact(raw, lambda: None), "bucket 未設定時帳號 ID 漏了")
+    assert_true(_FAKE_ACCOUNT not in redact(raw), "沒給 bucket_of 時帳號 ID 漏了")
+
+
+def test_redaction_leaves_ordinary_messages_alone():
+    """對照組：正常訊息不得被遮成馬賽克。
+
+    沒有這條的話，「整串換成 `<已遮蔽>`」也能讓上面那條變綠——
+    那會讓所有錯誤訊息都變成無法閱讀的東西，比外洩更難發現。
+    """
+    for plain in ("母庫沒有這份文件：kb/public/相關法規_全量/訴願法.txt",
+                  "母庫文件 id 不合法：'../etc/passwd'",
+                  "本案卷宗不存在：synthetic-ordinary-01"):
+        assert_eq(redact(plain, lambda: _FAKE_BUCKET), plain, "正常訊息被遮掉了")
 
 
 class _OldBotocoreRuntime:

@@ -108,6 +108,49 @@ def _is_missing_key(e: Exception) -> bool:
     return str(err.get("Code")) in ("NoSuchKey", "404", "NotFound")
 
 
+#: 從 AccessDenied 的訊息裡挖出「被拒的是哪個動作」。
+#: botocore 不把它放進結構化欄位，只在 `Error.Message` 的自然語言裡。
+_DENIED_ACTION_RE = re.compile(r"is not authorized to perform:\s*([A-Za-z0-9]+:[A-Za-z0-9*]+)")
+
+
+def _denied_action(e: Exception) -> str | None:
+    err = (getattr(e, "response", None) or {}).get("Error") or {}
+    m = _DENIED_ACTION_RE.search(str(err.get("Message") or e))
+    return m.group(1) if m else None
+
+
+def _is_masked_missing_key(e: Exception) -> bool:
+    """這個 AccessDenied 其實是「key 不存在」被 S3 偽裝成 403 嗎。
+
+    **S3 對沒有 `s3:ListBucket` 的呼叫者，把不存在的物件回 403 而不是 404**
+    ——否則呼叫者可以用 404／403 的差別去列舉 bucket 內容。所以我們這個 task role
+    （只給了 `GetObject`）一碰到打錯的 id，拿到的是一句講權限的錯。
+
+    2026-09-13 雲上實際遇到的訊息長這樣（帳號與 bucket 已遮）：
+
+        AccessDenied … User: arn:aws:sts::…:assumed-role/… is not authorized to
+        perform: s3:ListBucket on resource: "arn:aws:s3:::…"
+
+    **判準是被拒的動作是不是 `ListBucket`**，不是「凡 AccessDenied 都當找不到」：
+
+    - `s3:ListBucket` 被拒 → 這是「存在與否」的查詢被擋，也就是 S3 在說
+      「我不告訴你它在不在」。在我們這個 role 上，這**必然**代表 key 不存在
+      （存在的 key 用 `GetObject` 讀得到，根本不會走到問 ListBucket 這一步）。
+    - `s3:GetObject` 被拒 → 這是**真的權限壞了**。往上丟，不得吞成 404，
+      否則整個母庫掛掉會長得像「每一份法規都查無」，我們自己會瞎掉。
+    - 挖不出動作 → 也往上丟。猜錯的代價不對稱：把權限故障說成「查無」
+      會讓人去找一份其實存在的檔案，而且找一整晚。
+
+    **這個判準只在「本服務的 role 沒有 ListBucket」這個前提下成立。**
+    哪天 role 被加上 `s3:ListBucket`，不存在的 key 會改回 404（`_is_missing_key`
+    那條就接得住），這條分支自然不再被觸發——不會因此誤判，只是變成冗餘。
+    """
+    err = (getattr(e, "response", None) or {}).get("Error") or {}
+    if str(err.get("Code")) not in ("AccessDenied", "403"):
+        return False
+    return _denied_action(e) == "s3:ListBucket"
+
+
 def fetch_text(key: str, s3: Any = None) -> str:
     """讀一份母庫文件的**全文**。`key` 必須已經過 `safe_key`。"""
     try:
@@ -115,7 +158,9 @@ def fetch_text(key: str, s3: Any = None) -> str:
     except Exception as e:  # noqa: BLE001 - botocore 例外型別動態生成，不能用 isinstance
         # 只有「這個 key 不存在」翻成 404。權限不足、網路不通、bucket 名寫錯一律往上丟
         # ——把它們也說成「找不到這份文件」會讓人去找一份其實存在的檔案。
-        if _is_missing_key(e):
+        # 「不存在」有兩種長相：直球的 NoSuchKey／404，以及被 S3 偽裝成 403 的那種
+        # （見 `_is_masked_missing_key`）。
+        if _is_missing_key(e) or _is_masked_missing_key(e):
             raise DocumentNotFound(f"母庫沒有這份文件：{key}") from e
         raise
     return obj["Body"].read().decode("utf-8")
