@@ -71,6 +71,16 @@ except ImportError as _e2:  # pragma: no cover
 else:
     APP_IMPORT_ERROR = ""
 
+# JSON 檢視端（契約 §4.4 #21）。跟匯出共用同一支 sections 轉換，
+# `test_json_view_and_export_share_one_sections_implementation` 靠它比對。
+try:
+    from backend.api import dossier as dossier_api
+except ImportError as _e3:  # pragma: no cover
+    dossier_api = None
+    DOSSIER_IMPORT_ERROR = str(_e3)
+else:
+    DOSSIER_IMPORT_ERROR = ""
+
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 
 ORDINARY = "synthetic-ordinary-01"
@@ -558,6 +568,41 @@ def test_endpoint_503_when_font_missing() -> None:
         _fail("沒有字型時 PDF 端點竟然回了 200——那份檔案是整片豆腐字")
     finally:
         render.font_search_paths = original
+
+
+def test_json_view_and_export_share_one_sections_implementation() -> None:
+    """**契約 §4.4：這個轉換全系統只能有一份實作。**
+
+    同一個 `run_id`，JSON 檢視（`GET …/artifacts/{id}`）與匯出（#23）拿到的
+    `sections[]` 必須**逐欄相同**。不同的話，承辦人在畫面上看到的草稿跟他下載到的
+    檔案內容不一樣——而那種不一致沒有任何燈會亮。
+
+    2026-09-13 去重前確實是兩份（`backend/dossier/artifacts.py` 與
+    `backend/orchestrator/artifact_sections.py`），對 `title`／`meta` 的處理就不同。
+    這條釘的是「日後不准再分岔」，不是「現在剛好一樣」。
+    """
+    api = _endpoint()
+    if dossier_api is None:  # pragma: no cover
+        raise TestSkipped(f"需要 fastapi（{DOSSIER_IMPORT_ERROR}）。")
+
+    rid = _persisted_run_id()
+    payload = build_payload(run_case(ORDINARY, mode="fixture", persist=False))
+
+    # 匯出端走的那一支（`backend/api/export.py` import 的）
+    export_sections = api.build_sections(payload, artifact_id="art-x")["sections"]
+    # JSON 檢視端走的那一支（`backend/api/dossier.py` import 的）
+    json_sections = dossier_api.build_sections(payload, artifact_id="art-x")["sections"]
+
+    if export_sections != json_sections:
+        _fail(
+            "JSON 檢視與匯出的 sections[] 不一致——契約 §4.4 要求只能有一份實作。\n"
+            f"  JSON  ：{[s.get('h') for s in json_sections]}\n"
+            f"  匯出  ：{[s.get('h') for s in export_sections]}"
+        )
+    if api.build_sections is not dossier_api.build_sections:
+        _fail("兩端指到不同的函式物件——就算現在輸出剛好一樣，下次有人改一邊就會分岔")
+    if not export_sections:
+        _fail(f"run {rid} 轉出來是空的，這條比對就沒有意義")
 
 
 def test_endpoint_mounted_on_app_with_contract_path() -> None:

@@ -24,8 +24,8 @@ from pydantic import BaseModel, ConfigDict
 
 from backend.config import settings
 from backend.dossier import corpus, store
-from backend.dossier.artifacts import sections_from_payload
 from backend.intake.uploads import MAX_BYTES, UPLOADS_DIR, _safe_name
+from backend.orchestrator.artifact_sections import build_sections
 from backend.orchestrator.graph import build_payload
 from backend.orchestrator.runstore import RunNotFound, load_run
 
@@ -377,11 +377,16 @@ def get_artifact(case_id: str, artifact_id: str) -> dict:
     if hit is None:
         raise HTTPException(status_code=404, detail=f"案件 {case_id} 沒有這份產出：{artifact_id}")
     try:
-        sections, cite_count = sections_from_payload(build_payload(load_run(str(hit["run_id"]))))
+        # 契約 §4.4：**這個轉換全系統只能有一份實作**，JSON 檢視與匯出（#23）共用。
+        # 兩份的話同一份草稿從兩支端點出來會長得不一樣——使用者當場看得到的不一致。
+        # `title` 仍用 manifest 記的產出名稱（`hit["name"]`），不是 doc 裡的抬頭：
+        # 那是承辦人在右欄看到的那個名字，換掉會讓清單與詳情對不起來。
+        view = build_sections(build_payload(load_run(str(hit["run_id"]))),
+                              artifact_id=hit["id"])
     except Exception as e:  # noqa: BLE001
         raise _translate(e) from e
     return {"artifact_id": hit["id"], "title": hit["name"], "run_id": hit["run_id"],
-            "sections": sections, "cite_count": cite_count}
+            "sections": view["sections"], "cite_count": view["cite_count"]}
 
 
 @router.delete("/api/cases/{case_id}/artifacts/{artifact_id}", status_code=204)
