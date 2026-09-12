@@ -25,9 +25,9 @@ from backend.retrieval.base import UnavailableRetriever
 from backend.retrieval.lawtable import LawTableRetriever
 
 SIMILAR_CASE_UNAVAILABLE_REASON = (
-    "相似歷史案檢索需要賽方資料集（歷史訴願決定書）。該資料集僅供競賽之用，"
-    "不進 git、不在本機，本次執行無任何相似案可回。此通道回空不是查無相似案，"
-    "而是本系統目前無法檢索——標「庫外，未驗證」。"
+    "相似歷史案檢索需要已建索引的決定書庫（賽方資料集之歷史訴願決定書，與市府公開之"
+    "新北訴願決定書全量）。本次執行未接上該庫（RETRIEVER 非 kb），無任何相似案可回。"
+    "此通道回空不是查無相似案，而是本系統目前無法檢索——標「庫外，未驗證」。"
 )
 
 # KB 呼叫本身炸掉（throttle／權限／網路）。**三種說法必須分得出來**（spec §7 第 2 列）：
@@ -241,9 +241,9 @@ def run(
     kb_error: str | None = None
     if case_query or query_text:
         try:
-            case_hits = similar.search(
-                case_query or query_text, filters={"prefix": ["歷史訴願決定書/"]}, top_k=5
-            )
+            # 不傳 prefix：收哪些前綴由 `retrieval.kb.DEFAULT_PREFIXES` 單點決定
+            # （這裡再寫一份就會與它漂移）。N4 只說「我要相似案」，不說去哪撈。
+            case_hits = similar.search(case_query or query_text, top_k=5)
         except Exception as e:  # noqa: BLE001 — 檢索器可能是 boto3，例外型別由 SDK 決定
             kb_error = f"{type(e).__name__}: {e}"
     cases: list[dict[str, Any]] = []
@@ -269,6 +269,13 @@ def run(
     # 有注入檢索器但呼叫炸了，就不是「可用」——available 必須說的是這一次的實情
     similar_available = ctx.retriever is not None and kb_error is None
     similar_meta: dict[str, Any] = dict(similar.meta())
+    # 兩批各命中幾筆，payload 自己說得出來（「賽方資料集用在哪」不該靠人去數 cases[]）。
+    # 從實際回來的命中數，不是從配額設定值算——配額是上限，實際可能少於它。
+    hits_by_provenance: dict[str, int] = {}
+    for c in cases:
+        key = c["provenance"] or "unknown"
+        hits_by_provenance[key] = hits_by_provenance.get(key, 0) + 1
+    similar_meta["hits_by_provenance"] = hits_by_provenance
     if kb_error is not None:
         similar_meta.update(
             {
@@ -277,6 +284,7 @@ def run(
                 "reason": SIMILAR_CASE_KB_FAILED_REASON.format(error=kb_error),
                 "error": kb_error,
                 "hits": 0,
+                "hits_by_provenance": {},
                 "verified": False,
             }
         )

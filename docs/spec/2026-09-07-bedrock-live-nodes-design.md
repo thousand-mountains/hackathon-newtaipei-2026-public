@@ -147,8 +147,12 @@ class KBRetriever:
     def meta(self) -> dict: {"backend": "bedrock_kb", "available": True, "kb_snapshot_date": ...}
 ```
 
-- boto3 `bedrock-agent-runtime.retrieve`，`retrievalConfiguration={"managedSearchConfiguration": {"numberOfResults": min(top_k*3, 50)}}`。多抓三倍再後過濾（Managed KB filter 不支援路徑比對，AppealAssist 實測）。
-- 後過濾：`score < KB_MIN_SCORE` 丟；`_file_type == "PDF"` 丟；URI 前綴不在 `filters["prefix"]`（預設 `["歷史訴願決定書/"]`）丟；`filters["exclude_case"]` 命中丟（demo 案的來源決定書）。
+- boto3 `bedrock-agent-runtime.retrieve`，`retrievalConfiguration={"vectorSearchConfiguration": {"numberOfResults": min(top_k*3, 50)}}`。多抓三倍再後過濾（Managed KB filter 不支援路徑比對，AppealAssist 實測）。**2026-09-12 修正**：原本寫 `managedSearchConfiguration`，S3 Vectors 後端只吃 `vectorSearchConfiguration`，前者會丟 `ValidationException`。
+- 後過濾：`score < KB_MIN_SCORE` 丟；`_file_type == "PDF"` 丟；URI 前綴不在 `filters["prefix"]` 丟；`filters["exclude_case"]` 命中丟（demo 案的來源決定書）。
+- 前綴預設值 `retrieval.kb.DEFAULT_PREFIXES = ["歷史訴願決定書/", "新北訴願決定書_全量/"]`，是相似案通道收哪些前綴的**唯一事實來源**——N4 不傳 `filters["prefix"]`，不在節點層再寫一份。**2026-09-12 放寬**：原本只收 `["歷史訴願決定書/"]`（寫 spec 時爬蟲批的角色還沒定）。實測 KB 裡 public 批 2347 筆、official 批 101 筆，`numberOfResults=15` 時前 15 名全是 public，官方那批被完全擠掉，後過濾把相似案清成 0 筆。兩批都是新北市政府訴願決定書，性質相同，來源差異由 `payload.provenance`（`official` / `public_crawl`）標示，UI 看得到。刻意仍**不收** `行政函釋/` 與 `司法院釋字及行政判解/`——那兩類是通道 A 與 N5 `REF_PREFIXES` 的材料，不是相似案。
+- 相似案的**席次配額**（2026-09-12 加）：`SIMILAR_CASE_QUOTA = {"歷史訴願決定書/": 2, "新北訴願決定書_全量/": 3}`，合計仍是 `top_k=5`。做法是**兩批分開查詢、各自取配額席次、合併後按分數排序**（`kb-1` 永遠是分數最高的那筆），不是「先撈一大包再硬塞席次」——後者會在官方那批其實不相關時把爛結果塞進前五名。某一批不足由另一批補滿（不留空位），但一律仍受 `KB_MIN_SCORE` 約束：寧可少一筆也不塞。配額查詢的 `numberOfResults` 用 `QUOTA_FETCH_DEPTH=50`（實測：=15 時 official 0 筆、=50 時 2 筆，抓不夠深席次會永遠空著）。兩次 retrieve 之間 sleep `RETRIEVE_INTERVAL_S=1.1` 秒（賽方規範：Bedrock 壓在 1 RPS 以下）。**這個配額成立的前提是兩批分數落在同一條線（實測 0.77–0.80）**；若 official 的最佳命中掉到與 public 差一截，保席次等於犧牲相關性，屆時要回頭重議。
+- 明確指定 `filters["prefix"]`（N5 的 `retrieve_refs`）→ 單次查詢、抓三倍，行為不變；不指定 prefix ＝ 相似案通道 ＝ 走配額。
+- `retrieval_meta.similar_case_channel.hits_by_provenance` 報兩批各自的實際命中數（例：`{"official": 2, "public_crawl": 3}`），數的是真的回來的命中，不是配額設定值。
 - `Hit.source` = 去掉 bucket 與 `kb/{official|public}/` 之後的相對路徑，`Hit.verified` 由 N6 對 manifest 決定，`Hit.payload` 帶 `{"score", "text", "provenance": "official" | "public_crawl"}`。
 - 查詢句：N1 抽出的事實段**原文**（`facts_excerpt[].text` 加 `intake.note`），不用改寫句（AppealAssist ask 模式教訓：改寫句漏撤銷案）。現有 `n4_retrieval.build_query()` 調整。
 - 環境變數：`BEDROCK_KB_ID`、`AWS_REGION`、`KB_MIN_SCORE`（預設 0.25）。`RETRIEVER=kb` 才啟用，否則維持 `UnavailableRetriever`。

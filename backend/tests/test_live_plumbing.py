@@ -32,6 +32,7 @@ from backend.orchestrator.graph import (
 )
 from backend.orchestrator.state import CaseState, NodeCtx
 from backend.retrieval.base import Hit
+import backend.retrieval.kb as kb_module
 from backend.retrieval.kb import KBRetriever, build_retriever
 from backend.tests import run_all
 from backend.tests.harness import assert_eq, assert_in, assert_true
@@ -826,7 +827,7 @@ def test_kb_retriever_filters_by_prefix_score_filetype_and_exclusion():
     assert_true(hits[0].verified is False, "verified 由 N6 對 manifest 決定，檢索不自己宣稱")
     call = fake.calls[0]
     assert_eq(call["knowledgeBaseId"], "kb-x")
-    assert_eq(call["retrievalConfiguration"]["managedSearchConfiguration"]["numberOfResults"], 15, "多抓三倍再後過濾")
+    assert_eq(call["retrievalConfiguration"]["vectorSearchConfiguration"]["numberOfResults"], 15, "多抓三倍再後過濾")
 
 
 def test_kb_retriever_parses_public_prefix_and_outcome_from_filename():
@@ -837,6 +838,165 @@ def test_kb_retriever_parses_public_prefix_and_outcome_from_filename():
     hits = r.search("q", filters={"prefix": ["新北訴願決定書_全量/"]})
     assert_eq(hits[0].payload["provenance"], "public_crawl")
     assert_eq(hits[0].payload["outcome"], "不受理")
+
+
+def _kb_public_result(uri_tail, score, text, file_type="TXT"):
+    uri = f"s3://bucket/kb/public/{uri_tail}"
+    return {"score": score,
+            "content": {"text": text},
+            "location": {"s3Location": {"uri": uri}},
+            "metadata": {"_file_type": file_type, "_source_uri": uri}}
+
+
+def test_default_prefixes_take_both_batches_of_appeal_decisions():
+    """相似案通道預設同時收 official 與 public_crawl 兩批訴願決定書。
+
+    2026-09-12 決賽環境實測：KB 裡 public 有 2347 筆、official 只有 101 筆，
+    前 15 名全被 public 佔滿；只收 official 的後過濾會把結果清成 0 筆，
+    等於這個功能形同虛設。兩批都是新北市政府訴願決定書，來源差異靠
+    `payload.provenance`（official／public_crawl）標示，不靠丟掉 2347 筆真實決定書。
+    """
+    fake = _FakeBedrockAgentRuntime([
+        _kb_public_result("新北訴願決定書_全量/1121070551_不受理.txt", 0.9, "主文：訴願不受理。"),
+        _kb_result("歷史訴願決定書/113年/16.113年-違反空氣污染防制法事件-駁回.txt", 0.8, "主文：訴願駁回。"),
+    ])
+    r = KBRetriever(kb_id="k", region="r", min_score=0.25, client=fake)
+    hits = r.search("露天燃燒")  # 不傳 filters → 走 DEFAULT_PREFIXES
+    assert_eq(len(hits), 2, "public 批的命中不得被前綴過濾掉")
+    assert_eq([h.payload["provenance"] for h in hits], ["public_crawl", "official"])
+    assert_eq(hits[0].payload["outcome"], "不受理", "結果仍照檔名，不由模型推測")
+
+
+def test_default_prefixes_still_exclude_interpretations_and_court_rulings():
+    """放寬不等於全收：行政函釋／司法院釋字及行政判解是通道 A 與 N5 的材料，不是相似案。"""
+    fake = _FakeBedrockAgentRuntime([
+        _kb_result("行政函釋/法務部93.txt", 0.95, "函釋"),
+        _kb_result("司法院釋字及行政判解/釋字第684號.txt", 0.94, "釋字"),
+        _kb_public_result("新北訴願決定書_全量/1121070551_不受理.txt", 0.5, "主文：訴願不受理。"),
+    ])
+    r = KBRetriever(kb_id="k", region="r", min_score=0.25, client=fake)
+    hits = r.search("q")
+    assert_eq([h.source for h in hits], ["新北訴願決定書_全量/1121070551_不受理.txt"],
+              "函釋與釋字判解不得進相似案通道")
+
+
+class _QuotaFakeRuntime:
+    """依查詢批次回不同結果的假 client：相似案通道會打兩次（official／public 各一次）。"""
+
+    def __init__(self, batches):
+        self.batches = batches   # 依呼叫順序回傳
+        self.calls = []
+
+    def retrieve(self, **kw):
+        self.calls.append(kw)
+        i = min(len(self.calls) - 1, len(self.batches) - 1)
+        return {"retrievalResults": self.batches[i]}
+
+
+@contextmanager
+def _no_retrieve_interval():
+    """測試不需要等那 1.1 秒的 RPS 間隔（真的 sleep 會讓整套測試多跑好幾秒）。"""
+    orig = kb_module.RETRIEVE_INTERVAL_S
+    kb_module.RETRIEVE_INTERVAL_S = 0
+    try:
+        yield
+    finally:
+        kb_module.RETRIEVE_INTERVAL_S = orig
+
+
+def _quota_retriever(batches, min_score=0.25):
+    return KBRetriever(kb_id="k", region="r", min_score=min_score,
+                       client=_QuotaFakeRuntime(batches))
+
+
+def test_similar_case_quota_queries_each_batch_separately():
+    """配額是「兩批分開查再合併」，不是「先撈一大包再硬塞席次」。"""
+    official = [_kb_result(f"歷史訴願決定書/113年/o{i}-駁回.txt", 0.90 - i / 100, "o") for i in range(4)]
+    public = [_kb_public_result(f"新北訴願決定書_全量/p{i}_駁回.txt", 0.95 - i / 100, "p") for i in range(6)]
+    r = _quota_retriever([official, public])
+    with _no_retrieve_interval():
+        hits = r.search("q", top_k=5)
+    calls = r._client.calls
+    assert_eq(len(calls), 2, "相似案通道要兩批各打一次，不是打一次撈一大包")
+    assert_eq(calls[0]["retrievalConfiguration"]["vectorSearchConfiguration"]["numberOfResults"], 50,
+              "配額查詢要抓夠深，否則少數批永遠被擠掉（2026-09-12 實測 15 撈到 0 筆 official）")
+    provs = [h.payload["provenance"] for h in hits]
+    assert_eq(len(hits), 5)
+    assert_eq(provs.count("official"), 2, "official 最多 2 席")
+    assert_eq(provs.count("public_crawl"), 3, "public 最多 3 席")
+
+
+def test_similar_case_quota_sorts_merged_results_by_score():
+    """合併後按分數排序，C1 永遠是分數最高的那筆。"""
+    official = [_kb_result("歷史訴願決定書/113年/高分-駁回.txt", 0.99, "o"),
+                _kb_result("歷史訴願決定書/113年/次高-撤銷.txt", 0.60, "o")]
+    public = [_kb_public_result("新北訴願決定書_全量/p1_駁回.txt", 0.80, "p"),
+              _kb_public_result("新北訴願決定書_全量/p2_駁回.txt", 0.70, "p"),
+              _kb_public_result("新北訴願決定書_全量/p3_駁回.txt", 0.50, "p")]
+    with _no_retrieve_interval():
+        hits = _quota_retriever([official, public]).search("q", top_k=5)
+    assert_eq([h.score for h in hits], sorted([h.score for h in hits], reverse=True), "沒有按分數排序")
+    assert_eq([h.id for h in hits], ["kb-1", "kb-2", "kb-3", "kb-4", "kb-5"], "編號要照排序後的順序給")
+    assert_eq(hits[0].score, 0.99)
+    assert_eq(hits[0].payload["provenance"], "official")
+
+
+def test_similar_case_quota_backfills_when_one_batch_is_short():
+    """official 只撈到 1 筆時，剩下的席次由 public 補滿，不留空位。"""
+    official = [_kb_result("歷史訴願決定書/113年/唯一-駁回.txt", 0.88, "o")]
+    public = [_kb_public_result(f"新北訴願決定書_全量/p{i}_駁回.txt", 0.80 - i / 100, "p") for i in range(6)]
+    with _no_retrieve_interval():
+        hits = _quota_retriever([official, public]).search("q", top_k=5)
+    provs = [h.payload["provenance"] for h in hits]
+    assert_eq(len(hits), 5, "某批不足要由另一批補滿")
+    assert_eq(provs.count("official"), 1)
+    assert_eq(provs.count("public_crawl"), 4, "public 補到 4 席（超過平時的 3 席上限）")
+
+
+def test_similar_case_quota_never_admits_hits_below_the_score_threshold():
+    """配額不得讓低於 KB_MIN_SCORE 的東西進來——寧可少一筆。"""
+    official = [_kb_result("歷史訴願決定書/113年/低分-駁回.txt", 0.10, "o")]
+    public = [_kb_public_result("新北訴願決定書_全量/p1_駁回.txt", 0.80, "p"),
+              _kb_public_result("新北訴願決定書_全量/低分_駁回.txt", 0.05, "p")]
+    with _no_retrieve_interval():
+        hits = _quota_retriever([official, public], min_score=0.25).search("q", top_k=5)
+    assert_eq([h.source for h in hits], ["新北訴願決定書_全量/p1_駁回.txt"],
+              "只有過門檻的那一筆能進，配額不是塞滿五席的理由")
+
+
+def test_explicit_prefix_still_does_a_single_query():
+    """N5 的 retrieve_refs 明確指定前綴，行為不變（單次查詢、抓三倍）。"""
+    r = _quota_retriever([[_kb_result("行政函釋/法務部93.txt", 0.9, "函釋")]])
+    hits = r.search("q", filters={"prefix": ["行政函釋/", "司法院釋字及行政判解/"]}, top_k=5)
+    assert_eq(len(r._client.calls), 1, "指定前綴時不得變成兩次查詢")
+    assert_eq(r._client.calls[0]["retrievalConfiguration"]["vectorSearchConfiguration"]["numberOfResults"], 15)
+    assert_eq([h.source for h in hits], ["行政函釋/法務部93.txt"])
+
+
+def test_n4_reports_hits_by_provenance():
+    """payload 自己說得出「賽方資料集用在哪」，不用人去數 cases[]。"""
+    class FakeKB:
+        name = "bedrock_kb"
+
+        def search(self, query, filters=None, top_k=5):
+            return [
+                Hit(id="kb-1", title="o", score=0.9, source="歷史訴願決定書/113年/o-駁回.txt",
+                    payload={"outcome": "駁回", "provenance": "official", "text": "t"}),
+                Hit(id="kb-2", title="p", score=0.8, source="新北訴願決定書_全量/p_駁回.txt",
+                    payload={"outcome": "駁回", "provenance": "public_crawl", "text": "t"}),
+            ]
+
+        def meta(self):
+            return {"backend": "bedrock_kb", "available": True}
+
+    st = CaseState(case_id="synthetic-ordinary-01", run_mode="bedrock")
+    st.intake = {"type": "違反空氣污染防制法事件", "note": "主張未收受"}
+    st.facts_excerpt = [{"text": "訴願人於農地露天燃燒稻稈。", "page": 2}]
+    st.classification = {"class": {"case_type": "違反空氣污染防制法事件", "law_hits": ["空氣污染防制法"]}}
+    st.screen = {"art77": {"clause": "77-2"}, "deadline": {"steps": []}}
+    n4_retrieval.run(st, NodeCtx(run_mode="bedrock", snapshot=load_snapshot(), retriever=FakeKB()))
+    by = st.retrieval["retrieval_meta"]["similar_case_channel"]["hits_by_provenance"]
+    assert_eq(by, {"official": 1, "public_crawl": 1})
 
 
 def test_build_retriever_requires_env_for_kb():
@@ -881,7 +1041,10 @@ def test_n4_uses_injected_retriever_for_similar_cases():
     assert_eq(c["origin"], "retrieval")
     assert_true(c["lamp"] is None, "燈號歸 N6")
     assert_in("露天燃燒稻稈", kb.queries[0][0], "查詢句必須含事實段原文")
-    assert_eq(kb.queries[0][1]["prefix"], ["歷史訴願決定書/"])
+    assert_true(
+        not (kb.queries[0][1] or {}).get("prefix"),
+        "N4 不得自己寫一份 prefix——收哪些前綴由 retrieval.kb.DEFAULT_PREFIXES 單點決定",
+    )
     assert_eq(st.retrieval["retrieval_meta"]["backend"], "lawtable+bedrock_kb")
     assert_true(r.degraded is False, "兩條通道都有結果就不是降級")
 
