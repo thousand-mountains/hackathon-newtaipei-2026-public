@@ -1040,6 +1040,153 @@ def test_the_lamp_reason_says_which_kind_of_score_the_hits_carried():
         assert kind in v3.why, f"混合命中漏講 {kind}：{v3.why}"
 
 
+#: 一份**真的** Strands callback payload 的形狀，照本機安裝的
+#: `strands.handlers.callback_handler.PrintingCallbackHandler.__call__` 的宣告抄：
+#: `reasoningText`（推理文字）／`data`（文字內容）／`complete`（是不是最後一塊）／
+#: `event`（ModelStreamChunkEvent）。
+_REASONING_CHUNK = {
+    "reasoningText": "使用者問的是期限，我應該先讀卷再決定要不要拒答……",
+    "event": {"contentBlockDelta": {"delta": {"reasoningContent": {"text": "…"}}}},
+}
+_TEXT_CHUNK = {"data": "依卷內資料，", "complete": False,
+               "event": {"contentBlockDelta": {"delta": {"text": "依卷內資料，"}}}}
+
+
+def test_the_model_text_is_streamed_as_token_events():
+    """`token` 在契約 §2.3 的事件表裡，但後端從來沒發過一筆（QA 掃 r01–r10，共 0 筆）。
+
+    `callback_handler=None` ＋ 一次阻塞呼叫 ＝ 模型的文字沒有中途出口。
+    畫面不會壞（前端 `:548` 會用 `done.answer` 補一則泡泡），差別是
+    **一輪 10–72 秒完全沒有聲音**。
+    """
+    events: list = []
+    cb = chat_mod.token_callback_handler(lambda n, d: events.append((n, d)))
+    cb(**_TEXT_CHUNK)
+    cb(data="第 14 條規定……", complete=True)
+    assert [d["text"] for n, d in events if n == "token"] == ["依卷內資料，", "第 14 條規定……"]
+
+
+def test_the_reasoning_text_never_reaches_the_operator():
+    """`reasoningText` 是模型的推理過程，**一個字都不准出去**。
+
+    承辦人看到它會以為那是系統的判斷理由，而它不是——那會變成「把內部的東西端到
+    承辦人面前」的又一個實例。
+
+    **這條餵的是一份真的含 reasoning 的 callback payload**，不是斷言程式碼裡有那個
+    `if`：白名單寫錯、或哪天 Strands 把推理也塞進 `data`，只看程式碼是看不出來的。
+    """
+    events: list = []
+    cb = chat_mod.token_callback_handler(lambda n, d: events.append((n, d)))
+    cb(**_REASONING_CHUNK)
+    assert events == [], f"推理文字漏出去了：{events}"
+
+    # 同一塊同時帶 reasoning 與 data 時，只出 data
+    events.clear()
+    cb(reasoningText="我在想……", data="所以本案", complete=False)
+    assert [d["text"] for n, d in events if n == "token"] == ["所以本案"]
+    assert "我在想" not in json.dumps(events, ensure_ascii=False)
+
+
+def test_an_empty_chunk_does_not_open_an_empty_bubble():
+    """空的 `data` 不發事件——前端收到第一筆 token 就 push 一則泡泡（`:484`）。"""
+    events: list = []
+    cb = chat_mod.token_callback_handler(lambda n, d: events.append((n, d)))
+    cb(data="")
+    cb(complete=True)
+    cb(event={"messageStop": {}})
+    assert events == [], f"發了空的 token：{events}"
+
+
+def test_refine_text_stays_silent():
+    """`refine_text` 自己另建一個 agent，**那支不得串流**。
+
+    它的輸出是「改寫後的文字」，走 `tool_result` 回給模型，不是這一輪的回答。
+    串流出去會讓改寫稿逐字打在對話框裡，看起來像 agent 在回話。
+    """
+    src = pathlib.Path(chat_mod.__file__).read_text(encoding="utf-8")
+    refine = src[src.index("def refine_text"):]
+    refine = refine[:refine.index("\n    def ", 10)]
+    assert "callback_handler=None" in refine, "refine_text 的 agent 接上了串流"
+    assert "token_callback_handler" not in refine, "refine_text 的改寫稿會被逐字打出來"
+
+
+def test_no_emit_means_no_callback_at_all():
+    """`?stream=0` 與直呼路徑沒有 `emit`，那時不該硬塞一個 callback 進 Agent。"""
+    assert chat_mod.token_callback_handler(None) is None
+
+
+def test_redirect_does_not_eat_an_answer_that_has_nothing_to_suppress():
+    """`redirect` 非 null 會讓前端把整則答案丟掉，所以它不能只看問題的關鍵字。
+
+    QA `r10` 實測：承辦人問「訴願人是誰、處分日期是哪一天」（含關鍵字「日期」），
+    模型正確回「收文欄位目前是空的，所以我沒辦法告訴你」——**一個數字都沒算**。
+    而 `frontend/src/store/app.js:563` 拿到 `redirect` 就丟掉 `answer`、只顯示
+    reason 與 CTA（照契約 §2.4.1 一做的）。承辦人看到的是「期間計算由規則引擎負責」
+    加一個「查看程序審查」，**而他真正需要的那句「欄位是空的，請先補」被吃掉了。**
+
+    紅燈維持（誤判＝多一次覆核，便宜）；`redirect` 改成看答案（誤判＝拿不到答案）。
+    """
+    v = classify_answer("訴願人是誰、處分日期是哪一天？",
+                        "收文欄位目前是空的，所以我沒辦法告訴你訴願人是誰。", None)
+    assert v.lamp == "r", "紅燈不該被放寬"
+    assert v.redirect is None, "答案裡沒有要擋的東西，卻把整則吃掉了"
+
+
+def test_redirect_still_fires_when_the_answer_really_does_state_a_number():
+    """**這一格是上一條的對照組，比其他任何一格重要。**
+
+    改成看答案之後最容易變成破口的就是這裡：答案真的講了天數／期間結論時，
+    `redirect` 必須照樣觸發、照樣被擋。§2.4.1 一要擋的是「不得顯示 agent 講的
+    任何天數」——改成看答案是**更忠實地**執行同一條紅線，不是放寬它。
+    """
+    for answer in ("從送達日起算 30 天，到 6 月 13 日屆滿。",
+                   "這件已經逾期了。",
+                   "還來得及，期間內。",
+                   "罰鍰 6000 元。"):
+        v = classify_answer("期限怎麼算？", answer, None)
+        assert v.lamp == "r", answer
+        assert v.redirect is not None, f"答案講了要擋的東西卻沒攔：{answer}"
+
+
+def test_a_period_conclusion_is_caught_even_when_the_question_never_asked():
+    """問題沒問期限、但**模型自己下了期間結論**——以前完全不受攔。
+
+    規則 1 只看問題，而 §2.4.1 一的紅線是關於答案內容的。
+    「這個案子怎麼樣？」→「距離期滿還有幾天」就這樣穿過去。
+    """
+    v = classify_answer("這個案子怎麼樣？", "這件已經逾期，應為不受理。", None)
+    assert v.lamp == "r", "模型自己講了期間結論卻沒判紅"
+    assert v.redirect is not None, "紅線破口：答案裡的期間結論沒有被攔"
+
+
+def test_quoting_a_date_recorded_in_the_file_is_not_a_calculation():
+    """**只認期間結論詞、不認裸數字**——否則會反過來咬掉正常的回答。
+
+    「原處分日是哪一天？」→「113 年 6 月 11 日」有數字有量詞，但那是**卷內記載的
+    日期**，不是模型算出來的期間。把它也擋掉，承辦人問一個記在卷裡的日期會拿到
+    一句「期間計算由規則引擎負責」——那比原本的毛病更糟。
+    """
+    v = classify_answer("原處分日是哪一天？", "卷內記載的原處分日是 113 年 6 月 11 日。", None)
+    assert v.redirect is None, "把卷內記載的日期當成模型算出來的期間擋掉了"
+
+
+def test_the_numeric_reason_describes_the_rule_not_this_turn():
+    """`why` 不得描述一件沒有發生的拒絕。
+
+    原文「期間計算由規則引擎負責，聊天不計算期限。」掛在一個**沒有算任何東西**的
+    回合上（`r10`），是在陳述一件沒發生的事——同 `WHY_DROPPED` 的毛病。
+    """
+    why = classify_answer("期限？", "收文欄位是空的。", None).why
+    assert "一律請人工覆核" in why, why
+    assert "聊天不代算" in why, why
+
+
+def test_the_redirect_cta_does_not_promise_a_calculation_that_may_not_exist():
+    """「查看程序審查的算式」——intake 空的案子沒有算式，點過去是空的。"""
+    assert "算式" not in chat_mod.REDIRECT_DEADLINE["cta"], \
+        chat_mod.REDIRECT_DEADLINE["cta"]
+
+
 def test_the_dropped_reason_does_not_claim_to_know_what_the_model_meant():
     """寬鬆偵測分不出「引用」與「說它不存在」，所以說明句不得替模型的意圖作證。
 
