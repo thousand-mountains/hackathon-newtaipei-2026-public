@@ -1,0 +1,6 @@
+node_modules/
+cdk.out/
+*.js
+*.d.ts
+# CDK 的 lookup 快取會存帳號 id 與 subnet id，不進 git（本文件的既有紀律：不放真實帳號 id）
+cdk.context.json
