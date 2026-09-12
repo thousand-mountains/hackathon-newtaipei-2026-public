@@ -2012,6 +2012,97 @@ def test_retrieval_note_counts_come_from_the_manifest_not_a_hardcoded_string():
         settings.MANIFEST_PATH = orig
 
 
+@contextmanager
+def _index_state(payload):
+    """暫時把 INDEX_STATE_PATH 指到一份臨時紀錄（payload=None → 指到不存在的路徑）。"""
+    orig = settings.INDEX_STATE_PATH
+    tmp = settings.MANIFEST_PATH.parent / "index-state-test-only.json"
+    try:
+        if payload is None:
+            settings.INDEX_STATE_PATH = settings.MANIFEST_PATH.parent / "index-state-absent.json"
+        else:
+            tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+            settings.INDEX_STATE_PATH = tmp
+        yield
+    finally:
+        settings.INDEX_STATE_PATH = orig
+        tmp.unlink(missing_ok=True)
+
+
+def test_retrieval_note_must_disclose_the_gap_between_listed_and_indexed():
+    """入庫清單筆數 ≠ 已索引筆數時，對外敘述必須說得出差異，不得只報其中一個數字。
+
+    2026-09-12 實際事故：manifest 有 6997 筆、向量庫實際只索引 2477 份
+    （多出來的 4520 筆函釋在一個沒被索引的 bucket 裡），而這句話掛在「檢索來源」
+    標題下只報 6997——讀的人只會得到「這系統能檢索 6997 筆」。**那是假的。**
+    清單是「打算讓它檢索什麼」，已索引才是「現在檢索得到什麼」。
+    """
+    counts = settings.kb_corpus_counts()
+    assert_true(counts, "前提不成立：data/manifest.json 讀不到")
+    listed = sum(counts.values())
+    indexed = listed - 4520  # 重現當天的落差
+
+    with _index_state({"completed_at": "2026-09-12T05:00:00+00:00", "documents_indexed": indexed}):
+        note = settings.retrieval_note("kb")
+    assert_in(str(indexed), note, "已索引筆數要出現")
+    assert_in(str(listed), note, "清單筆數也要出現——只報一個數字就是隱瞞落差")
+    assert_in(str(listed - indexed), note, "差幾筆要講出來，不能只說「兩者不同」")
+    assert_in("檢索不到", note, "要明說多出來的那些現在檢索不到")
+    assert_true(note.index(str(indexed)) < note.index(str(listed)),
+                "主述要是已索引筆數，清單是次要資訊——順序也是一種誠實")
+
+
+def test_retrieval_note_refuses_to_report_a_searchable_count_without_an_ingestion_record():
+    """沒有入庫紀錄時，不得拿 manifest 的數字頂替成「檢索得到幾筆」。
+
+    這是上面那條的另一半：**寧可說「不知道」，也不要報一個看起來像答案的數字。**
+    """
+    counts = settings.kb_corpus_counts()
+    assert_true(counts, "前提不成立：data/manifest.json 讀不到")
+    with _index_state(None):
+        note = settings.retrieval_note("kb")
+    assert_in("無法說出向量庫實際已索引幾筆", note, "沒紀錄就要明說沒紀錄")
+    assert_in("清單不等於已索引", note, "要說清楚 manifest 的數字代表什麼")
+    assert_true("已索引 " not in note, "沒有紀錄卻報出一個已索引筆數，就是編一個數字")
+
+
+def test_retrieval_note_says_they_agree_when_the_ingestion_covered_the_whole_manifest():
+    """兩者一致時就明說一致——不是靜默地只報一個數字，讓人分不出有沒有比對過。"""
+    counts = settings.kb_corpus_counts()
+    assert_true(counts, "前提不成立：data/manifest.json 讀不到")
+    listed = sum(counts.values())
+    with _index_state({"completed_at": "2026-09-12T06:00:00+00:00", "documents_indexed": listed}):
+        note = settings.retrieval_note("kb")
+    assert_in("與入庫清單一致", note)
+    assert_true("檢索不到" not in note, "一致時不該出現落差的說法")
+
+
+def test_every_corpus_in_the_manifest_is_named_not_lumped_into_others():
+    """入庫清單的每一批都要具名，不得有東西落進「其餘 N 筆」。
+
+    2026-09-12 實際發生：新匯入 4520 筆環境部函釋落在 `kb/public/行政函釋`，
+    而 KB_CORPUS_LABELS 只有 `kb/official/行政函釋`，於是 `/api/health` 對外那句
+    變成「行政函釋 10 筆、其餘 4520 筆」——**讀的人會以為本系統只有 10 筆函釋**，
+    而那 4520 筆正是空污、廢棄物這些案型最相關的一批。
+
+    這條釘的是「少報自己有什麼也是失真」：日後任何人再加一批語料，
+    沒補標籤就會在這裡被擋下來，而不是安靜地被併進「其餘」。
+    """
+    counts = settings.kb_corpus_counts()
+    assert_true(counts, "前提不成立：data/manifest.json 讀不到")
+    unlabeled = sorted(g for g in counts if g not in settings.KB_CORPUS_LABELS)
+    assert_eq(unlabeled, [],
+              "有語料批次沒有對應標籤，會被併進「其餘」而不具名——"
+              "請到 settings.KB_CORPUS_LABELS 補上，標籤要說得出它實際是什麼")
+    note = settings.retrieval_note("kb")
+    # 先證明分項真的有印出來，否則下面那句「不得出現『其餘』」會空洞地成立：
+    # 一個完全不報分項的版本也能通過，那是假通過，不是通過。
+    for group, n in counts.items():
+        label = settings.KB_CORPUS_LABELS[group]
+        assert_in(f"{label} {n} 筆", note, f"{label} 這批要具名報出筆數")
+    assert_true("其餘" not in note, "每一批都具名時，對外那句就不該出現「其餘」")
+
+
 def test_dataset_scope_no_longer_claims_to_bound_similar_case_retrieval():
     """dataset_scope 只管引用驗證；相似案的庫另算，必須指向 retrieval_note。"""
     scope = settings.PROVENANCE["dataset_scope"]

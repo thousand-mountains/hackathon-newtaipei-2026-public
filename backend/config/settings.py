@@ -132,11 +132,18 @@ UNKNOWN_DATA_NOTE = "本次案例的資料性質未標示（kind={kind}），本
 # 換賽方帳號重建 KB 後數字會跟著動，不用回頭改字串。manifest 讀不到就不報數字。
 MANIFEST_PATH = BACKEND_DIR.parent / "data" / "manifest.json"
 # KB 入庫清單的分類標籤：manifest 的 `path` 前三段（kb/{official|public}/{目錄}）→ 人話
+# **兩批行政函釋必須分開具名**（2026-09-12）：`kb/official/行政函釋` 是賽方資料集裡的
+# 10 筆（內政部 3、法務部 7，都有 source_pdf）；`kb/public/行政函釋` 是後來另外匯入的
+# 4520 筆環境部（原環保署）函釋（字號全為 環署／環部／環化／環循，逐筆清點確認）。
+# 兩批共用同一個標籤名的話，這一行會寫成「行政函釋 10 筆、其餘 4520 筆」——
+# 讀的人會以為本系統只有 10 筆函釋，而那 4520 筆正是空污、廢棄物這些案型最相關的一批。
+# 少報自己有什麼跟多報一樣是失真。
 KB_CORPUS_LABELS = {
     "kb/official/歷史訴願決定書": "賽方資料集・歷史訴願決定書",
     "kb/public/新北訴願決定書_全量": "市府公開全量爬蟲・新北訴願決定書",
     "kb/official/司法院釋字及行政判解": "司法院釋字及行政判解",
-    "kb/official/行政函釋": "行政函釋",
+    "kb/official/行政函釋": "賽方資料集・行政函釋（內政部、法務部）",
+    "kb/public/行政函釋": "環境部（原環保署）行政函釋",
 }
 _manifest_cache: dict[str, Any] = {}
 
@@ -162,29 +169,97 @@ def kb_corpus_counts() -> dict[str, int] | None:
     return dict(_manifest_cache["counts"])
 
 
+# 最近一次成功 ingestion 的結果，由 `scripts/ingest_kb.py` 在 job COMPLETE 時寫出。
+# **存在的理由是一個真實事故**（2026-09-12）：manifest 有 6997 筆、向量庫實際只索引了
+# 2477 份，而 `retrieval_note` 把 manifest 的數字放在「檢索來源」標題下報出去——
+# 讀的人只會得到「這系統能檢索 6997 筆」，那是假的。
+#
+# 為什麼不在 `/api/health` 直接打 AWS 查：健康檢查不該依賴外部服務（打不通就變成
+# 健康檢查自己壞掉），demo 時也不該多一次網路往返。所以改成「入庫時把結果寫在本機」。
+# 為什麼不寫死成常數：那只會在下次擴充語料時再錯一次——這個檔會跟著每次入庫更新。
+# **檔案不存在時不得猜**：沒有紀錄就明說沒有紀錄，不拿 manifest 的數字頂替。
+# 本檔不含 KB id 與 bucket 名（那兩個只活在 .env，CONSTITUTION §7）。
+INDEX_STATE_PATH = BACKEND_DIR.parent / "data" / "index-state.json"
+
+
+def index_state() -> dict[str, Any] | None:
+    """最近一次成功入庫的紀錄。檔案不存在／壞掉／缺關鍵欄位 → None（不猜、不估）。"""
+    try:
+        state = json.loads(INDEX_STATE_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(state, dict) or not isinstance(state.get("documents_indexed"), int):
+        return None
+    return state
+
+
 def retrieval_note(kind: str | None = None) -> str:
-    """檢索來源那句：相似案通道接了什麼、法規通道是什麼、庫裡各有多少筆。"""
+    """檢索來源那句。
+
+    **主述是「向量庫實際索引了幾筆」，入庫清單是次要資訊。**
+    兩者不一致時必須把差異講出來——清單只代表「我們打算讓它檢索什麼」，
+    已索引才代表「現在真的檢索得到什麼」。把前者講成後者就是對能力說謊。
+    """
     k = kind or retriever_kind()
     if k != "kb":
         return (
             f"檢索來源：法規條文走 laws-snapshot.json 查表；相似案通道未接上"
             f"（RETRIEVER={k}），一律回空並標「庫外，未驗證」——那是本系統查不到，不是查無相似案。"
         )
+    head = "檢索來源：法規條文走 laws-snapshot.json 查表（法規不進 KB）；相似案通道走 Bedrock Managed Knowledge Base"
+    tail = "相似案只收兩批訴願決定書，函釋與釋字判解不進這條通道。"
+
     counts = kb_corpus_counts()
-    if not counts:
-        return (
-            "檢索來源：法規條文走 laws-snapshot.json 查表；相似案通道走 Bedrock Managed "
-            "Knowledge Base。入庫清單（data/manifest.json）本機讀不到，故不報各批筆數。"
+    state = index_state()
+    manifest_total = sum(counts.values()) if counts else None
+    indexed = state["documents_indexed"] if state else None
+
+    # 分項一律照報（清單有什麼就講什麼）。**它描述的是清單，不是檢索範圍**——
+    # 這個區別由主述那句負責講清楚，不是靠藏起分項來迴避。
+    if counts:
+        named = [(KB_CORPUS_LABELS[g], counts[g]) for g in KB_CORPUS_LABELS if g in counts]
+        other = sum(v for g, v in counts.items() if g not in KB_CORPUS_LABELS)
+        breakdown = "、".join(f"{label} {n} 筆" for label, n in named)
+        if other:
+            breakdown += f"、其餘 {other} 筆"
+    else:
+        breakdown = ""
+
+    if indexed is None:
+        # 沒有入庫紀錄 → 說不出實際檢索得到幾筆。**這時絕不可拿 manifest 的數字當主述。**
+        listed = (
+            f"入庫清單（data/manifest.json）列了 {manifest_total} 筆——{breakdown}；"
+            "但**清單不等於已索引**——清單是「打算讓它檢索什麼」，不是「現在檢索得到什麼」。"
+            if manifest_total is not None else
+            "入庫清單（data/manifest.json）本機也讀不到，故不報各批筆數。"
         )
-    named = [(KB_CORPUS_LABELS[g], counts[g]) for g in KB_CORPUS_LABELS if g in counts]
-    other = sum(v for g, v in counts.items() if g not in KB_CORPUS_LABELS)
-    breakdown = "、".join(f"{label} {n} 筆" for label, n in named)
-    if other:
-        breakdown += f"、其餘 {other} 筆"
+        return (
+            f"{head}。本機沒有任何成功入庫的紀錄（找不到 data/index-state.json），"
+            f"因此**無法說出向量庫實際已索引幾筆**。{listed}{tail}"
+        )
+
+    when = state.get("completed_at") or "時間未記錄"
+    if manifest_total is None:
+        return (
+            f"{head}，向量庫已索引 {indexed} 筆（依 data/index-state.json，最近一次成功入庫於 {when}）。"
+            f"入庫清單（data/manifest.json）本機讀不到，故不報各批筆數。{tail}"
+        )
+
+    if indexed == manifest_total:
+        return (
+            f"{head}，向量庫已索引 {indexed} 筆（最近一次成功入庫於 {when}），"
+            f"與入庫清單一致——{breakdown}。{tail}"
+        )
+    gap = manifest_total - indexed
+    direction = (
+        f"清單比向量庫多 {gap} 筆，**那 {gap} 筆目前檢索不到**"
+        if gap > 0 else
+        f"向量庫比清單多 {-gap} 筆，**表示庫裡有清單沒記載的東西**"
+    )
     return (
-        "檢索來源：法規條文走 laws-snapshot.json 查表（法規不進 KB）；相似案通道走 Bedrock "
-        f"Managed Knowledge Base，入庫清單（data/manifest.json）計 {sum(counts.values())} 筆——{breakdown}。"
-        "相似案只收兩批訴願決定書，函釋與釋字判解不進這條通道。"
+        f"{head}，**向量庫實際已索引 {indexed} 筆**（最近一次成功入庫於 {when}）。"
+        f"入庫清單（data/manifest.json）列了 {manifest_total} 筆——{breakdown}；"
+        f"兩者不一致：{direction}。能檢索到的是前者，清單數字不代表檢索範圍。{tail}"
     )
 
 

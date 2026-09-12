@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import concurrent.futures
+import datetime as dt
 import json
 import os
 import pathlib
@@ -132,8 +133,39 @@ def main() -> int:
         time.sleep(10)
         job = agent.get_ingestion_job(knowledgeBaseId=kb_id, dataSourceId=ds, ingestionJobId=job["ingestionJobId"])["ingestionJob"]
         print("ingestion:", job["status"])
-    print(json.dumps(job.get("statistics", {}), ensure_ascii=False))
-    return 0 if job["status"] == "COMPLETE" else 1
+    stats = job.get("statistics", {})
+    print(json.dumps(stats, ensure_ascii=False))
+    if job["status"] != "COMPLETE":
+        return 1
+
+    # 把「向量庫實際索引了幾份」寫進本機紀錄，給 `/api/health` 的 retrieval_note 用。
+    # 沒有這一步，對外就只剩 manifest 的數字可報——而 manifest 是「打算入庫什麼」，
+    # 不是「真的索引了什麼」。2026-09-12 那次兩者差了 4520 筆，對外卻報成一個數。
+    #
+    # 用 numberOfDocumentsScanned 當「已索引」：它是本次 job 在 data source 掃到的
+    # 文件總數，也就是向量庫現在涵蓋的範圍。新增／修改那兩個欄位只講「這次動了幾份」，
+    # 冪等重跑時會是 0，拿它當總數會報成 0 筆。**整包 statistics 一併存檔**，
+    # 日後要換算法時看得到原始數字，不用回頭猜當初是怎麼算的。
+    scanned = stats.get("numberOfDocumentsScanned")
+    if not isinstance(scanned, int):
+        print("ingestion 完成但 statistics 沒有 numberOfDocumentsScanned，"
+              "不寫 index-state.json（寧可讓對外說『沒有紀錄』，也不寫一個猜的數字）",
+              file=sys.stderr)
+        return 0
+    state_path = pathlib.Path(a.manifest).parent / "index-state.json"
+    state_path.write_text(json.dumps({
+        "completed_at": dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat(),
+        "documents_indexed": scanned,
+        "manifest_entries": len(entries),
+        "manifest_path": a.manifest,
+        "statistics": stats,
+        "note": ("documents_indexed 取自 ingestion job 的 numberOfDocumentsScanned"
+                 "（本次 job 在 data source 掃到的文件總數）。"
+                 "本檔不含 KB id 與 bucket 名——那兩個只活在 .env。"),
+    }, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    print(f"已寫入 {state_path}：已索引 {scanned} 筆、清單 {len(entries)} 筆"
+          + ("（一致）" if scanned == len(entries) else f"（**不一致，差 {len(entries) - scanned} 筆**）"))
+    return 0
 
 
 if __name__ == "__main__":
