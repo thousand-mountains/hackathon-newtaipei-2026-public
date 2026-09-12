@@ -28,7 +28,160 @@ RUNS_DIR = OUTPUT_DIR / "runs"
 
 DEFAULT_MODEL_PROVIDER = "bedrock"
 DEFAULT_RETRIEVER = "lawtable_only"
-DEFAULT_KB_MIN_SCORE = 0.25
+# **這個值跟 KB 的建法綁死，換 KB 一定要跟著換**（2026-09-12 兩種 KB 各量一次）。
+# 同一個查詢在兩邊的分數差一倍以上，所以「調好的門檻」不能跨 KB 搬：
+#
+#   MANAGED KB        真實命中 median 0.206，閒聊句「今天天氣很好…」0.731
+#                     ——雜訊比訊號高，門檻**沒有鑑別力**，只能當砍尾端用 → 0.15
+#                     （docs/evidence/2026-09-12-bedrock-live/kb-min-score.md）
+#   VECTOR/S3 Vectors 真實命中 min 0.809，四句負控制 max 0.731，中間有空帶
+#                     ——門檻真的有用 → 窗口 0.74–0.78，取 0.76
+#                     （同目錄 kb-min-score-s3vectors.md）
+#
+# **這裡的預設刻意取寬鬆的那個（0.15）**，調好的值由 `.env` 的 KB_MIN_SCORE 帶。
+# 理由是兩種錯法的代價不對稱：門檻設太低只是多回幾筆低分的，看得見也查得出來；
+# 設太高會**靜默回 0 筆**——畫面上「相似案：無」，跟 KB 掛掉、權限不足長得一模一樣，
+# 承辦人與我們都分不出是哪一種。寧可寬鬆，不要假裝沒東西可撈。
+#
+# **但「寬鬆」的正當性完全建立在「後面有重排接手」上**（2026-09-12 覆核補）。
+# 放寬 recall 的前提是 precision 由 `RERANK_MIN_SCORE` 負責（分工見下方 rerank 段）。
+# 沒設重排模型時那個前提不成立，寬門檻就是**純粹的品質下降**：沒有任何一關擋得掉
+# 語意無關的命中，承辦人看到的相似案卡會更雜。所以預設值**分兩種**，
+# 由 `kb_min_score()` 依重排開關挑——這是唯一一個會自己變的預設值，
+# 因為它本來就不是獨立的旋鈕，是跟另一個旋鈕綁在一起的。
+DEFAULT_KB_MIN_SCORE = 0.15
+# 沒有重排時的預設：回到加重排之前那個值。這個 0.25 沒有量測背書（當時就是估的），
+# 但它至少是**已驗證過的行為**——決賽期間，未知的舊值優於已知會變差的新值。
+DEFAULT_KB_MIN_SCORE_NO_RERANK = 0.25
+
+# ── 重排（rerank）─────────────────────────────────────────────────
+#
+# **這是今天量到最重要的一件事**（2026-09-12，見 docs/evidence/…/rerank.md）。
+# embedding 是 bi-encoder：查詢與文件各自變成向量再比距離，模型從來沒有「同時看過」
+# 兩者。rerank 是 cross-encoder：兩者一起餵進去，直接判斷「這份文件回答了這個查詢嗎」。
+#
+# 實測（刻意挑 embedding 分數最沒有鑑別力的那個 KB；哪一個見證據文件）：
+#
+#              embedding top1      rerank top1
+#   真實案件     0.42–0.79          0.809–1.000      ← 生產形態的 case_digest 查詢
+#   負控制       0.44–0.48          0.000–0.057      ← 商標／海關／專利／閒聊
+#
+# embedding 的訊號與雜訊**重疊**（真實命中 median 0.213 低於閒聊句的 0.485）；
+# rerank 之後空帶寬 0.75，門檻擺在中間兩邊都有 9 倍以上餘裕。
+# 這解決了三個 KB 的門檻量測都解不掉的問題——**分數門檻本來就不該承擔這個任務**。
+#
+# 所以兩個門檻的分工是：
+#   KB_MIN_SCORE      放寬，只負責 recall（把對的文件撈進候選池）
+#   RERANK_MIN_SCORE  真正的相關性關卡，負責 precision
+DEFAULT_RERANK_MIN_SCORE = 0.5
+
+# 相似案通道收哪些前綴、各給幾個席次。格式 `前綴:席次`，逗號分隔。
+#
+# **為什麼要可設定**：目錄名跟著 corpus 走，不是我們能決定的常數（2026-09-12 踩到）。
+# 舊 corpus 是 `新北訴願決定書_全量/`（2,347 筆），第三方整理的那份叫
+# `新北訴願決定書_環保局全量/`（8,486 筆）——同樣是新北訴願決定書，只差三個字，
+# 但寫死的前綴一個都比不中，整條相似案通道**靜默回 0 筆**（不報錯，比報錯難查）。
+# KB id、門檻、前綴這三樣都跟著 corpus 綁在一起，所以一律由 .env 帶。
+DEFAULT_SIMILAR_CASE_QUOTA = "歷史訴願決定書/:2,新北訴願決定書_全量/:3"
+
+
+def similar_case_quota() -> dict[str, int]:
+    """相似案通道的 {前綴: 席次}。格式壞掉就 raise，不默默退回預設。
+
+    默默退回預設等於「設定看起來生效了但其實沒有」，那比明確失敗難查得多。
+    """
+    raw = os.environ.get("SIMILAR_CASE_QUOTA") or DEFAULT_SIMILAR_CASE_QUOTA
+    out: dict[str, int] = {}
+    for part in raw.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        prefix, sep, seats = part.rpartition(":")
+        if not sep or not prefix or not seats.strip().isdigit():
+            raise ValueError(
+                f"SIMILAR_CASE_QUOTA 格式錯誤：{part!r}。應為 `前綴/:席次`，逗號分隔，"
+                f"例 {DEFAULT_SIMILAR_CASE_QUOTA!r}")
+        out[prefix.strip()] = int(seats)
+    if not out:
+        raise ValueError("SIMILAR_CASE_QUOTA 解不出任何前綴")
+    return out
+
+
+def similar_case_prefixes() -> list[str]:
+    """相似案通道收哪些前綴——**唯一的事實來源**，N4 不自己再寫一份。"""
+    return list(similar_case_quota())
+
+
+# N5 `retrieve_refs` 工具准查哪些前綴＝**可以被引用的來源白名單**。
+#
+# 這不只是設定，是法律上的界線：只有函釋與判解是 N5 可以拿來當依據的材料，
+# 決定書是相似案（參考），法規是規則引擎查表的事。放寬這個清單等於放寬
+# 「系統可以引用什麼」，**要 qa-legal 同意才能動**（CONSTITUTION §2）。
+#
+# 之所以改成可設定，跟 SIMILAR_CASE_QUOTA 同一個原因：目錄名跟著 corpus 走。
+# 第三方 corpus 的函釋放在 `行政函釋_全量/`（4,520 筆），與我們自己整理的
+# `行政函釋/`（10 筆）是同一種材料、不同目錄——寫死就只看得到 29 份。
+DEFAULT_REF_PREFIXES = "行政函釋/,司法院釋字及行政判解/"
+
+
+def ref_prefixes() -> list[str]:
+    """N5 可引用來源的前綴白名單。"""
+    raw = os.environ.get("REF_PREFIXES") or DEFAULT_REF_PREFIXES
+    out = [p.strip() for p in raw.split(",") if p.strip()]
+    if not out:
+        raise ValueError("REF_PREFIXES 解不出任何前綴")
+    return out
+
+
+def ref_doc_kinds() -> list[str]:
+    """引用通道要在**伺服器端**先篩哪些 `doc_kind`。空＝不篩（預設）。
+
+    **這跟 rerank 的分工要分清楚**（2026-09-12 實測）：
+
+    - rerank 負責「這筆相不相關」——它做得很好，語意無關的查詢會被壓到 0.00
+    - filter 負責「該類文件進不進得了候選池」——rerank 再強也排不了沒撈到的東西
+
+    實測「行政罰法 裁處權時效 三年」在 MANAGED KB 上回 0 筆，追下去發現
+    `retrieve` 深度 50 的結果是 statute 24 ＋ decision 19，**函釋一筆都沒進來**
+    （函釋只佔語料 27%），用路徑前綴事後過濾就剩 0。加上 `doc_kind=ref_letter`
+    的伺服器端 filter 之後有 16 筆候選，rerank 後 0.93–0.98 且內文確實在談時效。
+
+    預設關閉，因為**它依賴側檔**：沒有 `doc_kind` metadata 的 KB 一開就全篩成空。
+    需要的 corpus 在 `.env` 開，跟 KB id／門檻／前綴一樣屬於「跟著語料走」的設定。
+    """
+    raw = os.environ.get("REF_DOC_KINDS") or ""
+    return [x.strip() for x in raw.split(",") if x.strip()]
+
+
+def rerank_model_id() -> str | None:
+    """重排模型的 arn。**沒設就不重排**，行為與加這個功能之前完全相同。
+
+    值只從環境變數來（CONSTITUTION §7：model id 的實際值不進程式碼）。
+    """
+    return os.environ.get("BEDROCK_RERANK_MODEL_ID") or None
+
+
+def rerank_state() -> dict[str, Any]:
+    """健康檢查要報的重排狀態。**不打任何 API，也不報 model id 的值**（CONSTITUTION §7）。
+
+    放在這裡而不是 `api/app.py`：API 層要 fastapi，測試路徑是 stdlib-only，
+    寫在那邊就沒有測試守得住（`kb.describe_similar_case_backend` 同一個理由）。
+
+    `kb_min_score` 一起報，因為它的預設**跟著重排開關變**——只報「重排沒開」
+    而不報「所以門檻是 0.25」，看的人還是要回頭翻程式碼才知道現在到底在用什麼。
+    """
+    return {"enabled": bool(rerank_model_id()),
+            "min_score": rerank_min_score(),
+            "kb_min_score": kb_min_score()}
+
+
+def rerank_min_score() -> float:
+    """重排後的相關性門檻。低於這個值的命中不回——那是「撈到了但不相關」。
+
+    空字串當成沒設（與 `kb_min_score()` 同一個理由）。
+    """
+    raw = os.environ.get("RERANK_MIN_SCORE")
+    return float(raw) if raw and raw.strip() else DEFAULT_RERANK_MIN_SCORE
 # 賽方規範要求 Bedrock 請求壓在 1 RPS 以下。1.1 留一點餘裕，與
 # `backend/retrieval/kb.py` 的 RETRIEVE_INTERVAL_S 取同一個值。
 DEFAULT_BEDROCK_MIN_INTERVAL_S = 1.1
@@ -69,7 +222,15 @@ def kb_id() -> str | None:
 
 
 def kb_min_score() -> float:
-    return float(os.environ.get("KB_MIN_SCORE", DEFAULT_KB_MIN_SCORE))
+    """檢索的分數門檻。**沒設環境變數時，預設值依重排開關而異**（見上方註解）。
+
+    空字串（`.env` 裡寫了 `KB_MIN_SCORE=` 卻沒填值）當成沒設，不是當成 `float("")`
+    ——那會在檢索路徑深處炸出一個看不出成因的 ValueError。
+    """
+    raw = os.environ.get("KB_MIN_SCORE")
+    if raw and raw.strip():
+        return float(raw)
+    return DEFAULT_KB_MIN_SCORE if rerank_model_id() else DEFAULT_KB_MIN_SCORE_NO_RERANK
 
 
 def kb_bucket() -> str | None:
@@ -191,6 +352,73 @@ def index_state() -> dict[str, Any] | None:
     if not isinstance(state, dict) or not isinstance(state.get("documents_indexed"), int):
         return None
     return state
+
+
+# ── 資料集的結果分布：報「幾件」，不報「幾 %」──────────────────────
+#
+# 2026-09-12：資料集在手後量到的事實——**兩批資料的撤銷率差一個數量級**：
+#   公開爬蟲（2,347 筆，接近母體）：廢清法 4.9%、空污法 0.4%
+#   賽方資料集（130 筆，挑選過的教學樣本）：違反廢清法事件 23.5%、違反建築法事件 26.7%
+# 混在一起算出來的 3.3% 兩邊都不代表。所以這裡**逐批分開回**，不給合併數字。
+#
+# **為什麼回 counts 不回 rate**：一個裸露的百分比在畫面上幾乎一定被讀成
+# 「本案有 X% 機率被撤銷」——那是系統對案件結果的預測，正是 CONSTITUTION 拒絕
+# 生成的法律判斷。給「17 件中 4 件撤銷」，承辦人自己看得到分母有多小；
+# 給「23.5%」，分母就消失了。要百分比的人自己除，那是他的判斷不是系統的宣稱。
+OUTCOME_DISTRIBUTION_CAVEAT = (
+    "此為知識庫內的結果分布，**不是母體統計，也不是本案的結果預測**。"
+    "賽方資料集為挑選過的樣本（涵蓋各種 77 條款與各種結果），其比例不代表實際撤銷比率；"
+    "公開爬蟲批較接近實際分布。系統不就本案結果作任何推估。"
+)
+
+
+def outcome_counts(category: str | None = None) -> dict[str, Any] | None:
+    """知識庫的決定結果分布，依來源批次分開。manifest 讀不到 → None（不猜）。
+
+    `category` 給值時只計同案型的（比對前過 `normalize_case_type`，且雙向子字串——
+    兩批的粒度不同：公開批的 `category` 是法規名「廢棄物清理法」，
+    賽方批的檔名帶案由「違反廢棄物清理法事件」，前者是後者的子字串）。
+    """
+    try:
+        stat = MANIFEST_PATH.stat()
+    except OSError:
+        return None
+    key = (str(MANIFEST_PATH), stat.st_mtime_ns, stat.st_size, "outcomes")
+    if _manifest_cache.get("okey") != key:
+        try:
+            entries = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))["entries"]
+        except (OSError, ValueError, KeyError):
+            return None
+        rows = []
+        for e in entries:
+            outcome = e.get("outcome")
+            if not outcome:
+                continue
+            cat = e.get("category")
+            if not cat:
+                # 賽方批的案由在檔名：`NN.YYY年-案由-條款-…-結果.txt`
+                seg = str(e.get("path", "")).rsplit("/", 1)[-1].split("-")
+                cat = seg[1] if len(seg) > 1 else None
+            rows.append((e.get("provenance") or "unknown",
+                         normalize_case_type(cat) if cat else None, outcome))
+        _manifest_cache["okey"] = key
+        _manifest_cache["orows"] = rows
+    rows = _manifest_cache["orows"]
+
+    want = normalize_case_type(category) if category else None
+    out: dict[str, Any] = {"by_provenance": {}, "caveat": OUTCOME_DISTRIBUTION_CAVEAT}
+    if want:
+        out["category"] = category
+    matched = 0
+    for prov, cat, outcome in rows:
+        if want:
+            if not cat or (want not in cat and cat not in want):
+                continue
+        matched += 1
+        bucket = out["by_provenance"].setdefault(prov, {})
+        bucket[outcome] = bucket.get(outcome, 0) + 1
+    out["total"] = matched
+    return out
 
 
 def retrieval_note(kind: str | None = None) -> str:
@@ -479,6 +707,30 @@ BLOCK_CRITERION_NONE = "本案未觸發結論段封鎖，結論段由系統依�
 # 事實爭點在「不是操作判準」時的標題文字——講成提醒，不得講成封鎖原因
 FACT_ISSUE_OBSERVATION_LABEL = "另外偵測到的事實認定爭點（提醒，非本案封鎖原因）"
 FACT_ISSUE_OPERATIVE_LABEL = "本案封鎖原因涉及的事實認定爭點"
+
+# ── 「汙」與「污」是同一個字的兩種寫法，而兩種在這個專案裡都有人用 ────────
+#
+# 用「污」：SUBSTANTIVE_TYPES（本檔）、n2_classify 的法規名對照表、laws-snapshot.json，
+#          以及全國法規資料庫的正式法規名。
+# 用「汙」：前端收文頁的案型下拉選單、賽方資料集的決定書檔名。
+#
+# 2026-09-12 實測：承辦人在下拉選單選「違反空氣汙染防制法事件」，
+# `case_type in SUBSTANTIVE_TYPES` 就比不中 → 走 fail-safe 分支 →
+# 畫面對他說「案型不在已知需事實認定型清單內，系統無法判斷本案是否需要實體審查」。
+# 那個案型明明就在清單上，而且是他從系統自己的選單裡選的。
+#
+# 封鎖結果不變（fail-safe 也封鎖，安全性沒有缺口），但**理由是錯的**——
+# 系統對承辦人謊報了自己的判斷依據（CONSTITUTION §1 分層誠實）。
+#
+# 為什麼不是只改前端了事：前端那一個字已經同步改掉了，但賽方檔名仍是「汙」，
+# 承辦人也可能自己打字。靠單一拼寫正確撐著太脆，比對這一側也要收得住。
+#
+# **只吃掉這一個異體字，不做其他正規化**（不轉全半形、不去空白、不做模糊比對）：
+# 範圍越窄，誤把兩個真的不同的案型併成同一個的風險越低。
+def normalize_case_type(s: str | None) -> str:
+    """案型比對前的正規化。顯示用的值不經過這裡——畫面要照實顯示承辦人填的字。"""
+    return (s or "").replace("汙", "污")
+
 
 # 需事實認定型案型：程序合法時進入實體審查，結論段由人寫（architecture §4.3）
 SUBSTANTIVE_TYPES = (

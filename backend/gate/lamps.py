@@ -16,7 +16,7 @@ import re
 from typing import Any
 
 from backend.config.origin_registry import TIER_HUMAN, TIER_SOURCED, TIER_VERIFIABLE
-from backend.config.settings import UNCONFIRMED_INTAKE_SIGNAL
+from backend.config.settings import UNCONFIRMED_INTAKE_SIGNAL, normalize_case_type
 from backend.gate.citations import (
     STATE_AMENDED,
     STATE_MISSING,
@@ -146,7 +146,12 @@ def requires_human_conclusion(
     回傳 (是否封鎖, 觸發訊號清單)。
     """
     signals: list[str] = []
-    substantive = bool(art77.get("requires_substantive_review")) and case_type in substantive_types
+    # 比對前吃掉「汙／污」異體字（見 settings.normalize_case_type 的說明）。
+    # **只正規化比對用的副本**：signals 裡照實印 case_type 原值，
+    # 承辦人填什麼畫面就顯示什麼。
+    _ct = normalize_case_type(case_type)
+    _types = tuple(normalize_case_type(t) for t in substantive_types)
+    substantive = bool(art77.get("requires_substantive_review")) and _ct in _types
     if substantive:
         signals.append(f"程序合法且須進入實體審查（案型：{case_type}）")
     high = [i for i in fact_issues if i.get("severity") == "high"]
@@ -161,7 +166,7 @@ def requires_human_conclusion(
     #
     # 為什麼要加「程序上沒有不受理事由」這個條件：逾期不受理（77-2）是期間引擎直接算出來的，
     # 屬可驗算層，那種案子不需要靠案型判斷就能寫結論（synthetic-ordinary-01 就是）。
-    unknown_type = case_type not in substantive_types
+    unknown_type = _ct not in _types
     # 判斷卡 7（2026-09-05 Ci 拍板）：只有**承辦人確認過**的期間輸入欄位，
     # 才可以用「程序上已有可直接算出的不受理事由」來解除結論封鎖。
     # 未確認時 `procedurally_resolved` 一律當 False——覆核實測證明，

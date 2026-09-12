@@ -332,7 +332,7 @@ AC4–AC11、AC15、AC16 標 `@live`，需要 Bedrock 開通；其餘在 fixture
 |---|---|---|
 | R1 | 開發用帳號 Bedrock 仍 `Operation not allowed`（帳號驗證中，PAID/ACTIVE 已確認） | Support Case 已建議送出；程式開發不受阻（fixture + monkeypatch）；live AC 標「未驗」，**不得以 `MODEL_PROVIDER=openai` 的輸出充當 AC 證據**（賽制僅限 AWS 基礎模型）；賽方是否提供帳號在 `#hack-general` 確認 |
 | R2 | Managed KB 不可控 chunking 導致 recall 不足 | AC7 實測；不足則 §13 待拍板改自管 KB + S3 Vectors（architecture §8 原案），介面不變 |
-| R3 | Sonnet 5 在東京需跨區 inference profile | 開通後 `list-inference-profiles` 確認；model id 走環境變數 |
+| R3 | Sonnet 5 需跨區 inference profile；改 us-west-2 後前綴由 `apac.` 變 `us.` | 開通後 `list-inference-profiles` 確認；model id 走環境變數，只改 region 不改 model id 會 ValidationException |
 | R4 | live 模式下 N1 兩次抽取結果不同 | D6 + AC9：確認後從 n2 續跑，不重抽 |
 | R6 | 手寫掃描件的視覺讀取品質未實測（手上沒有真實訴願書） | AC16 用自造掃描件量測；賽場遇到抽不出就走手動表單，這是設計不是失敗 |
 | R7 | 賽方「僅供競賽之用」資料集上傳到非競賽用帳號的 S3 是 CONSTITUTION §6 的邊界 | bucket 私有、只放 `kb/` 前綴 txt、賽方帳號到手後重建並**刪除**開發用帳號的 bucket 與 KB；Claire 2026-09-06 拍板「先用開發用帳號」 |

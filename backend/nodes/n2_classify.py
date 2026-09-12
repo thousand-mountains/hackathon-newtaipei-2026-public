@@ -8,8 +8,14 @@ architecture §3.1 規劃的是「kNN 投票 + 與 N1 抽取結果交叉比對�
 - `knn` 一律回空 list，`knn_backend="unavailable"`
 - `agreement.simulated=true`、`agreement.match=null`——交叉比對這道安全網
   **此刻沒有實際執行**，UI 與 demo 都必須明講（architecture §4.4）
-- `expected_outcome_prior` **不輸出**：那是資料集分布，本機沒有資料集，
-  給不出數字就不給，不用「常見比例」腦補（CONSTITUTION §8）
+- `expected_outcome_prior` **不輸出**。理由在 2026-09-12 換過一次，要講清楚：
+  原本寫的是「本機沒有資料集」——資料集到位後那句就不成立了（manifest 現有 2,448
+  筆帶 outcome），但**決定本身仍然正確**，只是理由變了。現在的理由是：
+  這個欄位要的是「本案預期結果的先驗機率」，那是對案件結果的推估，屬法律判斷，
+  系統不代為認定（CONSTITUTION §1）。拿一個過期的理由去解釋一個仍然正確的決定，
+  本身就是不實陳述。
+  真正能誠實給的是**結果件數**，在 N4 的 `retrieval.outcome_summary`：
+  檢索到的幾件各是什麼結果、同案型在庫裡幾件什麼結果，逐批分開、附警語、不算比率。
 """
 from __future__ import annotations
 
@@ -78,9 +84,14 @@ def run(state: CaseState, ctx: NodeCtx, digest: str = "") -> NodeResult:
             "method": "rule_v0_fallback",
             "method_note": "v0 fallback：規則式法規名比對。真正的 kNN 分類需要賽方 101 份歷史決定書向量庫，本機無此資料，待資料集到位後替換。",
             "law_hits": law_hits,
-            # expected_outcome_prior 刻意不輸出：沒有資料集就沒有分布，不腦補數字。
+            # expected_outcome_prior 刻意不輸出：這欄要的是本案結果的先驗機率，
+            # 那是對結果的推估，不是描述。資料集已到位（不再是「沒有資料」），
+            # 但有資料也不改變這個決定——見模組 docstring。
             "expected_outcome_prior": None,
-            "expected_outcome_prior_reason": "需歷史決定書分布統計，本機無資料集，不推估。",
+            "expected_outcome_prior_reason": (
+                "不就本案結果作推估：預期結果屬法律判斷，由承辦人認定（CONSTITUTION §1）。"
+                "可據實提供的是知識庫的結果件數分布，見 retrieval.outcome_summary。"
+            ),
         },
         "knn": [],
         "knn_backend": "unavailable",

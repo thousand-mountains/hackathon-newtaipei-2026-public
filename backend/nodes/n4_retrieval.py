@@ -20,6 +20,7 @@ import time
 from collections import Counter as _count
 from typing import Any
 
+from backend.config import settings
 from backend.orchestrator.state import CaseState, NodeCtx, NodeResult
 from backend.retrieval.base import UnavailableRetriever
 from backend.retrieval.lawtable import LawTableRetriever
@@ -54,6 +55,13 @@ SUBSTANTIVE_ARTICLE_UNKNOWN = (
 PRECEDENT_CHANNEL_NOTE = (
     "期間引擎的依據字串裡若含判解字號（例『最高行 108 判 531 意旨』），本節點不檢索——"
     "法條查表通道只查條號，判解白名單的比對在守門節點（N6）做。"
+)
+
+
+# 結果分布那一句：說清楚它是描述而不是預測。前端照這句畫，不自己另外編說法。
+OUTCOME_SUMMARY_NOTE = (
+    "以上為檢索到的相似案與知識庫同案型的**決定結果件數**（規則計數，零 LLM）。"
+    "系統不就本案結果作推估，也不提供撤銷機率——那屬法律判斷，由承辦人認定。"
 )
 
 
@@ -241,7 +249,7 @@ def run(
     kb_error: str | None = None
     if case_query or query_text:
         try:
-            # 不傳 prefix：收哪些前綴由 `retrieval.kb.DEFAULT_PREFIXES` 單點決定
+            # 不傳 prefix：收哪些前綴由 `settings.similar_case_quota()` 單點決定
             # （這裡再寫一份就會與它漂移）。N4 只說「我要相似案」，不說去哪撈。
             case_hits = similar.search(case_query or query_text, top_k=5)
         except Exception as e:  # noqa: BLE001 — 檢索器可能是 boto3，例外型別由 SDK 決定
@@ -262,6 +270,15 @@ def run(
                 "note": h.note or "KB 命中，未對資料集實檔驗證（manifest 對檔為加值層 Task 9）",
                 "outcome": p.get("outcome"),
                 "provenance": p.get("provenance"),
+                # **`sim` 這個數字是誰算的**。開了重排就是 cross-encoder 判的語意相關性，
+                # 沒開就是 embedding 的向量距離——兩者不是同一回事，畫面上的文案要跟著換
+                # （CONSTITUTION §1：顯示的數字必須說得出它是什麼）。
+                # 檢索器已經在 payload 標了 `ranked_by`，這裡只是把它帶到卡片上；
+                # 沒有標的（沒開重排、或非 KB 檢索器）就是 embedding。
+                "ranked_by": p.get("ranked_by") or "embedding",
+                # 案型：公開爬蟲那批的檔名只有「案號_結果」，卡片標題看不出是什麼案子，
+                # 這個欄位是唯一的來源（來自 KB 側檔）。沒有就 None，不猜。
+                "category": p.get("category"),
                 "text": p.get("text", "")[:600],
                 "lamp": None,
             }
@@ -314,7 +331,32 @@ def run(
         ),
         "substantive_article_gap": SUBSTANTIVE_ARTICLE_UNKNOWN,
     }
-    state.retrieval = {"laws": laws, "cases": cases, "retrieval_meta": retrieval_meta}
+    # ── 檢索到的這幾件，結果各是什麼（逐件計數，不算比率）─────────────
+    #
+    # 「相似案撤銷率 X%」是最容易被誤讀的一個數字：分母只有 top-K（通常 5），
+    # 一件撤銷就是 20%、兩件就是 40%——那是雜訊不是統計；而且承辦人幾乎一定會
+    # 把它讀成「本案有 X% 機率被撤銷」，那是系統對案件結果的預測
+    # （CONSTITUTION：結論涉及法律判斷，不代為認定）。
+    #
+    # 所以這裡只給**計數**與**分母**，讓分母留在畫面上；要換算比率是讀的人的判斷。
+    # `corpus` 那塊是同案型在整個知識庫裡的分布，逐批分開（兩批差一個數量級，
+    # 見 settings.outcome_counts 的說明），附警語。
+    run_case_type = ((state.classification or {}).get("class") or {}).get("case_type") or ""
+    # 幕僚敘述那行「結果分布」與 payload 的 outcome_summary **算同一份**。
+    # 分開算兩次的話，標籤（「未標示」）與計數遲早會漂，畫面與 payload 就會各說各話。
+    retrieved_outcomes = dict(sorted(_count(c["outcome"] or "未標示" for c in cases).items()))
+    outcome_summary = {
+        "retrieved": {"n": len(cases), "counts": retrieved_outcomes},
+        "corpus": settings.outcome_counts(run_case_type or None),
+        "note": OUTCOME_SUMMARY_NOTE,
+        "origin": "rule",
+    }
+    state.retrieval = {
+        "laws": laws,
+        "cases": cases,
+        "retrieval_meta": retrieval_meta,
+        "outcome_summary": outcome_summary,
+    }
 
     elapsed = int((time.perf_counter() - started) * 1000)
     verified_n = sum(1 for l in laws if l["verified"])
@@ -365,7 +407,7 @@ def run(
                         [
                             # outcome 可能是 None（檔名讀不出主文），跟字串混在一起 sorted() 會炸，
                             # 所以在這裡補一個明講「讀不出來」的標籤，不假裝它是某個結果。
-                            f"結果分布：{'；'.join(f'{k} {v} 件' for k, v in sorted(_count(c['outcome'] or '未標示' for c in cases).items()))}",
+                            f"結果分布：{'；'.join(f'{k} {v} 件' for k, v in retrieved_outcomes.items())}",
                             "",
                         ],
                         ["決定結果照檔名／主文，不由模型推測（CONSTITUTION §2）", ""],

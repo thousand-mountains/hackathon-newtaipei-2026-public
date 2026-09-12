@@ -135,7 +135,12 @@ aws --version   # 應該就回 aws-cli/2.36.44 了
 | `BEDROCK_MODEL_ID_DRAFT` | N5 主筆用 | 同上 |
 | `RETRIEVER` | `lawtable_only`（預設，相似案通道回空）／`kb`（走 Managed Knowledge Base） | 同上 |
 | `BEDROCK_KB_ID` | Managed Knowledge Base id（N4 檢索通道 B）。`RETRIEVER=kb` 時必填 | 同上 |
-| `KB_MIN_SCORE` | 檢索命中分數下限，預設 `0.25`；低於此值的命中丟棄 | 同上 |
+| `KB_MIN_SCORE` | 檢索命中分數下限，低於此值的命中丟棄。**預設依重排開關而異**：有設 `BEDROCK_RERANK_MODEL_ID` → `0.15`（放寬，只負責 recall，precision 交給重排）；沒設 → `0.25`（沒有重排接手時不能放寬）。**這個值跟 KB 的建法綁死**，換 KB 要重量（MANAGED 與 S3 Vectors 同一查詢分數差一倍以上） | 同上 |
+| `BEDROCK_RERANK_MODEL_ID` | 重排模型 arn。**留空＝不重排**，不報錯——這是安靜的品質下降（相似案會混進語意無關的命中），ECS 上漏設是看不出來的，所以 `/api/health` 會報這個開關的狀態，部署後去看一眼 | task definition 環境變數（非機密） |
+| `RERANK_MIN_SCORE` | 重排後的相關性門檻，預設 `0.5`。實測真實案件 0.809–1.000、語意無關 0.000–0.057 | 同上 |
+| `SIMILAR_CASE_QUOTA` | 相似案通道的 `前綴/:席次`，逗號分隔。**目錄名跟著 corpus 走，換 KB 必改**（`新北訴願決定書_全量/` vs `新北訴願決定書_環保局全量/`）——設錯不報錯，整條通道靜默回 0 筆。格式壞掉才會 raise | 同上 |
+| `REF_PREFIXES` | N5 可引用來源的前綴白名單（函釋／判解）。同樣**跟著 corpus 走**。放寬等於放寬「系統可以引用什麼」，**要 qa-legal 同意**（CONSTITUTION §2） | 同上 |
+| `REF_DOC_KINDS` | 引用通道在伺服器端先篩的 `doc_kind`。**留空＝不篩**（預設）；它依賴 KB 側檔，沒有側檔的 KB 一篩就全空 | 同上 |
 | `S3_KB_BUCKET` | 資料集所在的 S3 bucket 名稱，**入庫腳本用**（執行期服務不讀 S3） | 同上；bucket **必須非公開**（CONSTITUTION §6）。**2026-09-07 更名**：舊表寫作 `KB_DATA_BUCKET`，程式實際讀的是 `S3_KB_BUCKET` |
 
 **憑證怎麼給**：不設 `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` 這類變數。

@@ -285,8 +285,15 @@ def health() -> JSONResponse:
         "checks": checks,
         "run_mode": mode,
         "fixture_only": mode == "fixture",
+        # 這兩個欄位一度被寫死成 Phase 0 的值，`RETRIEVER=kb` 也照樣回報「沒開」
+        # （2026-09-12 實測）。健康檢查說的話必須是它真的知道的事（CONSTITUTION §1）。
         "kb_backend": settings.retriever_kind(),
-        "similar_case_backend": "kb" if settings.retriever_kind() == "kb" else "unavailable",
+        "similar_case_backend": retrieval_kb.describe_similar_case_backend(settings.retriever_kind()),
+        # 重排是**安靜地開或不開**：沒設 `BEDROCK_RERANK_MODEL_ID` 就不重排、不報錯，
+        # 而檢索的分數門檻又是跟著它一起變寬的（settings.kb_min_score）。
+        # ECS 上漏設這個變數，表現是「相似案卡混進語意無關的命中」——沒有人會發現。
+        # 這裡只報開關與門檻，**不報 model id 的值**（CONSTITUTION §7）。
+        "rerank": settings.rerank_state(),
         # fixture 檔位沒有呼叫任何基礎模型就不報 model id；live 檔位報環境變數設定的那組，
         # 但那是「設定值」不是「這次真的呼叫過」——逐次執行的實際值在 run_meta.model_ids。
         "model_ids": None if mode == "fixture" else llm_client.model_ids(),
@@ -368,6 +375,13 @@ def _run_kwargs(body: RunIn | None) -> dict[str, Any]:
     真正的 `base_state` 是後端拿它去 `load_run()` 讀回來的（見 `RunIn` 的安全邊界說明）。
     """
     body = body or RunIn()
+    # `from_node != n1` 卻沒有 `base_run_id` 是錯誤（沒有上游可沿用）。
+    # 這條規則 `run_case()` 也有（graph.py，那裡才是權威），但**在 bedrock 檔位
+    # 它來不及**：run_case 跑在背景，202 早就回出去了，前端要輪詢到 run_failed
+    # 才知道自己送錯——而那是個 502，看起來像系統壞了，不像參數錯了。
+    # 錯在請求就該回 4xx，而且要在發 202 之前（2026-09-12 AC8b 實測：實際回 202）。
+    if body.from_node and body.from_node != "n1" and not body.base_run_id:
+        raise ValueError("from_node 不是 n1 時必須提供 base_run_id（沒有上游可沿用）")
     kw: dict[str, Any] = {
         "confirmed_intake": body.confirmed_intake,
         "from_node": body.from_node,

@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import concurrent.futures
 import datetime as dt
+import hashlib
 import json
 import os
 import pathlib
@@ -48,25 +49,60 @@ class MissingLocalFile(RuntimeError):
     """stage 目錄缺檔。跟上傳失敗分開：這是資料沒備齊，重試不會好。"""
 
 
-def _sync_one(entry: dict, *, bucket: str, region: str, stage: str) -> bool:
-    """同步一個檔。回傳 True＝有上傳、False＝sha256 相同略過。
+def _sha_matches(s3, bucket: str, key: str, sha: str) -> bool:
+    try:
+        head = s3.head_object(Bucket=bucket, Key=key)
+    except s3.exceptions.ClientError:
+        return False
+    return head.get("Metadata", {}).get("sha256") == sha
+
+
+def _sha256_of(path: pathlib.Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _upload_sidecar(s3, local: pathlib.Path, bucket: str, key: str, sha: str) -> None:
+    """側檔也帶 `sha256` metadata，冪等比對才有東西可比（見 `_sync_one`）。"""
+    s3.upload_file(str(local), bucket, key,
+                   ExtraArgs={"Metadata": {"sha256": sha},
+                              "ContentType": "application/json; charset=utf-8"})
+
+
+def _sync_one(entry: dict, *, bucket: str, region: str, stage: str) -> tuple[bool, int]:
+    """同步一個檔。回傳 (本文有沒有上傳, 側檔上傳數 0/1)。
 
     冪等靠 S3 物件的 `sha256` metadata 比對，與序列版完全相同。
+
+    側檔跟著本文走：`x.txt` 的分類欄位在 `x.txt.metadata.json`（build_kb_metadata.py 產）。
+    它不進 manifest（它不是獨立文件，是這一筆的屬性），但**冪等要自己算一份**
+    ——側檔的 sha 跟本文的 sha 是兩件事（2026-09-12 覆核補）。
+
+    原本只檢查「S3 上有沒有側檔」，缺了才補。那在側檔第一次生出來時是對的，
+    但**改側檔產生器之後就會靜默留著舊版**：本文一個字都沒變（sha 相同）→ 略過 →
+    S3 上還是舊的 `doc_kind`／`category`。而側檔現在是 `outcome`／`category` 的
+    **優先來源**，也是 `REF_DOC_KINDS` 伺服器端 filter 的依據，用到舊值的表現是
+    「欄位都在、值是錯的」——比缺欄位難查得多。所以改成比側檔自己的 sha256。
+
+    沒有側檔（還沒跑過產生器）就跳過，不報錯。
     """
     s3 = _s3_client(region)
     local = pathlib.Path(stage) / entry["path"].removeprefix("kb/")
     if not local.exists():
         raise MissingLocalFile(str(local))
-    try:
-        head = s3.head_object(Bucket=bucket, Key=entry["path"])
-        if head.get("Metadata", {}).get("sha256") == entry["sha256"]:
-            return False
-    except s3.exceptions.ClientError:
-        pass
-    s3.upload_file(str(local), bucket, entry["path"],
-                   ExtraArgs={"Metadata": {"sha256": entry["sha256"], "provenance": entry["provenance"]},
-                              "ContentType": "text/plain; charset=utf-8"})
-    return True
+    side_local = local.with_name(local.name + ".metadata.json")
+    side_key = entry["path"] + ".metadata.json"
+    side_sha = _sha256_of(side_local) if side_local.exists() else None
+    body_same = _sha_matches(s3, bucket, entry["path"], entry["sha256"])
+    if not body_same:
+        s3.upload_file(str(local), bucket, entry["path"],
+                       ExtraArgs={"Metadata": {"sha256": entry["sha256"],
+                                               "provenance": entry["provenance"]},
+                                  "ContentType": "text/plain; charset=utf-8"})
+    # 側檔獨立判斷：本文重傳時一起重傳；本文沒變也要在側檔是新的／改過時補上去。
+    if side_sha and not _sha_matches(s3, bucket, side_key, side_sha):
+        _upload_sidecar(s3, side_local, bucket, side_key, side_sha)
+        return not body_same, 1
+    return not body_same, 0
 
 
 def main() -> int:
@@ -86,7 +122,7 @@ def main() -> int:
         print("缺 S3_KB_BUCKET 或 AWS_REGION", file=sys.stderr)
         return 2
     entries = json.loads(pathlib.Path(a.manifest).read_text(encoding="utf-8"))["entries"]
-    uploaded = skipped = 0
+    uploaded = skipped = sidecars = 0
     missing: list[str] = []
     failed: list[str] = []
     workers = max(1, a.workers)
@@ -98,15 +134,19 @@ def main() -> int:
         for fut in concurrent.futures.as_completed(futures):
             key = futures[fut]["path"]
             try:
-                if fut.result():
-                    uploaded += 1
-                else:
-                    skipped += 1
+                did_upload, side = fut.result()
             except MissingLocalFile as exc:
                 missing.append(str(exc))
+                continue
             except Exception as exc:  # noqa: BLE001 — 任何供應商錯誤都記下來，不吞
                 failed.append(f"{key}: {type(exc).__name__}: {exc}")
-    print(f"S3 同步完成：上傳 {uploaded}、略過 {skipped}、並行 {workers}")
+                continue
+            if did_upload:
+                uploaded += 1
+            else:
+                skipped += 1
+            sidecars += side
+    print(f"S3 同步完成：上傳 {uploaded}、略過 {skipped}、側檔 {sidecars}、並行 {workers}")
     if missing:
         print(f"缺本機檔 {len(missing)} 個：", file=sys.stderr)
         for m in missing[:20]:

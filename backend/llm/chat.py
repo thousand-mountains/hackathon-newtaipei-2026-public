@@ -23,8 +23,11 @@ spec §4.0「payload 由呼叫端提供」：`read_case` 只讀呼叫端餵進�
 起走；第 3 條（`scan_core_path_dependencies`）對 `backend/llm/` 具名豁免。所以它是
 規格層紅線，由 AC15 的機械檢查把關（`test -f` ＋ `grep -rn 'backend\\.orchestrator|backend\\.nodes'`）。
 
-同理 `REF_PREFIXES` 從 `backend/retrieval/kb.py` import，**不從 `backend/nodes/n5_draft.py`**
-——後者自己 import `backend.llm.client`，聊天層再 import 它就是層級倒置。
+同理引用白名單從 `backend/config/settings.py` 取（`settings.ref_prefixes()`），
+**不從 `backend/nodes/n5_draft.py`**——後者自己 import `backend.llm.client`，
+聊天層再 import 它就是層級倒置。也不從 `backend/retrieval/kb.py` 取：那裡已經沒有
+模組層常數了（目錄名跟著 corpus 走，寫死就會漏，見 settings.ref_prefixes 的說明）。
+`settings` 比聊天層與檢索層都底層，誰都可以依賴它。
 
 ## strands 的頂層 import 用 try/except 守衛
 
@@ -38,10 +41,10 @@ import json
 import re
 from typing import Any
 
+from backend.config import settings
 from backend.config.origin_registry import TIER_HUMAN
 from backend.gate.lamps import tier_for_lamp
 from backend.llm.client import _STRANDS_MISSING, LLMError, _load_model, _prompt, _throttle
-from backend.retrieval.kb import REF_PREFIXES
 from backend.retrieval.lawtable import LawTableRetriever
 
 try:
@@ -402,7 +405,7 @@ class ChatTools:
 
     def retrieve_refs(self, query: str) -> str:
         return self._search("retrieve_refs", query,
-                            {"prefix": list(REF_PREFIXES)}, "函釋與判解")
+                            {"prefix": settings.ref_prefixes()}, "函釋與判解")
 
     def read_case(self, section: str) -> str:
         """讀呼叫端餵進來的 payload 分區。**不碰 runstore、不呼叫 build_payload。**"""

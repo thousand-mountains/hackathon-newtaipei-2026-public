@@ -20,7 +20,13 @@ import random
 import tempfile
 from typing import Any
 
-from backend.config.settings import CONFIRMABLE_INTAKE_FIELDS, load_snapshot
+from backend.config.settings import (
+    CONFIRMABLE_INTAKE_FIELDS,
+    SUBSTANTIVE_TYPES,
+    load_snapshot,
+    normalize_case_type,
+    outcome_counts,
+)
 from backend.gate.citations import (
     STATE_MISSING,
     STATE_OK,
@@ -29,7 +35,13 @@ from backend.gate.citations import (
     Citation,
     CitationChecker,
 )
-from backend.gate.lamps import WHY_RECORD, detect_conclusion_like, normalize_for_structure
+from backend.nodes import n2_classify
+from backend.gate.lamps import (
+    WHY_RECORD,
+    detect_conclusion_like,
+    normalize_for_structure,
+    requires_human_conclusion,
+)
 from backend.nodes import n6_gate
 from backend.orchestrator.graph import build_payload, load_case, run_case
 from backend.orchestrator.state import CaseState, NodeCtx
@@ -1379,3 +1391,137 @@ def test_pipeline_is_still_deterministic():
             for _ in range(5)
         }
         assert_eq(len(hashes), 1, f"{case_id} 跑 5 次結果不一致（deterministic 壞了）")
+
+
+def test_case_type_variant_char_does_not_fall_through_to_fail_safe():
+    """「汙」與「污」是同一個案型，不得因為異體字被判成「系統不認得的案型」。
+
+    防的是**理由謊報**，不是安全破口：fail-safe 分支照樣封鎖，所以兩條路的
+    `needs_human` 都是 True，只看回傳值看不出差別。要斷言的是**訊號內容**——
+    走對分支時說「程序合法且須進入實體審查」，走 fail-safe 時說「案型不在清單內」。
+    後者對一個明明在清單上、而且是承辦人從系統自己的下拉選單選出來的案型說謊
+    （CONSTITUTION §1）。
+
+    2026-09-12 實測：前端下拉送出「違反空氣汙染防制法事件」，比對就落空。
+    """
+    art77 = {"requires_substantive_review": True, "clause": None}
+    canonical = "違反空氣污染防制法事件"
+    variant = canonical.replace("污", "汙")
+    assert_true(canonical in SUBSTANTIVE_TYPES, "前提：正體字版本本來就在清單上")
+    assert_true(variant not in SUBSTANTIVE_TYPES, "前提：異體字版本字面上不在清單上")
+
+    for case_type in (canonical, variant):
+        needs_human, signals = requires_human_conclusion(art77, case_type, [], SUBSTANTIVE_TYPES)
+        assert_true(needs_human, f"{case_type}：需事實認定型一律封鎖結論")
+        joined = "／".join(signals)
+        assert_in("須進入實體審查", joined, f"{case_type}：要走實體審查分支")
+        assert_true(
+            "不在已知需事實認定型清單內" not in joined,
+            f"{case_type}：不得落到 fail-safe 分支——那會對承辦人謊報封鎖理由",
+        )
+
+
+def test_normalize_case_type_only_touches_the_one_variant_char():
+    """正規化的範圍要窄：只吃「汙→污」，不得順手做其他模糊比對。
+
+    範圍一放寬，兩個真的不同的案型就可能被併成同一個——那是比異體字嚴重得多的錯。
+    """
+    assert_eq(normalize_case_type("違反空氣汙染防制法事件"), "違反空氣污染防制法事件")
+    assert_eq(normalize_case_type(None), "")
+    # 全半形、空白、其他法規名一律原樣保留
+    assert_eq(normalize_case_type(" 違反建築法事件 "), " 違反建築法事件 ")
+    assert_eq(normalize_case_type("違反噪音管制法事件"), "違反噪音管制法事件")
+    for t in SUBSTANTIVE_TYPES:
+        if "污" not in t:
+            assert_eq(normalize_case_type(t), t, f"{t} 不含該字，不該被動到")
+
+
+def test_frontend_case_type_options_are_all_matchable():
+    """收文頁下拉的每一個案型選項，都要嘛在 SUBSTANTIVE_TYPES 裡、要嘛是刻意的非實體型。
+
+    這條測試的存在理由：前端下拉是**承辦人唯一能選案型的地方**，它送出的值
+    如果比不中後端清單，系統就會對著自己給的選項說「我不認得」。
+    前端與後端各自維護一份字串清單，漂移只是時間問題——讓測試去盯，不是靠人記得。
+    """
+    html = (pathlib.Path(__file__).resolve().parents[2]
+            / "prototype" / "static" / "index.tmpl.html").read_text(encoding="utf-8")
+    block = html.split('id="f_type"', 1)[1].split("</select>", 1)[0]
+    options = [o.split("</option>")[0].strip()
+               for o in block.split("<option>")[1:]]
+    assert_true(len(options) >= 5, f"沒抓到下拉選項（實得 {options}）")
+    # 這兩個刻意不在 SUBSTANTIVE_TYPES：不是需事實認定型，走 fail-safe 是正確行為
+    non_substantive = {"申請提供政府資訊事件", "其他"}
+    for opt in options:
+        if opt in non_substantive:
+            continue
+        assert_in(
+            normalize_case_type(opt),
+            [normalize_case_type(t) for t in SUBSTANTIVE_TYPES],
+            f"下拉選項「{opt}」比不中 SUBSTANTIVE_TYPES，承辦人選了它就會落到 fail-safe",
+        )
+
+
+def test_outcome_distribution_never_reports_a_rate():
+    """結果分布只准報件數，不准報比率——這是「撤銷率 X%」那條路的防線。
+
+    為什麼比率不行：
+    1. top-K 的分母通常是 5。一件撤銷就是 20%、兩件 40%，那是雜訊不是統計。
+    2. 裸露的百分比在畫面上幾乎一定被讀成「本案有 X% 機率被撤銷」——
+       那是系統對案件結果的預測，屬法律判斷（CONSTITUTION §1）。
+    3. 兩批資料的撤銷率差一個數量級（公開爬蟲 ~5%、賽方挑選樣本 ~24%），
+       任何合併出來的單一比率兩邊都不代表。
+
+    件數保住分母：「17 件中 4 件撤銷」看得出樣本多小，「23.5%」看不出。
+    """
+    dist = outcome_counts("違反廢棄物清理法事件")
+    if dist is None:
+        return  # manifest 不在（例如乾淨 checkout）：不硬性要求，但也不假裝驗過
+    assert_true(dist["total"] > 0, "同案型應有命中")
+    assert_in("caveat", dist, "結果分布一定要帶警語")
+    assert_true(len(dist["by_provenance"]) >= 1, "要逐批分開，不給合併數字")
+
+    # 沒有任何比率欄位，值也全是整數件數
+    flat = json.dumps(dist, ensure_ascii=False)
+    for banned in ("rate", "percent", "ratio", "prob", "撤銷率", "機率"):
+        assert_true(
+            banned not in flat.replace("不代表實際撤銷比率", "").replace("不就本案結果作任何推估", ""),
+            f"結果分布不得出現 {banned!r}：那會把描述變成預測",
+        )
+    for prov, counts in dist["by_provenance"].items():
+        for k, v in counts.items():
+            assert_true(isinstance(v, int), f"{prov}.{k} 必須是件數（int），實得 {type(v)}")
+
+
+def test_outcome_counts_category_filter_matches_both_granularities():
+    """兩批資料的案型粒度不同，過濾要雙向命中，否則其中一批永遠算 0。
+
+    公開爬蟲批的 `category` 是法規名（`廢棄物清理法`），
+    賽方批的檔名帶案由（`違反廢棄物清理法事件`）。前者是後者的子字串。
+    只做單向比對，就會重演 AC7「cases=5、同案型=0」那個假失敗。
+    """
+    dist = outcome_counts("違反廢棄物清理法事件")
+    if dist is None:
+        return
+    provs = set(dist["by_provenance"])
+    assert_true(
+        len(provs) >= 2,
+        f"雙向比對應同時命中兩批，實得 {provs}（只有一批＝另一批的粒度沒被吃到）",
+    )
+    # 異體字同樣要吃掉
+    a = outcome_counts("違反空氣污染防制法事件")
+    b = outcome_counts("違反空氣汙染防制法事件")
+    assert_eq(a["total"], b["total"], "「汙／污」不得改變同案型的命中筆數")
+
+
+def test_expected_outcome_prior_reason_is_not_stale():
+    """`expected_outcome_prior` 留 null 是對的，但理由必須是**現在**的理由。
+
+    原本寫的是「本機無資料集」。資料集到位後那句就成了不實陳述——
+    決定沒變（仍然不推估），變的是為什麼。拿過期的理由解釋正確的決定，
+    讀的人會以為「等資料到了就會有這個數字」，那是誤導。
+    """
+    src = pathlib.Path(n2_classify.__file__).read_text(encoding="utf-8")
+    assert_true(
+        "本機無資料集，不推估" not in src,
+        "expected_outcome_prior 的理由仍寫著「本機無資料集」，但 manifest 已有 2,448 筆 outcome",
+    )

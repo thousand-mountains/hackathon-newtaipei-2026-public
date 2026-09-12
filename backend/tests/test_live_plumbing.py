@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import importlib.util
 import json
 import os
 import pathlib
@@ -34,7 +35,7 @@ from backend.orchestrator.graph import (
 from backend.orchestrator.state import CaseState, NodeCtx
 from backend.retrieval.base import Hit
 import backend.retrieval.kb as kb_module
-from backend.retrieval.kb import KBRetriever, build_retriever
+from backend.retrieval.kb import KBRetriever, build_retriever, describe_similar_case_backend
 from backend.tests import run_all
 from backend.tests.harness import assert_eq, assert_in, assert_true
 from backend.tests.test_gate_hardening import _confirmed_of
@@ -59,10 +60,13 @@ def env(**kv):
 
 
 def test_settings_defaults_are_offline():
-    with env(RUN_MODE=None, MODEL_PROVIDER=None, RETRIEVER=None, KB_MIN_SCORE=None):
+    with env(RUN_MODE=None, MODEL_PROVIDER=None, RETRIEVER=None, KB_MIN_SCORE=None,
+             BEDROCK_RERANK_MODEL_ID=None):
         assert_eq(settings.run_mode(), "fixture")
         assert_eq(settings.model_provider(), "bedrock")
         assert_eq(settings.retriever_kind(), "lawtable_only")
+        # 預設沒有重排 → 門檻用保守的那個（兩種預設的理由見
+        # test_kb_min_score_default_follows_the_rerank_switch）
         assert_eq(settings.kb_min_score(), 0.25)
         assert_eq(settings.missing_live_settings("fixture", "lawtable_only"), [])
 
@@ -852,6 +856,19 @@ def test_n5_logs_when_upstream_retrieval_is_empty():
 
 
 # ── Task 5：Managed KB 檢索器與 N4 通道 B ────────────────────────────
+def _search_cfg(call: dict) -> dict:
+    """從一次 retrieve 呼叫裡取出搜尋設定，**不管它用的是哪個鍵**。
+
+    設定鍵依 KB 型態而異（managed／vector，見 kb.py），由 `kb.py` 自己試錯決定。
+    這些測試在乎的是 `numberOfResults` 抓多深，不是鍵叫什麼——把鍵名釘死在斷言裡，
+    等於讓「支援另一種 KB」這件事必然弄紅一票無關的測試（2026-09-12 已經發生過一次）。
+    鍵名本身的正確性由 `test_search_key_*` 那組守。
+    """
+    cfg = call["retrievalConfiguration"]
+    assert_eq(len(cfg), 1, f"一次呼叫只能帶一個搜尋設定鍵，實際={list(cfg)}")
+    return next(iter(cfg.values()))
+
+
 class _FakeBedrockAgentRuntime:
     """模擬 boto3 bedrock-agent-runtime client 的 retrieve()。"""
 
@@ -887,15 +904,40 @@ def test_kb_retriever_filters_by_prefix_score_filetype_and_exclusion():
     assert_true(hits[0].verified is False, "verified 由 N6 對 manifest 決定，檢索不自己宣稱")
     call = fake.calls[0]
     assert_eq(call["knowledgeBaseId"], "kb-x")
-    assert_eq(call["retrievalConfiguration"]["vectorSearchConfiguration"]["numberOfResults"],
+    assert_eq(_search_cfg(call)["numberOfResults"],
               kb_module.REF_FETCH_DEPTH, "先多抓再後過濾（深度見 REF_FETCH_DEPTH）")
+
+
+def test_kb_retriever_dedupes_hits_from_the_same_source_file():
+    """同一份文件被切成多個 chunk，只算**一筆**——留分數最高的那個。
+
+    2026-09-12 實測：查詢「寄存送達 自寄存之日起發生效力」回的 3 筆函釋，
+    全是同一個檔案（`法務部93年4月13日法律字0930014628號函-寄存送達.txt`）的不同 chunk。
+    不去重的話 N5 的 refs 會出現 R1／R2／R3 指向同一份函釋，
+    承辦人看到「3 筆依據」，其實只有 1 份——那是對「有多少佐證」說謊（CONSTITUTION §1）。
+    相似案通道同樣會中（同一份決定書切兩塊，看板上就是兩張卡）。
+
+    `retrieve` 的結果已按 score 降序，所以 first-seen 就是最高分那個 chunk。
+    """
+    fake = _FakeBedrockAgentRuntime([
+        _kb_result("行政函釋/法務部93年-寄存送達.txt", 0.95, "chunk 1：寄存送達自寄存之日起…"),
+        _kb_result("行政函釋/法務部93年-寄存送達.txt", 0.44, "chunk 2：同一份函釋的另一段"),
+        _kb_result("行政函釋/法務部93年-寄存送達.txt", 0.28, "chunk 3：同一份函釋的第三段"),
+        _kb_result("行政函釋/內政部100年-送達.txt", 0.30, "另一份函釋"),
+    ])
+    r = KBRetriever(kb_id="k", region="r", min_score=0.25, client=fake)
+    hits = r.search("寄存送達", filters={"prefix": ["行政函釋/"]}, top_k=5)
+    assert_eq([h.source for h in hits],
+              ["行政函釋/法務部93年-寄存送達.txt", "行政函釋/內政部100年-送達.txt"])
+    assert_eq(hits[0].score, 0.95, "同源多 chunk 留最高分")
+    assert_eq([h.id for h in hits], ["kb-1", "kb-2"], "id 依去重後的順序連號，不留空號")
 
 
 def test_kb_retriever_parses_public_prefix_and_outcome_from_filename():
     res = _kb_result("x", 0.9, "t")
     res["location"]["s3Location"]["uri"] = "s3://b/kb/public/新北訴願決定書_全量/1121051256_不受理.txt"
     res["metadata"]["_source_uri"] = res["location"]["s3Location"]["uri"]
-    r = KBRetriever(kb_id="k", region="r", client=_FakeBedrockAgentRuntime([res]))
+    r = KBRetriever(kb_id="k", region="r", min_score=0.25, client=_FakeBedrockAgentRuntime([res]))
     hits = r.search("q", filters={"prefix": ["新北訴願決定書_全量/"]})
     assert_eq(hits[0].payload["provenance"], "public_crawl")
     assert_eq(hits[0].payload["outcome"], "不受理")
@@ -922,7 +964,7 @@ def test_default_prefixes_take_both_batches_of_appeal_decisions():
         _kb_result("歷史訴願決定書/113年/16.113年-違反空氣污染防制法事件-駁回.txt", 0.8, "主文：訴願駁回。"),
     ])
     r = KBRetriever(kb_id="k", region="r", min_score=0.25, client=fake)
-    hits = r.search("露天燃燒")  # 不傳 filters → 走 DEFAULT_PREFIXES
+    hits = r.search("露天燃燒")  # 不傳 filters → 走 settings.similar_case_quota()
     assert_eq(len(hits), 2, "public 批的命中不得被前綴過濾掉")
     assert_eq([h.payload["provenance"] for h in hits], ["public_crawl", "official"])
     assert_eq(hits[0].payload["outcome"], "不受理", "結果仍照檔名，不由模型推測")
@@ -979,7 +1021,7 @@ def test_similar_case_quota_queries_each_batch_separately():
         hits = r.search("q", top_k=5)
     calls = r._client.calls
     assert_eq(len(calls), 2, "相似案通道要兩批各打一次，不是打一次撈一大包")
-    assert_eq(calls[0]["retrievalConfiguration"]["vectorSearchConfiguration"]["numberOfResults"], 50,
+    assert_eq(_search_cfg(calls[0])["numberOfResults"], 50,
               "配額查詢要抓夠深，否則少數批永遠被擠掉（2026-09-12 實測 15 撈到 0 筆 official）")
     provs = [h.payload["provenance"] for h in hits]
     assert_eq(len(hits), 5)
@@ -1030,7 +1072,7 @@ def test_explicit_prefix_still_does_a_single_query():
     r = _quota_retriever([[_kb_result("行政函釋/法務部93.txt", 0.9, "函釋")]])
     hits = r.search("q", filters={"prefix": ["行政函釋/", "司法院釋字及行政判解/"]}, top_k=5)
     assert_eq(len(r._client.calls), 1, "指定前綴時不得變成兩次查詢")
-    assert_eq(r._client.calls[0]["retrievalConfiguration"]["vectorSearchConfiguration"]["numberOfResults"],
+    assert_eq(_search_cfg(r._client.calls[0])["numberOfResults"],
               kb_module.REF_FETCH_DEPTH,
               "比對常數而不是寫死的數字——改深度時不該連帶要改這條測試")
     assert_eq([h.source for h in hits], ["行政函釋/法務部93.txt"])
@@ -1115,6 +1157,172 @@ def test_n4_reports_hits_by_provenance():
     assert_eq(by, {"official": 1, "public_crawl": 1})
 
 
+def test_kb_retriever_parses_https_source_uri_from_managed_kb():
+    """Managed KB 的 `_source_uri` 是 https 且 percent-encoded，不是 `s3://`。
+
+    2026-09-12 實測：真的 Managed KB 回
+    `https://{bucket}.s3.{region}.amazonaws.com/kb/official/%E6%AD%B7...`。
+    只認 `s3://` 的話，前綴比不中 → 命中被過濾器**靜默刷成 0 筆**（回空 list，不報錯），
+    比報錯更難發現，所以這條要有測試守著。
+    """
+    tail = "%E6%AD%B7%E5%8F%B2%E8%A8%B4%E9%A1%98%E6%B1%BA%E5%AE%9A%E6%9B%B8/114%E5%B9%B4/04-%E9%A7%81%E5%9B%9E.txt"
+    uri = f"https://bucket.s3.us-west-2.amazonaws.com/kb/official/{tail}"
+    res = {"score": 0.7, "content": {"text": "主文：訴願駁回。"},
+           "location": {"s3Location": {"uri": uri}},
+           "metadata": {"_file_type": "PLAIN_TEXT", "_source_uri": uri}}
+    r = KBRetriever(kb_id="k", region="r", min_score=0.25, client=_FakeBedrockAgentRuntime([res]))
+    hits = r.search("q", filters={"prefix": ["歷史訴願決定書/"]})
+    assert_eq([h.source for h in hits], ["歷史訴願決定書/114年/04-駁回.txt"])
+    assert_eq(hits[0].payload["provenance"], "official")
+    assert_eq(hits[0].payload["outcome"], "駁回")
+
+
+def test_kb_retriever_accepts_virtual_host_and_path_style_https():
+    """path-style（`https://s3.{region}.amazonaws.com/{bucket}/kb/...`）也要認得。"""
+    for uri in ("https://b.s3.us-west-2.amazonaws.com/kb/public/新北訴願決定書_全量/1121051256_不受理.txt",
+                "https://s3.us-west-2.amazonaws.com/b/kb/public/新北訴願決定書_全量/1121051256_不受理.txt"):
+        res = {"score": 0.7, "content": {"text": "t"},
+               "location": {"s3Location": {"uri": uri}},
+               "metadata": {"_file_type": "PLAIN_TEXT", "_source_uri": uri}}
+        r = KBRetriever(kb_id="k", region="r", min_score=0.25, client=_FakeBedrockAgentRuntime([res]))
+        hits = r.search("q", filters={"prefix": ["新北訴願決定書_全量/"]})
+        assert_eq([h.source for h in hits],
+                  ["新北訴願決定書_全量/1121051256_不受理.txt"], f"解析失敗：{uri}")
+        assert_eq(hits[0].payload["provenance"], "public_crawl")
+
+
+def test_kb_metadata_sidecar_carries_case_type_for_both_batches():
+    """側檔要讓兩批來源都帶得出案型——這是相似案卡標題與 AC7 量測的共同依據。
+
+    公開爬蟲那批檔名只有 `案號_結果`，案型只存在 manifest 的 `category`；
+    賽方那批案型在檔名裡（`04.114年-違反廢棄物清理法事件-77(2)-…`）。
+    兩條路都要通，否則畫面上一半的相似案卡看不出是什麼案子（2026-09-12 實測）。
+    """
+    spec = importlib.util.spec_from_file_location(
+        "_build_kb_metadata", pathlib.Path(__file__).resolve().parents[2] / "scripts" / "build_kb_metadata.py")
+    bm = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(bm)
+
+    pub = bm.attributes_for({"path": "kb/public/新北訴願決定書_全量/1141050994_駁回.txt",
+                             "provenance": "public_crawl", "category": "空氣污染防制法",
+                             "outcome": "駁回", "year": "114", "case_no": "1141050994"})
+    assert_eq(pub["category"], "空氣污染防制法")
+    assert_eq(pub["provenance"], "public_crawl")
+    assert_eq(pub["doc_kind"], "decision")
+
+    off = bm.attributes_for({
+        "path": "kb/official/歷史訴願決定書/114年/04.114年-違反廢棄物清理法事件-77(2)-訴願逾期-不受理.txt",
+        "provenance": "official", "outcome": "不受理"})
+    assert_eq(off["category"], "違反廢棄物清理法事件", "案型要從檔名還原")
+    assert_eq(off["year"], "114")
+    assert_eq(off["clause"], "77(2)")
+    assert_eq(off["outcome"], "不受理")
+    assert_eq(off["doc_kind"], "decision")
+
+    ref = bm.attributes_for({"path": "kb/official/行政函釋/法務部93.txt", "provenance": "official"})
+    assert_eq(ref["doc_kind"], "ref_letter")
+    assert_true("category" not in ref, "函釋沒有案型，不得硬塞一個")
+
+    rul = bm.attributes_for({"path": "kb/official/司法院釋字及行政判解/釋字第546號解釋-訴願無實益.txt",
+                             "provenance": "official"})
+    assert_eq(rul["doc_kind"], "court_ruling")
+
+    for attrs in (pub, off, ref, rul):
+        for v in attrs.values():
+            assert_true(isinstance(v, str), f"Bedrock metadata 值必須是字串：{attrs}")
+
+
+def test_build_manifest_outcome_with_slash_stays_one_path_segment():
+    """`outcome` 含斜線的 21 筆不得在檔名裡長出一層目錄。
+
+    2026-09-12 在 S3 上實測到 `…/1141060373_不受理/駁回.txt`——`kb.py` 取檔名時
+    只拿得到 `駁回.txt`，案號掉了。這條守著那個回歸。
+    """
+    spec = importlib.util.spec_from_file_location(
+        "_build_manifest", pathlib.Path(__file__).resolve().parents[2] / "scripts" / "build_manifest.py")
+    bm = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(bm)
+    for raw, want in (("部分不受理/駁回", "部分不受理、駁回"),
+                      ("不受理/駁回", "不受理、駁回"),
+                      ("部分不受理/撤銷", "部分不受理、撤銷"),
+                      ("駁回", "駁回")):
+        got = bm.safe_segment(raw)
+        assert_eq(got, want)
+        assert_true("/" not in got, f"{raw} 仍含斜線")
+    name = f"1141060373_{bm.safe_segment('不受理/駁回')}.txt"
+    assert_eq(name.count("/"), 0, "檔名不得含路徑分隔字元")
+    assert_eq(name.rsplit("/", 1)[-1], name, "kb.py 的取檔名方式要拿得回完整檔名（含案號）")
+
+
+def test_kb_prefers_sidecar_metadata_over_filename_parsing():
+    """有側檔就用側檔，沒有才退回檔名——公開那批的檔名根本沒有案型。
+
+    `1141050994_駁回.txt` 只讀得出結果，讀不出案型；側檔的 `category` 才有。
+    退路要留著：側檔是 2026-09-12 才補的，沒側檔的檔案仍要能用（檔名至少有結果）。
+    """
+    uri = "s3://b/kb/public/新北訴願決定書_全量/1141050994_駁回.txt"
+    with_side = {"score": 0.8, "content": {"text": "t"},
+                 "location": {"s3Location": {"uri": uri}},
+                 "metadata": {"_file_type": "PLAIN_TEXT", "_source_uri": uri,
+                              "category": "空氣污染防制法", "outcome": "駁回",
+                              "provenance": "public_crawl", "year": "114"}}
+    r = KBRetriever(kb_id="k", region="r", min_score=0.25, client=_FakeBedrockAgentRuntime([with_side]))
+    h = r.search("q", filters={"prefix": ["新北訴願決定書_全量/"]})[0]
+    assert_eq(h.payload["category"], "空氣污染防制法", "側檔的案型要帶進 payload")
+    assert_eq(h.payload["outcome"], "駁回")
+    assert_eq(h.payload["provenance"], "public_crawl")
+
+    no_side = {"score": 0.8, "content": {"text": "t"},
+               "location": {"s3Location": {"uri": uri}},
+               "metadata": {"_file_type": "PLAIN_TEXT", "_source_uri": uri}}
+    r2 = KBRetriever(kb_id="k", region="r", min_score=0.25, client=_FakeBedrockAgentRuntime([no_side]))
+    h2 = r2.search("q", filters={"prefix": ["新北訴願決定書_全量/"]})[0]
+    assert_true(h2.payload["category"] is None, "沒側檔就誠實留 None，不從檔名硬猜案型")
+    assert_eq(h2.payload["outcome"], "駁回", "結果仍可從檔名讀")
+    assert_eq(h2.payload["provenance"], "public_crawl", "來源仍可從路徑讀")
+
+
+def test_n4_carries_category_onto_the_similar_case_card():
+    """案型要一路帶到相似案卡——卡片標題只有『1141050994_駁回』時，這是唯一的案型來源。"""
+    class KBWithCategory:
+        name = "bedrock_kb"
+
+        def search(self, query, filters=None, top_k=5):
+            return [Hit(id="kb-1", title="1141050994_駁回", score=0.8,
+                        source="新北訴願決定書_全量/1141050994_駁回.txt",
+                        payload={"outcome": "駁回", "provenance": "public_crawl",
+                                 "category": "空氣污染防制法", "text": "主文：訴願駁回。"})]
+
+        def meta(self):
+            return {"backend": "bedrock_kb", "available": True}
+
+    st = CaseState(case_id="synthetic-ordinary-01", run_mode="bedrock")
+    st.intake = {"type": "違反空氣污染防制法事件"}
+    st.facts_excerpt = [{"text": "訴願人於農地露天燃燒稻稈。", "page": 1}]
+    st.classification = {"class": {"case_type": "違反空氣污染防制法事件", "law_hits": ["空氣污染防制法"]}}
+    st.screen = {"art77": {"clause": "77-2"}, "deadline": {"steps": []}}
+    n4_retrieval.run(st, NodeCtx(run_mode="bedrock", snapshot=load_snapshot(), retriever=KBWithCategory()))
+    assert_eq(st.retrieval["cases"][0]["category"], "空氣污染防制法")
+
+
+def test_describe_similar_case_backend_tells_the_truth_about_the_channel():
+    """健康檢查不得把「開著的通道」講成 unavailable。
+
+    `/api/health` 原本把 `kb_backend`／`similar_case_backend` 寫死成 Phase 0 的值
+    （`lawtable_only`／`unavailable`），`RETRIEVER=kb` 也照樣這樣回報
+    ——2026-09-12 實測到。方向是「把有的說成沒有」，看板會顯示相似案通道不可用，
+    違反分層誠實（CONSTITUTION §1）：健康檢查說的話必須是它真的知道的事。
+    """
+    with env(RETRIEVER="lawtable_only", BEDROCK_KB_ID=None, AWS_REGION=None):
+        assert_eq(describe_similar_case_backend("lawtable_only"), "unavailable")
+    with env(BEDROCK_KB_ID="kb-x", AWS_REGION="us-west-2"):
+        assert_eq(describe_similar_case_backend("kb"), "bedrock_kb")
+    with env(BEDROCK_KB_ID=None, AWS_REGION=None):
+        got = describe_similar_case_backend("kb")
+        assert_in("misconfigured", got, "RETRIEVER=kb 卻缺變數時要說出來，不得假裝 unavailable")
+        assert_in("BEDROCK_KB_ID", got, "缺哪個變數要講明")
+
+
 def test_build_retriever_requires_env_for_kb():
     with env(BEDROCK_KB_ID=None, AWS_REGION=None):
         try:
@@ -1159,10 +1367,37 @@ def test_n4_uses_injected_retriever_for_similar_cases():
     assert_in("露天燃燒稻稈", kb.queries[0][0], "查詢句必須含事實段原文")
     assert_true(
         not (kb.queries[0][1] or {}).get("prefix"),
-        "N4 不得自己寫一份 prefix——收哪些前綴由 retrieval.kb.DEFAULT_PREFIXES 單點決定",
+        "N4 不得自己寫一份 prefix——收哪些前綴由 settings.similar_case_quota() 單點決定",
     )
     assert_eq(st.retrieval["retrieval_meta"]["backend"], "lawtable+bedrock_kb")
     assert_true(r.degraded is False, "兩條通道都有結果就不是降級")
+
+
+def test_n4_keeps_public_crawl_provenance_so_ui_can_mark_it():
+    """公開爬蟲那批要查得到，而且 `provenance` 必須一路帶到 payload。
+
+    spec §6.1：賽方資料集那批 UI 無標記，公開資料庫那批相似案卡要加「公開資料庫」標記。
+    標記的依據就是這個欄位——掉了就等於把兩種來源混為一談。
+    """
+    class PublicKB:
+        name = "bedrock_kb"
+
+        def search(self, query, filters=None, top_k=5):
+            return [Hit(id="kb-1", title="1121051256_不受理", score=0.8,
+                        source="新北訴願決定書_全量/1121051256_不受理.txt",
+                        payload={"outcome": "不受理", "provenance": "public_crawl", "text": "主文：訴願不受理。"})]
+
+        def meta(self):
+            return {"backend": "bedrock_kb", "available": True}
+
+    st = CaseState(case_id="synthetic-ordinary-01", run_mode="bedrock")
+    st.intake = {"type": "違反廢棄物清理法事件"}
+    st.facts_excerpt = [{"text": "訴願人未依規定清除廢棄物。", "page": 1}]
+    st.classification = {"class": {"case_type": "違反廢棄物清理法事件", "law_hits": ["廢棄物清理法"]}}
+    st.screen = {"art77": {"clause": "77-2"}, "deadline": {"steps": []}}
+    n4_retrieval.run(st, NodeCtx(run_mode="bedrock", snapshot=load_snapshot(), retriever=PublicKB()))
+    assert_eq(len(st.retrieval["cases"]), 1, "公開那批被前綴過濾擋掉的話這裡會是 0")
+    assert_eq(st.retrieval["cases"][0]["provenance"], "public_crawl")
 
 
 def test_n4_without_retriever_keeps_phase0_behaviour():
@@ -2261,3 +2496,802 @@ def test_bedrock_min_interval_default_is_under_one_rps():
     finally:
         if orig is not None:
             os.environ["BEDROCK_MIN_INTERVAL_S"] = orig
+
+
+class _KeyPickyRuntime:
+    """只接受某一個搜尋設定鍵的假 client，其餘一律 ValidationException。
+
+    模擬真帳號的行為（2026-09-12 實測）：MANAGED KB 收到 vectorSearchConfiguration
+    會回「is not supported for managed knowledge bases」，反之亦然。
+    """
+
+    class ValidationException(Exception):
+        pass
+
+    def __init__(self, accepts: str, results=None):
+        self.accepts = accepts
+        self.results = results or []
+        self.keys_tried: list[str] = []
+
+    def retrieve(self, **kw):
+        key = next(iter(kw["retrievalConfiguration"]))
+        self.keys_tried.append(key)
+        if key != self.accepts:
+            raise self.ValidationException(f"{key} is not supported for this knowledge base")
+        return {"retrievalResults": self.results}
+
+
+def _one_official_result():
+    return [_kb_result("歷史訴願決定書/113年/x-駁回.txt", 0.9, "主文：訴願駁回。")]
+
+
+def test_search_key_is_discovered_per_kb_not_hardcoded():
+    """兩種 KB 都要能跑。寫死任一個鍵，另一種 KB 的相似案通道就整條掛掉。
+
+    這條守的是 2026-09-12 的真實事故：main 上寫死 vectorSearchConfiguration，
+    而 `.env` 指的是 MANAGED KB，每一次 retrieve 都 ValidationException。
+    """
+    for accepts in (kb_module.MANAGED_SEARCH_KEY, kb_module.VECTOR_SEARCH_KEY):
+        kb_module.reset_search_key_cache()
+        fake = _KeyPickyRuntime(accepts, _one_official_result())
+        r = KBRetriever(kb_id=f"kb-{accepts}", region="r", min_score=0.25, client=fake)
+        with _no_retrieve_interval():
+            hits = r.search("q", filters={"prefix": ["歷史訴願決定書/"]})
+        assert_eq(len(hits), 1, f"{accepts} 的 KB 應該撈得到東西")
+        assert_eq(fake.keys_tried[-1], accepts, "最後成功的必須是這個 KB 認的鍵")
+    kb_module.reset_search_key_cache()
+
+
+def test_search_key_is_probed_once_then_cached():
+    """試錯只能發生一次：每次查詢都先浪費一個被拒的呼叫，等於把 1 RPS 預算砍半。"""
+    kb_module.reset_search_key_cache()
+    fake = _KeyPickyRuntime(kb_module.VECTOR_SEARCH_KEY, _one_official_result())
+    r = KBRetriever(kb_id="kb-cache", region="r", min_score=0.25, client=fake)
+    with _no_retrieve_interval():
+        r.search("q", filters={"prefix": ["歷史訴願決定書/"]})
+        first_round = len(fake.keys_tried)
+        r.search("q2", filters={"prefix": ["歷史訴願決定書/"]})
+    assert_true(first_round > 1, "第一次應該試過不只一個鍵")
+    assert_eq(fake.keys_tried[first_round:], [kb_module.VECTOR_SEARCH_KEY],
+              "第二次查詢不得再試錯，直接用已知可行的鍵")
+    assert_eq(kb_module.search_key_for("kb-cache"), kb_module.VECTOR_SEARCH_KEY)
+    kb_module.reset_search_key_cache()
+
+
+class _SamplingRuntime:
+    """每次 retrieve 都回同一批結果的假 client（check_channels 只在乎路徑與 metadata）。"""
+
+    def __init__(self, results):
+        self.results = results
+        self.calls = 0
+
+    def retrieve(self, **kw):
+        self.calls += 1
+        return {"retrievalResults": self.results}
+
+
+def _sample_hit(rel, doc_kind=None):
+    md = {"_file_type": "TXT", "_source_uri": f"s3://bucket/kb/public/{rel}"}
+    if doc_kind:
+        md["doc_kind"] = doc_kind
+    return {"score": 0.9, "content": {"text": "x"},
+            "location": {"s3Location": {"uri": f"s3://bucket/kb/public/{rel}"}},
+            "metadata": md}
+
+
+def test_channel_check_names_the_real_directory_when_a_prefix_is_misspelled():
+    """自檢的**全部價值**在這裡：打錯字時要說出該填什麼，不是又一句「找不到」。
+
+    這重演的是真實情況——`DEFAULT_SIMILAR_CASE_QUOTA` 寫 `新北訴願決定書_全量/`，
+    第三方 corpus 的目錄卻叫 `新北訴願決定書_環保局全量/`。只差三個字，前綴比不中，
+    整條相似案通道靜默回 0 筆（`_relative_path` 的說明記過同一類問題）。
+    """
+    kb_module.reset_search_key_cache()
+    fake = _SamplingRuntime([_sample_hit("新北訴願決定書_環保局全量/113年/x.txt")])
+    with env(SIMILAR_CASE_QUOTA="新北訴願決定書_全量/:3", REF_PREFIXES="行政函釋/",
+             REF_DOC_KINDS=None), _no_retrieve_interval():
+        r = kb_module.check_channels(fake, "kb-typo", probes=("q",))
+    by = {p["prefix"]: p for p in r["prefixes"]}
+    assert_eq(by["新北訴願決定書_全量/"]["sampled_hits"], 0, "打錯的前綴不該撈到東西")
+    assert_eq(by["新北訴願決定書_全量/"]["closest"], "新北訴願決定書_環保局全量/",
+              "撈不到時必須指出 KB 裡最接近的目錄名——那才是使用者要填的值")
+    kb_module.reset_search_key_cache()
+
+
+def test_channel_check_does_not_cry_typo_at_another_configured_prefix():
+    """兩個 corpus 的相似目錄名同時在設定裡時，不得把其中一個報成另一個的拼錯。
+
+    2026-09-12 對 KB A 實測時真的誤報了：`REF_PREFIXES` 同時有 `行政函釋/` 與
+    `行政函釋_全量/`，前者在這個 KB 不存在，工具卻指著後者說「疑似打錯字」——
+    而後者明明也在設定裡、也撈得到。那不是拼錯，是別的 corpus 留下的設定。
+    **誤報比漏報傷**：一次錯誤指控就會讓人不再相信這支工具說的話。
+    """
+    kb_module.reset_search_key_cache()
+    fake = _SamplingRuntime([_sample_hit("行政函釋_全量/a.txt")])
+    with env(SIMILAR_CASE_QUOTA="歷史訴願決定書/:1",
+             REF_PREFIXES="行政函釋/,行政函釋_全量/", REF_DOC_KINDS=None), _no_retrieve_interval():
+        r = kb_module.check_channels(fake, "kb-two-corpora", probes=("q",))
+    by = {p["prefix"]: p for p in r["prefixes"]}
+    assert_eq(by["行政函釋/"]["sampled_hits"], 0)
+    assert_eq(by["行政函釋/"]["closest"], None,
+              "`行政函釋_全量/` 也在設定裡，不能被當成 `行政函釋/` 的正確拼法")
+    assert_eq(by["行政函釋_全量/"]["sampled_hits"], 1)
+    kb_module.reset_search_key_cache()
+
+
+def test_channel_check_reports_prefixes_that_do_match():
+    kb_module.reset_search_key_cache()
+    fake = _SamplingRuntime([
+        _sample_hit("歷史訴願決定書/113年/a.txt"),
+        _sample_hit("歷史訴願決定書/114年/b.txt"),
+        _sample_hit("行政函釋/c.txt"),
+    ])
+    with env(SIMILAR_CASE_QUOTA="歷史訴願決定書/:2", REF_PREFIXES="行政函釋/",
+             REF_DOC_KINDS=None), _no_retrieve_interval():
+        r = kb_module.check_channels(fake, "kb-ok", probes=("q",))
+    by = {p["prefix"]: p for p in r["prefixes"]}
+    assert_eq(by["歷史訴願決定書/"]["sampled_hits"], 2)
+    assert_eq(by["行政函釋/"]["sampled_hits"], 1)
+    assert_true(all(p["closest"] is None for p in r["prefixes"]),
+                "撈得到就不必提示相近名字")
+    assert_eq(by["歷史訴願決定書/"]["sources"], ["SIMILAR_CASE_QUOTA"])
+    kb_module.reset_search_key_cache()
+
+
+def test_channel_check_separates_a_wrong_doc_kind_from_a_kb_without_sidecars():
+    """`_retrieve` 的防呆（篩空就退回不篩）把這兩種失敗壓成同一個表現，這裡要分開。
+
+    值打錯的話，伺服器端過濾帶來的改善會無聲消失——沒有這個判別，
+    沒有人會發現 `REF_DOC_KINDS` 其實沒在生效。
+    """
+    kb_module.reset_search_key_cache()
+    # 有側檔，但要的值不在裡面 → 值打錯
+    fake = _SamplingRuntime([_sample_hit("行政函釋/a.txt", doc_kind="ref_letter")])
+    with env(SIMILAR_CASE_QUOTA="行政函釋/:1", REF_PREFIXES="行政函釋/",
+             REF_DOC_KINDS="ref_letters"), _no_retrieve_interval():
+        r = kb_module.check_channels(fake, "kb-typo-kind", probes=("q",))
+    assert_eq(r["doc_kinds"][0]["state"], "missing")
+    assert_eq(r["doc_kinds"][0]["closest"], "ref_letter", "要指出正確的值")
+
+    # 完全沒有側檔 → 這個 KB 不該開 REF_DOC_KINDS
+    kb_module.reset_search_key_cache()
+    fake2 = _SamplingRuntime([_sample_hit("行政函釋/a.txt")])
+    with env(SIMILAR_CASE_QUOTA="行政函釋/:1", REF_PREFIXES="行政函釋/",
+             REF_DOC_KINDS="ref_letter"), _no_retrieve_interval():
+        r2 = kb_module.check_channels(fake2, "kb-no-sidecar", probes=("q",))
+    assert_eq(r2["doc_kinds"][0]["state"], "no_sidecar",
+              "沒有任何側檔時不能報成「值打錯」——該改的是要不要開這個開關")
+    kb_module.reset_search_key_cache()
+
+
+def test_channel_check_is_not_on_the_per_case_path():
+    """自檢是換 corpus 時跑的，不是每件案子都要付的成本（1 RPS × 五句探針 ≈ 5 秒）。
+
+    守的是「有人日後把它接進 N4」——那會讓端到端多五秒，而硬上限是 90 秒。
+    """
+    n4 = pathlib.Path(__file__).resolve().parents[2] / "backend/nodes/n4_retrieval.py"
+    src = n4.read_text(encoding="utf-8")
+    assert_true("check_channels" not in src,
+                "check_channels 不得出現在 N4 的每案路徑")
+
+
+def test_non_validation_errors_are_not_swallowed_by_the_probe():
+    """throttle／權限／網路問題不是「鍵用錯了」，不得被試錯邏輯吞掉改試另一個鍵。
+
+    吞掉的話，KB 掛了會長得像「兩個鍵都不支援」，真正的原因（例如 throttle）就不見了。
+    """
+    kb_module.reset_search_key_cache()
+
+    class ThrottledRuntime:
+        def __init__(self):
+            self.calls = 0
+
+        def retrieve(self, **kw):
+            self.calls += 1
+            raise RuntimeError("ThrottlingException: rate exceeded")
+
+    fake = ThrottledRuntime()
+    r = KBRetriever(kb_id="kb-throttle", region="r", client=fake)
+    try:
+        with _no_retrieve_interval():
+            r.search("q", filters={"prefix": ["歷史訴願決定書/"]})
+    except RuntimeError as e:
+        assert_in("Throttling", str(e), "原始例外要照原樣冒出去")
+    else:
+        raise AssertionError("throttle 不得被當成鍵用錯而吞掉")
+    assert_eq(fake.calls, 1, "非 ValidationException 不得觸發第二個鍵的重試")
+    assert_true(kb_module.search_key_for("kb-throttle") is None, "失敗的呼叫不得寫進快取")
+    kb_module.reset_search_key_cache()
+
+
+class _RerankFakeRuntime(_FakeBedrockAgentRuntime):
+    """假 client：retrieve 照舊，rerank 依 `by_index` 指定的分數回傳。"""
+
+    def __init__(self, results, by_index):
+        super().__init__(results)
+        self.by_index = by_index          # {來源索引: relevanceScore}
+        self.rerank_calls = []
+
+    def rerank(self, **kw):
+        self.rerank_calls.append(kw)
+        n = kw["rerankingConfiguration"]["bedrockRerankingConfiguration"]["numberOfResults"]
+        ranked = sorted(self.by_index.items(), key=lambda kv: kv[1], reverse=True)[:n]
+        return {"results": [{"index": i, "relevanceScore": s} for i, s in ranked]}
+
+
+def _three_cases():
+    return [_kb_result("新北訴願決定書_環保局全量/a_駁回.txt", 0.60, "甲案內文"),
+            _kb_result("新北訴願決定書_環保局全量/b_駁回.txt", 0.40, "乙案內文"),
+            _kb_result("新北訴願決定書_環保局全量/c_駁回.txt", 0.20, "丙案內文")]
+
+
+def test_rerank_off_by_default_keeps_embedding_order():
+    """沒設重排模型時，行為必須與加這個功能之前完全相同。"""
+    with env(BEDROCK_RERANK_MODEL_ID=None):
+        fake = _RerankFakeRuntime(_three_cases(), {})
+        r = KBRetriever(kb_id="k", region="r", min_score=0.15, client=fake)
+        with _no_retrieve_interval():
+            hits = r.search("q", filters={"prefix": ["新北訴願決定書_環保局全量/"]}, top_k=3)
+    assert_eq(fake.rerank_calls, [], "沒設模型就不得呼叫 rerank")
+    assert_eq([h.score for h in hits], [0.6, 0.4, 0.2], "維持 embedding 排序")
+    assert_true("ranked_by" not in (hits[0].payload or {}), "沒重排就不該標 ranked_by")
+
+
+def test_rerank_reorders_and_reports_which_score_ranked_them():
+    """重排要真的改變順序，而且畫面上的分數必須是決定排序的那一個。
+
+    embedding 排序是 甲(0.60) > 乙(0.40) > 丙(0.20)；rerank 判定丙最相關。
+    若回傳的 `score` 還是 embedding 分數，看板就會出現「第一名 0.20、第三名 0.60」
+    ——那是對「為什麼這幾筆排在前面」說謊（CONSTITUTION §1）。
+    """
+    with env(BEDROCK_RERANK_MODEL_ID="arn:fake:rerank", RERANK_MIN_SCORE="0.5"):
+        fake = _RerankFakeRuntime(_three_cases(), {0: 0.55, 1: 0.70, 2: 0.99})
+        r = KBRetriever(kb_id="k", region="r", min_score=0.15, client=fake)
+        with _no_retrieve_interval():
+            hits = r.search("q", filters={"prefix": ["新北訴願決定書_環保局全量/"]}, top_k=3)
+    assert_eq([h.source.rsplit("/", 1)[-1] for h in hits], ["c_駁回.txt", "b_駁回.txt", "a_駁回.txt"],
+              "順序要照 rerank 分數")
+    assert_eq([round(h.score, 2) for h in hits], [0.99, 0.7, 0.55], "score 換成 rerank 分數")
+    assert_eq([h.id for h in hits], ["kb-1", "kb-2", "kb-3"], "編號照重排後的順序")
+    p = hits[0].payload
+    assert_eq(p["ranked_by"], "rerank", "要說得出是誰排的")
+    assert_eq(round(p["embedding_score"], 2), 0.2, "原本的 embedding 分數要留著，不是丟掉")
+    assert_eq(round(p["rerank_score"], 2), 0.99)
+
+
+def test_rerank_drops_hits_below_the_relevance_floor():
+    """撈到了但不相關的要丟掉——寧可少一筆，不要拿低相關的塞滿版面。
+
+    2026-09-12 實測：語意無關的查詢（商標／海關／專利／閒聊）rerank 分數是
+    0.000–0.057，而真實案件的生產形態查詢是 0.809–1.000。門檻 0.5 在中間，
+    兩邊各有 9 倍以上餘裕。
+    """
+    with env(BEDROCK_RERANK_MODEL_ID="arn:fake:rerank", RERANK_MIN_SCORE="0.5"):
+        fake = _RerankFakeRuntime(_three_cases(), {0: 0.90, 1: 0.06, 2: 0.001})
+        r = KBRetriever(kb_id="k", region="r", min_score=0.15, client=fake)
+        with _no_retrieve_interval():
+            hits = r.search("q", filters={"prefix": ["新北訴願決定書_環保局全量/"]}, top_k=3)
+    assert_eq([h.source.rsplit("/", 1)[-1] for h in hits], ["a_駁回.txt"],
+              "只有過門檻的那筆能留下")
+
+
+def test_rerank_never_asks_for_more_results_than_sources():
+    """`numberOfResults` 超過來源數會 ValidationException（2026-09-12 實測踩過）。
+
+    候選少於 top_k 是常態——負控制查詢在後過濾之後常常只剩兩三筆。
+    """
+    with env(BEDROCK_RERANK_MODEL_ID="arn:fake:rerank", RERANK_MIN_SCORE="0.0"):
+        fake = _RerankFakeRuntime(_three_cases()[:2], {0: 0.9, 1: 0.8})
+        r = KBRetriever(kb_id="k", region="r", min_score=0.15, client=fake)
+        with _no_retrieve_interval():
+            r.search("q", filters={"prefix": ["新北訴願決定書_環保局全量/"]}, top_k=5)
+    n = fake.rerank_calls[0]["rerankingConfiguration"]["bedrockRerankingConfiguration"]["numberOfResults"]
+    assert_eq(n, 2, "要取 min(top_k, 來源數)")
+
+
+def test_rerank_skips_when_hits_have_no_text():
+    """沒有可讀內文就不重排——送空字串進去只會得到無意義的分數。"""
+    with env(BEDROCK_RERANK_MODEL_ID="arn:fake:rerank"):
+        fake = _RerankFakeRuntime([_kb_result("新北訴願決定書_環保局全量/a_駁回.txt", 0.6, "  ")], {0: 0.9})
+        r = KBRetriever(kb_id="k", region="r", min_score=0.15, client=fake)
+        with _no_retrieve_interval():
+            hits = r.search("q", filters={"prefix": ["新北訴願決定書_環保局全量/"]}, top_k=3)
+    assert_eq(fake.rerank_calls, [], "沒有內文就不得呼叫 rerank")
+    assert_eq(len(hits), 1, "命中照樣回傳，只是沒有重排")
+
+
+class _FilterAwareRuntime:
+    """假 client：記下每次 retrieve 的 filter，並可指定「帶 filter 時回空」。"""
+
+    def __init__(self, results, empty_when_filtered=False):
+        self.results = results
+        self.empty_when_filtered = empty_when_filtered
+        self.calls = []
+
+    def retrieve(self, **kw):
+        self.calls.append(kw)
+        cfg = next(iter(kw["retrievalConfiguration"].values()))
+        if self.empty_when_filtered and cfg.get("filter"):
+            return {"retrievalResults": []}
+        return {"retrievalResults": self.results}
+
+
+def _one_ref():
+    return [_kb_result("行政函釋/法務部93年-寄存送達.txt", 0.9, "寄存送達自寄存之日起…")]
+
+
+def _filters_of(fake):
+    return [next(iter(c["retrievalConfiguration"].values())).get("filter") for c in fake.calls]
+
+
+def test_ref_channel_sends_no_metadata_filter_by_default():
+    """`REF_DOC_KINDS` 沒設就不篩——沒有側檔的 KB 一篩就全空。"""
+    with env(REF_DOC_KINDS=None, BEDROCK_RERANK_MODEL_ID=None):
+        fake = _FilterAwareRuntime(_one_ref())
+        r = KBRetriever(kb_id="k", region="r", min_score=0.15, client=fake)
+        r.search("q", filters={"prefix": ["行政函釋/"]}, top_k=5)
+    assert_eq(_filters_of(fake), [None], "預設不得帶 filter")
+
+
+def test_ref_channel_filters_doc_kind_server_side_when_configured():
+    """設了就要在伺服器端先篩——rerank 排不了沒撈到的東西。
+
+    2026-09-12 實測：「行政罰法 裁處權時效 三年」在 MANAGED KB 上，
+    retrieve 深度 50 的結果是 statute 24 ＋ decision 19，函釋一筆都沒進來，
+    路徑前綴事後過濾就剩 0 筆。加上 doc_kind filter 之後有 16 筆候選。
+    """
+    with env(REF_DOC_KINDS="ref_letter", BEDROCK_RERANK_MODEL_ID=None):
+        fake = _FilterAwareRuntime(_one_ref())
+        r = KBRetriever(kb_id="k", region="r", min_score=0.15, client=fake)
+        r.search("q", filters={"prefix": ["行政函釋/"]}, top_k=5)
+    assert_eq(_filters_of(fake), [{"equals": {"key": "doc_kind", "value": "ref_letter"}}])
+
+    with env(REF_DOC_KINDS="ref_letter,court_ruling", BEDROCK_RERANK_MODEL_ID=None):
+        fake = _FilterAwareRuntime(_one_ref())
+        r = KBRetriever(kb_id="k", region="r", min_score=0.15, client=fake)
+        r.search("q", filters={"prefix": ["行政函釋/"]}, top_k=5)
+    assert_eq(_filters_of(fake), [{"in": {"key": "doc_kind", "value": ["ref_letter", "court_ruling"]}}],
+              "多值要用 in")
+
+
+def test_ref_channel_falls_back_when_the_filter_returns_nothing():
+    """filter 撈到 0 筆就退回不篩再試一次。
+
+    這個 KB 的文件可能根本沒有 `doc_kind` 側檔——篩了全空、又不報錯，
+    就是今天已經被咬過一次的那種靜默失敗。寧可多打一次也不要假裝沒東西。
+    """
+    with env(REF_DOC_KINDS="ref_letter", BEDROCK_RERANK_MODEL_ID=None):
+        fake = _FilterAwareRuntime(_one_ref(), empty_when_filtered=True)
+        r = KBRetriever(kb_id="k", region="r", min_score=0.15, client=fake)
+        with _no_retrieve_interval():
+            hits = r.search("q", filters={"prefix": ["行政函釋/"]}, top_k=5)
+    assert_eq(len(fake.calls), 2, "第一次帶 filter 撈空，要再打一次不帶 filter 的")
+    assert_eq(_filters_of(fake)[1], None, "第二次不得帶 filter")
+    assert_eq(len(hits), 1, "退回之後要撈得到東西")
+
+
+def test_similar_case_channel_never_sends_the_ref_doc_kind_filter():
+    """`REF_DOC_KINDS` 是引用通道的設定，不得外溢到相似案通道。
+
+    相似案要的是決定書，把它篩成函釋等於整條通道報廢。
+    """
+    with env(REF_DOC_KINDS="ref_letter", BEDROCK_RERANK_MODEL_ID=None,
+             SIMILAR_CASE_QUOTA="歷史訴願決定書/:2,新北訴願決定書_全量/:3"):
+        fake = _FilterAwareRuntime([_kb_result("歷史訴願決定書/113年/x-駁回.txt", 0.9, "決定書")])
+        r = KBRetriever(kb_id="k", region="r", min_score=0.15, client=fake)
+        with _no_retrieve_interval():
+            r.search("q", top_k=5)      # 不傳 prefix → 相似案通道
+    assert_true(all(f is None for f in _filters_of(fake)),
+                f"相似案通道不得帶 doc_kind filter，實際={_filters_of(fake)}")
+
+
+def test_outcome_is_only_read_from_filenames_of_decisions():
+    """函釋／法規的檔名不得被抓出「結果」——那是無中生有一個法律判斷。
+
+    函釋的檔名是**別人問了什麼**，不是本署答了什麼：
+    「…至撤銷查封時，始歸消滅」是在討論撤銷，那份函釋本身沒有結果。
+    2026-09-12 清點語料：函釋 16/4530、法規 5/679 的檔名含結果字樣，判解 0/3185。
+    """
+    def hit(kind, name):
+        uri = f"s3://b/kb/public/行政函釋_全量/{name}"
+        return {"score": 0.9, "content": {"text": "內文"},
+                "location": {"s3Location": {"uri": uri}},
+                "metadata": {"_file_type": "PLAIN_TEXT", "_source_uri": uri, "doc_kind": kind}}
+
+    with env(BEDROCK_RERANK_MODEL_ID=None):
+        fake = _FakeBedrockAgentRuntime([hit("ref_letter", "環署廢字0910045848號函-至撤銷查封時即生效力.txt")])
+        r = KBRetriever(kb_id="k", region="r", min_score=0.15, client=fake)
+        got = r.search("q", filters={"prefix": ["行政函釋_全量/"]}, top_k=3)
+        assert_true(got[0].payload["outcome"] is None,
+                    f"函釋不得有 outcome，實際={got[0].payload['outcome']}")
+
+        fake = _FakeBedrockAgentRuntime([hit("decision", "1141050994_駁回.txt")])
+        r = KBRetriever(kb_id="k", region="r", min_score=0.15, client=fake)
+        got = r.search("q", filters={"prefix": ["行政函釋_全量/"]}, top_k=3)
+        assert_eq(got[0].payload["outcome"], "駁回", "決定書照樣要抓得到結果")
+
+        # 沒有側檔的 KB（doc_kind 讀不到）維持舊行為，不靜默少一個欄位
+        no_kind = hit("decision", "1141050994_駁回.txt")
+        del no_kind["metadata"]["doc_kind"]
+        fake = _FakeBedrockAgentRuntime([no_kind])
+        r = KBRetriever(kb_id="k", region="r", min_score=0.15, client=fake)
+        got = r.search("q", filters={"prefix": ["行政函釋_全量/"]}, top_k=3)
+        assert_eq(got[0].payload["outcome"], "駁回", "沒有 doc_kind 時要保留退路")
+
+
+# ── 覆核補的四條（2026-09-12 PR #7 review）─────────────────────────
+#
+# 三條都在釘同一件事：**「有重排」與「沒重排」是兩種不同的行為**，
+# 而重排預設是關的。加功能時只量了開著的那一半，關著的那一半沒人看。
+
+
+class _QuotaRerankRuntime(_QuotaFakeRuntime):
+    """相似案通道（分批 retrieve）＋ rerank 的假 client。
+
+    rerank 依**文件內容**給分：`score_of(text) -> float`，預設照送進去的順序遞減。
+    刻意不依索引：索引順序是候選池排序的結果，拿它當旋鈕就會測到自己的假設。
+    """
+
+    def __init__(self, batches, score_of=None):
+        super().__init__(batches)
+        self.score_of = score_of
+        self.rerank_calls = []
+
+    def rerank(self, **kw):
+        self.rerank_calls.append(kw)
+        n = kw["rerankingConfiguration"]["bedrockRerankingConfiguration"]["numberOfResults"]
+        texts = [s["inlineDocumentSource"]["textDocument"]["text"] for s in kw["sources"]]
+        scored = sorted(
+            ((i, self.score_of(t) if self.score_of else 1.0 - i / 1000)
+             for i, t in enumerate(texts)),
+            key=lambda kv: kv[1], reverse=True)[:n]
+        return {"results": [{"index": i, "relevanceScore": s} for i, s in scored]}
+
+
+def test_similar_case_quota_scales_seats_to_the_candidate_pool():
+    """開了重排之後，候選池的組成仍要照設定的比例，不是照前綴的排列順序。
+
+    2026-09-12 覆核實測的舊行為：候選池 30 筆時，補位迴圈按批次順序倒，
+    **第一個前綴吃掉 27/30**，第二批只剩它那 3 個席次——即使第二批的分數全面較高。
+    重排再強也排不了沒進候選池的東西，等於設定的 2:3 在開了重排之後變成 27:3。
+
+    設定寫「5 席裡官方佔 2」，30 筆的候選池就該是「官方佔 12」。
+    """
+    official = [_kb_result(f"歷史訴願決定書/113年/o{i}-駁回.txt", 0.50 - i / 1000, f"官方{i}")
+                for i in range(30)]
+    public = [_kb_public_result(f"新北訴願決定書_全量/p{i}_駁回.txt", 0.95 - i / 1000, f"公開{i}")
+              for i in range(30)]
+    fake = _QuotaRerankRuntime([official, public])
+    with env(BEDROCK_RERANK_MODEL_ID="arn:fake:rerank", RERANK_MIN_SCORE="0.0"):
+        r = KBRetriever(kb_id="k", region="r", min_score=0.15, client=fake)
+        with _no_retrieve_interval():
+            r.search("q", top_k=5)
+    sent = [s["inlineDocumentSource"]["textDocument"]["text"] for s in fake.rerank_calls[0]["sources"]]
+    assert_eq(len(sent), kb_module.RERANK_CANDIDATES, "候選池要撐滿")
+    assert_eq(sum(1 for t in sent if t.startswith("官方")), 12, "2 席 ×6 ＝ 候選池裡 12 筆")
+    assert_eq(sum(1 for t in sent if t.startswith("公開")), 18, "3 席 ×6 ＝ 候選池裡 18 筆")
+
+
+def test_rerank_picks_the_final_five_purely_by_relevance_not_by_seats():
+    """席次保證的是「進得了候選池」，**不是「進得了前五名」**。
+
+    這條是刻意把行為釘死，免得日後有人看到「前五名全是公開批」以為是 bug：
+    重排把相關性量準了（負控制 0.00 vs 真實案件 0.81+），這時保席次就是拿相關性
+    換版面。要改回保席次的話，改的人會先看到這條測試失敗，然後讀到這段理由。
+    """
+    official = [_kb_result(f"歷史訴願決定書/113年/o{i}-駁回.txt", 0.90 - i / 1000, f"官方{i}")
+                for i in range(10)]
+    public = [_kb_public_result(f"新北訴願決定書_全量/p{i}_駁回.txt", 0.50 - i / 1000, f"公開{i}")
+              for i in range(10)]
+    # 公開批全拿高分、官方批全拿低分（都過門檻）——前五名應該全是公開批
+    fake = _QuotaRerankRuntime([official, public],
+                               score_of=lambda t: 0.9 if t.startswith("公開") else 0.6)
+    with env(BEDROCK_RERANK_MODEL_ID="arn:fake:rerank", RERANK_MIN_SCORE="0.5"):
+        r = KBRetriever(kb_id="k", region="r", min_score=0.15, client=fake)
+        with _no_retrieve_interval():
+            hits = r.search("q", top_k=5)
+    assert_eq(len(hits), 5)
+    assert_eq([h.payload["provenance"] for h in hits], ["public_crawl"] * 5,
+              "前五名由重排分數決定，官方的 2 席不在重排之後保留")
+
+
+def test_rerank_keeps_five_different_cases_not_five_chunks_of_one():
+    """同一份決定書的多個 chunk 只能佔一席，而且要由別的文件遞補。
+
+    候選池 30 筆之後這件事的量級變了：cross-encoder 會把同一份高度相關決定書的
+    每個 chunk 都打高分，前五名很可能是同一件案子的五個片段。承辦人看到「五筆相似案」
+    而實際只有一件，那是對「我們找到幾件」說謊（CONSTITUTION §1）。
+
+    也釘住「遞補」：只跟 rerank 要 5 筆的話，去重後會剩 1 筆且沒有東西補上來
+    ——那是把重複問題換成另一種靜默少筆。
+    """
+    same = [_kb_public_result("新北訴願決定書_全量/同一件_駁回.txt", 0.90 - i / 1000, f"第{i}段")
+            for i in range(5)]
+    others = [_kb_public_result(f"新北訴願決定書_全量/其他{i}_駁回.txt", 0.40 - i / 1000, f"其他{i}")
+              for i in range(4)]
+    fake = _QuotaRerankRuntime([[], same + others])
+    with env(BEDROCK_RERANK_MODEL_ID="arn:fake:rerank", RERANK_MIN_SCORE="0.0"):
+        r = KBRetriever(kb_id="k", region="r", min_score=0.15, client=fake)
+        with _no_retrieve_interval():
+            hits = r.search("q", top_k=5)
+    srcs = [h.source for h in hits]
+    assert_eq(len(srcs), len(set(srcs)), f"同一份文件佔了不只一席：{srcs}")
+    assert_eq(len(hits), 5, "去重之後席次要由別的文件補滿，不是剩一筆")
+    assert_eq(srcs[0], "新北訴願決定書_全量/同一件_駁回.txt", "重複的那份保留最高分的 chunk")
+
+
+def test_kb_min_score_default_follows_the_rerank_switch():
+    """放寬門檻的前提是「後面有重排接手」。沒有重排就不能用寬的那個預設。
+
+    0.15 的正當性全部建立在 rerank 負責 precision 上（證據見 rerank.md 的分工表）。
+    重排關著時那個前提不成立，寬門檻就是純粹的品質下降：沒有任何一關擋得掉
+    語意無關的命中。ECS 上漏設 `BEDROCK_RERANK_MODEL_ID` 就是這個情境。
+    """
+    with env(KB_MIN_SCORE=None, BEDROCK_RERANK_MODEL_ID=None):
+        assert_eq(settings.kb_min_score(), 0.25, "沒有重排就回到已驗證過的舊值")
+    with env(KB_MIN_SCORE=None, BEDROCK_RERANK_MODEL_ID="arn:fake:rerank"):
+        assert_eq(settings.kb_min_score(), 0.15, "有重排才放寬給 recall")
+    with env(KB_MIN_SCORE="0.42", BEDROCK_RERANK_MODEL_ID=None):
+        assert_eq(settings.kb_min_score(), 0.42, "明示設定永遠贏過兩個預設")
+    with env(KB_MIN_SCORE="", BEDROCK_RERANK_MODEL_ID="arn:fake:rerank"):
+        assert_eq(settings.kb_min_score(), 0.15, "`.env` 寫了變數卻沒填值＝沒設，不是 float('')")
+    with env(RERANK_MIN_SCORE=""):
+        assert_eq(settings.rerank_min_score(), 0.5, "同上，空字串不得炸在檢索路徑深處")
+
+
+def test_health_says_whether_rerank_is_actually_on():
+    """重排是安靜地開或不開，健康檢查要說得出來——這是漏設唯一看得見的地方。
+
+    測的是 `settings.rerank_state()`（`/api/health` 的 `rerank` 欄位直接用它）：
+    API 層要 fastapi，而測試路徑是 stdlib-only，所以可測的那一半放在 settings，
+    `api/app.py` 只負責把它掛進回應（`describe_similar_case_backend` 同一個做法）。
+    """
+    with env(BEDROCK_RERANK_MODEL_ID=None, KB_MIN_SCORE=None):
+        st = settings.rerank_state()
+    assert_eq(st["enabled"], False)
+    assert_eq(st["kb_min_score"], 0.25, "關著時報的是關著時真的在用的門檻")
+    with env(BEDROCK_RERANK_MODEL_ID="arn:fake:rerank", KB_MIN_SCORE=None, RERANK_MIN_SCORE="0.5"):
+        st = settings.rerank_state()
+    assert_eq(st, {"enabled": True, "min_score": 0.5, "kb_min_score": 0.15})
+    assert_true("arn:fake:rerank" not in json.dumps(st, ensure_ascii=False),
+                "model id 的值不得出現在健康檢查回應裡")
+
+
+class _FakeS3:
+    """`_sync_one` 用得到的最小 S3：head_object／upload_file／exceptions.ClientError。"""
+
+    class _Err(Exception):
+        pass
+
+    class _Exc:
+        ClientError = None      # 在 __init__ 綁成上面那個 _Err
+
+    def __init__(self, objects=None):
+        self.objects = dict(objects or {})      # {key: sha256 metadata}
+        self.uploads = []                       # [(key, sha)]
+        self.exceptions = self._Exc()
+        self.exceptions.ClientError = self._Err
+
+    def head_object(self, Bucket, Key):         # noqa: N803 — 照 boto3 的參數名
+        if Key not in self.objects:
+            raise self._Err(f"404 {Key}")
+        return {"Metadata": {"sha256": self.objects[Key]}}
+
+    def upload_file(self, local, bucket, key, ExtraArgs=None):  # noqa: N803
+        sha = (ExtraArgs or {}).get("Metadata", {}).get("sha256")
+        self.uploads.append((key, sha))
+        self.objects[key] = sha
+
+
+def _ingest_kb_module():
+    spec = importlib.util.spec_from_file_location(
+        "_ingest_kb", pathlib.Path(__file__).resolve().parents[2] / "scripts" / "ingest_kb.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+@contextmanager
+def _staged_entry(body="本文", sidecar='{"doc_kind": "decision"}'):
+    """一筆 manifest entry ＋ stage 目錄上的本文與側檔。"""
+    ing = _ingest_kb_module()
+    with tempfile.TemporaryDirectory() as d:
+        stage = pathlib.Path(d)
+        local = stage / "official" / "歷史訴願決定書" / "x.txt"
+        local.parent.mkdir(parents=True, exist_ok=True)
+        local.write_text(body, encoding="utf-8")
+        side = local.with_name("x.txt.metadata.json")
+        if sidecar is not None:
+            side.write_text(sidecar, encoding="utf-8")
+        entry = {"path": "kb/official/歷史訴願決定書/x.txt",
+                 "sha256": ing._sha256_of(local), "provenance": "official"}
+        yield ing, entry, str(stage), side
+
+
+def test_ingest_resends_a_changed_sidecar_even_when_the_body_is_untouched():
+    """側檔改了就要重傳——本文沒變不是「側檔也沒變」的證據。
+
+    2026-09-12 覆核抓到的舊行為：冪等只問「S3 上有沒有側檔」，有就跳過。
+    於是修了 `build_kb_metadata.py` 重跑入庫時，本文 sha 相同 → 整筆略過 →
+    S3 上留著舊的 `doc_kind`／`category`。而側檔是 `outcome`／`category` 的優先來源，
+    也是 `REF_DOC_KINDS` 伺服器端 filter 的依據——用到舊值的表現是
+    「欄位都在、值是錯的」，比缺欄位難查得多。
+    """
+    with _staged_entry() as (ing, entry, stage, side):
+        s3 = _FakeS3({entry["path"]: entry["sha256"],
+                      entry["path"] + ".metadata.json": "舊側檔的sha"})
+        ing._s3_client = lambda region: s3
+        body_uploaded, sidecars = ing._sync_one(entry, bucket="b", region="r", stage=stage)
+    assert_eq(body_uploaded, False, "本文沒變就不該重傳本文")
+    assert_eq(sidecars, 1, "側檔變了就要重傳")
+    assert_eq([k for k, _ in s3.uploads], [entry["path"] + ".metadata.json"])
+    assert_true(s3.uploads[0][1], "側檔上傳時要帶自己的 sha256，下次才比得出來")
+
+
+def test_ingest_is_idempotent_when_neither_body_nor_sidecar_changed():
+    """第二次跑要「上傳 0、側檔 0」（AC12）——加了側檔比對不得破壞冪等。"""
+    with _staged_entry() as (ing, entry, stage, side):
+        side_sha = ing._sha256_of(side)
+        s3 = _FakeS3({entry["path"]: entry["sha256"],
+                      entry["path"] + ".metadata.json": side_sha})
+        ing._s3_client = lambda region: s3
+        assert_eq(ing._sync_one(entry, bucket="b", region="r", stage=stage), (False, 0))
+    assert_eq(s3.uploads, [], "什麼都沒變就不該有任何上傳")
+
+
+def test_ingest_skips_the_sidecar_when_the_generator_has_not_run():
+    """還沒產側檔的 corpus 照樣入得了庫，不報錯（側檔是加值，不是前置條件）。"""
+    with _staged_entry(sidecar=None) as (ing, entry, stage, _side):
+        s3 = _FakeS3()
+        ing._s3_client = lambda region: s3
+        assert_eq(ing._sync_one(entry, bucket="b", region="r", stage=stage), (True, 0))
+    assert_eq([k for k, _ in s3.uploads], [entry["path"]], "只傳本文")
+
+
+def test_case_type_normalization_strips_party_names_and_known_typos():
+    """側檔的案型不得夾帶當事人姓名，法規正名的客觀錯字要收斂。
+
+    2026-09-12 清點第三方 corpus 的檔頭 `類別` 欄位，發現它夾著當事人姓名，
+    而且**有未遮罩的**（`受處分人吳平馨違反…`、`鍾明盛違反…`）。側檔會進 KB、
+    會顯示在相似案卡上——那是把當事人姓名端到承辦人與評審面前（CONSTITUTION §6）。
+
+    修法是砍掉「違反」**與它之前的一切**，同時解掉姓名外洩與案型歸位兩件事。
+
+    法規正名的錯字另外對照（沒有「空氣污染管制法」這部法；「土讓」是「土壤」的錯字）。
+    **刻意不處理**多部法規合併與非案型的請求事項——那是內容判斷，要 qa-legal 決定，
+    不是正規化能代勞的。
+    """
+    spec = importlib.util.spec_from_file_location(
+        "_bkm", pathlib.Path(__file__).resolve().parents[2] / "scripts" / "build_kb_metadata_from_keys.py")
+    g = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(g)
+    f = g.canonical_case_type
+
+    # 姓名一律不得留下
+    for raw in ("受處分人吳平馨違反空氣污染防制法", "鍾明盛違反廢棄物清理法",
+                "受處分人李○吉違反廢棄物清理法",
+                "財團法人新北市私立○○高級工業家事職業學校違反廢棄物清理法"):
+        got = f(raw)
+        assert_true("違反" not in got, f"「違反」之前的內容沒砍乾淨：{raw} → {got}")
+        assert_true("○" not in got, f"遮罩符號殘留（代表機構名沒砍掉）：{raw} → {got}")
+    assert_eq(f("受處分人吳平馨違反空氣污染防制法"), "空氣污染防制法")
+    assert_eq(f("鍾明盛違反廢棄物清理法"), "廢棄物清理法")
+
+    # 賽方檔名那套（異體字 ＋ 違反…事件 外殼）要跟公開批收斂到同一個值
+    assert_eq(f("違反空氣汙染防制法事件"), "空氣污染防制法")
+
+    # 法規正名的客觀錯字
+    assert_eq(f("空氣污染管制法"), "空氣污染防制法", "沒有「管制法」這部法")
+    assert_eq(f("土讓及地下水污染整治法"), "土壤及地下水污染整治法", "讓→壤")
+    assert_eq(f("土壤及地下水污染整治法事"), "土壤及地下水污染整治法", "「事件」被截成「事」")
+
+    # **不得**動的：多部法規合併與非案型的請求事項，那是內容判斷
+    assert_eq(f("空氣污染防制法及廢棄物清理法"), "空氣污染防制法及廢棄物清理法")
+    assert_eq(f("追繳空氣污染防制費"), "追繳空氣污染防制費")
+
+    # 正常值不得被動到
+    assert_eq(f("噪音管制法"), "噪音管制法")
+
+
+def _run_eval_module():
+    spec = importlib.util.spec_from_file_location(
+        "_run_eval", pathlib.Path(__file__).resolve().parents[2] / "scripts" / "run_eval.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_eval_does_not_call_a_spec_mandated_default_a_hallucination():
+    """`n1_extract.md` 明文要求的預設值，不得被評估腳本判成「編」。
+
+    prompt 寫得很清楚：`transit_days` 卷證沒寫就 0、`interested_party` 不確定給 false
+    （都附 conf 0.5）。golden 照腳本的規則把「卷證沒寫」抄成 null，若不認這件事，
+    這兩欄每一列都會落進 🔴「卷證沒寫卻填了值」——而報告對那一格的指示是
+    「改 n1_extract.md 時優先壓這一格」，等於叫人去改一個本來就對的規格。
+
+    真正的 hallucination（卷證沒寫卻生出非預設值）仍然要抓得到。
+    """
+    ev = _run_eval_module()
+    assert_eq(ev.judge_field("transit_days", None, 0), "ok", "0 是規格預設，不是編的")
+    assert_eq(ev.judge_field("interested_party", None, False), "ok", "false 是規格預設")
+    assert_eq(ev.judge_field("transit_days", None, 5), "hallucinated",
+              "卷證沒寫卻生出 5 天在途期間——這個才是編的")
+    assert_eq(ev.judge_field("interested_party", None, True), "hallucinated")
+    # 其他欄位不受影響：沒有規格預設，填了就是編的
+    assert_eq(ev.judge_field("no", None, "新北環稽字第123號"), "hallucinated")
+    assert_eq(ev.judge_field("d2", None, "2024-06-13"), "hallucinated")
+
+
+def test_eval_compares_loose_typed_fields_after_normalising_both_sides():
+    """`transit_days`／`interested_party` 在 schema 裡是 LooseFieldValue，型別刻意寬鬆。
+
+    模型可能回 `False`，也可能回 `"false"`。直接 `str(want) == str(got)` 會把
+    `False` 與 `"false"` 判成不等，於是對的被記成「抽錯」——那會讓人去調一個沒壞的 prompt。
+    """
+    ev = _run_eval_module()
+    assert_eq(ev.judge_field("interested_party", True, "true"), "ok")
+    assert_eq(ev.judge_field("interested_party", False, "false"), "ok")
+    assert_eq(ev.judge_field("transit_days", 3, "3"), "ok")
+    assert_eq(ev.judge_field("transit_days", 3, "5"), "wrong", "真的不一樣還是要判錯")
+    assert_eq(ev.judge_field("interested_party", True, "false"), "wrong")
+
+
+def test_eval_still_reports_the_four_verdicts_for_ordinary_fields():
+    """一般欄位的四種判級不得因為上面兩條而改變。"""
+    ev = _run_eval_module()
+    assert_eq(ev.judge_field("d2", "2024-06-13", "2024-06-13"), "ok")
+    assert_eq(ev.judge_field("d2", "2024-06-13", "2024-06-14"), "wrong")
+    assert_eq(ev.judge_field("d2", "2024-06-13", None), "missed")
+    assert_eq(ev.judge_field("d2", None, None), "ok")
+
+
+def _n4_card(payload_extra: dict) -> dict:
+    """跑一次 N4，回第一張相似案卡。`payload_extra` 併進檢索器回傳的 Hit payload。"""
+    class _KB:
+        name = "bedrock_kb"
+
+        def search(self, query, filters=None, top_k=5):
+            return [Hit(id="kb-1", title="1141050994_駁回", score=0.92,
+                        source="新北訴願決定書_全量/1141050994_駁回.txt",
+                        payload={"outcome": "駁回", "provenance": "public_crawl",
+                                 "text": "主文：訴願駁回。", **payload_extra})]
+
+        def meta(self):
+            return {"backend": "bedrock_kb", "available": True}
+
+    st = CaseState(case_id="synthetic-ordinary-01", run_mode="bedrock")
+    st.intake = {"type": "違反空氣污染防制法事件"}
+    st.facts_excerpt = [{"text": "訴願人於農地露天燃燒稻稈。", "page": 1}]
+    st.classification = {"class": {"case_type": "違反空氣污染防制法事件",
+                                   "law_hits": ["空氣污染防制法"]}}
+    st.screen = {"art77": {"clause": "77-2"}, "deadline": {"steps": []}}
+    n4_retrieval.run(st, NodeCtx(run_mode="bedrock", snapshot=load_snapshot(), retriever=_KB()))
+    return st.retrieval["cases"][0]
+
+
+def test_similar_case_card_says_which_ranker_produced_the_number():
+    """卡片上的 `sim` 是誰算的，要跟著卡片走。
+
+    開了重排，那個百分比是 cross-encoder 判的語意相關性；沒開才是 embedding 的
+    向量距離。兩者都是 0–100、長得一模一樣，意思不同——畫面要據此換文案，
+    而換文案的前提是這個欄位有被帶出來（CONSTITUTION §1）。
+    """
+    assert_eq(_n4_card({"ranked_by": "rerank"})["ranked_by"], "rerank")
+    # 沒重排時檢索器不標 ranked_by，卡片要說得出那就是 embedding，不是留白讓前端猜
+    assert_eq(_n4_card({})["ranked_by"], "embedding")
+
+
+def test_frontend_similarity_caption_follows_the_ranker():
+    """前端的相似度文案不得寫死「向量比對」。
+
+    這條測試的存在理由跟 `test_frontend_case_type_options_are_all_matchable` 一樣：
+    前後端各自維護一份字串，漂移只是時間問題。而這一份字串是**對承辦人解釋畫面上
+    那個數字是什麼**——開了重排之後還寫「向量比對」就是不實陳述，而且它就在 demo
+    主畫面上。用 Python 測試讀前端原始碼（frontend 沒有 JS test runner）。
+    """
+    src = (pathlib.Path(__file__).resolve().parents[2]
+           / "frontend" / "src" / "api" / "adapt.js").read_text(encoding="utf-8")
+    block = src.split("export function toCaseCards", 1)[1].split("\n}", 1)[0]
+    assert_in("ranked_by", block, "相似度文案沒有依 ranked_by 切換，等於對數字的來歷說死話")
+    assert_in("重排模型判定", block, "缺開了重排時的文案")
+    assert_in("向量比對", block, "缺沒開重排時的文案（那一種仍然存在，不能整段換掉）")

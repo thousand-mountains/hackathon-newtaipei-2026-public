@@ -427,7 +427,8 @@ secret 掃描本輪再加一條「12 碼數字＝疑似 AWS 帳號 ID」，跑�
 
 接下來照順序：
 
-1. **開 AWS Support Case** 請求開通 Bedrock（東京 `ap-northeast-1`）。這是唯一的阻塞點。
+1. **開 AWS Support Case** 請求開通 Bedrock（`us-west-2`）。這是唯一的阻塞點。
+   （2026-09-12：賽制指定主要區域為 us-east-1／us-west-2，原東京 `ap-northeast-1` 方案作廢。）
 2. 開通後在 console 申請 **model access**（抽取與主筆各一個 model id 或 inference profile）。
 3. 建 **Managed Knowledge Base**：私有 S3 bucket（Block Public Access 四項全開）→ 資料分
    `kb/official/`、`kb/public/` 前綴上傳 → console 建 KB 指到該 prefix → 取得 KB id 填 `.env`

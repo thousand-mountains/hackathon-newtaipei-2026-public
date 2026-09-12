@@ -673,6 +673,17 @@ def build_payload(state: CaseState) -> dict[str, Any]:
         # 避免兩處內容漂移；`issues` 由 fact_issues 加燈號組成，見 `_issues_view()`。
         "laws": laws,
         "cases": cases,
+        # N5 `retrieve_refs` 工具當次撈到的函釋／判解。**先前完全沒有進 payload**，
+        # 造成草稿裡引用了 `R2`，畫面上卻找不到那份依據——承辦人看得到編號、
+        # 查不到出處，「引用必可驗」實質落空（CONSTITUTION §2）。
+        # 2026-09-12 實測：`draft.tool_calls` 記著 hit_ids=['R1','R2']、`draft.refs`
+        # 有完整內容，但 build_payload 從頭到尾沒有輸出 draft，所以那些證據誰也看不到。
+        # AC5（每句 cite_ids ⊆ N4 ∪ 工具命中）也因此必紅——它先前不紅，只是因為
+        # N5 沒跑、沒有任何句子，那是假通過。
+        "refs": (state.draft or {}).get("refs", []),
+        # 工具問了什麼、撈到什麼，一併外顯：草稿說「依法務部歷次函釋意旨」時，
+        # 承辦人要看得到那是哪一次檢索的結果，而不是只能相信它。
+        "ref_tool_calls": (state.draft or {}).get("tool_calls", []),
         "issues": _issues_view(state),
         "doc": doc,
         "citations": state.gate.get("citations", []),

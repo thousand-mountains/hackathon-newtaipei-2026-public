@@ -94,9 +94,16 @@ export function toCaseCards(payload) {
   return (payload?.cases || []).map((c) => ({
     id: c.id,
     t: c.t,
-    // sim 是**向量檢索相似度**，不是法律上的相似度——文案要說清楚
+    // sim 不是法律上的相似度——文案要說清楚。而且**它是誰算的會變**：
+    // 開了重排就是 cross-encoder 判的語意相關性，沒開才是 embedding 的向量距離。
+    // 兩者都是 0–100 的數字，看起來一樣，意思不一樣；後端用 `ranked_by` 說明是哪一種，
+    // 這裡照著換文案。寫死「向量比對」會在開了重排之後變成不實陳述（CONSTITUTION §1）。
     sim: typeof c.sim === 'number' ? c.sim : null,
-    simLabel: '檢索相似度（向量比對，非法律見解相似度）',
+    rankedBy: c.ranked_by === 'rerank' ? 'rerank' : 'embedding',
+    simLabel:
+      c.ranked_by === 'rerank'
+        ? '語意相關性（重排模型判定，非法律見解相似度）'
+        : '檢索相似度（向量比對，非法律見解相似度）',
     outcome: c.outcome || null,
     // provenance 兩批來源必須分得出來
     provenance: c.provenance || 'unknown',
