@@ -513,6 +513,30 @@ AWS_PROFILE=hack-ntpc AWS_REGION=us-west-2 aws ec2 describe-security-groups \
 python3 backend/tests/run_all.py
 ```
 
+### 5.1 建置 context 大小（部署前一定要看一眼）
+
+```bash
+du -sh backend/output
+# 期望：**幾 MB**。看到幾百 MB 就先清，再部署。
+find backend/output/runs -maxdepth 1 -type f -name '*.json' -print0 \
+  | xargs -0 stat -f '%m %N' | sort -rn | tail -n +21 | cut -d' ' -f2- \
+  | tr '\n' '\0' | xargs -0 rm -f        # 留最新 20 個，其餘清掉
+```
+
+`backend/output/` 是本機跑 run 的產物，**每跑一次就多一個檔**，一天下來會長到
+幾百 MB（2026-09-12 實測：一個工作天累積 892 MB／16,260 個檔）。它已經被
+`.dockerignore` 與 CDK 的 exclude 擋在建置 context 外，**所以現在不會進映像檔**——
+但目錄本身還是會一直長，而且：
+
+- 兩道擋牆哪天被誰改掉或改名，它會立刻回到 905 MB 的 staging（實測數字，見
+  `.dockerignore` 檔頭的三組對照）。
+- `du -sh backend/output` 是**成本最低的哨兵**：一行指令，看到幾百 MB 就知道
+  要嘛該清了、要嘛擋牆破了。
+
+⚠️ 清之前確認沒有別的 session 正在用某個 `run_id`——保留最新幾個就夠了，
+不要整個 `rm -rf runs/`。`git ls-files backend/output` 應該是 0（它是 gitignored 的
+本機產物，刪掉不影響任何人的 commit）。
+
 它包含三道與部署直接相關的靜態掃描：
 - **secret／禁用雲端字樣（`backend/` + `prototype/`）**：不得出現 AWS 金鑰樣式字串，
   也不得出現其他雲的 CLI／SDK／憑證變數。整合後 `prototype/` 也納入掃描範圍。
