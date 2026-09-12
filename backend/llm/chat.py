@@ -417,6 +417,32 @@ PIPELINE_NODE_LABELS = {
     "n6": "引用守門",
 }
 
+def degraded_summary(out: dict[str, Any]) -> str:
+    """流水線回報的降級原因 → 一句給承辦人的話。沒有降級就回 `""`。
+
+    **零加工**：每一句都來自 `run_meta.degraded[].reason`，這一層只在前面補上節點的
+    中文名（`PIPELINE_NODE_LABELS`，契約 §2.3 ③ 已在用的同一張表）。沒有 `reason`
+    的那筆直接跳過——**不得替它組一句「可能是某某有問題」**，那就是編造（CONSTITUTION §1）。
+
+    為什麼需要這支（2026-09-13 雲上實測）：兩個合成案跑「解析卷證」都停在
+    `NEEDS_INPUT`，`run_meta.degraded` 明寫「缺漏：案號，需人工表單補齊後才能續跑」，
+    但 `tool_result.note` 是空字串、回給模型的字串只說「終態 NEEDS_INPUT」，
+    於是畫面上只剩「還沒有生成草稿」。**工具卡會標黃、燈號會紅，但黃燈沒說黃在哪**，
+    承辦人只會覺得它就是沒生，不會知道下一步是去補案號。
+    """
+    parts: list[str] = []
+    for entry in out.get("degraded") or []:
+        if not isinstance(entry, dict):
+            continue
+        reason = str(entry.get("reason") or "").strip()
+        if not reason:
+            continue
+        node = str(entry.get("node") or "")
+        label = PIPELINE_NODE_LABELS.get(node, node)
+        parts.append(f"{label}：{reason}" if label else reason)
+    return "；".join(parts)
+
+
 #: 乙案（AgentCore Runtime）容器裡沒有六節點流水線，`run_pipeline` 不會被注入。
 #: **明說「這個檔位沒有」，不要靜默失敗**（契約 v2 §0.1 末段）。
 _NO_PIPELINE = ("這個檔位沒有六節點流水線，解析卷證與生成草稿在這裡跑不了。"
@@ -851,8 +877,19 @@ class ChatTools:
             self._result("extract_case_document", [], note, status="failed")
             return f"{note}。請告訴使用者這次解析失敗了，不要編造卷內內容。"
         self._adopt_run(out)
-        self._result("extract_case_document", [], "", status="ok",
+        # 降級原因照實往下傳（2026-09-13 補）。沒有降級時 `note` 仍是 `""`、
+        # 回給模型的字串一個字都不變——正常案件不該多出一段警告。
+        stuck = degraded_summary(out)
+        self._result("extract_case_document", [], stuck, status="ok",
                      run_id=out.get("run_id"), state=out.get("state"))
+        if stuck:
+            return (f"卷證解析跑完了，但**有節點降級，這個案子還不能往下走**"
+                    f"（run {out.get('run_id')}，終態 {out.get('state')}）。"
+                    f"降級原因：{stuck}。"
+                    f"這個 run 只跑到程序審查，沒有草稿。"
+                    f"請照實把上面的原因告訴使用者，講清楚卡在哪一步、要補哪幾個欄位，"
+                    f"並說明補齊後才能續跑。**不要說解析已完成，也不要說現在可以生成草稿。**"
+                    f"要看內容請用 read_case 讀 intake／facts_excerpt／screen。")
         return (f"已完成卷證解析（run {out.get('run_id')}，終態 {out.get('state')}）。"
                 f"這個 run **只跑到程序審查，沒有草稿**。"
                 f"要看內容請用 read_case 讀 intake／facts_excerpt／screen。")
@@ -933,7 +970,11 @@ class ChatTools:
         # `terms` 就是這一輪真的送出去的查詢詞，拿它當通道 B 的依據，不是推論。
         picks = classify_picks(laws, self.case_payload.get("laws") or [], terms)
         needs_note = [p for p in picks if p["state"] != PICK_MATCHED]
-        self._result("generate_decision_draft", [], "", status="ok",
+        # 同 `extract_case_document`：降級原因是流水線自己寫的，一個字都不加工。
+        # 這條路徑 `from_node="n4"`，所以帶上來的可能含 N1 那筆（沒重跑的節點會被
+        # `run_case()` 從 base_state 續帶）——那正是要講的：欄位還缺著就生了草稿。
+        stuck = degraded_summary(out)
+        self._result("generate_decision_draft", [], stuck, status="ok",
                      run_id=out.get("run_id"), state=out.get("state"),
                      artifact_id=out.get("artifact_id"),
                      cite_count=out.get("cite_count"),
@@ -946,9 +987,14 @@ class ChatTools:
                     f"純法規名查不到。請照實告訴使用者這件事與下一步："
                     f"要讓某條法規成為草稿的引用依據，要把它指定到條，例如「訴願法第14條」。"
                     f"不要說它們已被引用，也不要說它們完全沒被用到。")
+        stuck_note = ""
+        if stuck:
+            stuck_note = (f"另外：這次執行有節點降級——{stuck}。"
+                          f"請照實把這件事告訴使用者，"
+                          f"**不要說這份草稿已經可以直接用、也不要說案件已審查完成**。")
         return (f"已生成草稿（run {out.get('run_id')}，終態 {out.get('state')}，"
                 f"引用 {out.get('cite_count')} 處）。草稿全文請由承辦人在產出區檢視，"
-                f"不要在這裡整份複述。{note}")
+                f"不要在這裡整份複述。{stuck_note}{note}")
 
     def build_relation_graph(self) -> str:
         """畫本案的關聯圖：卷證 → 事實 → 爭點 → 法規依據 → 結論（契約 v2 §3.7）。
@@ -1131,6 +1177,7 @@ __all__ = [
     "PIPELINE_NODE_LABELS",
     "build_chat_agent",
     "cited_ids",
+    "degraded_summary",
     "classify_answer",
     "is_numeric_question",
     "TIER_HUMAN",

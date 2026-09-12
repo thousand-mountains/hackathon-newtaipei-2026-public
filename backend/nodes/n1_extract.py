@@ -22,12 +22,16 @@ from __future__ import annotations
 import time
 from typing import Any
 
+from backend.intake.fields import field_labels
 from backend.llm import client as llm_client
 from backend.orchestrator.state import CaseState, NodeCtx, NodeResult
 
 # 必填欄位與信心門檻（architecture §3.1）。門檻 0.80 是假設值，待真實資料實測校準。
 REQUIRED_FIELDS = ("no", "type", "d2", "service_method")
 CONF_THRESHOLD = 0.80
+
+#: 中文標籤在 `backend/intake/fields.py`（零依賴，N3 也要用——它不能 import 這個檔，
+#: 本檔頂層有 `backend.llm.client`，CONSTITUTION §4 禁止 N2/N3/N4/N6 碰 LLM）。
 
 
 def run(state: CaseState, ctx: NodeCtx, case_fixture: dict[str, Any] | None = None) -> NodeResult:
@@ -137,8 +141,8 @@ def _finish(
     reason = None
     if degraded:
         reason = (
-            f"必填欄位信心不足或缺漏（低信心：{low_conf or '無'}；缺漏：{missing or '無'}），"
-            f"需人工表單補齊後才能續跑"
+            f"必填欄位信心不足或缺漏（低信心：{field_labels(low_conf)}；"
+            f"缺漏：{field_labels(missing)}），需人工表單補齊後才能續跑"
         )
 
     elapsed = int((time.perf_counter() - started) * 1000)
@@ -164,7 +168,9 @@ def _finish(
                 "logs": [
                     [f"必填欄位 {len(REQUIRED_FIELDS)} 項，信心門檻 {CONF_THRESHOLD:.2f}", ""],
                     [
-                        f"低信心欄位：{'、'.join(low_conf) if low_conf else '無'}",
+                        # 這一行會畫在 agent 卡片上給承辦人看，所以跟 `degrade_reason`
+                        # 一樣不得吐鍵名（2026-09-13 補；漏掉的那一半）。
+                        f"低信心欄位：{field_labels(low_conf)}",
                         "y" if low_conf else "",
                     ],
                     mode_log,

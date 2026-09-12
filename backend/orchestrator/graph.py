@@ -371,10 +371,22 @@ def run_case(
             # **為什麼可以不停**：判斷卡 7 不是靠這個 break 守的，是靠
             # `lamps.requires_human_conclusion` 守的——
             # `procedurally_resolved = art77.clause and procedural_inputs_confirmed`，
-            # 沒有人確認過就永遠解不開結論封鎖。實測缺 `d2` 時 N3 的行為也正確：
-            # `deadline=None`、`art77.clause=None`、`requires_human_conclusion=True`
-            # ——它拒絕計算，不猜。所以往下跑不會讓任何紅線鬆掉，只會讓**不依賴那些
-            # 欄位的東西**（法條查表、相似案檢索）先出現。
+            # 沒有人確認過就永遠解不開結論封鎖。缺 `d2` 時 N3 會 `deadline=None`、
+            # `art77.clause=None`、`requires_human_conclusion=True`——它拒絕計算，不猜。
+            # 所以往下跑不會讓任何紅線鬆掉，只會讓**不依賴那些欄位的東西**
+            # （法條查表、相似案檢索）先出現。
+            #
+            # ⚠️ **這段話在 2026-09-12 寫下時只有三分之一成立，2026-09-13 才補齊。**
+            # 當時寫的是「實測缺 `d2` 時 N3 的行為也正確」，但那次實測只走到公示送達
+            # 那條路——`compute()` 對 `public` 在第一步就拒答回傳，碰不到日期。
+            # `personal` 與 `deposit` 兩條路會走到 `_roc(eff)`，而 `service_date` 的
+            # 型別標的是 `dt.date` 不是 `dt.date | None`，於是 `None.year` 當場
+            # `AttributeError`、**整條 run 以 `run_failed` 收掉**，聊天視窗只說
+            # 「解析卷證失敗」。註解很篤定、行為不成立，而且一路綠。
+            # 現在由 `n3_procedure.run()` 在呼叫引擎前擋下（缺／壞掉的 `d2` 都擋），
+            # 六種 `service_method` × `d2` 有無的組合逐格實跑過。
+            # 教訓：**「實測過」要說清楚測的是哪幾條路**，否則下一個人會把一條路的
+            # 結果讀成全部的路。
             #
             # 終態刻意保留 `NEEDS_INPUT` 而不是 `VERIFIED`：這件案子確實還要補件，
             # 改成 VERIFIED 等於說「驗完了」。驗收腳本與前端據此判斷要不要請人確認。

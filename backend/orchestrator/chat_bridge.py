@@ -84,7 +84,7 @@ def pipeline_adapter(case_id: str, cases_dir: pathlib.Path | None = None,
         run_pipeline(*, to_node=None, from_node="n1", base_run_id=None,
                      overrides=None, on_event=None) -> dict
 
-    回傳的 dict：`{run_id, state, node_timings, cite_count, artifact_id,
+    回傳的 dict：`{run_id, state, node_timings, degraded, cite_count, artifact_id,
     has_draft, sections}`。**沒有 `CaseState`，也沒有任何編排層的型別。**
 
     `run_kwargs` 供測試指定 `mode`／`data_dir`／`persist`，正式路徑不傳。
@@ -117,6 +117,17 @@ def pipeline_adapter(case_id: str, cases_dir: pathlib.Path | None = None,
             "run_id": payload.get("run_id"),
             "state": run_meta.get("final_state") or payload.get("state"),
             "node_timings": dict(run_meta.get("node_timings") or {}),
+            # 降級原因要往上帶（2026-09-13 補）。原本這裡只取 `final_state`，
+            # 於是「管線知道自己為什麼卡住」這件事在這一行被丟掉：雲上實測
+            # `state=NEEDS_INPUT`、`run_meta.degraded[0].reason` 寫著缺哪幾欄，
+            # 但聊天視窗只說「還沒有生成草稿」——**承辦人不會知道要去補案號**
+            # （CONSTITUTION §1 分層誠實）。
+            # 只帶 `node` 與 `reason`：`agents` 是給 agent 卡片用的，聊天層不畫卡片。
+            "degraded": [
+                {"node": d.get("node"), "reason": d.get("reason")}
+                for d in (run_meta.get("degraded") or [])
+                if isinstance(d, dict)
+            ],
             # **走 `build_sections()` 這把尺，不自己數**（2026-09-13 修）。
             # 原本是 `len(payload["citations"])`，跟 JSON 檢視（`GET …/artifacts/{id}`）
             # 與匯出的 `X-Cite-Count` 對不起來——同一份草稿兩個數字。

@@ -373,12 +373,16 @@ class _FakePipeline:
 
     def __init__(self, nodes: list[str], sections: dict | None = None,
                  state: str = "SCREENED", boom: Exception | None = None,
-                 timings: dict | None = None) -> None:
+                 timings: dict | None = None,
+                 degraded: list[dict] | None = None) -> None:
         self._nodes = nodes
         self._sections = sections or {}
         self._state = state
         self._boom = boom
         self.timings = timings or {n: (i + 1) * 1000 for i, n in enumerate(nodes)}
+        # 真 adapter 2026-09-13 起帶 `degraded`（`chat_bridge.pipeline_adapter`）。
+        # 假貨少一個鍵就等於替聊天層假設「這個鍵不會有」，那正是這批測試要擋的事。
+        self._degraded = degraded or []
         self.calls: list[dict] = []
 
     def __call__(self, *, to_node=None, from_node="n1", base_run_id=None,
@@ -393,7 +397,8 @@ class _FakePipeline:
                 on_event("node_done", {"node": n, "elapsed_ms": self.timings[n],
                                        "degraded": n == "n4"})
         return {"run_id": "run-new-1", "state": self._state,
-                "node_timings": dict(self.timings), "cite_count": 7,
+                "node_timings": dict(self.timings),
+                "degraded": [dict(d) for d in self._degraded], "cite_count": 7,
                 "artifact_id": None, "has_draft": self._state == "VERIFIED",
                 "sections": self._sections}
 
@@ -849,6 +854,100 @@ def test_extract_runs_only_to_n3_and_reports_that_this_run_has_no_draft():
     assert result["run_id"] == "run-new-1"
     assert result["state"] == "SCREENED"
     assert "沒有草稿" in out, "回給模型的話要講明這個 run 沒有草稿，否則它會去描述一份不存在的草稿"
+
+
+#: N1 實際寫出來的降級原因（`backend/nodes/n1_extract.py` 的 `reason`）。
+#: 這裡刻意抄一份**實際字串**而不是 import 過來組：這幾支測的是「聊天層把拿到的
+#: 原因原樣講出去」，用 n1 的程式去生它就變成兩邊用同一個 bug 互相佐證。
+#: 中文標籤是否跟前端一致由 `test_live_plumbing` 的跨層守衛另外釘。
+_N1_STUCK = ("必填欄位信心不足或缺漏（低信心：無；缺漏：案號、送達日），"
+             "需人工表單補齊後才能續跑")
+
+
+def test_extract_says_what_it_is_stuck_on_not_just_that_there_is_no_draft():
+    """CONSTITUTION §1：管線知道自己為什麼卡住，就不准只說「還沒有草稿」。
+
+    2026-09-13 雲上實測的漏：`run_meta.degraded` 寫著「缺漏：案號」，但
+    `tool_result.note` 是空字串、回給模型的字串只提終態，於是聊天視窗講的是
+    「這份案子還沒有生成草稿」——**承辦人不會知道下一步是去補案號**。
+    工具卡會標黃、燈號會紅，但黃燈沒說黃在哪。
+    """
+    calls: list = []
+    events: list = []
+    fake = _FakePipeline(["n1", "n2", "n3"], sections={"screen": {"x": 1}},
+                         state="NEEDS_INPUT",
+                         degraded=[{"node": "n1", "reason": _N1_STUCK}])
+    out = _tools(calls, events=events, run_pipeline=fake).extract_case_document()
+
+    result = [d for n, d in events if n == "tool_result"][0]
+    assert result["status"] == "ok", "降級不是失敗，狀態不變"
+    assert _N1_STUCK in result["note"], f"note 沒帶上降級原因：{result['note']!r}"
+    assert "讀卷抽取" in result["note"], "要說得出是哪一步卡住"
+    # 欄位鍵名不得端到承辦人面前
+    for code in ("['no']", "'no'", "service_method"):
+        assert code not in result["note"], f"note 出現開發者鍵名 {code}：{result['note']!r}"
+
+    # 回給模型的字串：講事實、講下一步、擋掉會講錯的話（照 picked_laws 那段的寫法）
+    assert _N1_STUCK in out, out
+    assert "不要說解析已完成" in out and "不要說現在可以生成草稿" in out, out
+
+
+def test_a_run_with_nothing_degraded_says_not_one_extra_word():
+    """沒有降級時 `note` 與回給模型的字串**逐字**維持原樣。
+
+    釘這條是因為反向的錯同樣嚴重：正常案件多出一段「有節點降級」的警告，
+    承辦人會去找一個不存在的問題，而那種雜訊沒有任何測試會抓。
+    """
+    calls: list = []
+    events: list = []
+    fake = _FakePipeline(["n1", "n2", "n3"], sections={"screen": {"x": 1}})
+    out = _tools(calls, events=events, run_pipeline=fake).extract_case_document()
+
+    result = [d for n, d in events if n == "tool_result"][0]
+    assert result["note"] == "", f"沒有降級卻寫了 note：{result['note']!r}"
+    assert out == ("已完成卷證解析（run run-new-1，終態 SCREENED）。"
+                   "這個 run **只跑到程序審查，沒有草稿**。"
+                   "要看內容請用 read_case 讀 intake／facts_excerpt／screen。"), out
+
+
+def test_a_degraded_entry_with_no_reason_is_not_padded_with_a_guess():
+    """管線標了降級卻沒寫原因時，**不得替它編一句**（CONSTITUTION §1 零編造）。
+
+    唯一能講的是那張黃卡本身，講不出為什麼就不講——組一句「可能是案號有問題」
+    比不講更糟：它看起來像系統知道，其實是猜的。
+    """
+    calls: list = []
+    events: list = []
+    fake = _FakePipeline(["n1"], sections={"screen": {"x": 1}}, state="NEEDS_INPUT",
+                         degraded=[{"node": "n1", "reason": None},
+                                   {"node": "n1", "reason": "   "}])
+    out = _tools(calls, events=events, run_pipeline=fake).extract_case_document()
+
+    result = [d for n, d in events if n == "tool_result"][0]
+    assert result["note"] == "", f"沒有原因就不該有 note：{result['note']!r}"
+    assert "降級" not in out, out
+
+
+def test_draft_also_relays_the_degradation_reason():
+    """`generate_decision_draft` 同一個毛病：n5／n6 降級時也要講得出來。
+
+    這條路徑 `from_node="n4"`，帶上來的可能含 N1 那筆（沒重跑的節點由
+    `run_case()` 從 base_state 續帶）——**欄位還缺著就生了草稿**正是要講的事。
+    """
+    calls: list = []
+    events: list = []
+    fake = _FakePipeline(["n4", "n5", "n6"], state="VERIFIED",
+                         degraded=[{"node": "n5",
+                                    "reason": "fixture 檔位：草稿為模板重播，非模型即時生成"}])
+    out = _tools(calls, events=events, run_pipeline=fake, run_id="run-old",
+                 payload={"screen": {"x": 1}}, case_manifest=_MANIFEST_OK
+                 ).generate_decision_draft()
+
+    result = [d for n, d in events if n == "tool_result"][0]
+    assert result["status"] == "ok"
+    assert "草稿撰寫：fixture 檔位：草稿為模板重播" in result["note"], result["note"]
+    assert "模板重播" in out, out
+    assert "不要說這份草稿已經可以直接用" in out, out
 
 
 def test_only_the_two_pipeline_tools_emit_tool_steps():
