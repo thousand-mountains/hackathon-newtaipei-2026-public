@@ -112,10 +112,94 @@ REDIRECT_DEADLINE = {
     },
     "reason": "期間計算由規則引擎負責，同輸入必同輸出、可逐步覆核；"
               "聊天不計算期限（CONSTITUTION §4）。",
-    "cta": "查看程序審查的算式",
+    # CTA 指向**程序審查那一段**，不是「算式」。算式只有在送達方式與送達日都齊全時
+    # 才算得出來，而 QA `r10` 那種 intake 空的案子點過去是空的——
+    # 那句話在承諾一個不一定存在的東西（2026-09-13 改）。
+    "cta": "查看程序審查",
 }
 
-WHY_NUMERIC = "期間計算由規則引擎負責，聊天不計算期限。"
+#: ⚠️ 這句話**描述規則，不描述這一輪發生了什麼**（2026-09-13 改）。
+#: 原文是「期間計算由規則引擎負責，聊天不計算期限。」，但規則 1 只看問題不看答案，
+#: 於是 QA `r10` 那種回合——模型說「收文欄位是空的，我沒辦法告訴你」，一個數字都沒算——
+#: 也掛著這句話。那是在描述一件沒有發生的拒絕（同 `WHY_DROPPED` 的毛病）。
+WHY_NUMERIC = ("問到期限、日期或金額的回合一律請人工覆核："
+               "期間計算由規則引擎負責，同輸入必同輸出、可逐步覆核，聊天不代算。")
+
+#: 答案裡「真的有東西要擋」的兩種形狀。**規則 1 的紅燈不看這個**（紅燈維持保守，
+#: 只看問題的關鍵字），只有 `redirect` 附不附看它。
+#:
+#: 為什麼兩邊門檻不同：誤判的代價不對稱。紅燈誤判＝多一次人工覆核；
+#: **`redirect` 誤判＝承辦人得不到答案**——前端拿到非 null 的 `redirect` 會把
+#: `answer` 整個丟掉、只顯示 reason 與 CTA（`frontend/src/store/app.js:563`，
+#: 那是照契約 §2.4.1 一做的）。QA `r10` 實測：承辦人問「訴願人是誰、處分日期是哪一天」，
+#: 模型正確回「收文欄位是空的，我沒辦法告訴你」，而畫面上他看到的是
+#: 「期間計算由規則引擎負責」加一個「查看程序審查的算式」——**而那個案子沒有算式**。
+#:
+#: **這不是放寬紅線。** §2.4.1 一要擋的是「不得顯示 agent 講的任何天數」，
+#: 那是關於**答案內容**的規則。答案裡有天數 → 照樣觸發、照樣被擋；
+#: 答案裡沒有 → 本來就沒有東西要擋。改成看答案，是比看問題關鍵字**更忠實地**
+#: 執行同一條紅線。
+#:
+#: 期間結論詞這批**刻意多列**：漏掉的代價是紅線破口（「已經逾期了」一個數字都沒有，
+#: 卻是一句期間結論），多列的代價只是多一次正確的攔截。
+_PERIOD_CONCLUSION = (
+    "逾期", "未逾", "屆滿", "期滿", "到期", "過期",
+    "來得及", "來不及", "不受理", "期間內", "期限內",
+)
+#: 帶數字的期間／金額表述：數字＋量詞。
+_AMOUNT_UNITS = ("天", "日", "月", "年", "元", "%", "％")
+
+#: **完整的日期寫法**（`113 年 6 月 11 日`、`6 月 11 日`）。判斷「答案裡有沒有東西要擋」
+#: 之前先把它們拿掉。
+#:
+#: 為什麼一定要這一步（2026-09-13 實測）：「原處分日是哪一天？」這個問題本身會被
+#: `is_numeric_question` 判成數字類（「一」是中文數字、「天」是量詞），而答案
+#: 「卷內記載的原處分日是 113 年 6 月 11 日」有數字有量詞——於是**承辦人問一個
+#: 記在卷裡的日期，會拿到一句「期間計算由規則引擎負責」而看不到答案**。
+#: 那比原本的毛病更糟。
+#:
+#: **卷內記載的日期不是模型算出來的期間。** 紅線擋的是後者。
+#: `30 日`、`30 天` 這種**期間長度**不在這個樣式裡，照樣擋得到。
+_DATE_LIKE = re.compile(
+    r"\d+\s*年\s*\d+\s*月\s*\d+\s*日"   # 113 年 6 月 11 日
+    r"|\d+\s*年\s*\d+\s*月"                # 113 年 6 月
+    r"|\d+\s*月\s*\d+\s*日"                # 6 月 11 日
+)
+
+
+def answer_states_a_period_conclusion(answer: str) -> bool:
+    """這則答案自己下了期間結論嗎（「已經逾期」「還在期間內」「來不及了」）。
+
+    **不需要問題問過期限**——這是 2026-09-13 補的破口：規則 1 只看問題，所以
+    「這個案子怎麼樣？」→「距離期滿還有幾天」這種**模型自己講出來的**期間結論
+    以前完全不受攔。§2.4.1 一的紅線是關於**答案內容**的（不得顯示 agent 講的任何
+    天數），跟問題問了什麼無關。
+
+    **只收結論詞，不收裸數字**，理由見 `answer_carries_a_number_to_suppress`。
+    """
+    return any(kw in (answer or "") for kw in _PERIOD_CONCLUSION)
+
+
+def answer_carries_a_number_to_suppress(answer: str) -> bool:
+    """這則答案裡有沒有**真的要擋的東西**（期間／金額的陳述或結論）。
+
+    只給 `redirect` 用，不影響紅燈。判準兩條，任一命中即算：
+
+    1. 出現期間結論詞（`_PERIOD_CONCLUSION`）——**不需要數字**。
+       「已經逾期了」沒有任何數字，卻是一句期間結論，這是單看數字會漏掉的那一類。
+    2. 同時出現數字與量詞（天／日／月／年／元／%），**扣掉完整的日期寫法**
+       （見 `_DATE_LIKE`：卷內記載的日期不是模型算出來的期間）。
+
+    第 2 條沿用 `is_numeric_question` 的第二條規則，**刻意一樣**：兩邊判的是同一件
+    「這段文字在講數量」，用兩套判準遲早會出現「問題算數字類、答案不算」的矛盾。
+    差別只有日期那一步——那一步是這裡才需要的，因為只有這裡的誤判會吃掉答案。
+    """
+    text = answer or ""
+    if any(kw in text for kw in _PERIOD_CONCLUSION):
+        return True
+    without_dates = _DATE_LIKE.sub(" ", text)
+    return (bool(_HAS_DIGIT.search(without_dates))
+            and any(u in without_dates for u in _AMOUNT_UNITS))
 WHY_REFINE = "本則為模型改寫的文字，系統不替其內容背書，請覆核後採用。"
 #: `ranked_by` → **那個分數是什麼**。契約 §3.2 把「一律說成向量相似度」列為不實陳述：
 #: 開了重排之後 `score` 是 cross-encoder 判的語意相關性（實測同一批命中
@@ -422,8 +506,26 @@ def classify_answer(
         )
 
     # 規則 1：數字類問題 —— 期間與金額由規則引擎算，聊天不代算。
+    #
+    # **紅燈與 redirect 的門檻刻意不同**（2026-09-13 改，見 `_PERIOD_CONCLUSION`）：
+    # 紅燈只看問題、維持保守（誤判＝多一次覆核）；`redirect` 要看答案裡有沒有真的
+    # 要擋的東西（誤判＝前端把整則答案丟掉，承辦人什麼都拿不到）。
     if is_numeric_question(question):
-        return _verdict("r", "human_required", WHY_NUMERIC, redirect=dict(REDIRECT_DEADLINE))
+        redirect = (dict(REDIRECT_DEADLINE)
+                    if answer_carries_a_number_to_suppress(answer) else None)
+        return _verdict("r", "human_required", WHY_NUMERIC, redirect=redirect)
+
+    # 規則 1b：**問題沒問期限，但答案自己下了期間結論**（2026-09-13 補的破口）。
+    # 「這個案子怎麼樣？」→「距離期滿還有幾天」以前完全不受攔：規則 1 只看問題，
+    # 而 §2.4.1 一的紅線是關於答案內容的。
+    #
+    # **這裡只認結論詞、不認裸數字**，否則會反過來咬掉正常的回答：
+    # 「原處分日是哪一天？」→「113 年 6 月 11 日」有數字有量詞，但那是**卷內記載的
+    # 日期**，不是模型算出來的期間。把它也擋掉，承辦人問一個記在卷裡的日期
+    # 會拿到一句「期間計算由規則引擎負責」——那比原本的毛病更糟。
+    if answer_states_a_period_conclusion(answer):
+        return _verdict("r", "human_required", WHY_NUMERIC,
+                        redirect=dict(REDIRECT_DEADLINE))
 
     # 規則 2：用過 refine_text —— 即使同回合也檢索到 refs，改寫文字仍然無出處。
     if refine_used:
@@ -483,6 +585,28 @@ _QUERY_CLIP = 60
 def _clip(text: str, limit: int = _QUERY_CLIP) -> str:
     one_line = " ".join(str(text).split())
     return one_line if len(one_line) <= limit else one_line[:limit] + "…（節錄）"
+
+
+#: `extract_case_document` 回傳字串的結尾。**不要叫模型接著去讀卷內。**
+#:
+#: 原文是「要看內容請用 `read_case` 讀 intake／facts_excerpt／screen」，QA 雲上實測
+#: （`r05`）的後果是模型照做，一次按鈕跑出四張卡：
+#:
+#:     tc-1 extract_case_document   （n1 11150ms／n2 0ms／n3 0ms）
+#:     tc-2 read_case {"section":"intake"}
+#:     tc-3 read_case {"section":"facts_excerpt"}
+#:     tc-4 read_case {"section":"screen"}
+#:
+#: 整輪 28 秒而 n1 只佔 11 秒，其餘是三輪模型往返加三次節流。**不是模型不聽話，
+#: 是這句話叫它去做的。** 而契約 §3.3 說那四塊內容由前端打彙整版取，agent 不必再讀。
+#:
+#: 順帶修掉兩件事：原文把 `read_case` 這個函式名與三個分區鍵名端到模型面前
+#: （紅線 5 管的是模型的輸出，管不到工具回傳值——假話與術語的來源常常是我們自己）。
+_EXTRACT_NO_REREAD = (
+    "收文欄位、事實摘錄與程序審查的結果都已經隨這次解析產出，**不必再讀一次卷內**。"
+    "請用一兩句話說明解析完成、目前走到哪一步就好。"
+    "承辦人接著問某一項的細節時，那時再去讀對應的部分。"
+)
 
 
 def degraded_summary(out: dict[str, Any]) -> str:
@@ -1193,6 +1317,10 @@ class ChatTools:
         if Agent is None:
             self._result("refine_text", [], "模型不可用", status="failed")
             raise LLMError(_STRANDS_MISSING)
+        # **`callback_handler=None` 是刻意的，不要順手接上 `token`**：
+        # 這一支的輸出是「改寫後的文字」，走 `tool_result` 回給模型，不是這一輪的
+        # 回答。串流出去會讓改寫稿逐字打在對話框裡，看起來像 agent 在回話
+        # （而且 §3.4 說改寫文字走 `token` 那句，指的是主 agent 轉述它的那一段）。
         agent = Agent(model=_load_model(model_kind="draft"),
                       system_prompt=_prompt("chat_refine"),
                       tools=[], callback_handler=None)
@@ -1255,10 +1383,9 @@ class ChatTools:
                     f"這個 run 只跑到程序審查，沒有草稿。"
                     f"請照實把上面的原因告訴使用者，講清楚卡在哪一步、要補哪幾個欄位，"
                     f"並說明補齊後才能續跑。**不要說解析已完成，也不要說現在可以生成草稿。**"
-                    f"要看內容請用 read_case 讀 intake／facts_excerpt／screen。")
+                    f"{_EXTRACT_NO_REREAD}")
         return (f"已完成卷證解析（run {out.get('run_id')}，終態 {out.get('state')}）。"
-                f"這個 run **只跑到程序審查，沒有草稿**。"
-                f"要看內容請用 read_case 讀 intake／facts_excerpt／screen。")
+                f"這個 run **只跑到程序審查，沒有草稿**。{_EXTRACT_NO_REREAD}")
 
     def generate_decision_draft(self) -> str:
         """跑 n4–n6，產出一份經過引用守門的決定書草稿。
@@ -1577,6 +1704,44 @@ class ChatTools:
                 build_relation_graph]
 
 
+def token_callback_handler(emit: Any) -> Any:
+    """Strands 的 callback → `token` 事件（契約 §2.3）。`emit` 是 `None` 就回 `None`。
+
+    ## 為什麼需要它
+
+    `token` 在契約 §2.3 的事件表裡、前端也有逐字 append 的邏輯，但**後端從來沒有
+    發過一筆**（QA 掃 `r01`–`r10` 十份 SSE，`token` 共 0 筆）：`build_chat_agent`
+    傳的是 `callback_handler=None`，而 `_run_turn` 是一次阻塞呼叫，模型的文字
+    從頭到尾沒有中途出口。契約沒有說謊（§2.3 明寫「`token` 可零筆」），
+    也不在任何「本期不做」的註記裡——它就是一個沒接上的事件。
+
+    畫面不會壞（`frontend/src/store/app.js:548`：沒收到 token 但 `done` 有
+    `answer` 就補一則泡泡），差別是**一輪 10–72 秒完全沒有聲音**。
+
+    ## `reasoningText` 一個字都不准出去
+
+    那是模型的推理過程。承辦人看到它會以為那是系統的判斷理由，**而它不是**——
+    會變成「把內部的東西端到承辦人面前」的又一個實例（同紅線 5 那一族）。
+    Strands 把它放在**另一個 kwarg**（`reasoningText`），所以這裡**只讀 `data`**，
+    其餘一律不碰：白名單而不是黑名單，日後 Strands 多一個欄位也不會漏出去。
+
+    kwarg 的形狀不是猜的，是照本機安裝的
+    `strands.handlers.callback_handler.PrintingCallbackHandler.__call__` 的宣告：
+    `reasoningText`（推理）、`data`（文字內容）、`complete`（是不是最後一塊）。
+    """
+    if emit is None:
+        return None
+
+    def on_chunk(**kwargs: Any) -> None:
+        text = kwargs.get("data")
+        # 只轉發字串型的 `data`。空字串跳過——發一個空的 `token` 只會讓前端
+        # 多開一則空泡泡（`:484` 收到第一筆就 push）。
+        if isinstance(text, str) and text:
+            emit("token", {"text": text})
+
+    return on_chunk
+
+
 def build_chat_agent(case_payload: dict[str, Any], refbook: RefBook,
                      retriever: Any = None, snapshot: dict[str, Any] | None = None,
                      emit: Any = None, *, run_pipeline: Any = None,
@@ -1611,7 +1776,9 @@ def build_chat_agent(case_payload: dict[str, Any], refbook: RefBook,
         model=_load_model(model_kind="draft"),
         system_prompt=_prompt("chat_ask"),
         tools=tools.as_strands_tools(),
-        callback_handler=None,
+        # 逐字串流（契約 §2.3 的 `token`）。**只有這一個 agent 發 token**——
+        # `refine_text` 自己另建一個，那支維持靜音（見那裡的說明）。
+        callback_handler=token_callback_handler(emit),
     )
     return agent, tools
 
@@ -1627,6 +1794,7 @@ __all__ = [
     "PIPELINE_NODE_LABELS",
     "build_chat_agent",
     "cited_ids",
+    "token_callback_handler",
     "ARCHIVE_CHANNEL_CORPUS",
     "ARCHIVE_CHANNEL_LAWTABLE",
     "ARCHIVE_LAWTABLE_PREFIX",
