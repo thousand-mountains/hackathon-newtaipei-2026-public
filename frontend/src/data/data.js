@@ -39,10 +39,10 @@ export const CASE_POOL = [
 ];
 
 export const TOOLS = [
-  {id:"extract",cmd:"/萃取答辯書",name:"萃取答辯書",api:"extract_case_document",
+  {id:"extract",cmd:"/解析卷證檔案",name:"解析卷證檔案",api:"extract_case_document",
    param:"files[], case_id",
    desc:"解析卷證，判斷案件類型，輸出事實經過、訴願主張、本案爭點與程序審查結果",
-   kw:["萃取","解析","讀取","擷取","分析卷","分析檔","摘要","案件類型","程序審查","看一下卷"]},
+   kw:["萃取","解析","讀取","擷取","分析卷","分析檔","摘要","案件類型","程序審查","看一下卷","解析卷證"]},
   {id:"cases",cmd:"/查找相似案例",name:"查找相似案例",api:"search_similar_decisions",
    param:"case_type, issues[], top_k=5",
    desc:"檢索歷史訴願決定書資料庫，回傳相似案例卡片並存入右側卷宗",

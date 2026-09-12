@@ -119,7 +119,7 @@
 
 ```jsonc
 {
-  "message": "幫我萃取答辯書",   // 必填（點 chip 時前端會帶對應的命令字串，如 "/萃取答辯書"）
+  "message": "幫我解析卷證檔案", // 必填（點 chip 時前端會帶對應的命令字串，如 "/解析卷證檔案"）
   "session_id": "sess-…",       // 選填；省略＝沿用該 case 的對話 session
   "tool_hint": "extract",       // 選填；點 chip／/ 選單時帶（extract|cases|laws|graph|draft|refine|export）
                                 //   純打字時省略，由後端自行判斷要不要呼叫工具
@@ -166,7 +166,7 @@ wire 格式：`event: <名稱>\ndata: <一行 JSON>\n\n`。共通欄位：`seq`�
 
 前端設計稿列 8 張工具卡（`data.js TOOLS`），但 `export_pdf`／`export_docx` 其實是**下載**（走 §1.5 的 export 端點 #23，不是 chat 工具），關聯圖是否保留見 §6。以下是走 chat 的工具：
 
-### 3.1 `extract`（萃取答辯書）→ 歸檔：不歸檔，直接顯示在對話卡
+### 3.1 `extract`（解析卷證檔案）→ 歸檔：不歸檔，直接顯示在對話卡
 對應 `ToolOut.vue out.type==='extract'`。
 ```jsonc
 {

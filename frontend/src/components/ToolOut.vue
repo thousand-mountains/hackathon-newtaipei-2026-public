@@ -7,7 +7,7 @@ const emit = defineEmits(['view-case', 'view-graph', 'preview-paper', 'export-do
 </script>
 
 <template>
-  <!-- 萃取結果 -->
+  <!-- 解析卷證結果 -->
   <template v-if="out.type === 'extract'">
     <div class="sec">
       <div class="sec-h">案件基本資訊</div>

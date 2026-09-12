@@ -285,7 +285,7 @@ const IMPL = {
   },
   async graph(c, tool, ack) {
     if (!c.flags.extract) {
-      aiMsg('<p>還沒萃取，我手上沒有節點可以牽線。先跑一次<b>萃取答辯書</b>吧。</p>')
+      aiMsg('<p>還沒解析卷證，我手上沒有節點可以牽線。先跑一次<b>解析卷證檔案</b>吧。</p>')
       return
     }
     const msg = await toolBlock(
@@ -438,7 +438,7 @@ export async function send(text) {
     return
   }
   if (files.length && !text) {
-    aiMsg(`<p>已收到 ${files.length} 份卷證並歸檔至右側「卷證檔案」。是否要開始萃取？點選下方的「萃取答辯書」，或直接輸入 <code style="font-family:var(--mono);font-size:11.5px">/萃取答辯書</code>。</p>`)
+    aiMsg(`<p>已收到 ${files.length} 份卷證並歸檔至右側「卷證檔案」。是否要開始解析？點選下方的「解析卷證檔案」，或直接輸入 <code style="font-family:var(--mono);font-size:11.5px">/解析卷證檔案</code>。</p>`)
     return
   }
   aiMsg('<p>這句我沒對到工具。可以按 <code style="font-family:var(--mono);font-size:11.5px">/</code> 查看可呼叫的工具清單，或輸入「你會什麼」讓我列出全部 7 支 API。</p>')
@@ -517,7 +517,7 @@ export const chips = computed(() => {
     add('你會什麼？', { t: 'ask' }, '?')
     return out
   }
-  if (!f.extract) add('萃取答辯書', { t: 'tool', id: 'extract' }, '▸')
+  if (!f.extract) add('解析卷證檔案', { t: 'tool', id: 'extract' }, '▸')
   if (f.extract && !f.cases) add('查找相似案例', { t: 'tool', id: 'cases' }, '▸')
   if (f.extract && !f.laws) add('搜尋相關法規', { t: 'tool', id: 'laws' }, '▸')
   if (f.extract && !f.graph) add('生成關聯圖', { t: 'tool', id: 'graph' }, '▸')

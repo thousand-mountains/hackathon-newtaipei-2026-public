@@ -251,7 +251,7 @@ const moveFolders = computed(() => state.folders)
     :actions="[{ label: '取消', fn: closeSheet }, { label: '附加至訊息', pri: true, fn: submitAttach }]"
     @close="closeSheet"
   >
-    <p><span style="color: var(--muted); font-size: 12.5px">原型展示：以下為模擬的本機卷證檔案，勾選後將附加至訊息並觸發萃取工具。</span></p>
+    <p><span style="color: var(--muted); font-size: 12.5px">原型展示：以下為模擬的本機卷證檔案，勾選後將附加至訊息並觸發解析卷證工具。</span></p>
     <p v-if="!pickState.items.length"><span style="color: var(--faint); font-size: 12.5px">示範檔案皆已上傳。</span></p>
     <label v-for="(f, i) in pickState.items" :key="i" class="pickrow">
       <input type="checkbox" :checked="pickState.checked.includes(i)" @change="toggleCheck(i)" />

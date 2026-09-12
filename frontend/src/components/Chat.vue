@@ -23,7 +23,7 @@ const caseMeta = computed(() =>
       <h1>{{ c.name }}</h1>
       <span class="meta">{{ caseMeta }}</span>
       <span class="spacer"></span>
-      <div class="stage-strip" title="辦案進度：萃取 → 案例 → 法規 → 關聯圖 → 草稿 → 產出">
+      <div class="stage-strip" title="辦案進度：解析 → 案例 → 法規 → 關聯圖 → 草稿 → 產出">
         <span v-for="(on, i) in stages" :key="i" class="stage-pip" :class="{ on }"></span>
       </div>
     </div>
