@@ -7,7 +7,9 @@
 - **相依**：`chat-ask-agent`（甲案本體）、`deploy-backend-to-aws`（現行部署）
 - **死線**：繳交 2026-09-13。**ALB 白名單收窄是交件前最後一個部署動作。**
 
-> ⚠️ **本文件引用的兩份檔案目前尚未進 git**：`.prospec/changes/chat-ask-agent/*` 與 `docs/spec/2026-09-12-chat-honesty-lamps.md` 在主工作樹是未追蹤檔（`git ls-tree -r HEAD` 查不到）。在它們被 commit 之前，從乾淨 clone 打不開這些引用。本文件行號以**主工作樹當下的版本**為準，它們 commit 後請複查一次。
+> ⚠️ **本文件引用的兩份檔案目前尚未進 git**：`.prospec/changes/chat-ask-agent/*` 與 `docs/spec/2026-09-12-chat-honesty-lamps.md` 在主工作樹是未追蹤檔（`git ls-tree -r HEAD` 查不到），而且**正在被編輯**。在它們被 commit 之前，從乾淨 clone 打不開這些引用。
+>
+> 因此**指向這兩份的引用一律用內容錨點（搜某個字串）而非行號**——初稿用行號，已經害我做出一次錯誤判斷（誤以為 503/501 有衝突，實際是引到了一列不相干的表格）。指向 repo 內已 commit 檔案的行號則保留，那些不會動。
 
 ---
 
@@ -38,7 +40,7 @@
 
 背景：`verify.sh` 目前 4 段（首頁靜態資源 `:33-67`／`/api/health` 四項 `:69-106`／真打 Bedrock 端到端 `:108-153`／C 型守門 409 `:155-165`），輔助函式是 `note()` `:29`、`bad()` `:30`（同時設 `fail=1`）、`ok()` `:31`。
 
-⚠️ **契約重點，寫錯這條檢查就永遠失敗**：`run_id` 是**必填**，而且必須是一次**已完成**的 run（`docs/spec/2026-09-12-chat-honesty-lamps.md:31-33`；`case_id`／`run_id` 不同案回 400）。只送 `message` 的 curl **在系統完全正常時也拿不到 `data:` 行**。
+⚠️ **契約重點，寫錯這條檢查就永遠失敗**：`run_id` 是**必填**，而且必須是一次**已完成**的 run（`docs/spec/2026-09-12-chat-honesty-lamps.md`（搜 `"run_id"`，請求 body 的 jsonc 區塊）；`case_id`／`run_id` 不同案回 400）。只送 `message` 的 curl **在系統完全正常時也拿不到 `data:` 行**。
 
 驗收（可執行）：
 - `infra/cdk/verify.sh` 新增**第 5 段「聊天 SSE」**，插在第 4 段之後、「資料隔離」區塊（`:167`）之前。
@@ -66,7 +68,9 @@
 - **驗它不是恆真**：把 `run_id` 換成一個不存在的值跑一次，必須判失敗。
 - **驗它不是恆假**：在一個**已知正常**的部署上跑一次，必須通過。反向驗證證明不了這件事——一條參數寫錯的檢查永遠失敗，反向驗證照樣「通過」。
 
-⚠️ **fixture 模式的狀態碼已凍結為 503，不是待決**：`docs/spec/2026-09-12-chat-honesty-lamps.md:83` 寫「為什麼是 503 而不是 501（tech-lead 拍板，已凍結）…Ci 若要改回 501，**開工前說**；開工後不改」，`:369` 再重申一次。`.prospec/changes/chat-ask-agent/proposal.md:200` 仍寫「請 Ci 確認」，**兩份來源不一致，以 spec 的凍結為準**（見 Open Questions #1）。第 5 段可以直接對 fixture 模式斷言 503。
+⚠️ **fixture 模式的狀態碼已凍結為 503，不是待決。** 兩份來源**一致**：`docs/spec/2026-09-12-chat-honesty-lamps.md`（搜「為什麼是 503 而不是 501」）寫「tech-lead 拍板，已凍結…Ci 若要改回 501，**開工前說**；開工後不改」；`.prospec/changes/chat-ask-agent/proposal.md`（搜「fixture 模式回 503 而不是 501」）寫「tech-lead 已拍板 503（理由見 spec §2.3），契約凍結。Ci 若要改回 501，**開工前說**」。第 5 段可以直接對 fixture 模式斷言 503。
+
+> 本文件初稿曾宣稱這兩份打架，那是**行號漂移造成的誤判**（引用的 `:200` 實際是一列 `kb.py` 的表格）。已撤回。所有指向這兩份未追蹤檔的引用**一律改用內容錨點**（搜某個字串）而非行號。
 
 ### US-2: 換模型 id 時，IAM 要改哪裡是寫死的，不是臨場找 [P1]
 
@@ -75,8 +79,9 @@
 驗收：
 - **沿用 `BEDROCK_MODEL_ID_DRAFT` 的情況**：CDK 對**部署面**零改動。基準釘在 commit，不要用 `origin/main`——`origin/main` 會跟著甲案一起前進，那樣這條兩端都綠：
   ```bash
-  git diff --stat e27d2a7 -- infra/cdk/lib/ infra/cdk/bin/
-  # 期望：零輸出
+  git diff -U0 e27d2a7 -- infra/cdk/lib/ infra/cdk/bin/ \
+    | grep '^[+-]' | grep -vE '^(\+\+\+|---)' | grep -vE '^[+-][[:space:]]*//'
+  # 期望：零輸出（濾掉註解行——驗的是有沒有動到資源或權限，不是有沒有人改註解）
   ```
 - **改用第三顆模型 id 的情況**（條件式，現在不做），要動的是這三處，一處都不能漏：
   1. `infra/cdk/lib/appeal-backend-stack.ts:11` 起的 `AppealBackendStackProps` 加 `readonly modelIdChat: string;`
@@ -129,6 +134,28 @@
 
 ⚠️ **收窄前必須先確認評審在哪裡看。** 那四組是**會場出口 IP**，收窄後從會場以外連進來的人會被擋掉，**包含交件後才自己點開網址的評審**。這題不能用推論決定——問到答案再收窄，問不到就不要收。
 
+### US-5: 聊天不會讓我們在評審面前吃 429 [P1]
+
+**作為**在 demo 現場的人，**我想要**聊天呼叫也受 1 RPS 節流保護，**這樣**我不會在評審面前拿到一個當場除不了錯的 429。
+
+背景（實查，非推論）：`_throttle()` 只管 `_invoke_structured` **每一次送出的請求**，Strands agent loop 在**一次**呼叫內因工具往返而多打的模型請求**不經過它**（`backend/llm/client.py:76-80` docstring 明寫）。聊天正是 agent loop，一輪可能連打 3–5 次。賽方規範是 ≤1 RPS（`client.py:62`）。
+
+**已定案：補 throttle。** 取捨理由——慢 3–5 秒是可以解釋的體驗損失，429 不是。
+
+驗收：
+- `backend/llm/chat.py` 的**每個工具進入點**各呼叫一次 `_throttle()`，一個都不能漏。
+- 驗法（可執行）：列出 `chat.py` 裡所有註冊為 tool 的函式，逐一確認第一行是 `_throttle()`：
+  ```bash
+  grep -n '@tool\|def \|_throttle()' backend/llm/chat.py
+  # 每個 @tool 底下的 def，其函式體第一句要是 _throttle()
+  ```
+- 代價：一輪聊天多等約 3–5 秒（**估計值，未量測**）。落地後量一次實際值填回這裡。
+
+⚠️ **誠實限制，不要讓規格寫得像已經解決：**
+1. 補 throttle **只保證單一路徑不超速**。甲案下六節點與聊天共用**同一個進程**的節流狀態，所以進程內是有效的。
+2. **乙案（AgentCore）一上線就破了**：聊天跑在另一個容器，兩邊各節各的，**甲乙並存時全域仍可能超標**。真要嚴格全域限速，得把兩邊併進同一個節流器——`client.py:76-80` 的第 2 點（`retrieval/kb.py` 的 `RETRIEVE_INTERVAL_S` 是另一個獨立的閘）講的是同一件事。
+3. **賽制是否把聊天呼叫一起算，仍然待查。** 補 throttle 是保守選擇，不是因為查到了答案。
+
 ---
 
 ## Edge Cases
@@ -136,9 +163,9 @@
 | 情境 | 預期行為 | 怎麼發現 |
 |---|---|---|
 | 聊天用了 `BEDROCK_MODEL_ID_DRAFT` 以外的模型，但沒改 CDK | 線上 `AccessDenied`，本機完全驗不出來（本機憑證權限比 task role 寬） | US-2 的 `cdk synth` 查 ARN；或 `verify.sh` 第 5 段在雲上失敗 |
-| 第 5 段的 curl 漏送 `run_id` | 回 400／422，拿不到 `data:` 行，**系統正常也判失敗** | 契約在 `docs/spec/2026-09-12-chat-honesty-lamps.md:31-33`。這是恆假型驗收，比恆真更毒——它會訓練人忽略 `verify.sh` |
+| 第 5 段的 curl 漏送 `run_id` | 回 400／422，拿不到 `data:` 行，**系統正常也判失敗** | 契約在 `docs/spec/2026-09-12-chat-honesty-lamps.md`（搜 `"run_id"`，請求 body 的 jsonc 區塊）。這是恆假型驗收，比恆真更毒——它會訓練人忽略 `verify.sh` |
 | SSE 在 ALB 後面被緩衝，事件不即時 | `X-Accel-Buffering: no` 已在既有端點處理（`app.py:459-463`）；ALB idle timeout 900 秒夠 | US-1 的 `curl -N` 必須真的看到 `data:` 行，只看狀態碼抓不到 |
-| **聊天繞過 1 RPS 節流器** | ⚠️ **不是「會被壓低」，是「不受保護」**：`_throttle()` 只管 `_invoke_structured` 每次送出的請求，**Strands agent loop 在一次呼叫內的工具往返不經過它**（`backend/llm/client.py:76-80` docstring 明寫）。聊天正是 agent loop，一輪可能連打 3–5 次模型；`retrieval/kb.py` 的 `RETRIEVE_INTERVAL_S` 是另一個獨立的閘，兩者相加仍可能超標 | 已列為待決（`honesty-lamps.md:371-373`）。賽方規範是 ≤1 RPS（`client.py:62`）。**要不要在交件前把 agent loop 併進節流器，是 Ci 的取捨，不是技術問題** |
+| **聊天繞過 1 RPS 節流器** | ⚠️ **不是「會被壓低」，是「不受保護」**：`_throttle()` 只管 `_invoke_structured` 每次送出的請求，**Strands agent loop 在一次呼叫內的工具往返不經過它**（`backend/llm/client.py:76-80` docstring 明寫）。聊天正是 agent loop，一輪可能連打 3–5 次模型；`retrieval/kb.py` 的 `RETRIEVE_INTERVAL_S` 是另一個獨立的閘，兩者相加仍可能超標 | **已定案：補 throttle**（見 US-5）。理由是評審面前拿到 429 比慢 3–5 秒難看得多，而且 429 發生在 demo 中途無法當場除錯 |
 | 聊天與六節點 SSE 同時開很多條 | 共用同一個 uvicorn threadpool（預設 40 條），demo 量級夠用；不是通用方案 | 容量假設，非本 change 改動範圍 |
 | ALB 白名單誤啟用（不該收窄時收窄了） | `AlbIngress` 會顯示 CIDR 而非 `0.0.0.0/0`，**但它可能說謊**（見 US-4 警語） | `AlbIngress` ＋ `describe-security-groups` 兩個都看 |
 | `.env` 裡被人加了 `ALB_ALLOWED_CIDRS` | `deploy.sh` 會靜默覆蓋命令列的值，**且回滾步驟失效** | US-4 步驟 0b。實查 2026-09-12：目前 `.env` 沒有這個變數 |
@@ -151,9 +178,10 @@
 本 change 完成的定義（全部通過才算）：
 
 ```bash
-# 1) 「部署零改動」是可驗證的。基準釘在 commit，不是 origin/main
-git diff --stat e27d2a7 -- infra/cdk/lib/ infra/cdk/bin/
-#    期望：零輸出
+# 1) 「部署零改動」是可驗證的。基準釘在 commit，不是 origin/main；且濾掉註解行
+git diff -U0 e27d2a7 -- infra/cdk/lib/ infra/cdk/bin/ \
+  | grep '^[+-]' | grep -vE '^(\+\+\+|---)' | grep -vE '^[+-][[:space:]]*//'
+#    期望：零輸出。濾註解的理由——驗的是有沒有動到資源或權限，不是有沒有人改註解
 git diff --stat e27d2a7 -- backend/requirements.txt
 #    期望：只有 :19 那句註解的修正，不得有新增套件行
 
@@ -192,13 +220,13 @@ grep -n 'ALB_ALLOWED_CIDRS' backend/DEPLOY.md    # 期望在 §3.6 與 §6 都�
 
 ## Open Questions
 
-1. **503 vs 501：兩份來源不一致，需要一句話定案。** `docs/spec/2026-09-12-chat-honesty-lamps.md:83` 寫 tech-lead 已拍板 503、契約凍結、開工後不改；`.prospec/changes/chat-ask-agent/proposal.md:200` 仍寫「請 Ci 確認」。**本 change 採信 spec 的凍結**。請 Ci 一句話定案後，把弱的那份改掉，否則明天還會再吵一次。
-2. **聊天要不要併進 1 RPS 節流器？** 這不是「待查」而是「待拍板」——程式碼白紙黑字說聊天**不受保護**（`backend/llm/client.py:76-80`），賽方規範是 ≤1 RPS（`client.py:62`）。選項在 `honesty-lamps.md:371-373`：保護（一輪多等約 3–5 秒，估計值未量測）／不保護（承認可能短暫超標）。**賽制是否把聊天呼叫一起算，仍然待查。** 這是分層誠實 vs 30h 紀律的取捨。
+1. ~~**503 vs 501 兩份來源不一致。**~~ **已撤回：兩份其實一致**，都寫「tech-lead 已拍板 503、契約凍結、Ci 若要改開工前說」。初稿的衝突宣稱源於引用了一個漂掉的行號，不是真的矛盾。**不需拍板，不需改動任何檔案。**
+2. ~~**聊天要不要併進 1 RPS 節流器？**~~ **已定案：補 throttle**（US-5）。**但仍有一項待查：賽制是否把聊天呼叫一起算。** 補 throttle 是保守選擇，不是因為查到了答案——這一點不要在轉述時說成「已確認合規」。
 3. **四組會場 IP 的實際值？** 交件前向賽方確認。刻意不寫死在任何文件裡，避免抄到過期的值。
 4. **評審是在會場內還是會場外看？** 未確認。**這題沒答案就不該收窄**（US-4 的警語）。
 5. **`chat-ask-agent` 與 `chat-honesty-lamps` 要不要 commit？** 不 commit 的話，本文件的五個引用在 main 上全是死鏈（本文件開頭已標注）。
 6. **AgentCore（Stretch）若真的做，環境變數開關要對齊** `CHAT_BACKEND=inproc|agentcore`，預設 `inproc`。本 change 不設計這個開關，只記下名稱以免兩邊各發明一個。
-7. **既有矛盾（非本 change 造成，但會誤導人）**：環境收回時間有兩種說法在 repo 裡並存——`backend/DEPLOY.md:413-428`（§3.5，來自 `bce7667`）說「不主張 9/15，以 9/13 13:00 可能即失效為準備基準」，而 `.prospec/changes/deploy-backend-to-aws/proposal.md:32`（來自 `e6fb4343`）說「已由 Ci 確認：環境會一直開到黑客松結束，先前兩說皆不再作為規劃基準」。`appeal-backend-stack.ts:72` 的註解也指回舊說法。**要改就三處一起改**，需 Ci 確認以哪個為準。
+7. ~~**環境收回時間兩說並存。**~~ **已對齊三處**（`backend/DEPLOY.md` §3.5、`infra/cdk/lib/appeal-backend-stack.ts` 的 VPC 註解、`deploy-backend-to-aws/proposal.md` 的硬前提表），統一為「環境開到黑客松結束」。**來源等級一律照實寫成「Ci 2026-09-12 口頭確認，非賽方書面」，不得在轉述時升級成「賽方確認」。** 口頭確認效力弱於書面，Ci 會再確認一次這個事實是否仍成立。
 
 ---
 
@@ -227,6 +255,8 @@ grep -n 'ALB_ALLOWED_CIDRS' backend/DEPLOY.md    # 期望在 §3.6 與 §6 都�
 | 2 | `chat-ask-agent` 實作完成後，加 `verify.sh` 第 5 段（**帶 `run_id`**），並跑「不存在 run_id 判失敗」＋「正常部署判通過」兩個方向 | ⏳ 等甲案 |
 | 3 | 同步改 `verify.sh:2` 檔頭與 `DEPLOY.md:325` §3.4 標題的「四條」→「五條」 | ⏳ 併在步驟 2 一起 |
 | 4 | 修 `backend/requirements.txt:19` 的過時註解（單檔 → 目錄級） | ⏳ 併在步驟 2 一起 |
-| 5 | 跑 `git diff --stat e27d2a7 -- infra/cdk/lib/ infra/cdk/bin/` 確認「部署零改動」成立 | ⏳ 等步驟 2 |
-| 6 | Ci 拍板 Open Questions #1（503/501 定案）與 #2（RPS 保不保護） | ⏳ |
+| 5 | 跑 Success Criteria #1 的濾註解 diff，確認「部署零改動」成立 | ⏳ 等步驟 2 |
+| 6 | 在 `backend/llm/chat.py` 每個工具進入點補 `_throttle()`（US-5，已定案），並量實際延遲填回規格 | ⏳ 等甲案 |
+| 6b | ~~Ci 拍板 503/501 與 RPS~~ | ✅ 503/501 本無衝突（誤判已撤回）；RPS 已定案補 throttle |
+| 6c | 環境收回時間三處對齊 | ✅ 本 commit（DEPLOY.md §3.5、`appeal-backend-stack.ts` VPC 註解；proposal 那份本來就是新的） |
 | 7 | 交件前：照 DEPLOY.md §6 收窄 ALB，確認 `AlbIngress` **與 SG 實況**都變成四組，重跑 `verify.sh` 全段 | ⏳ 2026-09-13 |

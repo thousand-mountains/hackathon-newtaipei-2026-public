@@ -69,7 +69,8 @@ export class AppealBackendStack extends cdk.Stack {
     // ── VPC ───────────────────────────────────────────────────────────────
     // 用帳號的預設 VPC（四個公有子網），不自建 VPC：
     //   自建就得配 NAT gateway 才能讓 task 拉 ECR 映像檔——多花錢、多花時間，
-    //   而環境本來就是短命的（收回時間見 DEPLOY.md §3.5，尚未向賽方確認）。
+    //   而環境本來就是短命的（收回時間見 DEPLOY.md §3.5：開到黑客松結束，
+    //   Ci 2026-09-12 口頭確認，非賽方書面）。
     //   task 放公有子網 + 指派 public IP 即可拉映像檔，
     //   對外仍然只有 ALB 進得來（見下面 SG）。
     const vpc = ec2.Vpc.fromLookup(this, 'DefaultVpc', { isDefault: true });

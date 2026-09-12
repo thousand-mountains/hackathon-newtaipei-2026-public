@@ -32,8 +32,9 @@
 ## Implementation Steps
 
 1. **等 `chat-ask-agent` 把端點做出來**（本 change 的唯一硬相依）
-   - 端點路徑 `POST /api/cases/{case_id}/chat`；request body 契約已定於 `docs/spec/2026-09-12-chat-honesty-lamps.md:31-33`：`{run_id（必填，須為已完成的 run）, message（必填非空）, session_id?, context?}`，`case_id`／`run_id` 不同案回 400
-   - fixture 模式狀態碼**已凍結為 503**（同檔 `:83`，tech-lead 拍板，開工後不改）
+   - 端點路徑 `POST /api/cases/{case_id}/chat`；request body 契約已定於 `docs/spec/2026-09-12-chat-honesty-lamps.md`（搜 `"run_id"` 的 jsonc 區塊）：`{run_id（必填，須為已完成的 run）, message（必填非空）, session_id?, context?}`，`case_id`／`run_id` 不同案回 400
+   - fixture 模式狀態碼**已凍結為 503**（同檔搜「為什麼是 503 而不是 501」，tech-lead 拍板，開工後不改）。`chat-ask-agent/proposal.md` 的說法與它一致，**沒有衝突**——初稿曾誤判有衝突，源於行號漂移
+   - ⚠️ **指向這兩份未追蹤檔的引用一律用內容錨點，不要用行號。** 它們正在被編輯，行號會漂
 
 2. **在 `infra/cdk/verify.sh` 加第 5 段**
    - 插入點：`:166` 附近（第 4 段結束、資料隔離區塊開始之前）
@@ -66,8 +67,20 @@
    - `infra/cdk/verify.sh:2` 檔頭、`backend/DEPLOY.md:325` §3.4 標題
    - 不改的話，第 5 段落地當下這兩處就變成錯的
 
+4b. **在 `backend/llm/chat.py` 的每個工具進入點補 `_throttle()`**（已定案，不是選項）
+   - 理由：評審面前拿到 429 比慢 3–5 秒難看得多，而且 429 發生在 demo 中途無法當場除錯
+   - 每個註冊為 tool 的函式，函式體第一句呼叫 `_throttle()`，**一個都不能漏**
+   - 驗法：`grep -n '@tool\|def \|_throttle()' backend/llm/chat.py`，逐一核對每個 `@tool` 底下的 `def`
+   - 代價：一輪聊天多等約 3–5 秒（**估計值，未量測**）。落地後量一次實際值填回規格
+   - ⚠️ **誠實限制，不要寫得像已經解決**：這只保證**單一路徑**不超速。甲案下六節點與聊天共用同一個進程的節流狀態，進程內有效；**乙案（AgentCore）一上線就破了**——聊天跑在另一個容器，兩邊各節各的，甲乙並存時全域仍可能超標。**賽制是否把聊天呼叫一起算，仍然待查**；補 throttle 是保守選擇，不是查到了答案
+
 5. **確認「部署零改動」成立**（這是交付項，不是順手）
-   - `git diff --stat e27d2a7 -- infra/cdk/lib/ infra/cdk/bin/` → 期望零輸出
+   - 濾掉註解行後零輸出：
+     ```bash
+     git diff -U0 e27d2a7 -- infra/cdk/lib/ infra/cdk/bin/ \
+       | grep '^[+-]' | grep -vE '^(\+\+\+|---)' | grep -vE '^[+-][[:space:]]*//'
+     ```
+     濾註解的理由：`169dd41` 之後有一次純註解修正（環境收回時間對齊），用 `--stat` 會紅但跟聊天無關。**驗的是有沒有動到資源或權限。**
    - ⚠️ **基準要釘在 commit，不要用 `origin/main`**：`origin/main` 會跟著甲案一起前進，用它當基準這條**兩端都綠**（併之前沒東西可比、併之後基準跟著動），是一條恆真檢查
    - `git diff --stat e27d2a7 -- backend/requirements.txt` → 期望只有 `:19` 那句註解
    - 若 `infra/cdk/lib/`／`bin/` 有輸出，代表甲案實際上動了 CDK，前提破了，要回頭看哪裡走偏
@@ -92,10 +105,10 @@
 
 | Risk | Impact | Mitigation |
 |------|--------|------------|
-| **第 5 段漏送必填的 `run_id` → 恆假檢查** | **High** | 契約在 `honesty-lamps.md:31-33`。步驟 2 的寫法已帶 `run_id`；步驟 3 的「不恆假」方向專門擋這類 |
+| **第 5 段漏送必填的 `run_id` → 恆假檢查** | **High** | 契約在 `honesty-lamps.md`（搜 `"run_id"` 的 jsonc 區塊）。步驟 2 的寫法已帶 `run_id`；步驟 3 的「不恆假」方向專門擋這類 |
 | 收窄後評審連不進來（那四組是**會場出口 IP**，會場外一律被擋，包含交件後才自己點開網址的評審） | **High** | **先確認評審在會場內還是會場外看，問到答案再收窄**。問不到就不收——維持 `0.0.0.0/0` 的損失遠小於評審點不開 |
 | 聊天改用第三顆模型 id 卻沒改 IAM | **High** | 線上 `AccessDenied`，**本機完全驗不出來**（本機憑證權限比 task role 寬）。用步驟 6 的 `cdk synth` 查 ARN，靜態就驗得出來 |
-| **聊天繞過 1 RPS 節流器**（`_throttle()` 只管 `_invoke_structured` 送出的請求，**Strands agent loop 的工具往返不經過它**——`backend/llm/client.py:76-80` docstring 明寫；聊天正是 agent loop，一輪可能連打 3–5 次） | **High（賽制風險）** | ⚠️ **未緩解**。賽方規範 ≤1 RPS（`client.py:62`）。選項見 `honesty-lamps.md:371-373`：在 `chat.py` 每個工具進入點各呼叫一次 `_throttle()`（一輪多等約 3–5 秒，估計未量測），或承認可能短暫超標。**待 Ci 拍板**；賽制是否把聊天呼叫一起算仍**待查** |
+| **聊天繞過 1 RPS 節流器**（`_throttle()` 只管 `_invoke_structured` 送出的請求，**Strands agent loop 的工具往返不經過它**——`backend/llm/client.py:76-80` docstring 明寫；聊天正是 agent loop，一輪可能連打 3–5 次） | **High（賽制風險）** | **已定案：補 throttle**（步驟 4b）。⚠️ **只緩解單一路徑**：甲案進程內有效，**乙案 AgentCore 一上線就破**（另一個容器，兩邊各節各的）。**賽制是否把聊天呼叫一起算仍待查**——不要把這條讀成已合規 |
 | 用 `origin/main` 當「零改動」基準 → 恆真檢查 | Medium | 步驟 5 已改成釘 `e27d2a7` |
 | `.env` 被加了 `ALB_ALLOWED_CIDRS` → 命令列值被靜默覆蓋、**回滾失效** | Medium | 步驟 7 的 0b。實查 2026-09-12：目前 `.env` 沒有這個變數 |
 | `AlbIngress` 說謊（值從 props 推導，不讀 SG 實況；`appeal-backend-stack.ts:232`） | Medium | 步驟 7 步驟 2 要求 `describe-security-groups` 一起查 |

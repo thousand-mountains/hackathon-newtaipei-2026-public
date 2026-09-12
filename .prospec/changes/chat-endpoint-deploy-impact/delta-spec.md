@@ -2,7 +2,7 @@
 
 > REQ ID 格式：`REQ-{MODULE}-{NUMBER}`
 > 本 change 只動**部署面**。聊天端點本身的需求在 `chat-ask-agent` 的 delta-spec（`REQ-CHAT-*`）。
-> ⚠️ 本文件引用的 `.prospec/changes/chat-ask-agent/*` 與 `docs/spec/2026-09-12-chat-honesty-lamps.md` **尚未進 git**，行號以主工作樹當下版本為準，它們 commit 後請複查。
+> ⚠️ 本文件引用的 `.prospec/changes/chat-ask-agent/*` 與 `docs/spec/2026-09-12-chat-honesty-lamps.md` **尚未進 git 且正在被編輯**，因此指向它們的引用**一律用內容錨點（搜某個字串）而非行號**。指向已 commit 檔案的行號則保留。
 
 ## ADDED
 
@@ -16,7 +16,7 @@
 
 **Acceptance Criteria:**
 
-1. 請求必須帶 `run_id`，且該 run 必須是一次**已完成**的 run（契約：`docs/spec/2026-09-12-chat-honesty-lamps.md:31-33`；`case_id`／`run_id` 不同案回 400）。作法是重用第 3 段跑完的 `rid`（`verify.sh:116` 取得，`:167` 仍在作用域）：
+1. 請求必須帶 `run_id`，且該 run 必須是一次**已完成**的 run（契約：`docs/spec/2026-09-12-chat-honesty-lamps.md`，搜 `"run_id"` 的 jsonc 區塊；`case_id`／`run_id` 不同案回 400）。作法是重用第 3 段跑完的 `rid`（`verify.sh:116` 取得，`:167` 仍在作用域）：
    ```bash
    curl -N -s --max-time 60 -X POST "$base/api/cases/synthetic-ordinary-01/chat" \
         -H 'content-type: application/json' \
@@ -30,7 +30,7 @@
    - 不恆真——把 `run_id` 換成不存在的值，第 5 段必須判失敗
    - 不恆假——在已知正常的部署上跑一次，第 5 段必須通過
    只做前者不滿足本需求：反向驗證證明不了「這條檢查不是永遠失敗」。
-6. fixture 模式的斷言為 **503**（已凍結，`honesty-lamps.md:83`：tech-lead 拍板，端點已實作、不可用的是執行檔位；`:369` 重申）。**不是 501**。
+6. fixture 模式的斷言為 **503**（已凍結：`honesty-lamps.md` 搜「為什麼是 503 而不是 501」，tech-lead 拍板，端點已實作、不可用的是執行檔位）。**不是 501。** `chat-ask-agent/proposal.md`（搜「fixture 模式回 503 而不是 501」）說法一致，兩份**沒有衝突**。
 7. `bash -n infra/cdk/verify.sh` 零輸出。
 8. 不新增測資：只用既有合成案例 `synthetic-ordinary-01`，並重用第 3 段真的跑出來的 run。
 
@@ -48,7 +48,12 @@
 
 **Acceptance Criteria:**
 
-1. `git diff --stat e27d2a7 -- infra/cdk/lib/ infra/cdk/bin/` **零輸出**。有輸出即代表前提破了，要回頭查哪裡走偏。
+1. 濾掉註解行之後**零輸出**：
+   ```bash
+   git diff -U0 e27d2a7 -- infra/cdk/lib/ infra/cdk/bin/ \
+     | grep '^[+-]' | grep -vE '^(\+\+\+|---)' | grep -vE '^[+-][[:space:]]*//'
+   ```
+   有輸出即代表前提破了，要回頭查哪裡走偏。**濾註解是刻意的**：驗的是「有沒有動到資源或權限」，不是「有沒有人改過註解」（`169dd41` 之後就有一次純註解修正）。
 2. ⚠️ **基準必須釘在 commit（`e27d2a7`），不得用 `origin/main`。** `origin/main` 會跟著甲案一起前進，用它當基準這條**兩端都綠**——併之前沒東西可比、併之後基準跟著動——是一條恆真檢查，不滿足本需求。
 3. `git diff --stat e27d2a7 -- backend/requirements.txt` 只包含 `:19` 那句註解的修正（見 REQ-DEPLOY-012），**不得有任何新增套件行**。
 4. `/opt/homebrew/bin/python3 backend/tests/run_all.py` 全綠：374/374（另 2 項因語料不在 repo 被 harness 照實標示略過）。
@@ -101,6 +106,26 @@
 
 **Priority:** High
 
+### REQ-DEPLOY-014: 聊天呼叫也要受 1 RPS 節流保護，而且不得宣稱已全域解決
+
+**Description:**
+
+`_throttle()` 只管 `_invoke_structured` **每一次送出的請求**；Strands agent loop 在**一次**呼叫內因工具往返而多打的模型請求**不經過它**（`backend/llm/client.py:76-80` docstring 明寫）。聊天正是 agent loop，一輪可能連打 3–5 次。賽方規範 ≤1 RPS（`client.py:62`）。
+
+**已定案：補 throttle。** 取捨理由——評審面前拿到 429 比慢 3–5 秒難看得多，而且 429 發生在 demo 中途無法當場除錯。
+
+**Acceptance Criteria:**
+
+1. `backend/llm/chat.py` 中**每一個**註冊為 tool 的函式，函式體第一句呼叫 `_throttle()`。一個都不能漏。
+2. 驗法：`grep -n '@tool\|def \|_throttle()' backend/llm/chat.py`，逐一核對每個 `@tool` 底下的 `def`。**數量型門檻不算數**（「有幾個 `_throttle()`」可以湊），要的是**覆蓋每一個工具進入點**。
+3. 落地後實際量一次「一輪聊天多等多久」，把估計值（約 3–5 秒）換成量測值。**在量到之前，文件一律標「估計值，未量測」。**
+4. **文件與規格不得寫成「已解決全域 1 RPS」。** 必須同時寫出兩項限制：
+   - 這只保證**單一路徑**不超速。甲案下六節點與聊天共用同一個進程的節流狀態，進程內有效。
+   - **乙案（AgentCore）一上線即失效**：聊天跑在另一個容器，兩邊各節各的，**甲乙並存時全域仍可能超標**。真要嚴格全域限速，得把兩邊併進同一個節流器。
+5. **賽制是否把聊天呼叫一起算，標「待查」。** 補 throttle 是保守選擇，不是因為查到了答案——不得在轉述時說成「已確認合規」。
+
+**Priority:** High
+
 ---
 
 ## MODIFIED
@@ -125,6 +150,6 @@ _No removals in this change._
 
 ## 本 change 不解、但已記錄的既有問題
 
-1. **聊天不受 1 RPS 節流保護**（`backend/llm/client.py:76-80` docstring；`honesty-lamps.md:371-373`）。賽方規範 ≤1 RPS。**待 Ci 拍板**保護與否；賽制是否把聊天呼叫一起算**待查**。
-2. **503 vs 501 兩份來源不一致**：`honesty-lamps.md:83` 說已凍結 503，`chat-ask-agent/proposal.md:200` 說請 Ci 確認。本 change 採信 spec，請 Ci 一句話定案後把弱的那份改掉。
-3. **環境收回時間兩說並存**：`backend/DEPLOY.md:413-428`（§3.5，`bce7667`）vs `.prospec/changes/deploy-backend-to-aws/proposal.md:32`（`e6fb4343`）。`appeal-backend-stack.ts:72` 的註解也指回舊說法。**非本 change 造成，要改三處一起改**，需 Ci 確認以哪個為準。
+1. **聊天的 1 RPS 保護只到單一路徑為止**。已定案補 throttle（REQ-DEPLOY-014），但**乙案 AgentCore 一上線即失效**，甲乙並存時全域仍可能超標。**賽制是否把聊天呼叫一起算，仍待查。**
+2. ~~503 vs 501 兩份來源不一致~~ **已撤回：兩份一致**，初稿的衝突宣稱源於行號漂移（引到了一列不相干的表格）。不需拍板、不需改動。
+3. ~~環境收回時間兩說並存~~ **已對齊三處**（`backend/DEPLOY.md` §3.5、`appeal-backend-stack.ts` 的 VPC 註解、`deploy-backend-to-aws/proposal.md` 硬前提表）為「開到黑客松結束」。**來源等級照實記為「Ci 2026-09-12 口頭確認，非賽方書面」，不得升級成「賽方確認」。** 口頭效力弱於書面，Ci 會再確認一次。
