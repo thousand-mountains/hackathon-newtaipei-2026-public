@@ -137,13 +137,33 @@ class RefBook:
         self._n = 0
         self._by_id: dict[str, dict[str, Any]] = {}
 
-    def add(self, hit: Any) -> dict[str, Any]:
+    def add(self, hit: Any, score_kind: str | None = "embedding") -> dict[str, Any]:
         """收一筆 `Hit`（或已經 `as_dict()` 過的 dict），配號並回傳 wire 格式的 hit。
 
         回傳的形狀就是 spec §4.2 `tool_result.hits[]` 的一筆：
-        `{id, t, src, score, verified, note, provenance}`。
+        `{id, t, src, score, verified, note, provenance, ranked_by}`。
         `provenance` 只有 KB hit 的 `payload` 裡有，法條查表的 hit 沒有 → `None`
         （spec §4.2 要求前端處理 `null`，所以這裡明確填 `None` 而不是省略這個鍵）。
+
+        ## `ranked_by`：`score` 那個數字**是哪一種**
+
+        2026-09-13 補。開了重排之後 `KBRetriever` 會把 `score` 換成**重排分數**並在
+        `payload["ranked_by"]` 標 `"rerank"`（`backend/retrieval/kb.py:546`），
+        但這裡原本沒把它帶出去——於是前端拿到一個重排分數，畫面上寫「向量相似度 87%」。
+        **那個數字不是向量相似度**，而那句文案就在 demo 主畫面上（CONSTITUTION §1）。
+
+        `score_kind` 是**呼叫端告訴這裡「這個檢索器的分數預設是哪一種」**：
+
+        - `"embedding"`（預設）：KB 檢索。`payload` 標了 `"rerank"` 就用它，
+          沒標就是 embedding——**沒重排時檢索器刻意不標**這個鍵
+          （`test_live_plumbing.py:2737` 釘住），所以「缺鍵」在這裡等於 embedding，
+          與 `backend/nodes/n4_retrieval.py:345` 同一條規則。
+        - `None`：法條查表。它的 `score` 是 **1.0／0.0 的二元命中**，不是相似度，
+          報任何一種「排序方式」都是把二元結果講成程度。前端據此不顯示百分比。
+
+        **為什麼由呼叫端給而不是在這裡嗅 payload**：嗅探（例如「有 `law` 鍵就是查表」）
+        會在某一天欄位改名時靜默倒向另一邊，而症狀是畫面上的文案錯了、沒有燈會亮。
+        呼叫端本來就握著 retriever，而 retriever 的 `name` 是**宣告出來的類別屬性**。
         """
         self._n += 1
         cid = f"c{self._n}"
@@ -160,12 +180,15 @@ class RefBook:
             # 每一筆 ref 自己帶 origin，前端才分得出「KB 命中」與「卷內既有」。
             # `done.origin` 維持 spec §7 凍結的三個值域，不在那裡新增第四個。
             "origin": "retrieval",
+            # 缺鍵不等於 null：省略會讓前端拿到 undefined 而不是值（契約 §2.3 同一條紀律）。
+            "ranked_by": (payload.get("ranked_by") or score_kind) if score_kind else None,
         }
         self._by_id[cid] = entry
         return entry
 
-    def add_all(self, hits: list[Any]) -> list[dict[str, Any]]:
-        return [self.add(h) for h in hits]
+    def add_all(self, hits: list[Any],
+                score_kind: str | None = "embedding") -> list[dict[str, Any]]:
+        return [self.add(h, score_kind) for h in hits]
 
     def add_case_refs(self, items: list[dict[str, Any]]) -> list[str]:
         """把卷內分區（`laws`／`cases`）自帶的 id 註冊進白名單。
@@ -196,6 +219,9 @@ class RefBook:
                 "note": item.get("note", "") or "卷內既有資料，非本次聊天檢索所得。",
                 "provenance": None,
                 "origin": "record",
+                # 卷內既有資料沒有檢索分數（`score` 就是 None），
+                # 也就沒有「誰排的」可言。明確填 None，不省略這個鍵。
+                "ranked_by": None,
             }
             added.append(cid)
         return added
@@ -547,6 +573,20 @@ def picks_needing_note(picked: list[dict[str, Any]],
 
 _NO_RETRIEVER = "目前沒有可用的檢索來源，這個工具查不了。請直接說明查不到，不要改用推測作答。"
 
+#: 分數**不是相似度**的檢索器。`LawTableRetriever.name`（`backend/retrieval/lawtable.py:21`）
+#: 是宣告出來的類別屬性，不是從 payload 嗅出來的。
+_BINARY_SCORE_BACKENDS = frozenset({"lawtable"})
+
+
+def _score_kind(retriever: Any) -> str | None:
+    """這個檢索器的 `score` 預設是哪一種數字（`RefBook.add` 的 `score_kind`）。
+
+    法條查表回 `None`：它的 1.0／0.0 是**條號在不在快照裡**，報成任何一種排序方式
+    都是把二元結果講成程度。其餘（KB）預設 embedding，實際重排過的那幾筆
+    由 `payload["ranked_by"]` 覆蓋。
+    """
+    return None if getattr(retriever, "name", "") in _BINARY_SCORE_BACKENDS else "embedding"
+
 
 class ChatTools:
     """一回合的工具集合與狀態。
@@ -690,7 +730,7 @@ class ChatTools:
             # 不回「查無結果」——那會讓模型把一次失敗講成「資料庫裡沒有」。
             # 訊息本身也不寫「查無」二字：模型很容易照抄回覆裡出現過的詞。
             return f"{note}。請告訴使用者這次查詢失敗了，不要說成資料庫裡沒有這筆資料。"
-        entries = self.refbook.add_all(hits)
+        entries = self.refbook.add_all(hits, _score_kind(retriever))
         self._result(name, entries, "" if entries else f"{which}查無結果。",
                      status="ok" if entries else "empty")
         if not entries:
