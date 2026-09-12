@@ -17,6 +17,19 @@ export interface AppealBackendStackProps extends cdk.StackProps {
   readonly knowledgeBaseId: string;
   /** 檢索分數下限（字串原樣傳給後端，由後端解析） */
   readonly kbMinScore: string;
+  /**
+   * ALB 對外開放的來源 CIDR 清單。
+   *
+   * 留空（預設）＝ `0.0.0.0/0`，任何人都能點開部署網址。
+   * 給了清單就**只有**這些來源進得來——賽方 2026-09-12 現場投影片要求
+   * 「AWS 部署時，對外開放連線請 allow 以下四組 IP」時用這個。
+   *
+   * ⚠️ 收窄有代價：那四組是**會場出口 IP**（實查 2026-09-12：本機對外 IP
+   * 就是其中之一），所以收窄後**從會場以外連進來的人會被擋掉**，
+   * 包含交件後才自己點開網址的評審。收窄前要先確認評審在會場內還是會場外看，
+   * 這題不能用推論決定。
+   */
+  readonly albAllowedCidrs?: readonly string[];
 }
 
 /** 這個帳號是共用的（已有四個 bucket、三個 KB），所有資源都掛這個前綴才認得出來。 */
@@ -112,6 +125,9 @@ export class AppealBackendStack extends cdk.Stack {
     // 建置 context 是 repo 根目錄（Dockerfile 要抓 backend/ 與 prototype/dist/）。
     // platform 一定要釘 linux/amd64：在 Apple Silicon 上少了這行，
     // Fargate 會因為 exec format error 起不來——第一次部署最常見的失敗原因。
+    const albAllowedCidrs = props.albAllowedCidrs ?? [];
+    const hasCidrAllowlist = albAllowedCidrs.length > 0;
+
     const repoRoot = path.resolve(__dirname, '..', '..', '..');
     const image = ecs.ContainerImage.fromAsset(repoRoot, {
       file: 'backend/Dockerfile',
@@ -154,6 +170,8 @@ export class AppealBackendStack extends cdk.Stack {
         desiredCount: 1,
         minHealthyPercent: 100,
         publicLoadBalancer: true,
+        // 有來源清單時不讓 pattern 自己加 0.0.0.0/0，改由下面逐條加。
+        openListener: !hasCidrAllowlist,
         // task 在公有子網並指派 public IP：沒有 NAT 也拉得到 ECR 映像檔。
         assignPublicIp: true,
         taskSubnets: { subnetType: ec2.SubnetType.PUBLIC },
@@ -198,6 +216,22 @@ export class AppealBackendStack extends cdk.Stack {
       timeout: cdk.Duration.seconds(10),
       healthyThresholdCount: 2,
       unhealthyThresholdCount: 3,
+    });
+
+    if (hasCidrAllowlist) {
+      for (const cidr of albAllowedCidrs) {
+        service.loadBalancer.connections.allowFrom(
+          ec2.Peer.ipv4(cidr),
+          ec2.Port.tcp(80),
+          // SG 規則描述跟 IAM role description 一樣只吃 ASCII，CloudFormation 會擋中文
+          `organiser allow list ${cidr}`,
+        );
+      }
+    }
+
+    new cdk.CfnOutput(this, 'AlbIngress', {
+      value: hasCidrAllowlist ? albAllowedCidrs.join(',') : '0.0.0.0/0',
+      description: 'Who can reach the ALB on port 80',
     });
 
     // 這是個短命的競賽環境，不必等連線排空。

@@ -429,6 +429,30 @@ aws cloudformation describe-stacks --stack-name hackntpc-appeal-backend \
 - 前端換版後要重建映像檔：`./deploy.sh deploy` 會自己重建並推送（`fromAsset` 的 hash 變了）。
 - 換 KB 正本只要改 `.env` 的 `BEDROCK_KB_ID` 再 `./deploy.sh deploy`，**不需重建映像檔**。
 
+### 3.6 ALB 來源 IP 白名單（預設全開，交件前才收窄）
+
+`ALB_ALLOWED_CIDRS` 控制誰連得到 ALB 的 80 port。**不設就是 `0.0.0.0/0`，任何人都點得開**——
+目前（2026-09-12）就是這個狀態，Ci 已拍板在交件前不收窄。
+
+```bash
+# 現在：不帶這個變數，維持全開
+./deploy.sh deploy
+
+# 交件前收窄（逗號分隔，空白會自動去掉）
+ALB_ALLOWED_CIDRS=<四組CIDR> ./deploy.sh deploy
+```
+
+怎麼確認目前是哪一種——看 stack 的 `AlbIngress` output：
+
+```bash
+AWS_PROFILE=hack-ntpc AWS_REGION=us-west-2 aws cloudformation describe-stacks \
+  --stack-name hackntpc-appeal-backend \
+  --query "Stacks[0].Outputs[?OutputKey=='AlbIngress'].OutputValue" --output text
+```
+
+全開時印 `0.0.0.0/0`；收窄後印那幾組 CIDR，以逗號相連。**部署完一定要看這行**，
+它是唯一能一眼分辨「有沒有誤啟用白名單」的地方。
+
 ---
 
 ## 4. 備援路徑（CONSTITUTION §8：備援事先寫好，不臨場發明）
@@ -473,3 +497,19 @@ python3 backend/tests/run_all.py
 另外用眼睛確認兩件事：
 - task definition 的 `environment` 裡沒有任何看起來像密碼或金鑰的值。
 - S3 bucket（若已建）的 Block Public Access 是全開的。
+---
+
+## 6. 交件前檢查清單（2026-09-13，有時限、會被忘記的動作）
+
+### 6.1 ALB IP 白名單收窄
+
+| 欄位 | 內容 |
+|---|---|
+| 觸發時機 | **2026-09-13 交件前**（在此之前一律維持全開，Ci 2026-09-12 拍板） |
+| 那四組 CIDR | **交件前向賽方確認並填入**——來源是賽方 2026-09-12 現場投影片。此處刻意不寫死，避免抄到過期的值 |
+| 指令 | `ALB_ALLOWED_CIDRS=<四組CIDR> ./deploy.sh deploy`（在 `infra/cdk/` 底下跑） |
+| 驗證 | 部署後跑 §3.6 那條 `describe-stacks`，`AlbIngress` 要從 `0.0.0.0/0` 變成那四組，逐條核對沒有少打 |
+| 回滾 | **不帶** `ALB_ALLOWED_CIDRS` 重跑一次 `./deploy.sh deploy`，`AlbIngress` 會回到 `0.0.0.0/0` |
+
+> ⚠️ **收窄前必須先確認評審在哪裡看。** 那四組是**會場出口 IP**，收窄之後**從會場以外連進來的人會被擋掉**，
+> 包含交件後才自己點開網址的評審。這題不能用推論決定——問到答案再收窄，問不到就不要收。

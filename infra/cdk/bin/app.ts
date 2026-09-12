@@ -44,6 +44,12 @@ new AppealBackendStack(app, 'HackNtpcAppealBackend', {
   modelIdDraft: required('BEDROCK_MODEL_ID_DRAFT'),
   knowledgeBaseId: required('BEDROCK_KB_ID'),
   kbMinScore: required('KB_MIN_SCORE'),
+  // 逗號分隔的 CIDR。不設＝維持 0.0.0.0/0（任何人都點得開）。
+  // 例：ALB_ALLOWED_CIDRS=1.2.3.4/32,5.6.7.8/32 ./deploy.sh deploy
+  albAllowedCidrs: (process.env.ALB_ALLOWED_CIDRS ?? '')
+    .split(',')
+    .map((c) => c.trim())
+    .filter((c) => c.length > 0),
 });
 
 cdk.Tags.of(app).add('Project', 'hackntpc-appeal-2026');
