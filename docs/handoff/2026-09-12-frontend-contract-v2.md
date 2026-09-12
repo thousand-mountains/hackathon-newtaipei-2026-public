@@ -683,7 +683,8 @@ lawtable 解析得了；決定書沒有對等的查詢詞形式，硬塞會稀�
     { "from":"S7", "to":"L3", "rel":"cite",    "basis":"citations[].sentence_id→resolved_id",
       "state":"ok", "lamp":"g" }
   ],
-  "unlinked": { "laws":["L5"], "issues":[], "note":"L5 沒有被任何句子引用" },
+  "unlinked": { "laws":["L5"], "cases":["C2"], "issues":[],
+                "note":"1 條檢索到的法規沒有被任何結論句引用；1 件檢索到的相似訴願決定沒有被任何結論句引用" },
   "stats": { "nodes":24, "edges":31, "edges_flagged":2 }
 }
 ```
@@ -705,6 +706,12 @@ lawtable 解析得了；決定書沒有對等的查詢詞形式，硬塞會稀�
 **`unlinked` 也要畫。** 檢索到但沒有任何句子引用的法規，是**真實且有意義的資訊**
 （「查到了但沒用上」）。不要靜默丟掉。
 
+**`unlinked.laws` 只放法規，相似訴願決定放 `unlinked.cases`（2026-09-13 更正）。**
+兩者原本合在 `laws` 一鍵，於是 `note` 講出「9 條檢索到的法規沒有被引用」——
+而其中 5 條是相似案。**那是一句假話**，承辦人會照它去找五條不存在的法規。
+分得開的依據本來就在節點的 `origin` 裡（`retrieval` vs `similar_case`）。
+`note` 的每個數字只數自己那一種，量詞也跟著分：法規論「條」、訴願決定論「件」。
+
 **前置條件**：要有一次 `state == "VERIFIED"` 的 run（需要 `doc[]` 與 `citations[]`）。
 只有 `SCREENED` 的話回 `status:"empty"` + `note:"要先生成草稿才畫得出完整關聯"`。
 **定案是回 `empty`，不是退化成前三欄**（2026-09-13）：半張圖在畫面上跟完整的圖
@@ -717,6 +724,19 @@ lawtable 解析得了；決定書沒有對等的查詢詞形式，硬塞會稀�
 | `status` | `"ok"` ／ `"empty"` | **一律存在**，前端不必用「`nodes` 是不是空的」去猜是哪一種 |
 | `note` | `status=="empty"` 時說明為什麼，`"ok"` 時為空字串 | 同上 |
 | `flagged[]` | `{sentence_id, raw, state, lamp, basis}` | **紅線**（plan AC5）：草稿引了、檢索沒找到的法條。`stats.edges_flagged` 是它的長度。**不靜默丟棄**——「AI 引了一條我們沒檢索到的法條」正是承辦人最需要知道的事 |
+
+#### 2026-09-13 更正：`unlinked` 分兩鍵、相似案不套法規的驗證用語
+
+| 欄位 | 變更 | 為什麼 |
+|---|---|---|
+| `unlinked.cases[]` | **新增一鍵**，放「檢索到但沒被任何結論句引用的相似訴願決定」；`unlinked.laws[]` 從此只放法規 | 合在一鍵時 `note` 會用「法規」稱呼相似案（雲上實打：`laws:[C1…C5,L1,L2,L3,L6]` + 「9 條檢索到的法規」）。**加鍵不改形狀**，前端既有的 `unlinked.laws` 解構照樣成立，只是值變正確了 |
+| `unlinked.note` | 兩種各一句、各數各的 | 數字用 `len()` 算，而且**數的是哪一種東西要寫在句子裡** |
+| `law` 節點的 `verify` | `origin=="similar_case"` 時 `verified:false` → `"unverifiable"`（不再是 `"suspect"`） | 相似案的 `verified` KB 命中**一律 false**，意思是「還沒對回資料集實檔」（那是 N6 的事，`backend/retrieval/kb.py:392`），不是「查證過是假的」。法規的 `verified:false` 仍然是 `"suspect"` |
+| `cite` 邊的 `basis` | 對到相似案時寫 `"citations[].raw ↔ cases[].t 字串相等"` | `basis` 是寫給人核對的，寫錯表人就核不出來 |
+
+> 前端 `RelationGraph.vue:156` 目前只渲染 `unlinked.laws`。**`unlinked.cases` 還沒有自己的
+> 欄位**，但它的件數會出現在同一行渲染的 `note` 裡，所以不會從畫面上消失。要不要把
+> 相似案獨立成一列由前端決定。
 
 `cite` 邊的 `basis` 實際寫的是 `"citations[].raw ↔ laws[].t 字串相等"`，
 不是上面範例的 `"citations[].sentence_id→resolved_id"`——**範例那個 join key 是空的**：
