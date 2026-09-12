@@ -470,12 +470,26 @@ def main() -> int:
             print(f"  ok    {label}")
 
     print("\n" + "=" * 72)
+    # 略過的測試**沒有執行**，一定要在總結講出來。只印「全綠 N/N」而不提略過，
+    # 就是在告訴讀者「都驗過了」——那正是這個專案一整天在抓的那個形狀。
+    skipped = harness.SKIPPED
     if all_failures:
-        print(f"失敗：{total_pass}/{total} 通過，{len(all_failures)} 項未過")
+        print(f"失敗：{total_pass}/{total} 通過，{len(all_failures)} 項未過"
+              + (f"，另有 {len(skipped)} 項略過（未執行）" if skipped else ""))
         for f in all_failures:
             print("\n" + f)
+        if skipped:
+            print("\n略過（未執行，不算通過）：")
+            for sk in skipped:
+                print(f"  - {sk}")
         return 1
-    print(f"全綠：{total_pass}/{total} 通過")
+    if skipped:
+        print(f"已執行的全綠：{total_pass}/{total} 通過"
+              f"　⚠️ 另有 {len(skipped)} 項**略過、未執行**——這不是全綠")
+        for sk in skipped:
+            print(f"  - {sk}")
+        return 0
+    print(f"全綠：{total_pass}/{total} 通過（無略過）")
     return 0
 
 

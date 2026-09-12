@@ -15,6 +15,15 @@ class TestFailure(AssertionError):
     pass
 
 
+class TestSkipped(Exception):
+    """這條測試**沒有執行**——不是通過。
+
+    只在「執行它所需的本機資料不在 repo 裡」時用（例：含個資、不得進 git 的語料）。
+    刻意不併進 passed：一條沒跑的測試被算成綠燈，就是我們一整天在抓的
+    「形式具備、實質不具備」。跑完會單獨列出，並附上補齊資料的指令。
+    """
+
+
 def collect(module: ModuleType) -> list[tuple[str, Callable[[], None]]]:
     """收集模組內所有 test_ 開頭的無參數函式，依原始碼行號排序。"""
     items = []
@@ -29,21 +38,33 @@ def collect(module: ModuleType) -> list[tuple[str, Callable[[], None]]]:
     return [(n, f) for _, n, f in items]
 
 
+SKIPPED: list[str] = []
+
+
 def run(modules: list[ModuleType], verbose: bool = True) -> tuple[int, int, list[str]]:
-    """跑完所有模組的測試，回傳 (通過數, 總數, 失敗訊息清單)。"""
+    """跑完所有模組的測試，回傳 (通過數, 總數, 失敗訊息清單)。
+
+    略過的測試**不計入 passed，也不計入 total**，另記在 `SKIPPED`。
+    """
     passed = 0
     total = 0
     failures: list[str] = []
     for module in modules:
         for name, fn in collect(module):
-            total += 1
             try:
                 fn()
+            except TestSkipped as e:
+                SKIPPED.append(f"{name}：{e}")
+                if verbose:
+                    print(f"  略過  {name} —— {e}")
+                continue
             except Exception:  # noqa: BLE001 - 測試 harness 要吞下所有例外
+                total += 1
                 failures.append(f"FAIL {name}\n{traceback.format_exc()}")
                 if verbose:
                     print(f"  FAIL  {name}")
             else:
+                total += 1
                 passed += 1
                 if verbose:
                     print(f"  ok    {name}")

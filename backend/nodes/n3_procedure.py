@@ -31,7 +31,7 @@ from backend.engine.deadline import compute
 from backend.engine.overdue_ref import TimelinessInput as RefInput
 from backend.engine.overdue_ref import HOLIDAY_TABLE_YEARS, _is_rest_day, holiday_table_covers
 from backend.engine.overdue_ref import check_timeliness as ref_check
-from backend.engine.party_ref import StandingInput, check_standing
+from backend.engine.party_ref import StandingInput, _norm_name, check_standing
 from backend.gate.lamps import requires_human_conclusion
 from backend.orchestrator.state import CaseState, NodeCtx, NodeResult
 
@@ -394,6 +394,37 @@ _PARTY_DISQUALIFIED_WARNING = (
 )
 
 
+
+def _looks_like_the_same_party_spelled_differently(a: str, b: str) -> bool:
+    """兩個名字不同，但一方是另一方的子字串——很可能是**同一造的兩種寫法**。
+
+    這是本 pipeline 最可能製造偽不適格的機制，而且不是假想的：下列寫法全部取自
+    真實語料 `party/party_facts.jsonl` 的相對人欄位，兩邊都會被引擎判成「不是同一人」——
+
+    | 訴願書可能的寫法 | 原處分書的寫法 | 實際關係 |
+    |---|---|---|
+    | 〈本名〉 | 〈本名〉即〈商號〉 | 自然人即獨資商號，同一造 |
+    | 〈本名〉 | 應為〈本名〉 | 抽取夾帶前綴詞 |
+    | 〈校名〉 | 財團法人〈校名〉 | 省略法人格前綴 |
+    | 〈本名〉 | 〈本名〉等 20 人（詳如附表） | 共同訴願的附表寫法 |
+
+    **這四種結構都實際出現在真實語料的相對人欄位裡**（案號見
+    `backend/tests/test_party_standing.py` 的向量表）；此處以佔位符表示，
+    是因為那些欄位帶有未遮罩的自然人實名。
+
+    實測代價為零：28 件真實 §77-3 案（全部應判不適格）**沒有任何一件**會因為這道守門
+    被降級，不適格命中率維持 24/28。用姓名相似度或編輯距離會有代價，子字串沒有。
+
+    門檻設 2 個字：遮罩後只剩一個字的名字本來就會被引擎判成資訊不足（`_same_party`
+    回 None），不需要也不該由這裡處理。
+    """
+    na, nb = _norm_name(a), _norm_name(b)
+    if not na or not nb or na == nb:
+        return False
+    short, long = (na, nb) if len(na) < len(nb) else (nb, na)
+    return len(short) >= 2 and short in long
+
+
 def check_party_standing(
     intake: dict[str, Any], intake_origin: dict[str, str] | None = None
 ) -> dict[str, Any]:
@@ -482,6 +513,47 @@ def check_party_standing(
         )
     ).to_dict()
     lead = f"比對訴願人「{appellant}」與原處分相對人「{respondent}」。"
+    if out["verdict"] == "不適格" and _looks_like_the_same_party_spelled_differently(
+        appellant, respondent
+    ):
+        # **偽不適格的守門**：一方是另一方的子字串時，引擎的「並非同一人」很可能
+        # 只是兩份文書寫法不同（本名 vs 本名即商號、有無法人格前綴、共同訴願附表）。
+        # 往安全方向倒——把人擋在訴願門外的錯無從救濟，多問一次人只是慢一點。
+        out = {
+            **out,
+            "verdict": "需人工認定",
+            "is_qualified": None,
+            "standing_as": "",
+            "confidence": "low",
+            "steps": list(out["steps"]) + [
+                f"⚠️ 但「{appellant}」與「{respondent}」其中一方是另一方的子字串，"
+                "很可能是**同一造在兩份文書上的不同寫法**（例：本名 vs 本名即商號、"
+                "有無「財團法人」前綴、共同訴願的附表寫法）。"
+                "**本項因此不下不適格，改請承辦人認定兩造是否為同一人。**"
+            ],
+            "missing": list(out["missing"]) + ["兩造是否為同一造（姓名寫法疑似同一造）"],
+        }
+    elif out["verdict"] == "不適格":
+        # **我們比來源引擎的驗證設定更敢下不適格，而且是往危險的方向。**
+        # 拿 28 件真實 §77-3 逐件比對（`backend/data/party-facts-77-3.jsonl`）：
+        # 來源設定餵得到 `appellant_capacity`，我們餵不到，兩件因此分歧——
+        #   1101031047（capacity=代表人、相對人為公司）：來源判需人工，我們判不適格
+        #   1131070709（capacity=共有人）：來源判需人工，我們判不適格
+        # 這兩類正是 §18「法律上利害關係人」與「代表公司提起」會落腳的地方，
+        # 也就是**訴願人其實適格、卻被我們擋掉**的路徑。承辦人必須看到這句。
+        out = {
+            **out,
+            "steps": list(out["steps"]) + [
+                "⚠️ 本判斷**只比對了姓名**：本系統未擷取「訴願人以何身分提起」"
+                "（代表人／代理人／共有人／承租人／受讓人…），所以看不到兩種會讓"
+                "訴願人**其實適格**的情形——(1) 相對人為公司而訴願人係代表公司提起、"
+                "(2) 訴願人為系爭標的之共有人等法律上利害關係人。"
+                "28 件真實 §77-3 案逐件比對，本系統就有 2 件在這兩類上比原引擎更早下不適格。"
+            ],
+            "missing": list(out["missing"]) + [
+                "訴願人以何身分提起（未擷取；缺這一欄無法辨識代表公司提起與法律上利害關係人）"
+            ],
+        }
     # 引擎自己就會把 appellant_capacity 列進 missing 的那幾條分支不要再加一次，
     # 同一件事講兩遍會讓承辦人以為是兩個不同的缺漏。
     engine_missing = list(out["missing"])
