@@ -81,7 +81,6 @@ const caseMeta = computed(() =>
                     </div>
                   </div>
                   <div class="tool-out">
-                    <p v-if="m.out && m.out.type === 'refine' && m.dir">修潤方向：<b>{{ m.dir }}</b></p>
                     <ToolOut
                       v-if="m.out"
                       :out="m.out"

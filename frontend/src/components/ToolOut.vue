@@ -91,21 +91,19 @@ const emit = defineEmits(['view-case', 'view-graph', 'preview-paper', 'export-do
     </div>
   </template>
 
-  <!-- 修潤對照 -->
-  <template v-else-if="out.type === 'refine'">
+  <!-- 修潤對照（前端 diff：上一版 vs 後端新版）-->
+  <template v-else-if="out.type === 'diff'">
     <div class="sec">
-      <div class="sec-h">修潤對照　理由欄 第五點</div>
-      <div class="draft" style="font-size: 14px">
-        <p class="indent">五、惟查，原處分機關於作成系爭處分書前，<span class="diffdel">卷內看不到有通知訴願人陳述意見的資料</span><span class="diffadd">遍查全卷，並無依行政程序法第 102 條規定通知訴願人陳述意見之相關文書可稽</span><span class="cite">卷證·全卷</span>，<span class="diffdel">也沒有依第 39 條通知，或是舉行聽證</span><span class="diffadd">亦未依同法第 39 條規定通知陳述意見或決定舉行聽證</span><span class="cite">行程法§102</span>。<span class="diffadd">又原處分機關迄本件訴願程序終結前，仍未依同法第 114 條第 1 項第 3 款規定事後給予陳述意見之機會以為補正</span><span class="cite">行程法§114 I③</span>，<span class="diffdel">所以程序上有問題</span><span class="diffadd">其踐行之行政程序即難謂無瑕疵</span>。</p>
+      <div class="sec-h">
+        修潤對照
+        <span v-if="out.instruction" style="font-weight: 400; color: var(--muted); letter-spacing: 0">　方向：{{ out.instruction }}</span>
       </div>
-    </div>
-    <div class="sec">
-      <div class="sec-h">修潤說明</div>
-      <ol class="olist">
-        <li>將口語敘述改為公文慣用之法律用語（「遍查全卷」「難謂無瑕疵」），並統一以「系爭處分書」指稱。</li>
-        <li>補充行政程序法第 114 條第 1 項第 3 款之補正時限論述，使程序瑕疵之法律效果完整，此為撤銷主文之關鍵環節。</li>
-        <li>新增之敘述皆對應卷宗內既有來源，未引入卷宗外之資料。</li>
-      </ol>
+      <div class="draft" style="font-size: 14px">
+        <p class="indent" v-html="out.html"></p>
+      </div>
+      <p style="margin-top: 8px; color: var(--muted); font-size: 12px">
+        <span class="diffadd" style="padding: 0 4px; border-radius: 2px">綠色</span> 為新增、<span class="diffdel" style="padding: 0 4px; border-radius: 2px">紅色</span> 為刪除。上一版取自本機暫存，逐詞與新版比對而得。
+      </p>
     </div>
   </template>
 
