@@ -8,7 +8,7 @@
 import RelationGraph from './RelationGraph.vue'
 import ProcedureCheck from './ProcedureCheck.vue'
 import { scoreCaption, scoreNote, rankerOf, showsPercent } from '../api/ranker.js'
-import { active, toolStatusText } from '../store/app.js'
+import { active, toolStatusText, inlineMd } from '../store/app.js'
 
 // 解析卷證的四塊（案由／事實摘錄／爭點／程序審查）**不在 tool_result 裡**——
 // `tool_result` 只帶 run_id 與 state，內容要跑完之後打彙整版拿（契約 §3.3）。
@@ -226,13 +226,20 @@ const provLabel = (p) => PROV[p] || '出處未標示'
     <div class="sec">
       <!-- 文案走 store 的 TOOL_STATUS（全前端唯一一份）。`empty` 不說「查無」的
            理由寫在那裡：後端同一個值也代表「還沒查」，而它正下方的 note 會逐字說明。 -->
-      <div class="sec-h">{{ toolStatusText(out.status, 'head') }}</div>
+      <!-- `ok` 的大標不畫：卡頭已經有「✓ 完成」，再寫一次「完成」會像渲染出錯，
+           而這張卡要讓人看的是下面那一句 note（`read_case` 就是這種）。
+           其餘狀態的大標帶著真的資訊（尚未執行／未取得結果／工具執行失敗），照畫。 -->
+      <div v-if="out.status !== 'ok'" class="sec-h">{{ toolStatusText(out.status, 'head') }}</div>
       <!-- 只顯示後端的 note，**不要再加一句固定的解釋**。契約 §2.3 把 failed 描述成
            「工具本身失敗（KB 打不到、快照載不動、pipeline 炸了）」，但後端也用 failed
            回前置條件沒滿足（實測「還沒有解析過卷證。」）。對那種情況說
            「查詢來源本身失敗，可以重試」是錯的——重試一百次也不會過。
            note 本來就每種情況都寫得具體，讓它自己說。 -->
-      <p style="margin: 0; font-size: 13.5px">{{ out.note }}</p>
+      <!-- note 是空的就不要畫一個空段落（`not_attempted` 這類新狀態前端不補固定句）。
+           後端的 note 帶 markdown 粗體（「這次**沒有去查**」），用跟程序審查卡同一支
+           行內渲染器畫出來——純文字輸出會把星號原樣印在承辦人面前。
+           **不要因此改後端的字**：那個粗體標的正是這句話的重點。 -->
+      <p v-if="out.note" style="margin: 0; font-size: 13.5px" v-html="inlineMd(out.note)"></p>
     </div>
   </template>
 

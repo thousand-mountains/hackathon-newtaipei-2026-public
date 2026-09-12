@@ -1,6 +1,6 @@
 <script setup>
 import { computed } from 'vue'
-import { state, active, stages, TOOLS, runTool, gotoProcedureCheck, toolStatusText } from '../store/app.js'
+import { state, active, stages, TOOLS, runTool, gotoProcedureCheck, toolStatus } from '../store/app.js'
 import ToolOut from './ToolOut.vue'
 import ProcedureCheck from './ProcedureCheck.vue'
 import Composer from './Composer.vue'
@@ -101,13 +101,17 @@ const caseMeta = computed(() =>
                   <div class="tool-head">
                     <span class="api">{{ m.api }}()</span>
                     <span class="nm">{{ m.name }}</span>
-                    <!-- 契約 §2.3：ok／empty／failed 三種在畫面上要分得出來，
-                         不能三種都畫成綠勾「完成」——那會把「查詢來源壞了」說成「查完了」。 -->
+                    <!-- 契約 §2.3 的四個值在畫面上要分得出來，不能都畫成綠勾「完成」
+                         ——那會把「查詢來源壞了」「一次都還沒跑」說成「查完了」。
+                         文字、符號、顏色**全部**從 store 的 TOOL_STATUS 拿：
+                         原本是一串 v-if，`v-else` 是綠勾，於是任何新值（例如
+                         `not_attempted`）一上線就會被畫成「✓ 完成」。 -->
                     <span class="st">
                       <template v-if="m.running"><span class="spin"></span>執行中</template>
-                      <template v-else-if="m.status === 'failed'"><span style="color: var(--alert)">✕</span> {{ toolStatusText('failed', 'chip') }}</template>
-                      <template v-else-if="m.status === 'empty'"><span style="color: var(--warn)">○</span> {{ toolStatusText('empty', 'chip') }}</template>
-                      <template v-else><span style="color: var(--ok)">✓</span> {{ toolStatusText('ok', 'chip') }}</template>
+                      <template v-else>
+                        <span :style="{ color: 'var(--' + toolStatus(m.status).tone + ')' }">{{ toolStatus(m.status).mark }}</span>
+                        {{ toolStatus(m.status).chip }}
+                      </template>
                     </span>
                   </div>
                   <div class="tool-steps">
