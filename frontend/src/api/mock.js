@@ -8,7 +8,7 @@
 //   - tool_result：{seq,turn_id,call_id,tool,status,note,hits,run_id,graph}（§3.1）
 //   - done：{session_id,answer,elapsed_ms,redirect,dropped_refs}（§2.4）
 //   - 母庫查：{results:[{id,t,src,score,doc_kind,...}]}（§4.2/§4.3）
-import { EVIDENCE_POOL, LAW_POOL, CASE_POOL, ACKS } from '../data/data.js'
+import { LAW_POOL, CASE_POOL, ACKS } from '../data/data.js'
 import { GNODES, GEDGES, GCOLS, DRAFT_HTML } from '../data/graph.js'
 import { MOCK_TIMING } from './config.js'
 
