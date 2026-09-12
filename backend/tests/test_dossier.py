@@ -7,21 +7,43 @@
 from __future__ import annotations
 
 import json
+import os
 import pathlib
 import subprocess
 import sys
 import tempfile
+from contextlib import contextmanager
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from backend.dossier import store  # noqa: E402
+import backend.retrieval.kb as kb_module  # noqa: E402
+from backend.dossier import corpus, store  # noqa: E402
 from backend.tests.harness import assert_eq, assert_in, assert_true  # noqa: E402
 
 
 def _tmp() -> pathlib.Path:
     return pathlib.Path(tempfile.mkdtemp(prefix="dossier-test-"))
+
+
+def _kb_module():
+    """`backend.retrieval.kb`，順便把試錯出來的搜尋設定鍵快取清掉——
+    快取跨測試殘留會讓「第幾次呼叫」的斷言隨執行順序變化。"""
+    kb_module.reset_search_key_cache()
+    return kb_module
+
+
+@contextmanager
+def _env(**kv):
+    old = {k: os.environ.get(k) for k in kv}
+    for k, v in kv.items():
+        os.environ.pop(k, None) if v is None else os.environ.__setitem__(k, v)
+    try:
+        yield
+    finally:
+        for k, v in old.items():
+            os.environ.pop(k, None) if v is None else os.environ.__setitem__(k, v)
 
 
 def _seed(cases_dir: pathlib.Path, case_id: str = "upload-0123456789ab") -> dict:
@@ -250,3 +272,214 @@ def test_list_manifests_skips_a_corrupt_file_without_killing_the_listing():
     bad.write_text("{ 這不是 JSON", encoding="utf-8")
     got = store.list_manifests(d)
     assert_eq(sorted(got), ["upload-0123456789ab"])
+
+
+# ── 母庫查：假 client，斷言「我們送出去的請求長什麼樣」 ─────────────
+
+
+class FakeKB:
+    """記下 retrieve 的參數並回預先排好的結果。"""
+
+    def __init__(self, results: list[dict], *, results_when_filtered: list[dict] | None = None):
+        self.results = results
+        self.results_when_filtered = results_when_filtered
+        self.calls: list[dict] = []
+
+    def retrieve(self, **kw):
+        self.calls.append(kw)
+        cfg = next(iter(kw["retrievalConfiguration"].values()))
+        if "filter" in cfg and self.results_when_filtered is not None:
+            return {"retrievalResults": self.results_when_filtered}
+        return {"retrievalResults": self.results}
+
+
+def _hit(rel: str, score: float, doc_kind: str, *, kind: str = "public", **md):
+    return {
+        "score": score,
+        "content": {"text": "內文"},
+        "metadata": {"_source_uri": f"s3://a-bucket/kb/{kind}/{rel}",
+                     "doc_kind": doc_kind, **md},
+    }
+
+
+def test_corpus_search_sends_the_doc_kind_filter_server_side():
+    kb_mod = _kb_module()
+    fake = FakeKB([_hit("相關法規_全量/廢棄物清理法.txt", 0.77, "statute")])
+    kb_mod.reset_search_key_cache()
+    kb_mod.search_corpus(fake, "KB1", "廢棄物", ["statute"], limit=10)
+    cfg = next(iter(fake.calls[0]["retrievalConfiguration"].values()))
+    assert_eq(cfg["filter"], {"equals": {"key": "doc_kind", "value": "statute"}})
+
+
+def test_corpus_search_dedupes_chunks_of_the_same_document():
+    """實測：filter 後 10 筆只有 5 份不同法規。不去重會把讀的人騙成 10 部法律。"""
+    kb_mod = _kb_module()
+    kb_mod.reset_search_key_cache()
+    chunks = [_hit("相關法規_全量/廢棄物清理法.txt", s, "statute") for s in (0.77, 0.76, 0.73)]
+    chunks.append(_hit("相關法規_全量/有害事業廢棄物認定標準.txt", 0.72, "statute"))
+    got = kb_mod.search_corpus(FakeKB(chunks), "KB1", "廢棄物", ["statute"], limit=10)
+    assert_eq(len(got), 2, "同一部法規的三個 chunk 應該收斂成一筆")
+    assert_eq(got[0]["score"], 0.77, "留的要是最高分那個 chunk")
+    assert_eq([x["id"] for x in got],
+              ["kb/public/相關法規_全量/廢棄物清理法.txt",
+               "kb/public/相關法規_全量/有害事業廢棄物認定標準.txt"])
+
+
+def test_corpus_search_never_falls_back_to_an_unfiltered_query():
+    """`_retrieve` 有「篩了全空就退回不篩」的防呆；母庫查**刻意沒有**。
+
+    退了就會把法院裁判書當法規端給承辦人——2026-09-12 實測「廢棄物」不篩抓 20 筆，
+    法規佔 0 筆（15 筆裁判書 + 5 筆決定書）。查無就要回空。
+    """
+    kb_mod = _kb_module()
+    kb_mod.reset_search_key_cache()
+    fake = FakeKB([_hit("新北裁判書_環保局全量/X.txt", 0.88, "court_ruling")],
+                  results_when_filtered=[])
+    got = kb_mod.search_corpus(fake, "KB1", "廢棄物", ["statute"], limit=10)
+    assert_eq(got, [], "查無就回空")
+    assert_eq(len(fake.calls), 1, "不得在篩不到時再打一次不帶 filter 的查詢")
+
+
+def test_corpus_search_id_is_the_full_s3_key_not_the_relative_path():
+    """`id` 要能直接餵 `s3.get_object`，而且要分得出 official 與 public 兩批。"""
+    kb_mod = _kb_module()
+    kb_mod.reset_search_key_cache()
+    got = kb_mod.search_corpus(
+        FakeKB([_hit("歷史訴願決定書/113年/01.txt", 0.8, "decision", kind="official")]),
+        "KB1", "廢棄物", ["decision"], limit=10)
+    assert_eq(got[0]["id"], "kb/official/歷史訴願決定書/113年/01.txt")
+    assert_eq(got[0]["src"], "歷史訴願決定書/113年/01.txt")
+    assert_eq(got[0]["provenance"], "official")
+
+
+def test_corpus_search_honours_the_limit_after_deduping_not_before():
+    kb_mod = _kb_module()
+    kb_mod.reset_search_key_cache()
+    chunks = [_hit("相關法規_全量/A.txt", 0.9, "statute"),
+              _hit("相關法規_全量/A.txt", 0.8, "statute"),
+              _hit("相關法規_全量/B.txt", 0.7, "statute")]
+    got = kb_mod.search_corpus(FakeKB(chunks), "KB1", "q", ["statute"], limit=2)
+    assert_eq([x["t"] for x in got], ["A", "B"], "去重要在截斷之前，否則 B 會被 A 的重複 chunk 擠掉")
+
+
+def test_decision_search_drops_court_rulings_even_if_the_filter_let_one_through():
+    """雙保險：filter 是第一道，這是第二道。filter 失效時不得靜默開始端裁判書。"""
+    kb_mod = _kb_module()
+    kb_mod.reset_search_key_cache()
+    fake = FakeKB([_hit("新北訴願決定書_環保局全量/1151090848_駁回.txt", 0.87, "decision",
+                        outcome="駁回", category="廢棄物清理法"),
+                   _hit("新北裁判書_環保局全量/KLDM_107.txt", 0.86, "court_ruling")])
+    with _env(BEDROCK_KB_ID="KB1"):
+        got = corpus.search_decisions("廢棄物", kb=fake)
+    assert_eq([x["doc_kind"] for x in got], ["decision"])
+    assert_eq(got[0]["verdict"], "駁回")
+    assert_eq(got[0]["category"], "廢棄物清理法")
+
+
+def test_a_decision_without_a_sidecar_reports_null_instead_of_guessing_the_case_type():
+    kb_mod = _kb_module()
+    kb_mod.reset_search_key_cache()
+    fake = FakeKB([_hit("新北訴願決定書_環保局全量/1151090848_駁回.txt", 0.87, "decision")])
+    with _env(BEDROCK_KB_ID="KB1"):
+        got = corpus.search_decisions("廢棄物", kb=fake)
+    assert_eq(got[0]["category"], None, "案型沒有退路：側檔缺席就留 null，不從檔名或內文猜")
+    assert_eq(got[0]["verdict"], None)
+
+
+# ── 母庫全文：S3 key 白名單與「全文不是 chunk」 ────────────────────
+
+
+def test_corpus_key_whitelist_blocks_everything_outside_the_two_kb_prefixes():
+    for bad in ("kb/public/../../secret.txt", "backend/output/runs/run-1.json",
+                "kb/public/x.txt.metadata.json", "kb/other/x.txt",
+                "kb/public/x.pdf", "", "kb/public/"):
+        try:
+            corpus.safe_key(bad)
+        except ValueError:
+            continue
+        raise AssertionError(f"{bad!r} 不該通過母庫 key 白名單")
+
+
+def test_corpus_key_whitelist_accepts_both_batches():
+    for good in ("kb/public/相關法規_全量/廢棄物清理法.txt",
+                 "kb/official/歷史訴願決定書/113年/01.113年-違反廢棄物清理法事件-不受理.txt"):
+        assert_eq(corpus.safe_key(good), good)
+
+
+class FakeS3:
+    def __init__(self, objects: dict[str, bytes]):
+        self.objects = objects
+        self.keys_read: list[str] = []
+
+    def get_object(self, Bucket: str, Key: str):  # noqa: N803 - boto3 的參數名就是大寫
+        self.keys_read.append(Key)
+        if Key not in self.objects:
+            raise _NoSuchKey(Key)
+        return {"Body": _Body(self.objects[Key])}
+
+
+class _NoSuchKey(Exception):
+    pass
+
+
+_NoSuchKey.__name__ = "NoSuchKey"
+
+
+class _Body:
+    def __init__(self, data: bytes):
+        self.data = data
+
+    def read(self) -> bytes:
+        return self.data
+
+
+def test_statute_full_text_comes_from_s3_in_one_piece():
+    """全文不得從 KB chunk 拼（CONSTITUTION §1）：拼出來是一份殘缺卻看起來完整的法規。"""
+    body = "第一條 …\n第二條 …\n" * 500
+    s3 = FakeS3({"kb/public/相關法規_全量/廢棄物清理法.txt": body.encode("utf-8"),
+                 "kb/public/相關法規_全量/廢棄物清理法.txt.metadata.json":
+                     json.dumps({"metadataAttributes": {"provenance": "public_crawl",
+                                                        "doc_kind": "statute",
+                                                        "category": "廢棄物"}}).encode("utf-8")})
+    with _env(S3_KB_BUCKET="a-bucket"):
+        got = corpus.get_statute("kb/public/相關法規_全量/廢棄物清理法.txt", s3=s3)
+    assert_eq(got["body"], body)
+    assert_eq(got["verified"], False, "KB 法規全文恆 verified:false（查表通道才是可驗的那條）")
+    assert_eq(got["relevance"], "unknown")
+    assert_eq(got["t"], "廢棄物清理法")
+    assert_eq(got["src"], "相關法規_全量/廢棄物清理法.txt")
+
+
+def test_a_missing_object_is_a_404_not_a_500():
+    with _env(S3_KB_BUCKET="a-bucket"):
+        try:
+            corpus.get_statute("kb/public/相關法規_全量/不存在.txt", s3=FakeS3({}))
+        except corpus.DocumentNotFound:
+            return
+    raise AssertionError("找不到的物件要翻成 DocumentNotFound")
+
+
+def test_a_court_ruling_requested_by_id_is_refused_with_a_reason():
+    key = "kb/public/新北裁判書_環保局全量/KLDM_107.txt"
+    s3 = FakeS3({key: b"judgment",
+                 key + ".metadata.json":
+                     json.dumps({"metadataAttributes": {"doc_kind": "court_ruling"}}).encode("utf-8")})
+    with _env(S3_KB_BUCKET="a-bucket"):
+        try:
+            corpus.get_decision(key, s3=s3)
+        except corpus.OutOfScope as e:
+            assert_in("court_ruling", str(e))
+            assert_true(key not in [k for k in s3.keys_read if not k.endswith(".metadata.json")],
+                        "被擋下來就不該再去讀全文")
+            return
+    raise AssertionError("法院裁判書要被明確擋下來並說明理由，不是靜默回一份")
+
+
+def test_missing_bucket_setting_says_so_instead_of_returning_empty():
+    with _env(S3_KB_BUCKET=None):
+        try:
+            corpus.get_statute("kb/public/x/y.txt", s3=FakeS3({}))
+        except corpus.CorpusUnavailable as e:
+            assert_in("S3_KB_BUCKET", str(e))
+            return
+    raise AssertionError("缺設定要照實說缺什麼，不得回空清單冒充查無")
