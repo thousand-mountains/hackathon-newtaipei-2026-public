@@ -856,6 +856,124 @@ def test_extract_runs_only_to_n3_and_reports_that_this_run_has_no_draft():
     assert "沒有草稿" in out, "回給模型的話要講明這個 run 沒有草稿，否則它會去描述一份不存在的草稿"
 
 
+class _RecordingRetriever:
+    """記下收到什麼 query。**查詢詞有沒有真的送到檢索層**是這批測試的核心。"""
+
+    name = "similar_cases"
+
+    def __init__(self, hits: list | None = None) -> None:
+        self.queries: list[str] = []
+        self._hits = hits if hits is not None else [_hit()]
+
+    def search(self, query, top_k=5, filters=None, **kw):  # noqa: ANN001
+        self.queries.append(query)
+        return self._hits
+
+
+def _hint_tools(calls: list, events: list, *, retriever=None, law_query="法A；法B",
+                case_query="卷證事實原文", run_pipeline=None, run_id=None,
+                payload=None, case_manifest=None):
+    chat_mod._throttle = lambda: calls.append(1)
+    return chat_mod.ChatTools(
+        payload if payload is not None else {"screen": {"x": 1}}, RefBook(),
+        retriever, {"laws": {}}, lambda n, d: events.append((n, d)),
+        run_pipeline=run_pipeline, run_id=run_id, case_manifest=case_manifest,
+        build_graph=(lambda *, run_id: {"nodes": [], "edges": []}),
+        law_query=law_query, law_query_sources=["n2.classification.class.case_type"],
+        case_query=case_query, case_query_sources=["n1.facts_excerpt[].text"],
+    )
+
+
+def test_a_tool_chip_runs_the_tool_it_is_named_after():
+    """chip 按下去要做它寫的那件事（2026-09-13 Ci 在畫面上抓到）。
+
+    實際發生的：按「/查找相似案例」，畫面上跑的是 `read_case`，然後回
+    「卷內還沒有相似案例的資料」。**按鈕寫查找，它去讀已經有的東西。**
+
+    根因是 `tool_hint` 收下來就丟掉（整個 backend 只有欄位宣告那一行提到它），
+    模型只看到 `/查找相似案例` 這串文字，自己決定做什麼。
+
+    **模型的選擇其實有道理，不要誤判成模型笨**：`search_similar_decisions(query)`
+    要一個查詢字串，chip 沒帶，它不願意編一個——紅線 1 就是這樣要求的。
+    問題不在模型，在沒有人給它查詢詞。
+    """
+    wanted = {
+        "search_similar_decisions": "search_similar_decisions",
+        "search_regulations": "search_regulations",
+        "build_relation_graph": "build_relation_graph",
+    }
+    for hint, tool in wanted.items():
+        calls: list = []
+        events: list = []
+        t = _hint_tools(calls, events, retriever=_RecordingRetriever(), run_id="run-1")
+        out = t.run_tool_hint(hint)
+        called = [d["tool"] for n, d in events if n == "tool_call"]
+        assert called == [tool], f"chip {hint} 跑的是 {called}，不是它寫的那支"
+        assert "read_case" not in called, f"chip {hint} 又跑去讀卷內了"
+        assert out and "不要再呼叫一次同一支工具" in out, out
+
+    # 流水線那兩支要用假 adapter（會真的跑節點）
+    for hint in ("extract_case_document", "generate_decision_draft"):
+        calls, events = [], []
+        t = _hint_tools(calls, events, run_pipeline=_FakePipeline(["n1"]), run_id="run-1",
+                        case_manifest=_MANIFEST_OK)
+        t.run_tool_hint(hint)
+        called = [d["tool"] for n, d in events if n == "tool_call"]
+        assert called == [hint], f"chip {hint} 跑的是 {called}"
+
+
+def test_the_two_chips_use_the_two_different_queries_n4_uses():
+    """查法條吃通道 A 的查詢句，查相似案吃通道 B 的——**兩串刻意不同**。
+
+    N4 自己就是這樣分的（`build_query` 給法條查表、`build_case_query` 給相似案語意
+    檢索，後者只吃卷證原文與案型，不吃改寫句——改寫句會漏撤銷案）。混用的話
+    畫面上的相似案會跟 N4 卡片裡的是兩批東西，兩邊都說自己是「本案的相似案」。
+    """
+    calls, events = [], []
+    kb = _RecordingRetriever()
+    _hint_tools(calls, events, retriever=kb).run_tool_hint("search_similar_decisions")
+    assert kb.queries == ["卷證事實原文"], f"相似案用錯查詢句：{kb.queries}"
+
+    calls, events = [], []
+    t = _hint_tools(calls, events, retriever=_RecordingRetriever())
+    t.run_tool_hint("search_regulations")
+    # 法條走內建的 LawTableRetriever（吃 snapshot），所以看送進事件的 args
+    args = [d["args"]["query"] for n, d in events if n == "tool_call"]
+    assert args == ["法A；法B"], f"法條用錯查詢句：{args}"
+
+
+def test_a_chip_with_no_derivable_query_says_why_instead_of_inventing_one():
+    """導不出查詢詞時**不得編一個去查**（CONSTITUTION §1 紅線）。
+
+    隨手丟一個「行政處分」之類的通用詞進去，會查回一堆跟本案無關的決定書，
+    而且看起來很像查到了——那比查無更糟。
+    """
+    calls, events = [], []
+    kb = _RecordingRetriever()
+    out = _hint_tools(calls, events, retriever=kb, law_query="", case_query=""
+                      ).run_tool_hint("search_similar_decisions")
+
+    assert kb.queries == [], f"沒有查詢詞卻還是去查了：{kb.queries}"
+    result = [d for n, d in events if n == "tool_result"][0]
+    assert result["status"] == "empty", "還沒查過不是 failed 也不是 ok"
+    assert "還導不出查詢詞" in result["note"], result["note"]
+    assert "要先解析卷證" in out, out
+    assert "不要自己想一個查詢詞" in out, out
+    assert "不要說查無相似案例" in out, "會被讀成「查過了、沒有」——這次根本還沒查"
+
+
+def test_a_free_typed_question_is_left_to_the_model():
+    """沒有 chip 的自由問句維持原狀（契約 §2.1）。
+
+    把它也變成強制的話，「幫我看一下這件案子」會被硬塞成某一支工具。
+    """
+    for hint in ("", "read_case", "不存在的工具", "refine_text"):
+        calls, events = [], []
+        assert _hint_tools(calls, events, retriever=_RecordingRetriever()
+                           ).run_tool_hint(hint) is None, f"{hint!r} 不該被當成 chip 執行"
+        assert not events, f"{hint!r} 不該發出任何事件"
+
+
 #: 畫面方位詞。**只收「螢幕上的位置」，不收「文件裡的位置」**——
 #: prompt 自己會寫「上面那五個工具」「見下方規則」，那是在指這份文件，不是畫面。
 #: 這個分界靠語感，沒有辦法機械判定，所以清單保守：寧可漏抓，不要抓錯讓人去改措辭
