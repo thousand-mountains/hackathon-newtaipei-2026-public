@@ -22,8 +22,8 @@ if str(ROOT) not in sys.path:
 import backend.llm.chat as chat_mod  # noqa: E402
 import backend.retrieval.kb as kb_module  # noqa: E402
 from backend.dossier import corpus, runlink, store  # noqa: E402
-from backend.orchestrator.artifact_sections import build_sections  # noqa: E402
 from backend.orchestrator import case_view  # noqa: E402
+from backend.orchestrator.artifact_sections import build_sections  # noqa: E402
 from backend.orchestrator.graph import build_payload, run_case  # noqa: E402
 from backend.tests.harness import assert_eq, assert_in, assert_true  # noqa: E402
 
