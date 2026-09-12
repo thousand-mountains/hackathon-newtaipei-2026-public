@@ -52,6 +52,17 @@ RETRIEVE_INTERVAL_S = 1.1
 # 2026-09-12 實測同一個查詢：numberOfResults=15 撈到 official 0 筆、=50 撈到 2 筆——
 # 抓不夠深，配額席次就會永遠空著。這個值是實測出來的下限，不是猜的。
 QUOTA_FETCH_DEPTH = 50
+# 明確指定 prefix 的通道（N5 的 retrieve_refs 查判解／函釋）要抓多深。
+# 原本是 `top_k * 3`＝15，跟上面同一個問題：判解 19 筆＋函釋 10 筆共 29 份，
+# 只佔 KB 2477 筆的 1.2%，抓太淺就會被 2448 筆決定書擠掉席次。
+#
+# **但要講清楚這一改的效益，免得被讀成比實際更大**（2026-09-12 兩個 session 各自實測、
+# 交叉對照後的結論）：15 在實質法題目上**本來就撈得到**判解
+# （「行政罰法第7條第1項 故意過失」15 就有 2 筆、分數 0.787–0.789）。
+# 改深的實際效益是「同一題從 3 筆變 6 筆」，**不是「從 0 變有」**。
+# 真正撈不到的那類（例：寄存送達）是**判解語料本身沒有覆蓋**，
+# 深度再深也變不出來——那要補語料，不是調這個常數。
+REF_FETCH_DEPTH = 50
 OUTCOME_RE = re.compile(r"(駁回|撤銷|不受理)")
 
 
@@ -104,8 +115,8 @@ class KBRetriever:
         exclude = filters.get("exclude_case") or self.exclude_case
         explicit = list(filters.get("prefix") or [])
         if explicit:
-            want = max(1, min(top_k * 3, 50))  # 後過濾會刷掉大半，先多抓三倍
-            hits = self._retrieve(query, explicit, exclude, want=want, limit=top_k)
+            hits = self._retrieve(query, explicit, exclude, want=REF_FETCH_DEPTH,
+                                  limit=top_k, dedupe_by_source=True)
         else:
             hits = self._quota_search(query, exclude, top_k)
         # 編號在排序之後才給，`kb-1` 永遠是分數最高的那筆
@@ -135,14 +146,29 @@ class KBRetriever:
         return picked[:top_k]
 
     def _retrieve(self, query: str, prefixes: list[str], exclude: str | None, *,
-                  want: int, limit: int) -> list[Hit]:
-        """打一次 KB 並做後過濾，回傳最多 limit 筆（`id` 是佔位值，由呼叫端重編）。"""
+                  want: int, limit: int, dedupe_by_source: bool = False) -> list[Hit]:
+        """打一次 KB 並做後過濾，回傳最多 limit 筆（`id` 是佔位值，由呼叫端重編）。
+
+        `dedupe_by_source` **預設 False，只有判解／函釋通道開它**（2026-09-12）。
+        去重本身對兩條通道都有意義，但相似案通道的「official 2 ＋ public_crawl 3」
+        是當天實跑驗證過的行為，決賽期間不為了一個一般性的改善去動已驗證的路徑。
+        相似案通道同樣有 chunk 重複的問題，是**已知且刻意未改**，不是漏看。
+        """
         resp = self._c().retrieve(
             knowledgeBaseId=self.kb_id,
             retrievalQuery={"text": query},
             retrievalConfiguration={"vectorSearchConfiguration": {"numberOfResults": want}},
         )
         hits: list[Hit] = []
+        # 同一份文件會被切成多個 chunk，各自以不同分數回來（2026-09-12 兩個 session
+        # 各自實測：判解查詢命中 8 筆其實只有 6 份、命中 5 筆其實只有 2 份）。
+        # 不去重的話「命中 N 筆」會把讀的人騙成 N 份不同的判解，
+        # 而且重複的 chunk 會把 `limit` 的席次吃光，把真正不同的第二、三份擠掉。
+        # **必須在 limit 截斷之前去重**，不能等回傳後再處理。
+        # 去重按來源檔路徑（`rel`），不是按分數或 chunk id——同一份判決的不同 chunk
+        # 分數本來就不同，按分數去重等於沒去重。KB 的結果已按分數遞減，
+        # 所以第一次遇到的那個 chunk 就是該文件的最高分，保留它即可。
+        seen_sources: set[str] = set()
         for r in resp.get("retrievalResults", []):
             score = float(r.get("score", 0.0))
             if score < self.min_score:
@@ -157,6 +183,10 @@ class KBRetriever:
                 continue
             if exclude and exclude in rel:
                 continue
+            if dedupe_by_source:  # 同一份文件的其他 chunk，丟掉（見上方 seen_sources 說明）
+                if rel in seen_sources:
+                    continue
+                seen_sources.add(rel)
             fname = rel.rsplit("/", 1)[-1]
             m = OUTCOME_RE.search(fname)
             text = re.sub(r"\s+", " ", ((r.get("content") or {}).get("text") or "")).strip()

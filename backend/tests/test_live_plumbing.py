@@ -827,7 +827,8 @@ def test_kb_retriever_filters_by_prefix_score_filetype_and_exclusion():
     assert_true(hits[0].verified is False, "verified 由 N6 對 manifest 決定，檢索不自己宣稱")
     call = fake.calls[0]
     assert_eq(call["knowledgeBaseId"], "kb-x")
-    assert_eq(call["retrievalConfiguration"]["vectorSearchConfiguration"]["numberOfResults"], 15, "多抓三倍再後過濾")
+    assert_eq(call["retrievalConfiguration"]["vectorSearchConfiguration"]["numberOfResults"],
+              kb_module.REF_FETCH_DEPTH, "先多抓再後過濾（深度見 REF_FETCH_DEPTH）")
 
 
 def test_kb_retriever_parses_public_prefix_and_outcome_from_filename():
@@ -965,12 +966,67 @@ def test_similar_case_quota_never_admits_hits_below_the_score_threshold():
 
 
 def test_explicit_prefix_still_does_a_single_query():
-    """N5 的 retrieve_refs 明確指定前綴，行為不變（單次查詢、抓三倍）。"""
+    """N5 的 retrieve_refs 明確指定前綴 → 單次查詢，不得變成配額那條兩批的路。"""
     r = _quota_retriever([[_kb_result("行政函釋/法務部93.txt", 0.9, "函釋")]])
     hits = r.search("q", filters={"prefix": ["行政函釋/", "司法院釋字及行政判解/"]}, top_k=5)
     assert_eq(len(r._client.calls), 1, "指定前綴時不得變成兩次查詢")
-    assert_eq(r._client.calls[0]["retrievalConfiguration"]["vectorSearchConfiguration"]["numberOfResults"], 15)
+    assert_eq(r._client.calls[0]["retrievalConfiguration"]["vectorSearchConfiguration"]["numberOfResults"],
+              kb_module.REF_FETCH_DEPTH,
+              "比對常數而不是寫死的數字——改深度時不該連帶要改這條測試")
     assert_eq([h.source for h in hits], ["行政函釋/法務部93.txt"])
+
+
+def test_ref_channel_fetch_depth_is_not_shallower_than_the_similar_case_channel():
+    """判解／函釋通道的抓取深度不得淺於相似案通道（2026-09-12 回歸）。
+
+    判解 19 筆＋函釋 10 筆只佔 KB 2477 筆的 1.2%，比 official 決定書那批還稀疏。
+    相似案通道早就因為「抓不夠深、席次永遠空著」改成 QUOTA_FETCH_DEPTH=50，
+    這條通道當時被漏掉、仍停在 top_k*3＝15。釘住這個不等式，
+    免得日後有人調相似案的深度卻又把這條留在原地。
+    """
+    assert_true(kb_module.REF_FETCH_DEPTH >= kb_module.QUOTA_FETCH_DEPTH,
+                f"判解通道 {kb_module.REF_FETCH_DEPTH} 不得淺於相似案通道 "
+                f"{kb_module.QUOTA_FETCH_DEPTH}")
+
+
+def test_ref_channel_dedupes_chunks_of_the_same_document_before_taking_top_k():
+    """同一份判決的多個 chunk 只能佔一個席次。
+
+    KB 把一份判決切成數段、各自以不同分數回來。不去重的話 `top_k=5`
+    可能全被同一份判決的 5 個 chunk 佔滿，畫面顯示「命中 5 筆」、
+    實際上只有 1 份判解——那是對「找到多少依據」說謊。
+    去重必須發生在取 top_k 之前，所以這條測試餵的重複 chunk 數量刻意多於 top_k。
+    """
+    same_doc = "司法院釋字及行政判解/最高行政法院108年度判字第531號行政判決-行政罰法7條1項.txt"
+    other_doc = "司法院釋字及行政判解/最高行政法院109年度上字第780號行政判決-行政罰法7條1項.txt"
+    r = _quota_retriever([[
+        _kb_result(same_doc, 0.79, "chunk A"),
+        _kb_result(same_doc, 0.77, "chunk B"),
+        _kb_result(same_doc, 0.75, "chunk C"),
+        _kb_result(other_doc, 0.70, "另一份判決"),
+    ]])
+    hits = r.search("q", filters={"prefix": ["司法院釋字及行政判解/"]}, top_k=3)
+    assert_eq([h.source for h in hits], [same_doc, other_doc],
+              "同一份文件只留一筆，且不得把另一份判決擠出去")
+    assert_eq(hits[0].score, 0.79, "保留的要是該文件分數最高的那個 chunk")
+
+
+def test_similar_case_channel_is_deliberately_left_undeduped():
+    """相似案通道**刻意不去重**——這是已驗證行為，不是漏做。
+
+    2026-09-12 決賽期間實跑驗證過 official 2 ＋ public_crawl 3 的配額分布，
+    當天不為了一個一般性的改善去動已驗證的路徑。這條測試釘住「只有判解通道去重」，
+    如果日後有人要讓相似案也去重，會在這裡看到這是一個需要重新驗證配額的決定，
+    而不是順手改掉。
+    """
+    dup = "新北訴願決定書_全量/1121070551_不受理.txt"
+    with _no_retrieve_interval():
+        hits = _quota_retriever([
+            [],  # official 批沒有命中
+            [_kb_public_result(dup, 0.90, "chunk A"), _kb_public_result(dup, 0.80, "chunk B")],
+        ]).search("q", top_k=5)
+    assert_eq([h.source for h in hits], [dup, dup],
+              "相似案通道目前不去重（若要改，請一併重驗配額分布）")
 
 
 def test_n4_reports_hits_by_provenance():
