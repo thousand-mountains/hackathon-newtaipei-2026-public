@@ -1,0 +1,6 @@
+name: agentcore-runtime-chat
+created_at: 2026-09-12T09:10:17.038Z
+status: plan
+description: Stretch：把 backend/llm/chat.py 的 Strands 聊天 agent 改由 Amazon Bedrock
+  AgentCore Runtime 託管，FastAPI 轉為 proxy；以 CHAT_BACKEND=inproc|agentcore 開關控制，預設
+  inproc，前端呼叫路徑不變

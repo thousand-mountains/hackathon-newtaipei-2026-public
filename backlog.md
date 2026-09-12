@@ -58,7 +58,7 @@
 
 | ID | Story | 負責 | 優先 | 狀態 |
 |---|---|---|---|---|
-| HACK-S-3 | 我可以對一份已跑完的案子追問細節，系統用同一份卷證回答（ask 追問 agent：Strands 單 agent + 六工具，SSE 串流） | backend | P2 | 未開始 |
+| HACK-S-3 | 我可以對一份已跑完的案子追問細節，系統用同一份卷證回答（ask 追問 agent：Strands 單 agent + 五工具，SSE 串流） | backend | **P1** | 已規劃 `.prospec/changes/chat-ask-agent/`＋`plans/2026-09-12-chat-ask-agent.md`；S0–S3 純函式層完成（`REF_PREFIXES` 上移、燈號判定、22 條測試），S4–S6 進行中 |
 | HACK-S-4 | 系統跑在 Bedrock AgentCore Runtime 上（承載 ask 那種有記憶的 agent；沒有 ask 就沒有理由做） | backend | P3 | 未開始 |
 | HACK-S-5 | 我按下開始分析後，看得到六個節點逐一亮起（SSE 節點事件流 `GET /runs/{id}/events`；plan Task 7b） | backend＋frontend | P2 | **完成** `1b0db05`（無 heartbeat，上雲要加 keep-alive） |
 | HACK-S-6 | 我可以在任一張幕僚卡上按「從這裡重新產生」，只重跑該節點以下（前端每卡重新產生列；plan Task 8b，後端續跑 API 已具備） | frontend | P2 | **完成** `bc0d025`（實作為收文頁一列，非草稿頁就地按鈕） |

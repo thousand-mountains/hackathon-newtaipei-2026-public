@@ -934,6 +934,17 @@ AgentCore Runtime microVM 由主服務呼叫。Runtime contract 是 **ARM64 容�
 
 ### 9.2 Region 選擇：ap-northeast-1（東京）
 
+> **2026-09-12 更新（本節以下原文已過時，保留供追溯）**：
+> 實際部署鎖在 **us-west-2**（賽方僅允許 `us-east-1`／`us-west-2`，見 `infra/cdk/deploy.sh:38-40`）。
+> 重讀官方區域表（2026-09-12，整理於 `docs/research/2026-09-12-agentcore.md` §2）：
+> **us-west-2 的 AgentCore 元件全部支援**
+> （Runtime microVMs／Runtime Instances／Memory／Gateway／Identity／Built-in Tools／
+> Observability／Policy／Evaluations／optimization；只有 payments 是 No，本專案用不到）。
+> 下方「只有東京與新加坡全綠」的結論是 9/3 讀取時的狀態，**已被官方表推翻**。
+> 詳見 `docs/spec/2026-09-12-agentcore-runtime-design.md`。
+> 這個更正**不改變 AgentCore 的 Stretch 定位**——它只讓「us-west-2 做不做得到」從疑慮變成可以，
+> 本節下方「ARM64 ＋ 自訂 HTTP contract 是額外複雜度」那條顧慮仍然成立。
+
 依 AgentCore 官方區域表（[agentcore-regions](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/agentcore-regions.html)，
 03 §1 讀取於 2026-09-03）：東京與新加坡的核心功能（Runtime／Memory／Gateway／Identity／Observability／Policy／Evaluations）**兩區全綠**；
 差異只在東京有 AWS Agent Registry 與 Web Search 內建工具、新加坡有 AgentCore payments。

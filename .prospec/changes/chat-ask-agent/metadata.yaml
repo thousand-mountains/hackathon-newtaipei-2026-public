@@ -1,0 +1,5 @@
+name: chat-ask-agent
+created_at: 2026-09-12T09:11:09.018Z
+status: plan
+description: 在已跑完的案子上開一個聊天端點：承辦人可自由追問卷內法規與相似案例，每則回答帶機械判定的誠實燈號與可驗引用；後端用既有 Strands
+  SDK 建單 agent 包住現有檢索，部署零改動
