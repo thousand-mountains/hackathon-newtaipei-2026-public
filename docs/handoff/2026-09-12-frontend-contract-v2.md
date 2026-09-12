@@ -737,6 +737,25 @@ backend/output/cases/{case_id}/manifest.json
   - `docx`：`python-docx` 直接組段落（要能續編）。`pdf`：需 CJK 字型進容器，否則整片豆腐字且不報錯。
   - **引註要跟著出去**：`sections[].blocks[].cites` 轉成註腳或行內標註，不要只匯出白文。
 
+  **回應標頭（2026-09-13 新增，實作方提案、契約擁有者追認）**：
+
+  | 標頭 | 內容 | 前端可以拿來做什麼 |
+  |---|---|---|
+  | `X-Cite-Count` | 這份匯出檔實際帶出的引註數 | 顯示「本檔含 N 處引註」 |
+  | `X-Unresolved-Cites` | 對不回本案 `laws`／`references` 的引註數 | **非 0 要警示**——這是 §2.4.1 第二項在匯出端的同一件事 |
+  | `X-Export-Warning` | 人類可讀的警語（可空） | 直接顯示 |
+
+  這三個是**加**不是改，端點形狀與參數完全照上面那行。`X-Unresolved-Cites` 特別有價值：
+  「引用對不上」原本只在對話裡看得到，檔案離開系統之後就沒人知道了。
+
+  **錯誤碼**：`format` 不在白名單 → `400`；case／artifact 不存在 → `404`；
+  run 存在但 `doc[]` 是空的 → **`409`，不回一份空白檔**（回 200 空檔＝失敗看起來像成功）。
+
+  ⏳ **`artifactId` 的過渡規則（Epic B 落地前）**：主路徑是查 `manifest.json` 的
+  `artifacts[].id` → `run_id`。**manifest 還不存在時，允許 `artifactId` 直接帶 `run-…`**。
+  manifest 一存在就**永遠優先**。這條是過渡，Epic B 合併後前端改用 `artifact_id`；
+  在那之前前端用 `run-…` 叫得動。
+
 > **同一份文件被切多 chunk**：`GET /api/laws`、`GET /api/decisions` 與本案清單 **後端先去重再回**
 > （`dedupe_by_source`，預設 False，**母庫查要記得開**），否則「命中 5 筆」其實只有 2 份文件。
 
