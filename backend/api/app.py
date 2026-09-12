@@ -36,8 +36,12 @@
 """
 from __future__ import annotations
 
+import asyncio
+import concurrent.futures
+import contextlib
 import datetime as dt
 import json
+import os
 import pathlib
 import re
 import shutil
@@ -49,6 +53,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+import anyio.to_thread  # noqa: E402
 from fastapi import BackgroundTasks, FastAPI, File, HTTPException, UploadFile  # noqa: E402
 from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse  # noqa: E402
@@ -151,7 +156,39 @@ def _frontend_check() -> dict[str, Any]:
     }
 
 
+#: anyio 預設執行緒池上限。**40 是 anyio 的預設值，不是量出來的**，所以這裡調高。
+#:
+#: 誰會長時間佔著 token（2026-09-13 盤點）：`?stream=0` 的聊天一次性模式（10–72 秒）、
+#: `GET /api/runs/{id}/events` 的同步 SSE generator、上傳與匯出。
+#: 聊天的 SSE 已經改成 async generator，**那條路現在用 0 個 token**。
+#:
+#: 為什麼是 128 而不是更大：一個 token ＝ 一條 OS thread。task 是 1 vCPU／2048 MiB，
+#: Python 執行緒的 stack 是惰性提交的，128 條實際佔用約數 MB——相對便宜。
+#: 但**不無上限**：1 vCPU 上掛幾百條只會 context switch 互打，而且沒有上限就沒有
+#: 背壓訊號，塞爆的時候會安靜地變慢而不是明確地排隊。
+#:
+#: ⚠️ **調高只是把懸崖往後推，不是拆掉那條鏈。** 真正拆掉鏈的是
+#: `/api/health` 走自己的池（見 `_HEALTH_POOL`）：健康檢查不跟它監測的負載搶資源。
+THREADPOOL_LIMIT = int(os.environ.get("BACKEND_THREADPOOL_LIMIT", "128"))
+
+
+@contextlib.asynccontextmanager
+async def _lifespan(_app: FastAPI):
+    """啟動時把 anyio 的預設執行緒池上限調高（見 `THREADPOOL_LIMIT`）。
+
+    只能在 async context 裡拿得到那個 limiter，所以放在 lifespan 而不是模組層。
+    拿不到就不調——**不要讓一個調校動作變成服務起不來的理由**，並印出來，不吞。
+    """
+    try:
+        anyio.to_thread.current_default_thread_limiter().total_tokens = THREADPOOL_LIMIT
+    except Exception as e:  # noqa: BLE001 — 見 docstring
+        print(f"[warn] 調整執行緒池上限失敗（維持預設值）：{type(e).__name__}: {e}",
+              file=sys.stderr)
+    yield
+
+
 app = FastAPI(
+    lifespan=_lifespan,
     title="訴願案件審理 AI 輔助（v2 六節點 + 五步動線）",
     description="六節點 deterministic pipeline，同一個 process 也 serve 五步動線前端。執行檔位由 RUN_MODE 決定（fixture 離線重播／bedrock 即時推論），實際值見 GET /api/health。",
     docs_url="/api/docs",
@@ -283,8 +320,37 @@ def _health_checks() -> list[dict]:
     return checks
 
 
+#: 健康檢查專用的執行緒池。**刻意不共用 anyio 的預設池**（2026-09-13，實測驅動）。
+#:
+#: starlette 迭代同步 generator 會佔住預設池的一個 token，**阻塞多久就佔多久**，
+#: 而聊天一輪 10–72 秒、池子預設上限 40。實測 41 條並行 SSE 時 `/api/health`
+#: 整個打不開、50 條要 12 秒。接下來是 ALB（`interval 30s`／`timeout 10s`／
+#: `unhealthyThresholdCount 3`）判 task 不健康 → `desiredCount: 1` 的 task 被換掉 →
+#: `backend/output/` 是容器本地磁碟，**上傳的卷證與 manifest 全部消失**。
+#:
+#: **健康檢查不該跟它要監測的負載搶同一個資源。** 給它自己的池，SSE 再多也搶不走。
+#: 兩條就夠：ALB 每 30 秒打一次，這裡一次 0.2–0.8 ms。
+_HEALTH_POOL = concurrent.futures.ThreadPoolExecutor(
+    max_workers=2, thread_name_prefix="health")
+
+
 @app.get("/api/health")
-def health() -> JSONResponse:
+async def health() -> JSONResponse:
+    """健康檢查。**`async def` + 專用執行緒池**，兩件事缺一不可。
+
+    只改 `async def` 會把 `_health_checks()` 的實際讀檔搬到 event loop 上，
+    變成阻塞所有人而不是只佔一個 token——**那比不改更糟**。所以實際工作仍在
+    執行緒裡跑，只是跑在自己的池子上。
+
+    紅線不變（見本檔檔頭）：它**真的**去讀 laws-snapshot 與合成案例，
+    讀不動就回 503。這裡沒有加任何快取——快取過的健康檢查會在磁碟剛壞掉時
+    照樣說 ok，那就是健康檢查說謊。
+    """
+    return await asyncio.get_running_loop().run_in_executor(_HEALTH_POOL, _health_body)
+
+
+def _health_body() -> JSONResponse:
+    """`/api/health` 的實際工作（會讀檔，所以不在 event loop 上跑）。"""
     mode = run_mode()
     checks = _health_checks()
     ok = all(c["ok"] for c in checks if c.get("blocking", True))

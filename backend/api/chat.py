@@ -28,8 +28,8 @@ runstore 與 orchestrator**（之後要能整份搬上託管服務，那個容�
 """
 from __future__ import annotations
 
+import asyncio
 import json
-import queue
 import threading
 import time
 import uuid
@@ -297,7 +297,7 @@ def chat(case_id: str, body: ChatIn, request: Request):
     # 並把結果帶進 gen()——重讀一次不只是浪費，還可能讀到不同的狀態。
     case_payload, run_info = _load_run_context(case_id, body.run_id)
 
-    def gen():
+    async def gen():
         """真串流：`emit` 推 queue，generator 邊跑邊 yield（契約 v2 §0.1 第 3 點）。
 
         **原本的做法是 `pending.append()` 然後整批 yield**，實測 t=0 emit 的事件
@@ -311,13 +311,33 @@ def chat(case_id: str, body: ChatIn, request: Request):
         `record()` 的 `seq` 由 worker 與 generator 共用，但**不會並行寫入**：
         worker 只在自己這條 thread 上 emit，而 `done`／`error` 是 sentinel 之後才 record，
         那時 worker 已經結束了。
+
+        ## 為什麼是 `async def`（2026-09-13 改，實測驅動）
+
+        starlette 迭代**同步** generator 的方式是丟進 anyio 的 threadpool，而且
+        **阻塞多久就佔著那個 token 多久**。聊天一輪 10–72 秒，池子預設上限 40。
+        實測（本檔的 `gen()`、fixture 檔位）：39 條並行時 `/api/health` 5 ms，
+        **41 條就整個打不開，50 條要 12 秒**——懸崖正好卡在 40。
+        再往下推就是 ALB 判 task 不健康 → 換掉 task → `backend/output/` 是容器本地磁碟，
+        上傳的卷證與 manifest **全部消失**。
+
+        而這個 token 對這支 generator 來說**完全是浪費的**：真正的工作早就跑在
+        自己的 `threading.Thread` 上了，同步版的 generator 只是坐在 `q.get()` 上
+        空等 72 秒，卻佔著一個服務其他請求的 token。改成 async generator 之後
+        starlette 直接在 event loop 上 await 它，**這條路徑的 threadpool 用量歸零**。
+
+        `asyncio.Queue` 不是執行緒安全的，所以 worker 那側一律走
+        `loop.call_soon_threadsafe()` 把入列動作排回 event loop，不直接碰 queue。
         """
-        q: queue.Queue = queue.Queue()
+        loop = asyncio.get_running_loop()
+        q: asyncio.Queue = asyncio.Queue()
         done_marker = object()
         box: dict[str, Any] = {}
 
         def emit(name: str, data: dict[str, Any]) -> None:
-            q.put(record(name, data))
+            # `record()` 在 worker 這條 thread 上跑（`seq` 的唯一寫入者仍是它），
+            # 只有入列動作排回 event loop。
+            loop.call_soon_threadsafe(q.put_nowait, record(name, data))
 
         def worker() -> None:
             try:
@@ -326,18 +346,19 @@ def chat(case_id: str, body: ChatIn, request: Request):
             except Exception as e:  # noqa: BLE001 — 例外帶回去，由 generator 決定怎麼說
                 box["error"] = e
             finally:
-                # **一定要送出去**：不送的話 generator 會永遠卡在 q.get()，
+                # **一定要送出去**：不送的話 generator 會永遠 await 下去，
                 # 而卡住的 SSE 連線看起來就像「還在跑」，比報錯更難查。
-                q.put(done_marker)
+                loop.call_soon_threadsafe(q.put_nowait, done_marker)
 
-        t = threading.Thread(target=worker, name="chat-turn", daemon=True)
-        t.start()
+        threading.Thread(target=worker, name="chat-turn", daemon=True).start()
         while True:
-            ev = q.get()
+            ev = await q.get()
             if ev is done_marker:
                 break
             yield _frame(ev)
-        t.join()
+        # **刻意不 `join()`**：`box` 的寫入在 worker 的 `finally` 之前就完成了，
+        # 而我們是**經由 queue** 才看到 sentinel 的，所以讀得到最終值。
+        # 在這裡 join 等於在 event loop 上做一次阻塞等待，為了一個已經沒有意義的保證。
         if "error" in box:
             # spec §4.6：失敗必須有一個**與 done 不同**的形狀。用 done 包一句道歉，
             # 前端會把它當一則正常回答並標燈——那正是 CONSTITUTION §1 要防的。

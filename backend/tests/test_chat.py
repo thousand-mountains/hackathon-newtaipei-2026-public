@@ -997,12 +997,12 @@ def test_resetting_case_refs_leaves_this_turn_s_retrieval_numbers_alone():
 # `.prospec/changes/chat-tools-unified/verification.md`（改動前六個事件全在 2.993s
 # 一起到，改動後 0.000／0.000／0.999／2.002／3.007／3.008）。
 
-def _gen_fn() -> ast.FunctionDef:
+def _gen_fn() -> ast.AsyncFunctionDef:
     tree = ast.parse(_api_chat_src())
     chat_fn = next(n for n in ast.walk(tree)
                    if isinstance(n, ast.FunctionDef) and n.name == "chat")
     return next(n for n in ast.walk(chat_fn)
-                if isinstance(n, ast.FunctionDef) and n.name == "gen")
+                if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == "gen")
 
 
 def test_gen_does_not_buffer_events_into_a_list_before_yielding():
@@ -1020,14 +1020,54 @@ def test_gen_does_not_buffer_events_into_a_list_before_yielding():
     attrs = [n.func.attr for n in ast.walk(emit)
              if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)]
     assert "append" not in attrs, "gen() 的 emit 又在攢清單了——串流會退回整批送"
-    assert "put" in attrs, "gen() 的 emit 沒有推進佇列，generator 那端取不到東西"
+    assert any(a.startswith("put") or a == "call_soon_threadsafe" for a in attrs), \
+        "gen() 的 emit 沒有把事件推進佇列，generator 那端取不到東西"
 
 
 def test_gen_runs_the_turn_on_a_worker_thread_so_the_generator_can_yield_meanwhile():
-    """同步 generator 自己跑 `_run_turn` 就沒有機會 yield——必須有人代跑。"""
-    src = ast.dump(_gen_fn())
-    assert "Thread" in src, "gen() 沒有把回合丟到工作執行緒，yield 不出中間事件"
-    assert "join" in src, "沒有 join：worker 還在寫 box 的時候就讀，done/error 可能讀到空"
+    """generator 自己跑 `_run_turn` 就沒有機會 yield——必須有人代跑。"""
+    assert "Thread" in ast.dump(_gen_fn()), \
+        "gen() 沒有把回合丟到工作執行緒，yield 不出中間事件"
+
+
+def test_gen_is_an_async_generator_so_it_does_not_hold_a_threadpool_token():
+    """**這條釘的是「41 條 SSE 就把服務弄掉」那個懸崖**（2026-09-13 實測）。
+
+    starlette 迭代**同步** generator 的方式是丟進 anyio 的 threadpool，而且阻塞多久
+    就佔著那個 token 多久。聊天一輪 10–72 秒、池子預設 40。實測（sync 版、池子 40）：
+    39 條並行時 `/api/cases` 2.1 ms，**41 條就 timeout**。接下來是 ALB 判 task 不健康
+    → 換掉 task → `backend/output/` 是容器本地磁碟，上傳的卷證與 manifest 全部消失。
+
+    而這個 token 對這支 generator 是**純浪費**：真正的工作跑在自己的
+    `threading.Thread` 上，同步版只是坐在佇列上空等。改 async 之後
+    這條路徑的 threadpool 用量歸零（實測：100 條並行時 `/api/cases` 1.9 ms）。
+
+    **不要因為「同步版讀起來比較簡單」就改回去。**
+    """
+    assert isinstance(_gen_fn(), ast.AsyncFunctionDef), \
+        "gen() 不是 async generator：每條 SSE 會佔住一個 threadpool token 長達 72 秒"
+
+
+def test_health_does_not_share_the_threadpool_with_the_streaming_endpoints():
+    """健康檢查不該跟它要監測的負載搶同一個資源（2026-09-13）。
+
+    兩件事缺一不可，所以兩件都釘：
+    1. `health` 是 `async def`——同步 `def` 會被丟進 anyio 預設池，跟 SSE 同一池。
+    2. 它的實際工作跑在**專用**執行緒池上——只改 async 會把讀檔搬到 event loop，
+       變成阻塞所有人而不是只佔一個 token，**那比不改更糟**。
+    """
+    tree = ast.parse((ROOT / "backend" / "api" / "app.py").read_text(encoding="utf-8"))
+    fn = next(n for n in ast.walk(tree)
+              if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == "health")
+    assert isinstance(fn, ast.AsyncFunctionDef), \
+        "health 是同步 def：它會跟 SSE 搶同一個 threadpool，41 條就打不開"
+    src = ast.unparse(fn)
+    assert "_HEALTH_POOL" in src, "health 沒有用專用執行緒池，SSE 還是搶得走"
+    assert "run_in_executor" in src, "health 的讀檔沒有離開 event loop"
+    # 紅線不變：它必須真的去讀，不得回一個快取過的常數
+    body = next(n for n in ast.walk(tree)
+                if isinstance(n, ast.FunctionDef) and n.name == "_health_body")
+    assert "_health_checks" in ast.unparse(body), "health 沒有真的跑檢查"
 
 
 def test_every_event_carries_turn_id_not_just_done():
