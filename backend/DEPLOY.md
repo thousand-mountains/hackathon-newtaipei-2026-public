@@ -450,8 +450,30 @@ AWS_PROFILE=hack-ntpc AWS_REGION=us-west-2 aws cloudformation describe-stacks \
   --query "Stacks[0].Outputs[?OutputKey=='AlbIngress'].OutputValue" --output text
 ```
 
-全開時印 `0.0.0.0/0`；收窄後印那幾組 CIDR，以逗號相連。**部署完一定要看這行**，
-它是唯一能一眼分辨「有沒有誤啟用白名單」的地方。
+全開時印 `0.0.0.0/0`；收窄後印那幾組 CIDR，以逗號相連。**部署完一定要看這行。**
+
+但它**不是 ground truth**：`AlbIngress` 的值是從 CDK props 推導的（`infra/cdk/lib/appeal-backend-stack.ts:232`），
+不是去讀 Security Group 實況。有人在 console 手改 SG、或踩到下面那個 `.env` 陷阱，
+它會照樣印出看起來正常的值。要確認實況再查一次 SG：
+
+```bash
+AWS_PROFILE=hack-ntpc AWS_REGION=us-west-2 aws ec2 describe-security-groups \
+  --filters "Name=group-name,Values=*ServiceLBSecurityGroup*" \
+  --query 'SecurityGroups[].IpPermissions[?ToPort==`80`][].IpRanges[].CidrIp' --output text
+```
+
+> `[?ToPort==\`80\`]` 後面那個 **`[]` 不能省**。少了它，投影會多包一層、
+> 查詢**靜默回空**——而空輸出看起來就像「沒有任何人連得進來」，是最容易誤判的方向。
+> （這條實測過：少 `[]` 時對一份含 80 埠規則的樣本回 `[]`。）
+>
+> 空輸出有兩種可能，要分得出來：真的沒有 80 埠規則，或 `--filters` 沒配到任何 SG。
+> 先拿掉 `--query` 跑一次看有沒有撈到 SG，再判斷。
+
+⚠️ **`.env` 會覆蓋你在命令列給的值。** `deploy.sh:32-35` 的 `set -a; . "$env_file"; set +a`
+在命令列變數**之後**執行，所以 `.env` 裡若有 `ALB_ALLOWED_CIDRS`，
+`ALB_ALLOWED_CIDRS=... ./deploy.sh deploy` 會被**靜默覆蓋**——更糟的是下面 §6 的**回滾**
+（不帶該變數重跑）在那種情況下根本不會回滾，而 `AlbIngress` 會照著 `.env` 印，看起來一切正常。
+（實查 2026-09-12：`.env` 目前沒有這個變數，回滾可用。動手前再確認一次。）
 
 ---
 
@@ -507,9 +529,12 @@ python3 backend/tests/run_all.py
 |---|---|
 | 觸發時機 | **2026-09-13 交件前**（在此之前一律維持全開，Ci 2026-09-12 拍板） |
 | 那四組 CIDR | **交件前向賽方確認並填入**——來源是賽方 2026-09-12 現場投影片。此處刻意不寫死，避免抄到過期的值 |
-| 指令 | `ALB_ALLOWED_CIDRS=<四組CIDR> ./deploy.sh deploy`（在 `infra/cdk/` 底下跑） |
-| 驗證 | 部署後跑 §3.6 那條 `describe-stacks`，`AlbIngress` 要從 `0.0.0.0/0` 變成那四組，逐條核對沒有少打 |
-| 回滾 | **不帶** `ALB_ALLOWED_CIDRS` 重跑一次 `./deploy.sh deploy`，`AlbIngress` 會回到 `0.0.0.0/0` |
+| 前置 0 | **回 Workshop Studio dashboard 重取 AWS 憑證**（臨時憑證，`~/.aws/credentials` 沒有 expiry 欄位查不出剩多久）。沒做這步，`deploy.sh:43` 的 `aws sts get-caller-identity` 會第一個擋下你，而錯誤訊息跟 ALB 毫無關係 |
+| 前置 0b | **確認 `.env` 裡沒有 `ALB_ALLOWED_CIDRS`**（`grep -c '^[[:space:]]*ALB_ALLOWED_CIDRS' .env` 要是 0）。有的話它會覆蓋命令列，**而且下面的回滾會失效**。理由見 §3.6 |
+| 指令 | `cd infra/cdk && ALB_ALLOWED_CIDRS=<四組CIDR> ./deploy.sh deploy` |
+| 驗證 | 兩個都查：①§3.6 的 `describe-stacks`，`AlbIngress` 要從 `0.0.0.0/0` 變成那四組，逐條核對沒有少打；②§3.6 的 `describe-security-groups` 查 SG 實況——`AlbIngress` 是推導值，會說謊 |
+| 收窄後 | **重跑完整 `./verify.sh`**。收窄動的是 SG，最容易壞的就是「自己也連不進去了」 |
+| 回滾 | **不帶** `ALB_ALLOWED_CIDRS` 重跑一次 `./deploy.sh deploy`，`AlbIngress` 會回到 `0.0.0.0/0`（前提是前置 0b 成立） |
 
 > ⚠️ **收窄前必須先確認評審在哪裡看。** 那四組是**會場出口 IP**，收窄之後**從會場以外連進來的人會被擋掉**，
 > 包含交件後才自己點開網址的評審。這題不能用推論決定——問到答案再收窄，問不到就不要收。

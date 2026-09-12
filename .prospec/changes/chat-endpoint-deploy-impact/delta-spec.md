@@ -2,6 +2,7 @@
 
 > REQ ID 格式：`REQ-{MODULE}-{NUMBER}`
 > 本 change 只動**部署面**。聊天端點本身的需求在 `chat-ask-agent` 的 delta-spec（`REQ-CHAT-*`）。
+> ⚠️ 本文件引用的 `.prospec/changes/chat-ask-agent/*` 與 `docs/spec/2026-09-12-chat-honesty-lamps.md` **尚未進 git**，行號以主工作樹當下版本為準，它們 commit 後請複查。
 
 ## ADDED
 
@@ -15,34 +16,42 @@
 
 **Acceptance Criteria:**
 
-1. 指令長這樣，對既有合成案例 `synthetic-ordinary-01` 發送：
+1. 請求必須帶 `run_id`，且該 run 必須是一次**已完成**的 run（契約：`docs/spec/2026-09-12-chat-honesty-lamps.md:31-33`；`case_id`／`run_id` 不同案回 400）。作法是重用第 3 段跑完的 `rid`（`verify.sh:116` 取得，`:167` 仍在作用域）：
    ```bash
    curl -N -s --max-time 60 -X POST "$base/api/cases/synthetic-ordinary-01/chat" \
-        -H 'content-type: application/json' -d '{"message":"這個案子的受理期間怎麼算？"}' | head -c 2000
+        -H 'content-type: application/json' \
+        -d "{\"run_id\":\"$rid\",\"message\":\"這個案子的受理期間怎麼算？\"}" | head -c 2000
    ```
-2. **判準是輸出中至少出現一行 `^data:`**。HTTP 200 但沒有 `data:` 行 → 判失敗（`bad`）。只比對狀態碼不算滿足本需求。
-3. 使用既有輔助函式 `ok()`（`verify.sh:31`）與 `bad()`（`:30`，自帶 `fail=1`），不另發明 exit 機制。
-4. **反向驗證已執行**：把路徑換成 `/api/cases/does-not-exist/chat` 跑一次，第 5 段判失敗。未做此步不得宣稱本需求完成。
-5. `bash -n infra/cdk/verify.sh` 零輸出。
-6. 不新增測資：只用既有合成案例。
+   ⚠️ **只送 `message` 不送 `run_id` 的版本，在系統完全正常時也會判失敗**——那是恆假型驗收，不滿足本需求。
+2. 前置守衛：`[[ -z "$rid" ]]` 時以 `bad` 記錄「第 3 段沒拿到 run_id，這段無法驗」，**把「第 3 段沒跑成」與「聊天壞了」分開**，不讓人誤判。
+3. **判準是輸出中至少出現一行 `^data:`**。HTTP 200 但沒有 `data:` 行 → 判失敗（`bad`）。只比對狀態碼不算滿足本需求。
+4. 使用既有輔助函式 `ok()`（`verify.sh:31`）與 `bad()`（`:30`，自帶 `fail=1`），不另發明 exit 機制。
+5. **兩個方向都驗過才算完成**：
+   - 不恆真——把 `run_id` 換成不存在的值，第 5 段必須判失敗
+   - 不恆假——在已知正常的部署上跑一次，第 5 段必須通過
+   只做前者不滿足本需求：反向驗證證明不了「這條檢查不是永遠失敗」。
+6. fixture 模式的斷言為 **503**（已凍結，`honesty-lamps.md:83`：tech-lead 拍板，端點已實作、不可用的是執行檔位；`:369` 重申）。**不是 501**。
+7. `bash -n infra/cdk/verify.sh` 零輸出。
+8. 不新增測資：只用既有合成案例 `synthetic-ordinary-01`，並重用第 3 段真的跑出來的 run。
 
 **Priority:** High
 
 ---
 
-### REQ-DEPLOY-011: 「部署零改動」必須是可執行的驗收，不是文件裡的宣稱
+### REQ-DEPLOY-011: 「部署零改動」必須是可執行的驗收，而且基準不能會漂
 
 **Description:**
 
-甲案沿用 `BEDROCK_MODEL_ID_DRAFT`，因此 task role 的 `InvokeNamedModelsOnly`（`infra/cdk/lib/appeal-backend-stack.ts:86-92`，來源是 `invokeArnsFor()` `:33-47` 與 `invokeResources` `:81-84`）已涵蓋聊天所需權限，CDK 不需改動；`boto3~=1.35.0` 與 `strands-agents>=1.15.0` 已在 `backend/requirements.txt:18-19`，不需加套件。
+甲案沿用 `BEDROCK_MODEL_ID_DRAFT`，因此 task role 的 `InvokeNamedModelsOnly`（`infra/cdk/lib/appeal-backend-stack.ts:101`，資源清單 `invokeResources` 在 `:94`，由 `invokeArnsFor()` `:46` 算出）已涵蓋聊天所需權限，CDK 不需改動；`boto3~=1.35.0` 與 `strands-agents>=1.15.0` 已在 `backend/requirements.txt:18-19`，不需加套件。
 
-本需求要求把這個結論變成一條會失敗的檢查——若甲案實際上動了 CDK，它必須被抓出來，而不是靠人回頭讀文件發現。
+本需求要求把這個結論變成一條**會失敗**的檢查——若甲案實際上動了 CDK，它必須被抓出來。
 
 **Acceptance Criteria:**
 
-1. `git diff --stat origin/main -- infra/cdk/lib/ infra/cdk/bin/` **零輸出**。有輸出即代表前提破了，要回頭查是哪裡走偏。
-2. `git diff -- backend/requirements.txt` 只包含 `:19` 那句註解的修正（見 REQ-DEPLOY-012），**不得有任何新增套件行**。
-3. `/opt/homebrew/bin/python3 backend/tests/run_all.py` 全綠：374/374（另 2 項因語料不在 repo 被 harness 照實標示略過）。
+1. `git diff --stat e27d2a7 -- infra/cdk/lib/ infra/cdk/bin/` **零輸出**。有輸出即代表前提破了，要回頭查哪裡走偏。
+2. ⚠️ **基準必須釘在 commit（`e27d2a7`），不得用 `origin/main`。** `origin/main` 會跟著甲案一起前進，用它當基準這條**兩端都綠**——併之前沒東西可比、併之後基準跟著動——是一條恆真檢查，不滿足本需求。
+3. `git diff --stat e27d2a7 -- backend/requirements.txt` 只包含 `:19` 那句註解的修正（見 REQ-DEPLOY-012），**不得有任何新增套件行**。
+4. `/opt/homebrew/bin/python3 backend/tests/run_all.py` 全綠：374/374（另 2 項因語料不在 repo 被 harness 照實標示略過）。
    ⚠️ 必須用 `/opt/homebrew/bin/python3`；macOS 的 `/usr/bin/python3` 是 3.9，腳本自己會擋。
 
 **Priority:** High
@@ -57,10 +66,11 @@
 
 **Acceptance Criteria:**
 
-1. 改法三處寫在 `plan.md` 步驟 5，逐條可照打：`AppealBackendStackProps`（`appeal-backend-stack.ts:11-20`）加欄位、`invokeResources`（`:81-84`）加一行、`bin/app.ts:43-44` 附近加 `required('BEDROCK_MODEL_ID_CHAT')`。
+1. 改法三處寫在 `plan.md` 步驟 6，逐條可照打：`AppealBackendStackProps`（`appeal-backend-stack.ts:11` 起）加欄位、`invokeResources`（`:94`）加一行、`bin/app.ts:43-44` 附近加 `required('BEDROCK_MODEL_ID_CHAT')`。
 2. 附**不需實際部署就能驗**的指令：`cdk synth` 後解析 template，確認 `bedrock:InvokeModel` statement 的 `Resource` 多了第三顆模型的 ARN。
 3. 附 `cdk synth` 的前置條件（需 `cdk.context.json` 與 `CDK_DEFAULT_ACCOUNT`，否則停在 `StackAccountRegionNotSpecified`）——這個坑已實際踩過。
-4. `backend/requirements.txt:19` 的註解修正為目錄級說法：實際被強制的是整個 `backend/llm/`（`backend/tests/run_all.py:423` 的錯誤訊息即「只有 `backend/llm/` 可以」），不是單一 `llm/client.py`。加 `backend/llm/chat.py` 後原註解會誤導下一個人以為自己違規。
+4. `backend/requirements.txt:19` 的註解修正為目錄級說法：實際被強制的是 `DEPENDENCY_EXEMPT_DIRS = ("api", "llm")`（`backend/tests/run_all.py:262`，套用在 `:271`／`:278`），即整個 `backend/llm/`。加 `backend/llm/chat.py` 後原註解會誤導下一個人以為自己違規。
+   （註：`run_all.py:423` 附近那條是 `_llm_import_violations`，只掃 N2/N3/N4/N6 節點，跟本條無關。）
 
 **Priority:** Medium
 
@@ -76,12 +86,18 @@
 
 **Acceptance Criteria:**
 
-1. `backend/DEPLOY.md` §3.6 說明機制與 `AlbIngress` 的查法；§6 是交件前檢查清單。✅ 完成於 `e27d2a7`。
-2. 清單含：觸發時機（2026-09-13 交件前）、指令（`ALB_ALLOWED_CIDRS=<四組CIDR> ./deploy.sh deploy`）、驗證（`describe-stacks` 查 `AlbIngress` 是否變成那四組）、回滾（不帶該變數重跑 deploy）。
-3. **四組 CIDR 的實際值不進 repo**，標「交件前向賽方確認並填入」。寫死會被抄到過期的值。
-4. 清單含風險警語：那四組是**會場出口 IP**，收窄後會場外連不進來，包含交件後才自己點開網址的評審。**先確認評審在哪裡看，問不到就不收窄。**
-5. 收窄後必須重跑完整 `verify.sh`（含第 5 段）——收窄動的是 SG，最容易壞的就是自己也連不進去。
-6. 目前狀態驗證：`AlbIngress` output 現在必須是 `0.0.0.0/0`，代表沒有誤啟用。
+1. `backend/DEPLOY.md` §3.6 說明機制與查法；§6 是交件前檢查清單。
+2. 清單含且順序不可跳：
+   - **步驟 0**：重取 Workshop Studio 臨時憑證。`deploy.sh:43` 的 `aws sts get-caller-identity` 會第一個擋你，而錯誤訊息跟 ALB 毫無關係——交件前夜最不該卡在這裡。
+   - **步驟 0b**：確認 `.env` 裡沒有 `ALB_ALLOWED_CIDRS`。`deploy.sh:32-35` 的 `set -a; . "$env_file"` 在命令列變數**之後**執行，會靜默覆蓋命令列的值，**並讓步驟 4 的回滾完全失效**（實查 2026-09-12：`.env` 目前沒有此變數，回滾可用）。
+   - **步驟 1**：`cd infra/cdk && ALB_ALLOWED_CIDRS=<四組CIDR> ./deploy.sh deploy`
+   - **步驟 2**：驗證，見下一條
+   - **步驟 3**：重跑完整 `verify.sh`（含第 5 段）——收窄動的是 SG，最容易壞的就是自己也連不進去
+   - **步驟 4（回滾）**：不帶 `ALB_ALLOWED_CIDRS` 重跑一次 deploy
+3. **驗證要兩個都查**：`AlbIngress` CfnOutput（`describe-stacks`）**以及** SG 實況（`aws ec2 describe-security-groups`）。`AlbIngress` 的值從 props 推導（`appeal-backend-stack.ts:232`），**不讀 SG 實況**——有人在 console 手改 SG、或踩到步驟 0b 的覆蓋，它會照樣印出看起來正常的值。
+4. **四組 CIDR 的實際值不進 repo**，標「交件前向賽方確認並填入」。寫死會被抄到過期的值。
+5. 清單含風險警語：那四組是**會場出口 IP**，收窄後會場外連不進來，包含交件後才自己點開網址的評審。**先確認評審在哪裡看，問不到就不收窄。**
+6. 目前狀態驗證：`AlbIngress` 現在必須是 `0.0.0.0/0`，代表沒有誤啟用。
 
 **Priority:** High
 
@@ -89,9 +105,13 @@
 
 ## MODIFIED
 
-### REQ-DEPLOY-00X（既有部署驗收）：驗收段數由 4 段增為 5 段
+### 既有部署驗收：段數由 4 段增為 5 段，兩處字樣要同步改
 
 原 `verify.sh` 四段（首頁靜態資源 `:33-67`／`/api/health` 四項 `:69-106`／真打 Bedrock 端到端 `:108-153`／C 型守門 409 `:155-165`）全部保留、判準不變，僅**新增**第 5 段。
+
+同步要改的兩處（不改就變成錯的）：
+- `infra/cdk/verify.sh:2` 檔頭：「Success Criteria 四條」→ 五條
+- `backend/DEPLOY.md:325` §3.4 標題：「`./verify.sh`，四條全綠才算完成」→ 五條
 
 **不得**因為加了第 5 段而放寬任何既有一段的判準。既有兩條紅線（`/api/health` 四項任一不對即是離線重播不得交件；C 型 submit 沒回 409 即 P0）維持不變。
 
@@ -100,3 +120,11 @@
 ## REMOVED
 
 _No removals in this change._
+
+---
+
+## 本 change 不解、但已記錄的既有問題
+
+1. **聊天不受 1 RPS 節流保護**（`backend/llm/client.py:76-80` docstring；`honesty-lamps.md:371-373`）。賽方規範 ≤1 RPS。**待 Ci 拍板**保護與否；賽制是否把聊天呼叫一起算**待查**。
+2. **503 vs 501 兩份來源不一致**：`honesty-lamps.md:83` 說已凍結 503，`chat-ask-agent/proposal.md:200` 說請 Ci 確認。本 change 採信 spec，請 Ci 一句話定案後把弱的那份改掉。
+3. **環境收回時間兩說並存**：`backend/DEPLOY.md:413-428`（§3.5，`bce7667`）vs `.prospec/changes/deploy-backend-to-aws/proposal.md:32`（`e6fb4343`）。`appeal-backend-stack.ts:72` 的註解也指回舊說法。**非本 change 造成，要改三處一起改**，需 Ci 確認以哪個為準。
