@@ -53,7 +53,9 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
+import backend.api.dossier as dossier_api
 from backend.api.events import BUS
+from backend.dossier import corpus
 from backend.config import settings
 from backend.config.settings import load_snapshot, run_mode
 from backend.llm.chat import RefBook, build_chat_agent, classify_answer
@@ -65,6 +67,7 @@ from backend.nodes.n4_retrieval import (
 )
 from backend.orchestrator.chat_bridge import (
     PAYLOAD_SECTIONS,
+    archive_adapter,
     load_case_manifest,
     pipeline_adapter,
     relation_graph_adapter,
@@ -217,6 +220,20 @@ def _user_message(body: ChatIn, history: list[dict[str, str]]) -> str:
     return "\n\n".join(parts)
 
 
+def _fetch_corpus_text(key: str) -> str:
+    """讀一份母庫文件的全文，給歸檔用的 `full_cached`。
+
+    **client 在這裡建、每次呼叫建一個**：`backend/api/` 是紅線掃描的具名豁免之一，
+    而 `backend/dossier/corpus.py` 只吃注入的 client（維持零外部依賴）。
+    一次聊天回合最多歸檔 5 筆，建 client 的成本遠小於把一個長命 client 綁在
+    模組層（那會讓憑證輪替之後的行程一直用舊的）。
+
+    **例外一律往上拋**，由 `archive_adapter` 接住並在那一筆的 `note` 說明——
+    在這裡吞掉的話，「這個檔位沒有 S3」與「S3 讀失敗」會長得一模一樣。
+    """
+    return corpus.fetch_text(key, dossier_api._s3_client())
+
+
 #: `ack` 的口白。**故意寫得像個承辦助理，而不是像一個進度條**——
 #: 它的用途是讓對話框立刻有東西，不是宣告工具已經開始跑（那是 `tool_call` 的事）。
 ACK_TEXT = "收到，我看一下卷內資料。"
@@ -258,6 +275,9 @@ def _run_turn(case_id: str, body: ChatIn, emit: Any,
         run_id=(run_info or {}).get("run_id"),
         case_manifest=load_case_manifest(case_id),
         build_graph=relation_graph_adapter(case_id),
+        # 契約 §3.0：兩支檢索工具查到的東西要歸檔進本案卷宗。全文由母庫抓
+        # （`_fetch_corpus_text` 自己吞掉 boto3 缺席與 S3 失敗，見該函式）。
+        archive=archive_adapter(case_id, fetch_text=_fetch_corpus_text),
         law_query=(run_info or {}).get("law_query") or "",
         law_query_sources=(run_info or {}).get("law_query_sources") or [],
         case_query=(run_info or {}).get("case_query") or "",

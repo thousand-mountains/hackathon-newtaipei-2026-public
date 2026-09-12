@@ -19,6 +19,8 @@ from backend.config.settings import (
     SYNTHETIC_DIR,
 )
 import backend.llm.chat as chat_mod
+from backend.llm.chat import RefBook
+from backend.retrieval.base import Hit
 from backend.dossier import store
 from backend.orchestrator import chat_bridge
 from backend.config.settings import load_snapshot
@@ -635,6 +637,164 @@ def test_node_done_events_report_degradation_from_the_node_not_from_a_guess():
 # 這一段跑的是**真的 adapter 配真的 run_case**（fixture 檔位）。
 # adapter 原本寫在 `backend/api/chat.py` 裡，那個檔頂層 import fastapi，
 # 於是這段 `CaseState` → dict 的轉換一行都跑不到——而它正是 Epic C 要接的東西。
+
+def test_the_four_chips_get_a_draft_without_touching_a_single_rest_endpoint():
+    """**整條 demo 動線**：解析卷證 → 查法規 → 查相似案 → 生成草稿，全部走 chip。
+
+    2026-09-13 這條是斷的，而且斷在兩個地方：
+    1. `tool_hint` 被丟掉，chip 跑去 `read_case`（`ece113d` 修）。
+    2. **查到的東西不進卷宗**（契約 §3.0 的「歸檔到」那一欄從來沒被實作），
+       所以 `generate_decision_draft` 的前置條件 3 讀 manifest 讀到空的，
+       正確地拒絕生成。承辦人看到的是「生成草稿永遠都是空的」。
+
+    這條測試釘住的是**接起來會動**——兩段各自的單元測試都綠，而動線是斷的。
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        cases_dir = pathlib.Path(tmp) / "cases"
+        store.ensure(ORDINARY, cases_dir=cases_dir)
+
+        def counts():
+            m = store.load(ORDINARY, cases_dir)
+            return len(m["laws"]), len(m["references"]), len(m["artifacts"])
+
+        assert_eq(counts(), (0, 0, 0), "起點應該是空卷宗")
+
+        last = _press_every_chip(ORDINARY, cases_dir)
+
+        laws, refs, artifacts = counts()
+        assert_true(laws > 0, "查法條查到了，卻沒有一筆進卷宗")
+        assert_true(refs > 0, "查相似案查到了，卻沒有一筆進卷宗")
+        assert_true(artifacts > 0, "草稿沒有登記進卷宗")
+        assert_true((last.get("cite_count") or 0) > 0,
+                    f"草稿生出來了但一處引用都沒有：{last}")
+        assert_true(last.get("artifact_id"), f"沒有 artifact_id：{last}")
+
+
+def _press_every_chip(case_id: str, cases_dir: pathlib.Path) -> dict:
+    """依序按四個 chip，回傳最後一張工具卡。**中間不碰任何 REST 端點。**"""
+    snapshot = load_snapshot()
+    events: list = []
+    chat_mod._throttle = lambda: None
+    run_id = None
+    sections: dict = {k: None for k in chat_bridge.PAYLOAD_SECTIONS}
+    law_query = case_query = ""
+
+    for hint in ("extract_case_document", "search_regulations",
+                 "search_similar_decisions", "generate_decision_draft"):
+        tools = chat_mod.ChatTools(
+            sections, RefBook(), _StubSimilarCases(), snapshot,
+            lambda n, d: events.append((n, d)),
+            run_pipeline=chat_bridge.pipeline_adapter(
+                case_id, cases_dir, mode="fixture", persist=True),
+            run_id=run_id,
+            case_manifest=chat_bridge.load_case_manifest(case_id, cases_dir),
+            archive=chat_bridge.archive_adapter(cases_dir=cases_dir, case_id=case_id),
+            law_query=law_query, case_query=case_query,
+        )
+        tools.run_tool_hint(hint)
+        run_id = tools.run_id or run_id
+        if run_id:
+            state = load_run(run_id)
+            names = list((snapshot.get("laws") or {}).keys())
+            law_query = n4_retrieval.build_query(state, names)
+            case_query = n4_retrieval.build_case_query(state)
+            sections = {k: build_payload(state).get(k)
+                        for k in chat_bridge.PAYLOAD_SECTIONS}
+    return [d for n, d in events if n == "tool_result"][-1]
+
+
+class _StubSimilarCases:
+    """相似案 KB 在雲上，本機沒有憑證。**回一筆形狀正確的**——包含
+    `payload["kb_kind"]`，因為歸檔要靠它把 S3 key 拼回來。"""
+
+    name = "similar_cases"
+
+    def search(self, query, top_k=5, filters=None, **kw):  # noqa: ANN001
+        return [Hit(id="kb-1", title="1151090848_駁回", score=0.71,
+                    source="新北訴願決定書_環保局全量/1151090848_駁回.txt",
+                    payload={"kb_kind": "public", "outcome": "駁回",
+                             "provenance": "public_crawl", "category": None,
+                             "text": "（命中的 chunk，不是全文）"})]
+
+
+def test_archiving_the_same_hits_twice_does_not_grow_the_dossier():
+    """連按兩次「查法條」，卷宗不得出現重複的同一條，也不得多出一批。
+
+    這是 `id` 穩定性的端到端版：`store.add_items` 依 `id` 去重，而 `id` 是
+    法名＋條號推導的。用 RefBook 的回合序號（`c1`／`c2`）當 id 的話，
+    第二次的 `c1` 跟第一次的 `c1` 是不同的法條，去重就失效。
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        cases_dir = pathlib.Path(tmp) / "cases"
+        store.ensure(ORDINARY, cases_dir=cases_dir)
+        archive = chat_bridge.archive_adapter(ORDINARY, cases_dir)
+        chat_mod._throttle = lambda: None
+
+        def press_law_chip():
+            chat_mod.ChatTools({}, RefBook(), None, load_snapshot(), lambda n, d: None,
+                               archive=archive, law_query="訴願法第77條"
+                               ).run_tool_hint("search_regulations")
+
+        press_law_chip()
+        first = [x["id"] for x in store.load(ORDINARY, cases_dir)["laws"]]
+        press_law_chip()
+        second = [x["id"] for x in store.load(ORDINARY, cases_dir)["laws"]]
+
+        assert_eq(first, ["lawtable:訴願法-77"], "id 不是法名＋條號推導的")
+        assert_eq(second, first, "按第二次卷宗長出了重複的東西")
+
+
+def test_a_full_text_fetch_failure_still_files_the_document_and_says_why():
+    """抓全文失敗**不得讓歸檔失敗**。
+
+    那會把「這份決定書加進卷宗了、只是沒快取全文」變成「加不進去」，
+    兩者差很多。抓不到就留空並在 `note` 說明。
+    """
+    item = {"id": "kb/public/決定書/1.txt", "t": "1_駁回", "src": "決定書/1.txt",
+            "note": "", "score": None, "provenance": "public_crawl",
+            "doc_kind": "decision", "verdict": "駁回", "category": None,
+            "full_cached": "", "channel": "corpus"}
+
+    def boom(_key):
+        raise RuntimeError("S3 掛了")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        cases_dir = pathlib.Path(tmp) / "cases"
+        store.ensure(ORDINARY, cases_dir=cases_dir)
+
+        chat_bridge.archive_adapter(ORDINARY, cases_dir, fetch_text=boom)(
+            "references", [dict(item)])
+        filed = store.load(ORDINARY, cases_dir)["references"]
+        assert_eq(len(filed), 1, "抓全文失敗把整筆歸檔帶走了")
+        assert_eq(filed[0]["full_cached"], "", "抓失敗卻有全文？")
+        assert_in(chat_bridge.NOTE_FULLTEXT_FAILED, filed[0]["note"])
+
+    # 沒有注入抓取器時（測試／還沒設好 S3 的檔位）也要說得出來
+    with tempfile.TemporaryDirectory() as tmp:
+        cases_dir = pathlib.Path(tmp) / "cases"
+        store.ensure(ORDINARY, cases_dir=cases_dir)
+        chat_bridge.archive_adapter(ORDINARY, cases_dir)("references", [dict(item)])
+        filed = store.load(ORDINARY, cases_dir)["references"]
+        assert_in(chat_bridge.NOTE_NO_FULLTEXT_FETCHER, filed[0]["note"])
+
+
+def test_the_lawtable_id_never_goes_looking_for_an_s3_object():
+    """`lawtable:…` 的 id 在 S3 上沒有對應物件，不得拿去抓全文。
+
+    抓了只會白拿一個 404，而第四批剛把那條路徑翻成「找不到這份文件」——
+    於是右欄會出現一批寫著「全文未快取（讀母庫失敗）」的法條，
+    看起來像 S3 壞了，其實是我們問錯了地方。
+    """
+    asked: list[str] = []
+    with tempfile.TemporaryDirectory() as tmp:
+        cases_dir = pathlib.Path(tmp) / "cases"
+        store.ensure(ORDINARY, cases_dir=cases_dir)
+        archive = chat_bridge.archive_adapter(
+            ORDINARY, cases_dir, fetch_text=lambda k: asked.append(k) or "x")
+        archive("laws", [{"id": "lawtable:訴願法-77", "t": "訴願法第77條",
+                          "note": "", "body_cached": "", "channel": "lawtable"}])
+    assert_eq(asked, [], f"拿 lawtable 的 id 去 S3 問了：{asked}")
+
 
 def test_the_chip_query_is_the_same_string_n4_actually_searched_with():
     """工具 chip 的查詢句必須是 **N4 真的送出去的那一串**，不是另外組的。

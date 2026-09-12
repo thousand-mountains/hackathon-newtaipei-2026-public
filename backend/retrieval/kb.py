@@ -630,6 +630,11 @@ class KBRetriever:
                              "provenance": md.get("provenance") or _provenance(kind),
                              "category": md.get("category") or None,
                              "year": md.get("year") or None,
+                             # `source` 是 `kb/<kind>/` **底下**的相對路徑，`kind` 到這裡
+                             # 就被丟掉了——於是拿一筆 hit 回頭讀 S3 全文時，key 少一段。
+                             # 猜（先試 official 再試 public）會在猜錯時讀到另一份文件，
+                             # 所以把 kind 帶著走（2026-09-13 補，聊天歸檔要用）。
+                             "kb_kind": kind,
                              "text": text},
                 )
             )
