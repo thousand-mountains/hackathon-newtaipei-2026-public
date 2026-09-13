@@ -471,6 +471,9 @@ export class AppealBackendStack extends cdk.Stack {
         })
       : undefined;
 
+    // ⚠️ **不要改 construct id `'Cdn'`**：改了 CloudFormation 會當成新資源重建，
+    // 部署網址（xxxx.cloudfront.net）跟著換掉——2026-09-13 已把網址交給大會。
+    // `deploy.sh destroy` 同理。
     const distribution = new cloudfront.Distribution(this, 'Cdn', {
       comment: `${PREFIX} https front door`,
       // 評審在台灣：PRICE_CLASS_100 只有北美歐洲 edge，台灣會繞遠路。

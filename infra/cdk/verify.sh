@@ -84,7 +84,9 @@ print(json.dumps(v) if not isinstance(v,str) else v)
 check_field run_mode bedrock
 check_field fixture_only false
 check_field kb_backend kb
-check_field similar_case_backend kb
+# 正常值是 `bedrock_kb`（`backend/retrieval/kb.py` 的 `describe_similar_case_backend` docstring 列了三種）。
+# 原本寫 `kb` 是把 RETRIEVER 的設定值當成了健康檢查的回報值，兩者不是同一個詞——這條因此一直誤報紅。
+check_field similar_case_backend bedrock_kb
 
 # frontend_dist：映像檔裡的前端是不是「完整的」。
 # 比 GET / 回 200 有訊息量——它會逐一檢查 index.html 引用的每個 /assets/… 是否存在，
@@ -177,11 +179,13 @@ fi
 if [[ -z "${rid:-}" ]]; then
   bad "聊天 SSE：沒有可用的 run_id（第 3 段沒跑成）—— 這段無法驗，不是聊天壞了"
 else
-  chat_out="$(curl -N -s --max-time 90 -X POST \
+  # ⚠️ 不能截斷輸出（原本是 `| head -c 4000`）：2026-09-13 經 CloudFront 實測，這一輪完整串流
+  #    13,771 bytes、17 秒，`done` 在 4000 bytes 之後——截斷就把「正常收尾」判成「串流被截斷」。
+  #    --max-time 也放寬：聊天一輪 10–72 秒，90 秒的上限會把慢一點的正常回合切掉。
+  chat_out="$(curl -N -s --max-time 240 -X POST \
     "$base/api/cases/synthetic-ordinary-01/chat" \
     -H 'content-type: application/json' \
-    -d "{\"run_id\":\"$rid\",\"message\":\"有沒有類似的訴願決定可以參考？\"}" \
-    | head -c 4000)"
+    -d "{\"run_id\":\"$rid\",\"message\":\"有沒有類似的訴願決定可以參考？\"}")"
   # 判準是**真的收到 data: 行**，不是 HTTP 200。只比狀態碼抓不到上面那些壞法。
   if printf '%s' "$chat_out" | grep -q '^data:'; then
     if printf '%s' "$chat_out" | grep -q '^event: done'; then
