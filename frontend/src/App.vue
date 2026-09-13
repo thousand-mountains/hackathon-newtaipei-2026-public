@@ -146,18 +146,20 @@ function onSearchInput() {
     const seq = ++searchSeq
     const results = await searchLibrary(searchState.group.key, q)
     if (seq !== searchSeq) return // 有更新的查詢在進行，丟棄這次舊結果
-    // 濾掉本案已加入的（避免重複）
-    searchState.results = results.filter((r) => !searchState.have.has(r.name))
+    // 濾掉本案已加入的（避免重複）——用母庫 id 比對，不用 name（同名不同條會被誤濾）
+    searchState.results = results.filter((r) => !searchState.have.has(r.id))
     searchState.searching = false
   }, 420)
 }
-function toggleSearchCheck(name) {
-  const idx = searchState.checked.indexOf(name)
+function toggleSearchCheck(id) {
+  const idx = searchState.checked.indexOf(id)
   if (idx >= 0) searchState.checked.splice(idx, 1)
-  else searchState.checked.push(name)
+  else searchState.checked.push(id)
 }
 function submitSearch() {
-  const items = searchState.results.filter((r) => searchState.checked.includes(r.name))
+  // 用 id 比對，不能用 name——同名不同條的法規（例如兩筆「訴願法」）name 相同，
+  // 用 name 當 key 會一勾全勾、也送錯項目。id 是母庫唯一鍵。
+  const items = searchState.results.filter((r) => searchState.checked.includes(r.id))
   const n = addSearched(searchState.group.key, items)
   closeSheet()
   toast(n ? `已加入 ${n} 項至「${searchState.group.name}」` : '未選擇任何項目')
@@ -343,8 +345,8 @@ const moveFolders = computed(() => state.folders)
     <div class="sslist" :class="{ searching: searchState.searching }">
       <p v-if="!searchState.q.trim()"><span style="color: var(--faint); font-size: 12.5px; display: block; padding: 14px 2px">輸入關鍵字開始搜尋⋯⋯</span></p>
       <p v-else-if="!searchState.results.length"><span style="color: var(--faint); font-size: 12.5px; display: block; padding: 14px 2px">沒有符合的結果，換個關鍵字試試。</span></p>
-      <label v-for="p in searchState.results" :key="p.name" class="pickrow">
-        <input type="checkbox" :checked="searchState.checked.includes(p.name)" @change="toggleSearchCheck(p.name)" />
+      <label v-for="p in searchState.results" :key="p.id" class="pickrow">
+        <input type="checkbox" :checked="searchState.checked.includes(p.id)" @change="toggleSearchCheck(p.id)" />
         <span class="pt">{{ p.name }}<small>{{ p.note || '' }}</small></span>
       </label>
     </div>

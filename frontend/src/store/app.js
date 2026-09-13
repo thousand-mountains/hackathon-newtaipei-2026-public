@@ -1316,7 +1316,8 @@ async function ensureServerCase(c) {
 // 開對話框時取「本案已加入的名單」，避免重複加入。實際搜尋改走 searchLibrary（async，打後端）。
 export function searchHave(groupKey) {
   const c = active()
-  return new Set(c.docs[groupKey].map((x) => x.name))
+  // 用母庫 id（_libId）判「已加入」，不能用 name——同名不同條的法規會被誤判為已加入而從搜尋結果消失。
+  return new Set(c.docs[groupKey].map((x) => x._libId).filter(Boolean))
 }
 
 // 看全文：打 getLaw #11 / getDecision #16 取母庫全文，組成顯示 HTML。
