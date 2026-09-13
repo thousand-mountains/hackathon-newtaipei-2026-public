@@ -708,6 +708,11 @@ _RETRIEVED_SECTIONS = {"retrieved_laws": "laws", "retrieved_cases": "cases"}
 #: 用連字號沒有這個依賴。
 ARCHIVE_LAWTABLE_PREFIX = "lawtable:"
 
+#: 歸檔層要用的法規名／條號，掛在 item 上傳給 `chat_bridge.archive_adapter`。
+#: **底線開頭代表「用完就丟」**：它不是契約 §4.0 的卷宗欄位，寫進 manifest 會多一個
+#: 沒有人定義過的鍵。由歸檔層 pop 掉。
+ARCHIVE_LAWTABLE_META = "_lawtable"
+
 #: 卷宗 `laws[].channel` 的兩個值。契約 §4.2 要求「KB 全文通道與查表通道畫面上要分得出來」，
 #: 這是把那句話落實到資料上——兩種東西的保證等級不同：
 #: - `lawtable`：條號**存在性**驗證（`laws-snapshot.json` 只有條號清單，沒有條文原文）
@@ -1184,6 +1189,12 @@ class ChatTools:
                 continue
             items.append({
                 "id": f"{ARCHIVE_LAWTABLE_PREFIX}{law}-{article}",
+                # 底線開頭＝**歸檔層用完就丟的欄位**，不進 manifest
+                # （`chat_bridge.archive_adapter` 會 pop 掉，見該函式）。
+                # 為什麼不讓歸檔層去拆 `id`：拆字串要知道「法規名不含 `-`、
+                # 條號可能寫成 `15之1`」這兩件事，而那兩件事只有這裡知道。
+                # 拆錯的下場是抓錯一部法的條文——而那段文字看起來完全正常。
+                ARCHIVE_LAWTABLE_META: {"law": law, "article": str(article)},
                 "t": getattr(h, "title", "") or f"{law}第{article}條",
                 "src": getattr(h, "source", ""),
                 "note": "條號存在性驗證，非法條全文（快照只索引條號）",
@@ -1874,6 +1885,7 @@ __all__ = [
     "token_callback_handler",
     "ARCHIVE_CHANNEL_CORPUS",
     "ARCHIVE_CHANNEL_LAWTABLE",
+    "ARCHIVE_LAWTABLE_META",
     "ARCHIVE_LAWTABLE_PREFIX",
     "PICK_FOUND_BY_TOOL",
     "degraded_summary",
