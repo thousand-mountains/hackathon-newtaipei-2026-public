@@ -5,7 +5,7 @@ import { CASE_NO, TOOLS, GROUPS, ACKS } from '../data/data.js'
 import { DEMO_CASE_FILES } from '../data/demo-case.js'
 import { api } from '../api/index.js'
 import { ApiError } from '../api/http.js'
-import { scoreCaption, corpusScoreCaption } from '../api/ranker.js'
+import { corpusScoreCaption } from '../api/ranker.js'
 
 // ── 草稿版本快取（localStorage）──
 // 優化文案的 diff 需要「上一版文字」。生成草稿／每次潤稿成功後，把新版純文字存進 localStorage；
@@ -271,31 +271,8 @@ function fillDocsFromServer(c, r) {
   // readable 要一路帶著：重開一個舊案時，讀不到的卷證也必須照樣標出來（契約 §4.1／§6）
   if (Array.isArray(r.files))
     c.docs.evidence = r.files.map((f) => ({ name: f.name, note: f.note || '', ext: f.ext || '', readable: f.readable !== false, _libId: f.id }))
-  if (Array.isArray(r.laws))
-    c.docs.laws = r.laws.map((l) => ({
-      name: l.t,
-      // 契約 §3.5.2：手動挑進來的法規要**持續**標著它走到哪（matched／query_only／unused）。
-      // 文案用後端的 retrieval_note，**不在前端另寫一份**——兩份比對規則遲早會兜不起來，
-      // 出現「chat 說這條沒進查表、右欄卻標著進了」，使用者無從判斷哪個是真的。
-      note: l.retrieval_note || l.note || '',
-      status: l.retrieval_status || 'unknown',
-      ext: '法',
-      _libId: l.id,
-      full: l.body_cached
-        ? `<p style="font-family:var(--serif);line-height:2">${esc(l.body_cached)}</p><p style="color:var(--muted);font-size:12.5px;border-top:1px solid var(--line-soft);padding-top:10px">本案關聯：${esc(l.note || '')}</p>`
-        : '',
-    }))
-  if (Array.isArray(r.references))
-    // 後端存的 `note` 是空字串（`backend/api/dossier.py:355`），判決結果與分類存在
-    // `verdict`／`category` 兩個鍵。只讀 note 的話，重新整理之後右欄的說明整排消失
-    // ——剛加進去時有「違章建築．駁回．…」，reload 就只剩標題。
-    c.docs.cases = r.references.map((d) => ({
-      name: d.t,
-      note: d.note || decisionNote({ category: d.category, verdict: d.verdict }),
-      ext: '例',
-      _libId: d.id,
-      full: d.full_cached || '',
-    }))
+  if (Array.isArray(r.laws)) c.docs.laws = r.laws.map(lawItem)
+  if (Array.isArray(r.references)) c.docs.cases = r.references.map(decisionItem)
   if (Array.isArray(r.artifacts)) {
     // 匯出的 PDF／DOCX **不是 artifact**：後端只把草稿寫進 manifest
     //（`backend/dossier/store.py:524` 的 kind 只有 "draft"），匯出走的是下載端點。
@@ -790,31 +767,11 @@ function applyToolResult(c, toolMsg, data) {
       if (toolMsg && toolMsg.out && toolMsg.out.type === 'extract') toolMsg.out.loaded = true
     })
   } else if (tool === 'search_similar_decisions') {
-    // 右欄那筆的 note 也要說得出分數是誰算的（走 api/ranker.js 的唯一文案）。
-    // **後端的 note 與分數來源兩者並存**，不是二選一：後端那句講的是「有沒有對實檔驗證」，
-    // 分數來源講的是「這個百分比誰算的」，是兩件事。用 `h.note || …` 的話
-    // 只要後端有帶 note（常態）右欄就永遠看不到分數來源。
-    archiveHits(c, 'cases', data.hits, (h) => ({
-      name: h.t,
-      note: [h.note, scoreCaption(h)].filter(Boolean).join('．'),
-      ext: '例',
-      full: h._full,
-      _libId: h._libId,
-    }))
     c.flags.cases = true
-    refreshGroupIds(c, 'cases') // agent 自動歸檔了本案清單，重載拿正確的移除用 id（listReferences #17）
+    reloadGroup(c, 'cases') // 後端已歸檔（listReferences #17），整組重載，跟 reload 走同一條路
   } else if (tool === 'search_regulations') {
-    archiveHits(c, 'laws', data.hits, (h) => ({
-      name: h.t,
-      note: h.note,
-      ext: '法',
-      _libId: h._libId,
-      full: h._body
-        ? `<p style="font-family:var(--serif);line-height:2">${esc(h._body)}</p><p style="color:var(--muted);font-size:12.5px;border-top:1px solid var(--line-soft);padding-top:10px">本案關聯：${esc(h.note || '')}</p>`
-        : '',
-    }))
     c.flags.laws = true
-    refreshGroupIds(c, 'laws') // 同上（listCaseLaws #12）
+    reloadGroup(c, 'laws') // 同上（listCaseLaws #12）
   } else if (tool === 'build_relation_graph') {
     c.flags.graph = true
     // 關聯圖**不歸檔**（契約 §3.0）：它是同一份 run 的視圖，不是新的產出物，
@@ -935,36 +892,78 @@ function sectionsToText(sections) {
     .trim()
 }
 
-function archiveHits(c, key, hits, mapper) {
-  const have = new Set(c.docs[key].map((x) => x.name))
-  ;(hits || []).forEach((h) => {
-    const item = mapper(h)
-    if (!have.has(item.name)) addOne(c, key, item)
-  })
+//: 本案清單一筆 → 右欄項目。**這兩支是唯一的映射**，開案首載（彙整版 #4）與
+//: 工具查完的重載（#12／#17）共用——兩邊回的是後端同一份 `manifest` 陣列
+//: （`backend/api/dossier.py:151-152` 直接回 `m["laws"]`／`m["references"]`），
+//: 所以同一份映射對兩條路都成立。
+//:
+//: **2026-09-13 之前不是這樣**：工具查完時前端自己從 `tool_result.hits[]` 組一份，
+//: 讀的是 `h._full`／`h._libId`／`h._body`——那三個鍵是 `mock.js` 自己造的，
+//: **真後端的 hits[] 只有契約 §3.2 那九個鍵**。於是 chat 查完點進去一片空白，
+//: 重新整理之後才有內容（Ci 實際撞到）。兩條路兩份映射，一條對一條錯。
+function lawItem(l) {
+  return {
+    name: l.t,
+    // 契約 §3.5.2：手動挑進來的法規要**持續**標著它走到哪（matched／query_only／unused）。
+    // 文案用後端的 retrieval_note，**不在前端另寫一份**——兩份比對規則遲早會兜不起來，
+    // 出現「chat 說這條沒進查表、右欄卻標著進了」，使用者無從判斷哪個是真的。
+    note: l.retrieval_note || l.note || '',
+    status: l.retrieval_status || 'unknown',
+    ext: '法',
+    _libId: l.id,
+    // `channel` 是契約 §4.0 定義的欄位，兩條通道的保證等級不同：
+    //   `lawtable`（查法條 chip）→ `body_cached` **必然是空的**，快照只索引條號。
+    //   `corpus`（母庫）→ 有全文（抓得到的話）。
+    // 所以查表那批直接把後端那句「條號存在性驗證，非法條全文」當內容——
+    // **留白的話 App.vue 會去打 §4.2 的全文端點，而 `lawtable:` 開頭的 id 打不到**，
+    // 結果是一片空白加一句「取法規全文失敗」，而其實一點資料都沒掉。
+    // 母庫那批 `body_cached` 空時仍然留白，維持即時取全文那條路。
+    full: l.body_cached
+      ? `<p style="font-family:var(--serif);line-height:2">${esc(l.body_cached)}</p><p style="color:var(--muted);font-size:12.5px;border-top:1px solid var(--line-soft);padding-top:10px">本案關聯：${esc(l.note || '')}</p>`
+      : l.channel === 'lawtable'
+        // 這裡取 `note` 而不是 `retrieval_note`：前者才是**解釋為什麼沒有全文**的那句
+        // （「條號存在性驗證，非法條全文（快照只索引條號）」），後者講的是這一條
+        // 走到哪個檢索狀態，已經顯示在右欄那一行了。
+        ? `<p style="color:var(--muted);font-size:13px">${esc(l.note || l.retrieval_note || '')}</p>`
+        : '',
+  }
+}
+function decisionItem(d) {
+  // 後端存的 `note` 是空字串（`backend/api/dossier.py:355`、`llm/chat.py:1224`），
+  // 判決結果與分類存在 `verdict`／`category` 兩個鍵。只讀 note 的話右欄說明整排消失。
+  //
+  // **這裡沒有相似度，是對的。** 兩條歸檔路徑（REST 與 chat）都刻意存 `score: None`
+  //（`dossier.py:329`、`chat.py:1227`）：分數是某一次查詢的相似度、不是這份決定書的
+  // 屬性。百分比仍然出現在工具卡的命中清單上——那裡才有對應的查詢。
+  return {
+    name: d.t,
+    note: d.note || decisionNote({ category: d.category, verdict: d.verdict }),
+    ext: '例',
+    _libId: d.id,
+    full: d.full_cached || '',
+  }
 }
 
-// 工具自動歸檔到本案清單後，背景重載該群組拿「本案清單的真 id」回填，
-// 讓之後的移除（deleteFile/removeCaseLaw/removeReference）能對得上後端。
-// 用到 listFiles #7 / listCaseLaws #12 / listReferences #17 / listArtifacts #20。
-const GROUP_LIST = {
-  evidence: (id) => api.listFiles(id).then((r) => r.files || []),
-  laws: (id) => api.listCaseLaws(id).then((r) => r.laws || []),
-  cases: (id) => api.listReferences(id).then((r) => r.references || []),
-  out: (id) => api.listArtifacts(id).then((r) => r.artifacts || []),
+//: 工具自動歸檔到本案清單之後，**整組從後端重載**——不要再從 `hits[]` 自己組一份。
+//: 歸檔是後端做的（2026-09-13 起），所以後端那份才是真相：`full_cached`、
+//: 真 id（移除要用）、`verdict`／`category`、`retrieval_status` 一次到位。
+//:
+//: 代價是多一次往返（實測 < 1 秒）。**沒有先樂觀顯示再校正**：樂觀那份能填的欄位
+//: 正好就是會出錯的那幾個（全文、id），畫出來的是一筆點不開、刪不掉的項目，
+//: 比晚一秒出現糟。工具卡上的命中清單在這一秒裡已經看得到結果了。
+const GROUP_RELOAD = {
+  laws: (id) => api.listCaseLaws(id).then((r) => (r.laws || []).map(lawItem)),
+  cases: (id) => api.listReferences(id).then((r) => (r.references || []).map(decisionItem)),
 }
-async function refreshGroupIds(c, key) {
-  if (!c._serverCreated || !GROUP_LIST[key]) return
+async function reloadGroup(c, key) {
+  if (!c._serverCreated || !GROUP_RELOAD[key]) return
   try {
-    const server = await GROUP_LIST[key](c.caseId)
-    // 以標題比對，把後端本案清單 id 回填到本地項目的 _libId/_artifactId
-    c.docs[key].forEach((it) => {
-      const m = server.find((s) => (s.t || s.name) === it.name)
-      if (!m) return
-      if (key === 'out') it._artifactId = m.id
-      else it._libId = m.id
-    })
+    const items = await GROUP_RELOAD[key](c.caseId)
+    c.docs[key] = items
+    if (!touched.includes(key)) touched.push(key)
+    flushTouched()
   } catch {
-    /* 重載失敗不影響顯示；移除時退化為只改本地 */
+    /* 重載失敗維持現狀：工具卡上的命中清單仍然看得到這次查到什麼 */
   }
 }
 
