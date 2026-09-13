@@ -130,6 +130,35 @@ def _sections(doc: list[dict[str, Any]]) -> dict[str, tuple[str, int]]:
     return out
 
 
+#: 期間計算句 `ss[].basis` 裡的法條寫法：`訴願法 14 I`、`民法 120 II`、
+#: `行政程序法 72`、`訴願法 17 → 民法 122`。**跟草稿內文的引用不是同一種格式**
+#: ——這是引擎寫的，沒有「第…條」那三個字，項次用羅馬數字且不進 key。
+#:
+#: `{1,9}法` 不能寫成 `{2,10}法`：後者要求「法」前面至少兩個字，
+#: **「民法」就永遠匹配不到**（我第一版量測就是這樣把 22 條邊漏掉的）。
+_BASIS_ARTICLE = re.compile(r"([\u4e00-\u9fff]{1,9}法)\s*第?\s*(\d+)\s*條?(?:\s*之\s*(\d+))?")
+
+
+def _basis_law_keys(basis: Any) -> list[str]:
+    """把一句期間計算的 `basis` 解成 `laws[].gate_ref_key` 同格式的鍵（`訴願法|14`）。
+
+    **只解析，不查證**——解出來的鍵之後一律要在 `laws[]` 裡找得到才畫（見
+    `build_relation_graph` 那段）。解不出來就回空清單，不猜。
+
+    刻意解不出來的兩種，**它們不是漏掉的**（plan §2「推不出來就不畫」）：
+    - `以上各步`：最後一步是前面幾步的結論，本來就沒有法條依據。
+    - `最高行 108 判 531 意旨`：判例不是法條，`laws[]` 不收判例。
+      同一句的 `行政程序法 74` 照樣解得出來，這是**部分解析**，不是失敗。
+    """
+    keys: list[str] = []
+    for m in _BASIS_ARTICLE.finditer(str(basis or "")):
+        article = m.group(2) + (f"之{m.group(3)}" if m.group(3) else "")
+        key = f"{m.group(1)}|{article}"
+        if key not in keys:
+            keys.append(key)
+    return keys
+
+
 def _verify_of(item: dict[str, Any], origin: str) -> str:
     """節點的驗證三態。**布林不夠用**：「查證過是假的」與「沒查證」是兩件事。
 
@@ -353,6 +382,7 @@ def build_relation_graph(payload: dict[str, Any]) -> dict[str, Any]:
     # 一個是決定書字號）。**`basis` 要寫出是跟哪一種對上的**——`basis` 是寫給人核對的，
     # 寫 `laws[].t` 卻其實對到 `cases[].t`，人就核不出來。
     cited: set[str] = set()
+    drawn: set[tuple[str, str]] = set()      # 已畫過的 (句, 法規)，給下一段去重用
     for c in citations:
         raw, sid = c.get("raw"), str(c.get("sentence_id") or "")
         lid, src_key = by_raw_law.get(raw), "laws"
@@ -366,6 +396,7 @@ def build_relation_graph(payload: dict[str, Any]) -> dict[str, Any]:
             })
             linked_out.add(sid)
             cited.add(lid)
+            drawn.add((sid, lid))
             continue
         # 沒命中不是 bug 是訊號。兩種沒命中要分得開：查無法條 vs 句子不在草稿裡。
         flagged.append({
@@ -378,6 +409,77 @@ def build_relation_graph(payload: dict[str, Any]) -> dict[str, Any]:
                       "citations[].sentence_id 不在 doc[] 的句子裡"),
         })
 
+    # ── cite 邊（期間計算句 → 它依據的法規）2026-09-13 新增 ─────────
+    #
+    # **稀疏的主因不是判準太嚴，是有一欄資料從來沒被讀過。** 16 份雲上真 run
+    # 的 261 句裡有 160 句帶著 `ss[].basis`，其中 86 句是期間計算段——每一句都
+    # 寫著自己依據哪條法規（`訴願法 14 I；民法 120 II`），而 `訴願法第14條`／
+    # `民法第120條`／`行政程序法第72條` 正是當時躺在 `unlinked` 裡的那幾條。
+    # **線的兩端本來就都在，只是沒人去連。**（實測：+92 條邊、句子進圖 29.5%→56.3%、
+    # `unlinked.laws` 72→19。）
+    #
+    # 為什麼這一段安全（三條，缺一條就不該做）：
+    #
+    # ① **`basis` 不是模型寫的**。它來自 `screen.deadline.steps[].basis`，由期間
+    #    引擎產生，在 `backend/orchestrator/narrative.py:183-188` 原封不動寫進句子。
+    #    所以這裡限定 `engine == "deadline"`——**不吃 `slot`／`origin` 以外還加這一層**，
+    #    是因為理由段（`origin:"llm"`）的 `basis` 是模型寫的，同一把尺套上去就不成立了。
+    #    （實測理由段吃下去也是 **+0 條**：它們的 basis 早就被 `citations[]` 蓋掉了。）
+    # ② **只從 `laws[]` 既有節點裡挑，不新增節點**。解出來的鍵要在
+    #    `laws[].gate_ref_key` 找得到才畫，所以不可能畫出一條指向不存在法規的邊。
+    # ③ **`basis` 原文帶在邊上**，承辦人一眼可核到底是依哪一步、哪一條。
+    #
+    # `state` 一律 `None`：草稿引用的四態是**守門對引用的查核結果**，這條邊不是
+    # 從引用來的，填 `"ok"` 等於替守門發一張它沒發過的燈。前端只在
+    # `state && state !== "ok"` 時畫警示線（`RelationGraph.vue:47`），所以 `None`
+    # 會正常畫成實線。`lamp` 用句子自己的燈號（期間計算句是「可驗算」層，一律綠）。
+    by_gate_key = {
+        str(law["gate_ref_key"]): law["id"]
+        for law in laws
+        if law.get("gate_ref_key") and law.get("id")
+    }
+    for s in sentences:
+        if s.get("engine") != "deadline":
+            continue
+        sid, basis = s["id"], str(s.get("basis") or "")
+        keys = _basis_law_keys(basis)
+        hit = False
+        for key in keys:
+            lid = by_gate_key.get(key)
+            if lid is None:
+                continue
+            hit = True
+            cited.add(lid)
+            linked_out.add(sid)
+            if (sid, lid) in drawn:
+                continue                     # 同一句已經由 citations[] 連過同一條
+            drawn.add((sid, lid))
+            edges.append({
+                "from": sid, "to": lid, "rel": "cite",
+                "basis": f"doc[].ss[].basis（期間引擎逐步算式）：{basis}",
+                "state": None, "lamp": s.get("l"),
+            })
+        # 解得出法條、卻在 laws[] 查無 → 跟草稿引用查無同一件事，不靜默丟棄。
+        # **解不出任何法條的不進這裡**（`以上各步` 沒有法條依據、判例不是法條），
+        # 那種句子就讓它不連——那是真的沒有東西可連，不是漏掉。
+        if keys and not hit:
+            flagged.append({
+                "sentence_id": sid,
+                "raw": basis,
+                "state": None,
+                "lamp": s.get("l"),
+                "basis": f"doc[].ss[].basis 解出 {'、'.join(keys)}，在 laws[] 查無",
+            })
+
+    # **事實段的句子刻意不連回卷證**（2026-09-13 Ci 拍板不做，理由寫在這裡，
+    # 因為它看起來像個現成的缺口）：`slot=="facts"` 的句子也帶 `basis`，值就是
+    # `facts_excerpt[].quote_ref`，連起來能再多 21 條邊、句子進圖從 56.3% 升到
+    # 59.8%。**但實測 21/21 句的文字與 `facts_excerpt[].text` 一字不差**——
+    # 事實段句子就是事實節點再講一次，畫了等於同一段文字在第 1 欄和第 5 欄各一份、
+    # 中間拉一條長線，不增加任何資訊，只是讓那 21 句看起來不孤單。
+    # **「讓數字好看」不是畫一條線的理由。** 要做的話請連的是 `F* → s*` 而不是
+    # `D* → s*`，並先想清楚兩欄同文要怎麼呈現。
+    #
     # ── 只留有連線的結論句（plan §4 備註）──────────────────────────
     nodes.extend(out_nodes[sid] for sid in out_nodes if sid in linked_out)
 
