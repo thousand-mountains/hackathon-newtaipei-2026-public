@@ -59,6 +59,17 @@ def _nodes_of(graph: dict, kind: str) -> list[dict]:
     return [n for n in graph["nodes"] if n["k"] == kind]
 
 
+#: `cite` 邊有兩種來源，**`basis` 自己說得出是哪一種**（那正是 `basis` 存在的理由）。
+#: 下面每一條只驗自己那一種——混在一起驗，兩邊的判準都會被迫放寬到剩下交集。
+FROM_CITATION = "citations[]"           # 草稿內文的引用（N6 抽出、四態查核過）
+FROM_BASIS = "doc[].ss[].basis"         # 期間計算句的引擎算式依據
+
+
+def _cite_edges(graph: dict, source: str) -> list[dict]:
+    return [e for e in graph["edges"]
+            if e["rel"] == "cite" and str(e.get("basis", "")).startswith(source)]
+
+
 # ── AC1：零 LLM（AST，不是 grep）──────────────────────────────────
 
 
@@ -235,7 +246,7 @@ def test_cite_edge_count_equals_the_raw_to_title_join() -> None:
     """
     for path in (ORDINARY, BLOCKED):
         payload = _payload(path)
-        got = _rels(build_relation_graph(payload)).get("cite", 0)
+        got = len(_cite_edges(build_relation_graph(payload), FROM_CITATION))
         assert_eq(got, _expected_cite_hits(payload), f"{path.name} 的 cite 邊數對不上")
 
 
@@ -253,8 +264,13 @@ def test_the_tempting_join_key_really_is_empty() -> None:
 
 
 def test_cite_edges_carry_state_and_lamp_for_the_third_line_style() -> None:
-    """設計稿的第三種線型改用 `state` / `lamp`——那是真的，矛盾不是（plan §6）。"""
-    edges = [e for e in _graph(ORDINARY)["edges"] if e["rel"] == "cite"]
+    """設計稿的第三種線型改用 `state` / `lamp`——那是真的，矛盾不是（plan §6）。
+
+    **只驗引用來的那種。** 引擎算式來的邊沒有守門四態（見
+    `test_engine_basis_edges_do_not_borrow_the_gate_s_verdict`），
+    把兩種混在一起驗，這條就只能放寬到「有沒有 lamp」，四態的值域就沒人守了。
+    """
+    edges = _cite_edges(_graph(ORDINARY), FROM_CITATION)
     assert_true(edges, "沒有 cite 邊，這條檢查等於沒跑")
     for e in edges:
         assert_in(e.get("state"),
@@ -288,7 +304,10 @@ def test_every_citation_is_either_an_edge_or_flagged() -> None:
         payload = _payload(path)
         graph = build_relation_graph(payload)
         total = len(payload["gate"]["citations"])
-        assert_eq(_rels(graph).get("cite", 0) + len(graph["flagged"]), total,
+        from_cit = len(_cite_edges(graph, FROM_CITATION))
+        flagged = [f for f in graph["flagged"]
+                   if str(f.get("basis", "")).startswith(FROM_CITATION)]
+        assert_eq(from_cit + len(flagged), total,
                   f"{path.name} 有 citation 既沒變成邊也沒進 flagged")
 
 
@@ -296,7 +315,7 @@ def test_blocked_run_flags_all_three_substantive_citations() -> None:
     """建築法型合成案的三筆引用 `laws[]` 一個都沒有——三筆全部要進 `flagged`。"""
     graph = _graph(BLOCKED)
     assert_eq(len(graph["flagged"]), 3, "查無的引用沒有全部被標記")
-    assert_eq(_rels(graph).get("cite", 0), 0, "不該有 cite 邊卻有了")
+    assert_eq(len(_cite_edges(graph, FROM_CITATION)), 0, "不該有引用來的 cite 邊卻有了")
 
 
 def test_retrieved_but_never_cited_laws_go_to_unlinked() -> None:
@@ -306,12 +325,12 @@ def test_retrieved_but_never_cited_laws_go_to_unlinked() -> None:
     照 `origin` 濾掉——不濾的話這條在有相似案的 run 上會紅，而它紅的原因
     會是「測試自己把相似案當法規」，不是實作壞了。
     """
-    graph = _graph(ORDINARY)
+    graph = build_relation_graph(_payload_with_cases())
     cited = {e["to"] for e in graph["edges"] if e["rel"] == "cite"}
     all_laws = {n["id"] for n in _nodes_of(graph, "law") if n["origin"] == "retrieval"}
     assert_eq(sorted(graph["unlinked"]["laws"]), sorted(all_laws - cited),
               "unlinked.laws 跟實際沒被引用的法規對不上")
-    assert_true(graph["unlinked"]["laws"], "這份 fixture 本來就有沒被引用的法規，結果是空的")
+    assert_eq(graph["unlinked"]["laws"], ["L9"], "沒被引用的那條法規沒有被報出來")
 
 
 # ── 相似案不是法規（2026-09-13 雲上實打抓到的誤導）────────────────
@@ -321,6 +340,17 @@ def test_retrieved_but_never_cited_laws_go_to_unlinked() -> None:
 # （CONSTITUTION §3：`synthetic-` 前綴、不暗示為真實案件），**不是把雲上那份
 # 含資料集內容的 run 搬進 git**。
 
+
+#: 一條**不會被任何人引用**的合成法規。
+#: 2026-09-13 起兩份 fixture 的 `unlinked.laws` 都是空的——期間計算段的 `basis`
+#: 把它們檢索到的每一條都連上了（那正是 P1 的效果）。**那讓「查到但沒用上」
+#: 這條路沒有測資走過**，而那條路是契約 §3.7 的紅線。所以這裡刻意放一條
+#: 沒人會引的進去，讓那幾條測試還有東西可驗。
+SYNTHETIC_UNUSED_LAW = {
+    "id": "L9", "t": "synthetic-未被引用法規第1條",
+    "gate_ref_key": "synthetic-未被引用法規|1", "verified": True,
+    "src": "synthetic", "origin": "retrieval",
+}
 
 #: 合成相似案。`verified: False` 照 `backend/retrieval/kb.py:392` 的實況寫死：
 #: KB 命中一律 `False`，意思是「還沒對回資料集實檔」，不是「查證過是假的」。
@@ -333,10 +363,13 @@ SYNTHETIC_CASES = [
 
 
 def _payload_with_cases(path: pathlib.Path = ORDINARY) -> dict:
-    """把合成相似案塞進一份既有 fixture 的 `retrieval.cases`。"""
+    """把合成相似案與一條沒人引用的合成法規塞進一份既有 fixture。"""
     payload = _payload(path)
     payload.setdefault("retrieval", {})["cases"] = copy.deepcopy(SYNTHETIC_CASES)
+    payload["retrieval"]["laws"] = (list(payload["retrieval"].get("laws") or [])
+                                    + [copy.deepcopy(SYNTHETIC_UNUSED_LAW)])
     payload.pop("cases", None)          # 扁平鍵優先，這裡要走巢狀那條
+    payload.pop("laws", None)
     return payload
 
 
@@ -407,9 +440,173 @@ def test_cite_basis_names_the_table_it_actually_matched() -> None:
     to_case = [e for e in graph["edges"] if e["rel"] == "cite" and e["to"] == "C1"]
     assert_eq(len(to_case), 1, "對到相似案的引用不見了")
     assert_in("cases[].t", to_case[0]["basis"], f"basis 講錯是跟哪張表對上的：{to_case[0]}")
-    for e in graph["edges"]:
-        if e["rel"] == "cite" and e["to"] != "C1":
+    for e in _cite_edges(graph, FROM_CITATION):
+        if e["to"] != "C1":
             assert_in("laws[].t", e["basis"], f"法規的 basis 被一起改掉了：{e}")
+
+
+# ── 期間計算句 → 它依據的法規（2026-09-13 新增，P1）──────────────
+#
+# 16 份雲上真 run（`VERIFIED` + `bedrock`）的實測背景：261 句裡 160 句帶
+# `ss[].basis`，其中 86 句是期間計算段。連上去之後邊 116→208、句子進圖
+# 29.5%→56.3%、`unlinked.laws` 72→19。**稀疏不是判準太嚴，是有一欄沒被讀過。**
+
+
+def _engine_sentences(payload: dict) -> list[dict]:
+    return [s for b in (payload.get("gate") or {}).get("doc") or []
+            for s in (b.get("ss") or []) if s.get("engine") == "deadline"]
+
+
+def test_calculation_sentences_link_to_the_laws_their_basis_names() -> None:
+    """每一條引擎來的邊，它指的那條法規**真的寫在那句的 `basis` 裡**。
+
+    這條不寫成「有邊就好」：只驗數量的話，把 `basis` 解析換成「連到第一條法規」
+    也會通過，而那是一條看起來很合理的假線。
+    """
+    for path in (ORDINARY, BLOCKED):
+        payload = _payload(path)
+        graph = build_relation_graph(payload)
+        edges = _cite_edges(graph, FROM_BASIS)
+        assert_true(edges, f"{path.name} 一條引擎來的邊都沒有，這條檢查等於沒跑")
+        by_id = {x["id"]: x for x in payload["retrieval"]["laws"]}
+        basis_of = {s["id"]: str(s.get("basis") or "") for s in _engine_sentences(payload)}
+        for e in edges:
+            basis = basis_of.get(e["from"])
+            assert_true(basis is not None, f"{e} 的來源句不是引擎句")
+            assert_in(by_id[e["to"]]["gate_ref_key"], relation._basis_law_keys(basis),
+                      f"{e} 指的法規沒有寫在該句的 basis 裡")
+            assert_in(basis, e["basis"], f"{e} 的 basis 沒有帶算式原文，承辦人核不了")
+
+
+def test_engine_basis_edges_only_point_at_laws_already_in_the_payload() -> None:
+    """**只從 `laws[]` 既有節點裡挑，不新增節點**——這條是這段安全的核心。
+
+    解得出條號不等於可以畫：畫出去的那一端必須是 `retrieval.laws` 本來就有的。
+    不然圖上會長出一條「系統自己想出來的法規」。
+    """
+    for path in (ORDINARY, BLOCKED):
+        payload = _payload(path)
+        # **刻意拿掉一部法**：兩份 fixture 原本每一條 basis 都查得到，
+        # 那樣這條測試從頭到尾看不到「查無」那條分支，等於沒驗（恆真）。
+        payload["retrieval"]["laws"] = [
+            x for x in payload["retrieval"]["laws"]
+            if not str(x.get("gate_ref_key", "")).startswith("訴願法|")
+        ]
+        graph = build_relation_graph(payload)
+        known = {x["id"] for x in payload["retrieval"]["laws"]}
+        edges = _cite_edges(graph, FROM_BASIS)
+        assert_true(edges, f"{path.name} 拿掉訴願法之後一條邊都不剩，這條等於沒驗")
+        for e in edges:
+            assert_in(e["to"], known, f"{e} 指向一個不在 retrieval.laws 裡的節點")
+        assert_true(any(str(f.get("basis", "")).startswith(FROM_BASIS)
+                        for f in graph["flagged"]),
+                    f"{path.name} 查無的那條沒有進 flagged，而是被靜默丟掉了")
+
+
+def test_the_two_bases_that_must_not_connect_are_not_treated_as_misses() -> None:
+    """`以上各步` 與 `最高行 108 判 531 意旨` **正確地不連**，而且不算查無。
+
+    前者是前幾步的結論、本來就沒有法條依據；後者是判例，`laws[]` 不收判例。
+    **這兩句不連不是漏掉**——沒有這條測試，下一個人會把它們當成待修的缺口，
+    然後為了讓它們連上而放寬判準。
+    """
+    payload = _payload(ORDINARY)
+    graph = build_relation_graph(payload)
+    linked = {e["from"] for e in _cite_edges(graph, FROM_BASIS)}
+    flagged = {f.get("sentence_id") for f in graph["flagged"]}
+    for s in _engine_sentences(payload):
+        basis = str(s.get("basis") or "")
+        if basis == "以上各步":
+            assert_true(s["id"] not in linked, f"{s['id']}「以上各步」不該連到任何法規")
+            assert_true(s["id"] not in flagged, f"{s['id']}「以上各步」沒有法條依據，不是查無")
+        if "判" in basis and "最高行" in basis:
+            # 判例解不出來，但同一句的「行政程序法 74」照樣要連上——這是部分解析。
+            assert_true(s["id"] in linked, f"{s['id']} 同句的法條也被判例拖著一起不連了")
+            assert_eq(relation._basis_law_keys(basis), ["行政程序法|74"],
+                      "判例被當成法規解出來了")
+
+
+def test_engine_basis_edges_do_not_borrow_the_gate_s_verdict() -> None:
+    """引擎來的邊 `state` 一律 `None`，`lamp` 用句子自己的。
+
+    草稿引用的四態是**守門對引用的查核結果**。這條邊不是從引用來的，
+    填 `"ok"` 等於替守門發一張它沒發過的燈——今晚已經有過一次
+    「把某一種東西的用語套到另一種上」的教訓（相似案被標成 `suspect`）。
+
+    前端只在 `state && state !== "ok"` 時畫警示線（`RelationGraph.vue:47`），
+    所以 `None` 會正常畫成實線，不會 92 條全變成可疑。
+    """
+    payload = _payload(ORDINARY)
+    graph = build_relation_graph(payload)
+    lamp_of = {s["id"]: s.get("l") for s in _engine_sentences(payload)}
+    edges = _cite_edges(graph, FROM_BASIS)
+    assert_true(edges, "沒有引擎來的邊，這條檢查等於沒跑")
+    for e in edges:
+        assert_true(e["state"] is None, f"{e} 借用了守門的四態")
+        assert_eq(e["lamp"], lamp_of[e["from"]], f"{e} 的燈號不是那句自己的")
+
+
+def test_engine_basis_never_duplicates_a_citation_edge() -> None:
+    """同一句已經由 `citations[]` 連過同一條法規時，不再畫第二條。"""
+    for path in (ORDINARY, BLOCKED):
+        graph = build_relation_graph(_payload(path))
+        pairs = [(e["from"], e["to"]) for e in graph["edges"] if e["rel"] == "cite"]
+        assert_eq(len(pairs), len(set(pairs)), f"{path.name} 有重複的 cite 邊：{pairs}")
+
+
+def test_basis_law_missing_from_retrieval_goes_to_flagged() -> None:
+    """`basis` 解得出法條、但 `laws[]` 查無 → 進 `flagged`，**不靜默丟棄**。
+
+    這跟「草稿引了檢索沒找到的法條」是同一件事的另一面：期間引擎依某條算了，
+    而我們的檢索沒有那一條——承辦人要知道。
+    """
+    payload = _payload(ORDINARY)
+    payload["retrieval"]["laws"] = [x for x in payload["retrieval"]["laws"]
+                                    if not str(x.get("gate_ref_key", "")).startswith("訴願法|")]
+    graph = build_relation_graph(payload)
+    hits = [f for f in graph["flagged"] if str(f.get("basis", "")).startswith(FROM_BASIS)]
+    assert_true(hits, "basis 指的法條檢索查無，卻沒有被報出來")
+    for f in hits:
+        assert_in("查無", f["basis"], f"{f} 沒寫明為什麼被標記")
+        assert_true(f["raw"], f"{f} 沒帶算式原文，承辦人核不了")
+
+
+def test_only_the_engine_s_basis_is_trusted_not_the_model_s() -> None:
+    """理由段的 `basis` 是**模型寫的**，不吃。
+
+    這條擋的是「反正 `basis` 都解析一下」——`origin:"llm"` 的句子把 `basis`
+    寫成任何一條卷內法規，就會多出一條沒有依據的線。實測吃下去也只有 +0 條
+    （理由段的 basis 早就被 `citations[]` 蓋掉了），所以沒有任何理由放寬。
+    """
+    payload = _payload(ORDINARY)
+    victim = None
+    for b in payload["gate"]["doc"]:
+        for s in b.get("ss") or []:
+            if s.get("origin") == "llm" and s.get("engine") is None:
+                s["basis"] = "訴願法 14 I；民法 120 II"   # 模型自己寫的，誰知道真假
+                victim = s["id"]
+                break
+        if victim:
+            break
+    assert_true(victim, "fixture 裡找不到模型寫的句子，這條等於沒驗")
+    graph = build_relation_graph(payload)
+    froms = {e["from"] for e in _cite_edges(graph, FROM_BASIS)}
+    assert_true(victim not in froms, f"{victim} 是模型寫的 basis，卻被當成引擎算式連上了")
+
+
+def test_two_character_law_name_is_not_swallowed_by_the_regex() -> None:
+    """`民法` 只有兩個字——`{2,10}法` 會讓它永遠匹配不到。
+
+    這不是假想的：第一版量測就是這樣把 `民法120`／`民法122` 共 22 條邊漏掉，
+    而漏掉的樣子是「數字看起來很合理」，不是報錯。
+    """
+    assert_eq(relation._basis_law_keys("訴願法 14 I；民法 120 II"),
+              ["訴願法|14", "民法|120"], "兩個字的法規名被吃掉了")
+    assert_eq(relation._basis_law_keys("訴願法 17 → 民法 122"),
+              ["訴願法|17", "民法|122"], "箭頭寫法的兩條沒有都解出來")
+    assert_eq(relation._basis_law_keys("以上各步"), [], "沒有法條的 basis 不該解出東西")
+    assert_eq(relation._basis_law_keys("訴願法 14 之 1"), ["訴願法|14之1"],
+              "之 N 的鍵格式要跟 laws[].gate_ref_key 一致")
 
 
 # ── AC6：stats 是算出來的 ─────────────────────────────────────────

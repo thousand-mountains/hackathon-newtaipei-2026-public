@@ -808,6 +808,13 @@ payload**（N4 這一輪檢索到的）。但畫面右欄的「案件卷宗」�
 `resolved_id` 的格式是 `L-{法名}-{條號}`、`gate_ref_key` 是 `{法名}|{條號}`，
 實測 0/4 命中，而 `raw` ↔ `t` 是 3/4。`basis` 是寫給人核對的，所以它得寫真的那條。
 
+**`cite` 邊有兩種來源，`basis` 的開頭就分得出來（2026-09-13 新增）**：
+`citations[]…` 是草稿內文的引用（帶守門四態 `state` 與 `lamp`）；
+`doc[].ss[].basis（期間引擎逐步算式）：…` 是期間計算句連到它依據的法規——
+那一種 **`state` 一律 `null`**（它不是引用，沒有守門的查核結果，填 `"ok"` 等於
+替守門發一張它沒發過的燈），`lamp` 用句子自己的。前端只在
+`state && state !== "ok"` 時畫警示線，所以 `null` 會正常畫成實線。
+
 **實測值（兩份合成 run，`backend/tests/fixtures/runs/`）**：
 
 | 合成案 | `quote` | `trigger` | `address` | `cite` | `flagged` | 句子進圖 |
