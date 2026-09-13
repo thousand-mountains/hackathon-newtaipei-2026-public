@@ -198,10 +198,10 @@ def build_sections(payload: dict[str, Any], artifact_id: str | None = None) -> d
         # 兩個數字要能直接相比：「14 處引註，其中 3 處對不回來」。
         # 相異 id 數會讓同一個對不上的編號被引三次時只算 1，警示強度被稀釋。
         "unresolved_count": len(unresolved),
+        # `notices`／`dataset_scope` 目前**只有工作台在用**，匯出檔不印
+        # （揭露改走每頁頁尾的固定一句，見 `export_render.DRAFT_FOOTER_NOTE`）。
+        # 留在 view 裡是因為它們是 payload 的一部分，不是為了 renderer。
         "notices": _notices(payload),
-        # 語料揭露的細節。與 `notices` 分開是為了讓 renderer 擺在文末而不是抬頭
-        # （見 `_SOURCE_KEYS`）。兩者都是 `provenance` 的內容，一個字都沒有少。
-        "source_notes": source_notes(payload),
         "dataset_scope": dataset_scope(payload),
     }
 
@@ -210,36 +210,25 @@ def build_sections(payload: dict[str, Any], artifact_id: str | None = None) -> d
 #
 #   _NOTICE_KEYS  「這份文件是什麼」——合成測資／AI 草稿／離線重播。
 #                 這是拿到紙本的人第一眼就必須知道的事，所以留在抬頭。
-#   _SOURCE_KEYS  「查了哪些語料」——各批筆數、涵蓋範圍、哪幾批查不到。
-#                 這是覆核時才會去看的細節，放文末。
 #
-# 拆開的理由是實測：`retrieval_note` 現在有十幾行（19,475 筆語料逐批列出），
-# 印在抬頭會把標題與主文推到第一頁的下半部，整份文件第一眼不像決定書。
-# **兩段都還在文件裡**，只是擺到各自該在的位置——分層誠實不因為排版而打折。
-_NOTICE_KEYS: tuple[str, ...] = ("banner", "execution_note")
+# `retrieval_note`（各批語料筆數，十幾行）**不在這裡**：它是覆核時才看的細節，
+# 印在匯出檔的抬頭會把標題與主文推到第一頁下半部。工作台要用的話直接讀
+# `payload.provenance.retrieval_note`。
+#
 # ⚠️ **匯出檔不再印 `notices`**（2026-09-13）：揭露改走每頁頁尾的固定一句
 #（`export_render.DRAFT_FOOTER_NOTE`）。這兩段仍留在 view 裡給工作台畫面用。
-_SOURCE_KEYS: tuple[str, ...] = ("retrieval_note",)
+_NOTICE_KEYS: tuple[str, ...] = ("banner", "execution_note")
 
 
-def _pick(payload: dict[str, Any], keys: tuple[str, ...]) -> list[str]:
-    """`provenance` 裡指定的那幾段，缺鍵就跳過（不編造是紅線，缺了就是缺了）。"""
+def _notices(payload: dict[str, Any]) -> list[str]:
+    """`provenance` 裡的揭露段落，缺鍵就跳過（不編造是紅線，缺了就是缺了）。"""
     prov = payload.get("provenance") or {}
     out: list[str] = []
-    for key in keys:
+    for key in _NOTICE_KEYS:
         text = (prov.get(key) or "").strip()
         if text and text not in out:
             out.append(text)
     return out
-
-
-def _notices(payload: dict[str, Any]) -> list[str]:
-    return _pick(payload, _NOTICE_KEYS)
-
-
-def source_notes(payload: dict[str, Any]) -> list[str]:
-    """「查了哪些語料」。擺在匯出檔文末的引註對照旁邊（見 `_SOURCE_KEYS` 的說明）。"""
-    return _pick(payload, _SOURCE_KEYS)
 
 
 def dataset_scope(payload: dict[str, Any]) -> str:

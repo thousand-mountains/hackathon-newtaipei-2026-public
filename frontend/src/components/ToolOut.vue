@@ -210,7 +210,7 @@ const provLabel = (p) => PROV[p] || '出處未標示'
            `indent`、這邊有，同一份草稿兩處縮排不同。公文的段序、縮排、附錄另排
            只能有一份實作，否則每加一種段別就要記得改兩個地方。 -->
       <!-- 不傳 `title`：卡頭（.sec-h）已經印過一次，再畫一次會變兩個標題。 -->
-      <div v-if="out.sections" class="draft" v-html="sectionsToHtml({ meta: out.meta, sections: out.sections })"></div>
+      <div v-if="out.sections" class="draft" v-html="sectionsToHtml({ case_no: out.caseNo, meta: out.meta, sections: out.sections })"></div>
       <!-- 未回 sections、但有 html 全文（mock 或未回 sections 的後端）→ 直接在聊天室攤出完整草稿。
            不外套 .draft：html 內容本身已自帶版面結構（.draft／段落），重複套會雙層縮排。 -->
       <div v-else-if="out.html" v-html="out.html"></div>

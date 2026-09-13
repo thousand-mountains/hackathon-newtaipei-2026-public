@@ -838,6 +838,7 @@ async function loadDraftSections(c, out) {
       // 抬頭（案號／訴願人／原處分機關）與 sections[] 平行，不是 section（契約 §4.4）。
       // 聊天室的草稿卡也要畫它——少了它，承辦人看不出這是哪一案的草稿。
       out.meta = Array.isArray(a.meta) ? a.meta : []
+      out.caseNo = a.case_no || ''
       if (typeof a.cite_count === 'number') out.citeCount = a.cite_count
       if (item) {
         item.full = sectionsToHtml(a)
@@ -888,9 +889,12 @@ const ASIDE_ROLES = ['appendix']
 // 其中一份壞了。現在兩處共用這一份 HTML。
 export function sectionsToHtml(a) {
   const head = a && a.title ? `<h3 class="dtitle">${esc(a.title)}</h3>` : ''
+  // 案號排在標題底下、與其餘抬頭欄位分開（公文格式，與匯出的 .docx／.pdf 一致）。
+  const caseNo = a && a.case_no ? `<p class="dmeta">案　　號：${esc(a.case_no)}</p>` : ''
   const meta = ((a && a.meta) || []).map((m) => `<p class="dmeta">${esc(m)}</p>`).join('')
   return (
     head +
+    caseNo +
     meta +
     ((a && a.sections) || [])
       .map((s) => {

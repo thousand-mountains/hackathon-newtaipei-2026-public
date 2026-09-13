@@ -42,14 +42,17 @@ from docx.shared import Pt, RGBColor
 from fpdf import FPDF
 
 from backend.config import settings
-from backend.orchestrator.artifact_sections import citation_lines, inline_marks
+# `citation_lines`／`inline_marks` 已不再使用——引註裝置不進匯出檔
+# （見下方 EXPORT_OMITS_CITATION_APPARATUS）。**不要為了「之後可能用得到」留著**：
+# 留著的 import 會讓下一個人以為這裡還在印引註。
 
 DOCX_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 PDF_MEDIA_TYPE = "application/pdf"
 
+#: 保留這個常數是因為**測試要拿它斷言「匯出檔裡不得出現這四個字」**
+#: （`test_docx_omits_the_citation_apparatus_but_keeps_the_disclosure`）。
+#: 它不再被任何 renderer 使用。
 CITATION_HEADING = "引註對照"
-NO_CITATION_NOTE = "本草稿沒有任何可回溯的引註。"
-SCOPE_PREFIX = "※ "
 
 #: 待填欄位的行首記號。**顏色之外一定要有文字**：這份文件會被印成黑白紙本，
 #: 紅字影印出來跟黑字沒兩樣。顏色給螢幕上看，記號給紙上看，兩個都要。
@@ -171,19 +174,35 @@ def resolve_cjk_font() -> pathlib.Path:
 
 
 def _all_text(view: dict[str, Any]) -> str:
-    parts = [view.get("title") or ""]
+    """**這份文件實際會印出來的每一個字。**
+
+    只給 `missing_glyphs()` 用，所以它必須跟 renderer 印的東西**逐項對得上**：
+
+    - 多算了不印的東西 → 為沒人看得到的字報一個假警告
+    - 漏算了會印的東西 → 真的豆腐字**不報**，而那正是本檔開頭那段在防的事
+
+    2026-09-13 踩到後者：匯出檔拿掉引註對照與語料揭露之後，這支還在算它們，
+    卻沒算新加的頁尾揭露（`DRAFT_FOOTER_NOTE`）與待填記號（`PLACEHOLDER_MARK`）。
+    缺字警告因此指著一堆不存在的文字，而頁尾真的缺字時不會有人知道。
+
+    **改 renderer 印什麼，就要回來改這裡。** 兩邊漂掉不會有任何徵兆——
+    測試只驗得到「有沒有警告」，驗不到「警告的是不是對的字」。
+    """
+    parts = [
+        view.get("title") or "",
+        DRAFT_FOOTER_NOTE,          # 每頁頁尾
+        PLACEHOLDER_MARK,           # 待填欄位的行首記號
+        BODY_INDENT,                # 正文縮排用的全形空白
+        settings.META_CASE_NO,      # 案號那一行的標籤
+        view.get("case_no") or "",
+    ]
     parts.extend(view.get("meta") or [])
-    parts.extend(view.get("notices") or [])
     for sec in view.get("sections") or []:
+        if (sec.get("role") or DEFAULT_ROLE) in SKIP_ROLES:
+            continue            # 附錄不印，就不必算它的字
         parts.append(sec.get("h") or "")
         for b in sec.get("blocks") or []:
             parts.append(b.get("text") or "")
-            parts.append(inline_marks(b))
-    parts.append(CITATION_HEADING)
-    for rid, label in citation_lines(view):
-        parts.append(f"{rid} {label}")
-    parts.extend(view.get("source_notes") or [])
-    parts.append(view.get("dataset_scope") or "")
     return "\n".join(parts)
 
 
@@ -320,7 +339,7 @@ def render_docx(view: dict[str, Any]) -> bytes:
             # 列印分發之後沒有人會發現那一格還沒填（2026-09-13 看實際 PDF 發現）。
             # 畫面上有紅燈撐著，紙上沒有，所以紙上要自己講。
             placeholder = bool(block.get("placeholder"))
-            paragraph = _docx_para(
+            _docx_para(
                 document,
                 f"{indent}{PLACEHOLDER_MARK if placeholder else ''}{text}",
                 size_pt=_DOCX_NOTE_PT + 1 if aside else _DOCX_BODY_PT,
@@ -328,7 +347,6 @@ def render_docx(view: dict[str, Any]) -> bytes:
                 bold=placeholder,
                 rgb=PLACEHOLDER_RGB if placeholder else None,
             )
-            del paragraph   # 行內引註標記不進匯出檔（見檔頭 EXPORT_OMITS_CITATION_APPARATUS）
 
     buf = io.BytesIO()
     document.save(buf)
@@ -489,7 +507,6 @@ def render_pdf(view: dict[str, Any]) -> tuple[bytes, list[str]]:
             pdf.ln(1)
         pdf.set_font(PDF_FONT_KEY, size=_PDF_BODY_PT if body else _PDF_SMALL_PT + 1)
         for block in sec.get("blocks") or []:
-            marks = ""   # 行內引註標記不進匯出檔（見檔頭 EXPORT_OMITS_CITATION_APPARATUS）
             text = block.get("text") or ""
             placeholder = bool(block.get("placeholder"))
             if placeholder:
@@ -502,7 +519,7 @@ def render_pdf(view: dict[str, Any]) -> tuple[bytes, list[str]]:
             # 數字與拉丁字旁邊的斷點，於是把那幾個空白撐到整行寬——
             # 「按訴願法第　　　77　　　條第　　　2」就是這樣來的（2026-09-13 實測）。
             # 中文本來就不需要兩端對齊，靠左是正確的排法，不是退讓。
-            _para(pdf, 8.0 if body else 6.0, f"{indent}{text} {marks}".rstrip())
+            _para(pdf, 8.0 if body else 6.0, f"{indent}{text}")
             if placeholder:
                 pdf.set_text_color(0, 0, 0)   # 用完立刻收回，不要讓紅色漏到下一段
         pdf.ln(2)
