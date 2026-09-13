@@ -636,14 +636,18 @@ async function driveChat(c, payload, uiTool) {
         // 紅線一（契約 §2.4.1 一、CONSTITUTION §4）：redirect 非 null →
         // 期限／天數這類問題交給規則引擎，**不得顯示 agent 講的任何天數**。
         // 這裡刻意**不寫 data.answer**（answer 裡就是 LLM 算的天數），只放 reason + CTA。
-        if (data.redirect) {
+        //
+        // **只在「純問答」回合套用。** 機械規則對「問題」做字面比對、寧可誤判（後端交接文件明說），
+        // 所以潤稿／生成草稿這類工具回合，內容裡出現「期間／天數」字眼也可能被帶上 redirect——
+        // 那時若把整個工具結果換成期限提示，會把好好的潤稿／草稿蓋掉（實測 refine 就中招）。
+        // 有工具卡的回合＝這輪的主體是工具產出，不套 redirect 覆蓋。
+        const hasToolThisTurn = Object.keys(cards).length > 0 || !!toolMsg
+        if (data.redirect && !hasToolThisTurn) {
           if (!tokenMsg) tokenMsg = push(c, { who: 'ai', kind: 'html', html: '' })
           const reason = data.redirect.reason || '期間計算由程序審查的規則引擎負責，聊天不計算期限。'
           tokenMsg.kind = 'redirect'
           tokenMsg.reason = reason
           tokenMsg.cta = data.redirect.cta || '查看程序審查的算式'
-          Object.values(cards).forEach((k) => (k.running = false))
-          if (toolMsg) toolMsg.running = false
           return
         }
         if (tokenMsg) {
@@ -851,9 +855,9 @@ function applyToolResult(c, toolMsg, data) {
     // 前端不再翻譯一次。status 非 ok 的兩條路在本函式最上面就處理掉了。
     if (toolMsg) toolMsg.out = { type: 'status', status: 'ok', note: data.note || '已讀取卷內資料。' }
   } else if (tool === 'refine_text') {
-    // 契約 §3.4：`hits: []`，工具本身沒有結構化產出，note 由後端帶
-    //（「已改寫；改寫文字無出處，本則回答標為請人工判斷。」）。
-    // 這裡只把 note 放上去，改寫內容由 agent 在下方逐字說明。
+    // 契約 §3.4：`hits: []`，改寫文字無出處，本則標「請人工判斷」。
+    // **前端不自己做 diff**：後端已把「改寫後的文章＋改了哪裡」用 token 串流出來，
+    //  由 token 泡泡呈現即可；前端再算一次會多餘且可能把建議表亂比成紅綠字。
     if (toolMsg) toolMsg.out = { type: 'status', status: 'ok', note: data.note || '已改寫。改寫文字無出處，請人工判斷。' }
   }
 }
