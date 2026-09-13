@@ -47,7 +47,7 @@ class LawTableRetriever:
         score 固定為 1.0（查表是二元命中，不是相似度）——刻意不假造相似度分數。
         """
         hits: list[Hit] = []
-        for law, article, display, known_law in extract_all_law_refs(query, self._names):
+        for law, article, display, known_law, _anaphora in extract_all_law_refs(query, self._names):
             if article is None:
                 # 條號無法無歧義解析：不猜一個數字去查表（猜錯就是「誤讀→綠燈」）。
                 hits.append(
@@ -319,7 +319,13 @@ GENERIC_LAW_RE = re.compile(
 # 「同法／本法／該法／前法」是決定書引用第二條以後的標準寫法，指的是前文最近提到的法規。
 # 不做回指解析的話，「又同法第999條」會被當成一部叫「又同法」的未知法規 → 只拿黃燈不擋，
 # 等於給了編造條號一條後門（把假條號寫成「同法第X條」就繞過紅燈）。
-ANAPHORA_RE = re.compile(rf"(同法|本法|該法|前開法律)\s*第\s*({_NUM})\s*條(?:\s*之\s*({_NUM}))?")
+#: 回指詞彙表。**`ANAPHORA_RE` 從它組出來，不要在別處再寫一份**——
+#: `gate/citations.py` 要靠這份判斷「這個法規名其實是回指詞」。
+ANAPHORA_WORDS = ("同法", "本法", "該法", "前開法律")
+
+ANAPHORA_RE = re.compile(
+    rf"({'|'.join(ANAPHORA_WORDS)})\s*第\s*({_NUM})\s*條(?:\s*之\s*({_NUM}))?"
+)
 
 # 泛用比對會把前導虛詞一起吃進法規名（例：「依民事訴訟法」），逐字剝掉。
 STOP_PREFIX = set("依按查據參另及與暨爰本該之以由自如逾違反同前上並且或者其惟至揆諸準用適用核符即則故是有無得應照")
@@ -387,14 +393,15 @@ def nearest_law_reference(
 
 def extract_law_refs(text: str, law_names: list[str]) -> list[tuple[str | None, str, str]]:
     """只抓快照涵蓋的法規（查表用）。回傳 [(法規名, 條號 key, 顯示字串)]。"""
-    return [(law, key, disp) for law, key, disp, known in extract_all_law_refs(text, law_names) if known]
+    return [(law, key, disp)
+            for law, key, disp, known, _anaphora in extract_all_law_refs(text, law_names) if known]
 
 
 def extract_all_law_refs(
     text: str,
     law_names: list[str],
     context: str = "",
-) -> list[tuple[str, str | None, str, bool]]:
+) -> list[tuple[str, str | None, str, bool, bool]]:
     """抓全部法條引用，含快照範圍外的。
 
     回傳 [(法規名, 條號 key, 顯示字串, 是否為快照涵蓋的法規)]，**依在文中出現的位置排序**
@@ -421,7 +428,8 @@ def extract_all_law_refs(
     （事實／理由／期間計算／主文）。「同法」在決定書裡指的就是同一段論證裡剛提過的法，
     跨段落綁回去才是真正危險的那件事。
     """
-    found: list[tuple[int, str, str | None, str, bool]] = []
+    # (位置, 法規名, 條號 key, 顯示字串, 是否在庫, 是否為「沒解到的回指」)
+    found: list[tuple[int, str, str | None, str, bool, bool]] = []
     known_ends: set[int] = set()
 
     def _key_display(law: str, g_art: str, g_sub: str | None) -> tuple[str | None, str]:
@@ -437,7 +445,7 @@ def extract_all_law_refs(
         for m in build_law_regex(law_names).finditer(text):
             law = m.group(1)
             key, display = _key_display(law, m.group(2), m.group(3))
-            found.append((m.start(), law, key, display, True))
+            found.append((m.start(), law, key, display, True, False))
             known_ends.add(m.end())
 
     # ── 回指解析：「同法／本法／該法第X條」綁到前文最近一次出現的法規名 ──
@@ -464,9 +472,9 @@ def extract_all_law_refs(
         key, display = _key_display(antecedent or m.group(1), m.group(2), m.group(3))
         if antecedent is None:
             # 找不到前行詞：不猜是哪部法，但也不能靜靜放過。標成未知法規讓它至少是黃的。
-            found.append((m.start(), m.group(1), key, display, False))
+            found.append((m.start(), m.group(1), key, display, False, True))
         else:
-            found.append((m.start(), antecedent, key, display, True))
+            found.append((m.start(), antecedent, key, display, True, False))
         known_ends.add(m.end())
 
     for m in GENERIC_LAW_RE.finditer(text):
@@ -476,7 +484,7 @@ def extract_all_law_refs(
         if law in law_names:
             continue  # 保險：剝完前綴後其實是已知法規
         key, display = _key_display(law, m.group(2), m.group(3))
-        found.append((m.start(), law, key, display, False))
+        found.append((m.start(), law, key, display, False, False))
         known_ends.add(m.end())
 
     # ── 安全網：法規名被空白／換行拆開（PDF 抽取常見）──────────────
@@ -484,16 +492,17 @@ def extract_all_law_refs(
     # 這一輪只會**增加**偵測，不會移除任何既有結果。
     squeezed = re.sub(r"\s+", "", text)
     if squeezed != text:
-        seen = {(law, key) for _, law, key, _d, _k in found}
+        seen = {(law, key) for _, law, key, _d, _k, _a in found}
         # `context` 一起帶進來：不帶的話這一輪會把回指詞**再解析一次**、而且是在
         # 沒有先行詞的情況下解析，於是同一筆引用會以「建築法第86條」與「同法第86條」
         # 兩種身分各出現一次——承辦人看到的還是那句假話（2026-09-13 實跑抓到）。
-        for law, key, display, known in extract_all_law_refs(
+        for law, key, display, known, anaphora in extract_all_law_refs(
             squeezed, law_names, re.sub(r"\s+", "", context)
         ):
             if (law, key) not in seen:
                 seen.add((law, key))
-                found.append((len(text), law, key, display, known))
+                found.append((len(text), law, key, display, known, anaphora))
 
     found.sort(key=lambda x: x[0])
-    return [(law, key, disp, known) for _, law, key, disp, known in found]
+    return [(law, key, disp, known, anaphora)
+            for _, law, key, disp, known, anaphora in found]

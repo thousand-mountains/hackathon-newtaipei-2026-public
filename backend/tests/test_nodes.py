@@ -15,10 +15,12 @@ from typing import Any
 
 from backend.config.settings import SUBSTANTIVE_TYPES, load_fact_issue_signals, load_snapshot
 from backend.gate.citations import (
+    BLOCKING_STATES,
     STATE_AMENDED,
     STATE_MISSING,
     STATE_OK,
     STATE_OUT_OF_SCOPE,
+    STATE_TO_LAMP,
     CitationChecker,
 )
 from backend.engine.deadline import compute
@@ -27,7 +29,12 @@ from backend.llm import client as llm_client
 from backend.nodes import n1_extract, n2_classify, n3_procedure, n4_retrieval, n5_draft, n6_gate
 from backend.orchestrator.state import CaseState, NodeCtx
 from backend.retrieval.base import UnavailableRetriever
-from backend.retrieval.lawtable import LawTableRetriever, cn_to_int
+from backend.retrieval.lawtable import (
+    ANAPHORA_RE,
+    ANAPHORA_WORDS,
+    LawTableRetriever,
+    cn_to_int,
+)
 from backend.tests.harness import assert_eq, assert_in, assert_true
 
 SNAPSHOT = load_snapshot()
@@ -627,6 +634,85 @@ def test_a_sentence_window_does_not_leak_the_context_citations():
     ck = CitationChecker(SNAPSHOT)
     r = ck.check_text("本件應予駁回。", context="按建築法第25條、訴願法第14條規定。")
     assert_eq(r, [], f"context 的引用洩漏進回傳值：{[c.raw for c in r]}")
+
+
+def test_an_unresolved_anaphora_does_not_claim_there_is_a_law_called_it():
+    """沒解到的回指詞**不得**被說成「一部我們沒收錄的法律」。
+
+    共用的庫外文案會寫成「**同法**不在快照涵蓋的 11 部法規內」——
+    **那句話的主詞不存在**。沒有一部叫「同法」的法律，所以「它不在我們的 11 部裡」
+    這個陳述本身是假的；承辦人讀到的是「有一部叫『同法』的法律我們沒收錄」，
+    而它其實多半是前一句講的建築法。雲上 16 份真 run 實測 11 筆。
+    """
+    ck = CitationChecker(SNAPSHOT)
+    for word in ANAPHORA_WORDS:
+        c = ck.check_text(f"又{word}第999條亦有明文。")[0]
+        assert_true("不在快照涵蓋的" not in c.note,
+                    f"{word} 仍被當成一部法律的名字：{c.note}")
+        assert_in("回指詞", c.note, f"{word} 沒說出「這是回指詞」：{c.note}")
+        # **文案要講得出下一步做什麼**，不是只說「我不知道」。
+        assert_in("往前", c.note, f"{word} 沒告訴承辦人往前對照：{c.note}")
+        assert_in("完整法規名稱", c.note, f"{word} 沒給出「改寫成完整法名」這條路：{c.note}")
+        assert_eq(c.payload.get("anaphora_unresolved"), True,
+                  "程式判讀用的旗標要在 payload 上，畫面上要分開講時不必去比對文案字串")
+
+
+def test_a_real_out_of_scope_law_keeps_the_original_wording():
+    """對照組：**具名的**庫外法規，原本那句話是對的，不得被新文案蓋掉。
+
+    「新北市建築管理自治條例」真的是一部法規、真的不在我們的 11 部裡，
+    叫人去查全國法規資料庫是正確的下一步。
+    """
+    ck = CitationChecker(SNAPSHOT)
+    c = ck.check_text("另依新北市建築管理自治條例第5條規定辦理。")[0]
+    assert_in("不在快照涵蓋的", c.note)
+    assert_true("回指詞" not in c.note, f"具名法規被當成回指詞：{c.note}")
+    assert_eq(c.payload.get("anaphora_unresolved"), False)
+
+
+def test_a_resolved_anaphora_carries_no_anaphora_note_at_all():
+    """解得到的回指已經變成真的法規名，不該再提「回指」兩個字——那會讓人以為它沒解到。"""
+    ck = CitationChecker(SNAPSHOT)
+    c = ck.check_text("又同法第86條規定。", context="按建築法第25條規定。")[0]
+    assert_eq(c.raw, "建築法第86條")
+    assert_eq(c.state, STATE_OK)
+    assert_true("回指詞" not in (c.note or ""), f"解到了還在講回指：{c.note}")
+
+
+def test_the_unresolved_anaphora_state_is_deliberately_not_a_new_one():
+    """**這條釘的是一個刻意的決定，不是一個還沒做完的事。**
+
+    「沒解到的回指」與「具名的庫外法規」共用 `out_of_scope`，差異只放在 `note`。
+    下一個人一定會想把它分成新的一態，所以理由寫在這裡也寫在
+    `CitationChecker.check_law` 的 docstring：
+
+    - 語意完全一樣——黃燈、不阻擋、不能當可查證出處。分出來之後這三件事
+      沒有一件會不同，那就不是一個新狀態，是一個新理由。
+    - 值域有寫死的消費端，而且**新值是安靜地壞掉不是大聲地壞掉**：
+      `cli.py`／`n6_gate.py`／`scripts/run_eval.py` 三處都是
+      `counts.get("out_of_scope", 0)`，新的一格會從統計裡默默消失；
+      `frontend/src/components/RelationGraph.vue` 直接把 state 原字串印給使用者看。
+
+    真要分的時候，先改那四個消費端再回來改這裡。
+    """
+    ck = CitationChecker(SNAPSHOT)
+    c = ck.check_text("又同法第999條亦有明文。")[0]
+    assert_eq(c.state, STATE_OUT_OF_SCOPE, "不得另開一態——理由見本測試 docstring")
+    assert_eq(c.lamp, STATE_TO_LAMP[STATE_OUT_OF_SCOPE], "黃燈")
+    assert_true(c.state not in BLOCKING_STATES, "不阻擋送出")
+    assert_true(c.state not in (STATE_OK, STATE_AMENDED),
+                "不得被當成可查證出處（n6_gate 的 usable_cites 只收這兩態）")
+
+
+def test_anaphora_words_are_declared_in_one_place():
+    """`ANAPHORA_RE` 必須從 `ANAPHORA_WORDS` 組出來。
+
+    兩邊各寫一份的話，新增一個回指寫法時會出現「抓得到但不會被標成回指」
+    ——於是那一筆又回去用「有一部叫『該法』的法律」那句假話，而且沒有症狀。
+    """
+    for word in ANAPHORA_WORDS:
+        assert_true(ANAPHORA_RE.match(f"{word}第5條"),
+                    f"{word} 在詞彙表裡卻抓不到——regex 沒有從詞彙表組出來")
 
 
 def test_anaphora_without_antecedent_is_visible_not_silent():
