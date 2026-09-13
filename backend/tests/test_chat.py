@@ -57,11 +57,33 @@ def _hit(hid: str = "kb-1", title: str = "新北市政府 112 年訴字第 1 號
 # ── 規則 1：數字類問題 ──────────────────────────────────────────────
 
 def test_numeric_question_goes_red_and_carries_the_deadline_redirect():
-    v = classify_answer("還剩幾天可以提訴願？", "大約還有 20 天。", RefBook())
+    """數字類問題一律紅燈；答案下了期間結論時才附 redirect。
+
+    **這一則的答案 2026-09-13 換過**：原本是「大約還有 20 天。」，靠「數字＋期間量詞」
+    那條分支觸發。那條分支已經被拿掉（實測 0 抓到真的、5 誤抓），所以現在用一個
+    **真的下了期間結論**的答案——這正是拿掉之後的殘餘風險：純數字不帶結論詞的說法
+    會漏。詳見 `backend/llm/chat.py` `_PERIOD_CONCLUSION` 上面那一大段。
+    """
+    v = classify_answer("還剩幾天可以提訴願？", "大約還有 20 天，尚未逾期。", RefBook())
     assert v.lamp == "r"
     assert v.origin == "human_required"
     assert v.redirect is not None
     assert v.redirect["endpoint"] == "/api/deadline"
+
+
+def test_the_known_gap_is_a_bare_number_with_no_conclusion_word():
+    """**已知缺口，刻意留著**：純數字、不帶任何結論詞的說法不會觸發 redirect。
+
+    這條測試是把缺口**寫下來**，不是宣稱它安全。紅燈仍然亮（只看問題），
+    所以最壞情況是「模型講了天數、紅燈亮了、答案照顯示」——比「正確答案被吃掉」溫和。
+
+    27 則雲上實打的回答裡找不到任何一則長這樣（模型下期間結論時一定會用到
+    逾期／屆滿／期限內），但 **27 則不是 2700 則**。哪天實際遇到，改的是這裡，
+    而且要先讀 chat.py 那段說明——不要用特例補。
+    """
+    v = classify_answer("還剩幾天？", "大約還有 20 天。", RefBook())
+    assert v.lamp == "r", "紅燈不受影響"
+    assert v.redirect is None, "如果這裡變成非 None，代表有人把數字分支加回來了"
 
 
 def test_numeric_rule_wins_even_when_the_answer_cites_a_real_hit():
@@ -1196,10 +1218,68 @@ def test_redirect_still_fires_when_the_answer_really_does_state_a_number():
     for answer in ("從送達日起算 30 天，到 6 月 13 日屆滿。",
                    "這件已經逾期了。",
                    "還來得及，期間內。",
-                   "期間還有 5 天。"):
+                   "提起訴願逾法定期間，應為不受理之決定。"):
         v = classify_answer("期限怎麼算？", answer, None)
         assert v.lamp == "r", answer
         assert v.redirect is not None, f"答案講了要擋的東西卻沒攔：{answer}"
+
+
+#: **QA 雲上實打的原文**（`scratchpad/qa/chat/*.sse` 的 `done.answer`，逐字抄）。
+#: 這幾則不是編出來的例子——2026-09-13 的判準改動就是被它們推翻與定案的。
+#: 存檔在 scratchpad 裡會隨 session 消失，所以把關鍵的幾則留在測試裡。
+_R10_ANSWER = ("收文欄位目前是空的，所以我沒辦法告訴你訴願人是誰、處分日期是哪一天。\n\n"
+               "這些基本資料需要先補進收文欄位，案子才能往下處理。\n")
+#: 五則誤抓的實際觸發片段，各自是一種完全不同的東西。
+_FALSE_POSITIVES = {
+    "r10 疑問詞「哪一天」": _R10_ANSWER,
+    "t01 收文欄位的記載值": "| 在途期間 | 0 天 |\n| 送達方式 | 寄存送達 |",
+    "t04 函釋字號裡的民國年": "另可參環保署 98 年函釋，該案認定露天燃燒屬廢棄物清理法規範。",
+    "t05 判解字號裡的民國年": "行政法院 92 年度判字第 123 號判決可供參考。",
+    "t09 同 r10（另一份存檔）": _R10_ANSWER,
+}
+#: 三則真陽性：人工標註「真的下了期間結論」的那幾則裡的關鍵句。
+_TRUE_POSITIVES = {
+    "r05 逐步算式＋結論": "3. 法定期間 30 日，屆滿日為 114/4/10\n4. 訴願人於 114/4/2 提起訴願 → **未逾期**",
+    "t10 結論列": "- **結論**：✅ 未逾期",
+    "t15 期限內": "- 實際提起日：114/4/2 → 在期限內",
+}
+
+
+def test_the_exact_r10_answer_is_no_longer_eaten():
+    """**驗收第一格：把原始那一則餵進去。**
+
+    2026-09-13 的教訓：上一輪我用自己編的問題與**截短的答案**驗這條修正，得出
+    「修好了」——而 `r10` 的完整原文其實還是會被攔（「處分日期是哪一天」的
+    「一天」＝中文數字＋期間量詞）。**手邊就有那則原文，卻沒拿它去跑。**
+
+    這種「針對某一則真實回答」的修正，驗收第一格一律是原文，等價情境排在後面。
+    """
+    assert not chat_mod.answer_states_a_period_conclusion(_R10_ANSWER)
+    v = classify_answer("訴願人是誰、處分日期是哪一天？", _R10_ANSWER, None)
+    assert v.lamp == "r", "紅燈不受影響（問題含「日期」）"
+    assert v.redirect is None, "r10 的原文還是被吃掉了——這條修正就是為它寫的"
+
+
+def test_none_of_the_five_real_false_positives_fire_any_more():
+    """五則誤抓逐一驗。它們分別是疑問詞、記載欄位值、兩種字號裡的民國年。
+
+    **不要用特例把它們一一排除**：那是三件互不相關的事，堆成三條例外規則之後，
+    沒有人有辦法推理那個判準下一次會怎麼判。拿掉整條數字分支才是對的收法。
+    """
+    for label, answer in _FALSE_POSITIVES.items():
+        assert not chat_mod.answer_states_a_period_conclusion(answer), \
+            f"{label} 仍然被當成期間結論：{answer[:60]!r}"
+
+
+def test_all_three_real_period_conclusions_still_fire():
+    """三則真陽性逐一驗——拿掉數字分支不得讓真的期間結論漏掉。
+
+    這三則各自命中不同的詞（屆滿／未逾期／期限內），冗餘度高，
+    這正是「結論詞那條分支 3/3 抓到」的原因。
+    """
+    for label, answer in _TRUE_POSITIVES.items():
+        assert chat_mod.answer_states_a_period_conclusion(answer), \
+            f"{label} 漏掉了：{answer[:60]!r}"
 
 
 def test_money_goes_red_but_does_not_get_the_deadline_redirect():
