@@ -398,11 +398,31 @@ export function newCaseInFolder(f) {
 //:
 //: 真正的修法是契約多一個態（例如 `not_attempted`），要動後端與契約，已回報。
 export const TOOL_STATUS = {
-  failed: { head: '工具執行失敗', chip: '失敗' },
-  empty: { head: '未取得結果', chip: '未取得結果' },
-  ok: { head: '完成', chip: '完成' },
+  ok: { head: '完成', chip: '完成', mark: '✓', tone: 'ok' },
+  // 做了、結果是沒有。`empty` 不再兼差當「還沒做」——那是下面那一格。
+  empty: { head: '未取得結果', chip: '未取得結果', mark: '○', tone: 'warn' },
+  // 沒做，因為前置條件不成立（契約 §2.3 第四個值，後端 `chat.py:913`）。
+  // 目前兩個情境：chip 導不出查詢詞、沒有 run 畫不了圖。
+  //
+  // **文案用「尚未執行」不用「還沒查」**：畫不出關聯圖那條不是「查」。
+  // 一格文案要同時蓋住兩個情境，講「這支工具一次都沒被呼叫」才是兩邊都真的那句。
+  // **為什麼不在這裡加一句解釋**：後端的 `note` 已經逐字寫了為什麼還沒做
+  //（「查詢詞由卷證解析的結果組出來……目前這些都還是空的」），而它就顯示在正下方。
+  // 前端再寫一句就是第二份文案來源。
+  not_attempted: { head: '尚未執行', chip: '尚未執行', mark: '—', tone: 'warn' },
+  failed: { head: '工具執行失敗', chip: '失敗', mark: '✕', tone: 'alert' },
 }
-export const toolStatusText = (status, where) => (TOOL_STATUS[status] || TOOL_STATUS.ok)[where]
+
+//: 查不到的 status 走這裡。**以前的 fallback 是 `TOOL_STATUS.ok`**——也就是把一個
+//: 我們看不懂的狀態畫成綠勾「完成」。`not_attempted` 上線前如果沒改這裡，那兩個
+//: 「一次都沒被呼叫」的情境會在畫面上顯示「✓ 完成」：不是難看，是**謊報成功**。
+//: 契約日後再加值域時，這一格保證它至少不會假裝順利跑完。
+const TOOL_STATUS_UNKNOWN = { head: '狀態不明', chip: '狀態不明', mark: '？', tone: 'warn' }
+
+//: 圖示與顏色也一起從這張表拿，不要在元件裡另寫 v-if 串——分開寫的話，
+//: 新增一個值時很容易文字更新了、圖示還停在舊的那串判斷式的 `v-else`（綠勾）。
+export const toolStatus = (status) => TOOL_STATUS[status] || TOOL_STATUS_UNKNOWN
+export const toolStatusText = (status, where) => toolStatus(status)[where]
 
 export { GROUPS }
 //: 匯出產出在右欄用的 ext。寫在一處，`fillDocsFromServer` 與 `flags.out` 共用——
@@ -712,13 +732,20 @@ export function gotoProcedureCheck() {
 // （實際載入的是建築法案），而且看起來完全像真的。這比少一塊功能嚴重得多。
 function applyToolResult(c, toolMsg, data) {
   const tool = data.tool
-  if (data.status === 'failed' || data.status === 'empty') {
+  // **白名單：只有 `ok` 走下面的「正常結果」路徑，其餘一律畫成狀態卡。**
+  // 原本這裡列舉 `failed || empty`，於是契約 2026-09-13 新增 `not_attempted` 之後，
+  // 它從縫隙掉進 ok 路徑——畫面上是「✓ 完成」＋「檢索命中（0 筆）」，
+  // 也就是把一次**根本沒發生的檢索**報告成「查完了，沒有」。實測命中過。
+  // 列舉「哪些不正常」永遠會漏掉下一個新值；列舉「哪一個是正常」不會。
+  if (data.status && data.status !== 'ok') {
     if (toolMsg) {
       toolMsg.running = false
-      // 契約 §2.3：empty 是「查無」、failed 是「工具本身壞了」，畫面上要分得出來。
-      // 卡頭的狀態也跟著改，不能兩種都顯示綠勾「完成」。
+      // 卡頭的狀態也跟著改，不能各種狀態都顯示綠勾「完成」。文字走 TOOL_STATUS。
       toolMsg.status = data.status
-      const fb = data.status === 'failed' ? '查詢來源失敗，可重試。' : '這個條件下沒有找到。'
+      // note 是空的時候才補一句。**只補這兩種本來就有的**——
+      // 對 `not_attempted` 說「這個條件下沒有找到」是在描述一件沒發生的事，
+      // 而後端那兩個情境都一定帶 note，補了反而是多一份會過期的文案。
+      const fb = data.status === 'failed' ? '查詢來源失敗，可重試。' : data.status === 'empty' ? '這個條件下沒有找到。' : ''
       toolMsg.out = { type: 'status', status: data.status, note: data.note || fb }
     }
     return
@@ -726,7 +753,9 @@ function applyToolResult(c, toolMsg, data) {
 
   // ok：把 tool_result 的真值放進 out，ToolOut.vue 只認 out 裡的東西。
   if (toolMsg) {
-    toolMsg.status = 'ok'
+    // 這裡只剩 status 是 `ok` 或後端沒帶 status 兩種，寫 'ok' 是對的；
+    // 但**不要無條件寫死**——上面那道白名單改了之後這行才安全。
+    toolMsg.status = data.status || 'ok'
     if (tool === 'search_regulations' || tool === 'search_similar_decisions' || tool === 'retrieve_refs') {
       toolMsg.out = { type: OUT_TYPE[tool] || 'hits', hits: data.hits || [], pickedLaws: data.picked_laws || null }
     } else if (tool === 'build_relation_graph') {
@@ -813,6 +842,14 @@ function applyToolResult(c, toolMsg, data) {
     // 重新生成草稿＝新的一版，舊基準先清掉，避免優化文案跨版本誤比。
     // 新基準等 #21 取回 sections[] 再存（見 loadDraftSections），這裡不塞假草稿。
     clearDraftText(c.caseId)
+  } else if (tool === 'read_case') {
+    // 契約 §3.6：`read_case` 的**內容走 token**，工具卡只負責讓人看得出「它讀了卷」。
+    // 沒有這個分支時 `out` 是 undefined，卡片就只剩一張「✓ 完成」的空殼，
+    // 後端寫給承辦人的那句 note 整段被丟掉（2026-09-13 實測一輪對話出現三張空卡）。
+    // **只畫 note 那一句**，不要把讀回來的內容也塞進卡片——那是 token 的工作。
+    // note 已經是給人看的中文（後端 `chat.py:1360`：「已讀取收文欄位（1 筆）。」），
+    // 前端不再翻譯一次。status 非 ok 的兩條路在本函式最上面就處理掉了。
+    if (toolMsg) toolMsg.out = { type: 'status', status: 'ok', note: data.note || '已讀取卷內資料。' }
   } else if (tool === 'refine_text') {
     // 契約 §3.4：`hits: []`，工具本身沒有結構化產出，note 由後端帶
     //（「已改寫；改寫文字無出處，本則回答標為請人工判斷。」）。
