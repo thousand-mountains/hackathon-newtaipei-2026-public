@@ -27,7 +27,11 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
-from backend.retrieval.lawtable import CN_NUMERAL_CHARS, extract_all_law_refs, parse_number
+from backend.retrieval.lawtable import (
+    CN_NUMERAL_CHARS,
+    extract_all_law_refs,
+    parse_number,
+)
 
 STATE_OK = "ok"
 STATE_AMENDED = "amended"
@@ -56,6 +60,25 @@ STATE_TO_MARK = {
     STATE_MISSING: "✗ 查無此號",
     STATE_UNPARSEABLE: "？ 無法解析",
 }
+
+#: 「同法／本法／該法第X條」抓到了，但**本句之前找不到它指的是哪一部法**。
+#:
+#: 為什麼要有專屬文案（2026-09-13）：走到這裡時 `law` 的值是「同法」，
+#: 而共用的庫外文案會寫成「**同法**不在快照涵蓋的 11 部法規內」——
+#: **那句話的主詞不存在**。沒有一部叫「同法」的法律，所以「它不在我們的 11 部裡」
+#: 這個陳述本身是假的。承辦人讀到的是「有一部叫『同法』的法律我們沒收錄」，
+#: 而它其實多半是前一句講的建築法。雲上 16 份真 run 實測 11 筆。
+#:
+#: 文案要講得出**下一步做什麼**：回指詞的先行詞只可能在前文，
+#: 所以要嘛往前看（前一筆引用可能本身就是本系統驗不了的法規），
+#: 要嘛把它改寫成完整法規名——後者是承辦人自己就能做完的動作。
+ANAPHORA_UNRESOLVED_NOTE = (
+    "「{word}」是回指詞（指前文提過的那一部法），不是法規名稱；"
+    "本句之前找不到它指的法規，因此無法驗證條號。"
+    "請往前對照同一段先前的引用確認它指哪一部法——"
+    "若前一筆引用本身就是本系統驗不了的法規，這一筆也驗不了；"
+    "或把它改寫成完整法規名稱（例如「建築法第86條」）再送審。"
+)
 
 BLOCKING_STATES = (STATE_MISSING,)
 
@@ -267,7 +290,28 @@ class CitationChecker:
         self._max_roc_year = current_roc_year(today)
 
     # ── 法條 ────────────────────────────────────────────────────────
-    def check_law(self, law: str, article: str | None, raw: str) -> Citation:
+    def check_law(
+        self,
+        law: str,
+        article: str | None,
+        raw: str,
+        anaphora_unresolved: bool = False,
+    ) -> Citation:
+        """`anaphora_unresolved`：這一筆的「法規名」其實是沒解到的回指詞（「同法」）。
+
+        **狀態仍然是 `out_of_scope`，刻意不另開一態**（2026-09-13 判斷，理由寫在這裡
+        因為下一個人一定會想分）：
+
+        - 語意完全一樣——燈號黃、不阻擋、不能當可查證出處（`usable_cites`）。
+          分出來之後這三件事沒有一件會不同，那就不是一個新狀態，是一個新理由。
+        - 值域有寫死的消費端，而且**新值是安靜地壞掉不是大聲地壞掉**：
+          `backend/cli.py:48`、`backend/nodes/n6_gate.py:502`、`scripts/run_eval.py:588`
+          都是 `counts.get("out_of_scope", 0)`——新的一格會從三份統計裡**默默消失**；
+          `frontend/src/components/RelationGraph.vue:162` 直接把 state 的原字串
+          印給使用者看（`${f.raw}（${f.state}）`），新值會變成畫面上一串沒翻譯的英文。
+
+        所以差異放在 `note`——那是給人看的欄位，而這件事本來就只是「說清楚為什麼」。
+        """
         if article is None:
             # 條號無法解析：不比對、不猜、不宣稱存在或不存在（黃燈交人工）
             return Citation(
@@ -296,8 +340,15 @@ class CitationChecker:
                 kind="law",
                 state=STATE_OUT_OF_SCOPE,
                 lamp=STATE_TO_LAMP[STATE_OUT_OF_SCOPE],
-                note=f"{law}不在快照涵蓋的 {len(self.laws)} 部法規內，本系統無法驗證條號，請人工查全國法規資料庫。",
-                payload={"law": law, "article": article},
+                note=(
+                    ANAPHORA_UNRESOLVED_NOTE.format(word=law)
+                    if anaphora_unresolved
+                    else f"{law}不在快照涵蓋的 {len(self.laws)} 部法規內，"
+                         f"本系統無法驗證條號，請人工查全國法規資料庫。"
+                ),
+                payload={"law": law, "article": article,
+                         # 程式判讀用：畫面上要分開講時不必去比對文案字串。
+                         "anaphora_unresolved": anaphora_unresolved},
             )
         if article in entry.get("articles", []):
             return Citation(
@@ -439,8 +490,10 @@ class CitationChecker:
         所以底下三段掃描一律只看 `text`。
         """
         out: list[Citation] = []
-        for law, key, display, _known in extract_all_law_refs(text, self._law_names, context):
-            out.append(self.check_law(law, key, display))
+        for law, key, display, _known, anaphora in extract_all_law_refs(
+            text, self._law_names, context
+        ):
+            out.append(self.check_law(law, key, display, anaphora_unresolved=anaphora))
         # 函釋先掃，並記下佔用區間——「台內營字第1120801234號函」裡的
         # 「112年5月1日」會被判解 regex 誤讀成年度，不排除會產生幽靈判解引用。
         directive_spans: list[tuple[int, int]] = []
