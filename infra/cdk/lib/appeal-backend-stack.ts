@@ -451,12 +451,15 @@ export class AppealBackendStack extends cdk.Stack {
     // cloudfront CreateDistribution／CreateFunction、ec2 DescribeManagedPrefixLists 皆在內；
     // route53domains 不在，所以賽方帳號也買不了網域。
     //
-    // ⚠️ **代價：CloudFront 等 origin 回第一個 byte（以及封包間隔）最多 60 秒**，
-    // 超過就 504。ALB 那個 900 秒救不了走 CloudFront 的請求。
-    //   - 聊天 SSE、`/runs` 202＋輪詢：每個呼叫都短或持續吐 byte，不受影響。
-    //   - `POST /api/cases/{id}/submit` 同步重跑六節點 51–78 秒 → **經 CloudFront 會 504**。
-    //     2026-09-13 前端（frontend/src）沒有呼叫這支；要讓它過得了只能改 202＋輪詢，
-    //     或向 AWS 申請 origin response timeout 配額（上限 180 秒）。
+    // ⚠️ **代價：CloudFront 等 origin 回第一個 byte、以及兩個封包之間，最多 `readTimeout`**，
+    // 超過就 504（POST 不重試）。ALB 那個 900 秒救不了走 CloudFront 的請求。
+    // 設 120 秒＝「Response timeout per origin」配額的預設上限（aws-cdk-lib 2.269
+    // `aws-cloudfront-origins/README.md`：預設 1-120 秒；超過要先核准配額，否則部署被拒）。
+    //   - 聊天 SSE：n5 主筆是不串流的 Bedrock 呼叫，實測空檔 69 秒——靠 `backend/api/chat.py`
+    //     的 `SSE_HEARTBEAT_SECONDS` 心跳撐住，不靠這個值。
+    //   - `/runs` 202＋輪詢：每個呼叫都短，不受影響。
+    //   - `POST /api/cases/{id}/submit` 同步重跑六節點 51–78 秒：落在 120 秒內，
+    //     但 Bedrock 被節流重試時會往上跑，超過就 504。2026-09-13 前端沒有呼叫這支。
     //
     // CloudFront → ALB 這一段走 HTTP（ALB 沒有憑證）。瀏覽器到 CloudFront 是 HTTPS。
     const cfFunction = hasCidrAllowlist
@@ -477,14 +480,14 @@ export class AppealBackendStack extends cdk.Stack {
       defaultBehavior: {
         origin: new origins.LoadBalancerV2Origin(service.loadBalancer, {
           protocolPolicy: cloudfront.OriginProtocolPolicy.HTTP_ONLY,
-          // 未申請配額時的上限就是 60。
-          readTimeout: cdk.Duration.seconds(60),
+          // 預設配額上限（見上方）。超過 120 要先申請配額，否則 CloudFront 拒絕部署。
+          readTimeout: cdk.Duration.seconds(120),
           keepaliveTimeout: cdk.Duration.seconds(60),
         }),
         viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
         allowedMethods: cloudfront.AllowedMethods.ALLOW_ALL,
-        // **一律不快取**：這是 API ＋ SSE，不是靜態站。快取 policy 關掉時 CloudFront
-        // 也不做壓縮，SSE 才不會被攢成一大塊才送出。
+        // **一律不快取**：這是 API ＋ SSE，不是靜態站。SSE 不會被壓縮攢成一塊：
+        // `text/event-stream` 不在 CloudFront 可壓縮類型清單，且沒有 Content-Length。
         cachePolicy: cloudfront.CachePolicy.CACHING_DISABLED,
         // 帶上 query string、cookie、標頭（Host 除外：ALB 不在乎 Host，
         // 帶 cloudfront.net 過去反而沒意義）。

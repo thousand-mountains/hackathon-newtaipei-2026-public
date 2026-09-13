@@ -543,16 +543,17 @@ AWS_PROFILE=hack-ntpc AWS_REGION=us-west-2 aws ec2 describe-security-groups \
 | 設定 | 值 | 為什麼 |
 |---|---|---|
 | viewer protocol | http → 301 轉 https | |
-| 快取 | `CachingDisabled` | API ＋ SSE，不快取；也因此不壓縮，SSE 不會被攢成一塊 |
+| 快取 | `CachingDisabled` | API ＋ SSE，不快取。SSE 不會被壓縮攢成一塊（`text/event-stream` 不在可壓縮清單） |
 | origin request | `AllViewerExceptHostHeader` | query／cookie／標頭照帶 |
 | CloudFront → ALB | HTTP 80 | ALB 沒憑證；瀏覽器到 CloudFront 這段是 HTTPS |
-| origin read timeout | **60 秒**（不申請配額時的上限） | 見下 |
+| origin read timeout | **120 秒**（「Response timeout per origin」配額預設上限；超過要申請，否則部署被拒） | 見下 |
 | price class | 200 | 100 沒有亞洲 edge |
 
-⚠️ **60 秒是新的天花板，ALB 的 900 秒救不了走 CloudFront 的請求。** origin 超過 60 秒沒回任何 byte → 504。
-- 聊天 SSE、`/runs`（202＋輪詢）：不受影響。
-- **`POST /api/cases/{id}/submit` 同步重跑六節點 51–78 秒 → 經 CloudFront 會 504**，`verify.sh` 的 submit 那條可能因此紅。
-  2026-09-13 前端（`frontend/src`）沒有呼叫這支。要讓它過：改 202＋輪詢，或向 AWS 申請 origin response timeout 配額（上限 180 秒）。
+⚠️ **120 秒是新的天花板，ALB 的 900 秒救不了走 CloudFront 的請求。** origin 回第一個 byte、或兩個封包之間超過 120 秒 → 504（POST 不重試）。
+- **聊天 SSE**：n5 主筆不串流，實測空檔 69 秒。靠 `backend/api/chat.py` 每 15 秒送一行 `: ping` 撐住（前端 `parseFrame` 會略過沒有 `data:` 的幀）。**心跳拿掉，生成草稿在雲上就會斷。**
+- `/runs`（202＋輪詢）：不受影響。
+- `POST /api/cases/{id}/submit` 同步 51–78 秒：落在 120 秒內，但 Bedrock 被節流重試會往上跑，超過就 504，`verify.sh` 的 submit 那條會紅。2026-09-13 前端（`frontend/src`）沒有呼叫這支。
+- `GET /api/runs/{id}/events` 沒有心跳，節點間空檔若超過 120 秒會斷；前端契約不打它（只有 `verify.sh`／除錯）。
 
 ---
 

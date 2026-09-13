@@ -2556,3 +2556,30 @@ def test_ranked_by_reaches_both_tool_result_hits_and_done_refs():
     verdict = classify_answer("這個爭點有前例嗎？", "有的，參見 [c1]。", t.refbook)
     assert verdict.refs, "這一則應該有 refs 才驗得到"
     assert verdict.refs[0]["ranked_by"] == "rerank", verdict.refs
+
+
+def test_gen_sends_a_heartbeat_while_the_turn_is_silent():
+    """**這條釘的是「部署走 CloudFront 後，生成草稿在雲上斷線」**（2026-09-13）。
+
+    CloudFront 規定 origin 兩個封包之間超過 response timeout 就切斷，而 n5 主筆是
+    一次不串流的 Bedrock 呼叫，本機實測空檔 69 秒。gen() 若只 `await q.get()`，
+    那 69 秒一個 byte 都不會出去。
+
+    驗兩件事：①有 `: ping` 這個 yield；②等佇列的那一步帶逾時（`asyncio.wait(..., timeout=)`）
+    ——少了逾時，ping 永遠輪不到。實跑驗證（uvicorn＋curl，心跳 1 秒、回合 4.5 秒）：
+    ping 每秒抵達一次、`done` 照常收尾，見 commit 說明。
+    """
+    gen = _gen_fn()
+    yielded = [n.value.value for n in ast.walk(gen)
+               if isinstance(n, ast.Yield) and isinstance(n.value, ast.Constant)]
+    assert any(isinstance(v, str) and v.startswith(":") for v in yielded), \
+        "gen() 沒有送 SSE 註解心跳：CloudFront 會在 n5 的空檔切斷連線"
+    waits = [n for n in ast.walk(gen)
+             if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+             and n.func.attr == "wait" and any(k.arg == "timeout" for k in n.keywords)]
+    assert waits, "gen() 等佇列時沒有逾時，心跳送不出去"
+    beat = next(float(n.value.value) for n in ast.parse(_api_chat_src()).body
+                if isinstance(n, ast.Assign)
+                and any(getattr(t, "id", "") == "SSE_HEARTBEAT_SECONDS" for t in n.targets))
+    assert beat < 60, f"心跳間隔 {beat} 秒，要遠小於 CloudFront readTimeout（120 秒）"
+

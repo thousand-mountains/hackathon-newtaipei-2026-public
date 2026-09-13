@@ -86,6 +86,10 @@ _SESSIONS: dict[str, list[dict[str, str]]] = {}
 #: 靜默砍掉會讓承辦人以為系統還記得前面講過的話。
 _MAX_TURNS = 12
 
+#: SSE 閒置多久送一次 `: ping`。要遠小於 CloudFront origin response timeout
+#: （`infra/cdk/lib/appeal-backend-stack.ts` 的 `readTimeout`），否則心跳本身就趕不上。
+SSE_HEARTBEAT_SECONDS = 15.0
+
 
 class ChatIn(BaseModel):
     """spec §2.1 的請求。`case_id` 走路徑參數，不在 body 裡。
@@ -419,11 +423,32 @@ def chat(case_id: str, body: ChatIn, request: Request):
                 loop.call_soon_threadsafe(q.put_nowait, done_marker)
 
         threading.Thread(target=worker, name="chat-turn", daemon=True).start()
-        while True:
-            ev = await q.get()
-            if ev is done_marker:
-                break
-            yield _frame(ev)
+        # **心跳（2026-09-13，部署改走 CloudFront 後必要）**：CloudFront 規定 origin
+        # 兩個封包之間超過 response timeout 就切斷連線，而 n5 主筆是一次不串流的
+        # Bedrock 呼叫，本機實測空檔 69 秒。空檔時送 SSE 註解行 `: ping`——
+        # 規格上不是事件，前端 `parseFrame`（沒有 `data:` 就回 null）會直接略過。
+        #
+        # 用「掛著的 get task ＋ asyncio.wait」而不是 `wait_for(q.get(), ...)`：
+        # wait_for 逾時會取消 get，取消與入列撞在一起時有掉事件的風險；
+        # 這裡的 task 不取消，下一輪接著等同一個。
+        pending_get: asyncio.Task | None = None
+        try:
+            while True:
+                if pending_get is None:
+                    pending_get = asyncio.ensure_future(q.get())
+                finished, _ = await asyncio.wait({pending_get}, timeout=SSE_HEARTBEAT_SECONDS)
+                if not finished:
+                    yield ": ping\n\n"
+                    continue
+                ev = pending_get.result()
+                pending_get = None
+                if ev is done_marker:
+                    break
+                yield _frame(ev)
+        finally:
+            # 客戶端中途斷線時 generator 會被關掉，別留一個永遠等不到的 task。
+            if pending_get is not None:
+                pending_get.cancel()
         # **刻意不 `join()`**：`box` 的寫入在 worker 的 `finally` 之前就完成了，
         # 而我們是**經由 queue** 才看到 sentinel 的，所以讀得到最終值。
         # 在這裡 join 等於在 event loop 上做一次阻塞等待，為了一個已經沒有意義的保證。
