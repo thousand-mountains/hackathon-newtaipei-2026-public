@@ -175,7 +175,10 @@ async function viewDoc(it) {
     if (it._artifactId) html = await viewArtifactFull(it._artifactId)
     else if (it.ext === '例') html = await viewDecisionFull(it._libId)
     else html = await viewLawFull(it._libId)
-    docView.full = html
+    // 取不到就退回這一筆自己的說明，**不要留一片空白**——空白讓人以為資料掉了，
+    // 而多數情況是這一筆本來就沒有可取的全文（viewLawFull/viewDecisionFull 失敗時
+    // 已經 toast 過原因，這裡只負責讓面板上有話可讀）。
+    docView.full = html || (it.note ? `<p style="color:var(--muted);font-size:13px">${it.note}</p>` : '')
     docView.loading = false
   }
 }
