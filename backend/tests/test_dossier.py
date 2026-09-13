@@ -1487,6 +1487,57 @@ def test_slicing_refuses_instead_of_guessing():
               "只有標題沒有內文，不得端一行「第 72 條」充數")
 
 
+def test_a_page_break_before_the_heading_does_not_hide_the_article():
+    """**PDF 轉文字留下的換頁符 `\x0c`**，2026-09-13 雲上實掃抓到。
+
+    母庫的法規檔是 PDF 轉來的，分頁處留一個換頁符，而它剛好落在
+    「建築法第25條」那一行的最前面——**demo 案子的核心法條**
+    （「未經申請審查許可擅自建造，違反建築法第25條」）。整條因此切不出來。
+
+    旁證：洗錢防制法有 13 個換頁符，收進去之後行首標題數 27 → 31，
+    與快照的 31 條完全相同。
+    """
+    text = ("    第 23 條\n甲。\n"
+            "\x0c    第 25 條\n未經申請審查許可，不得擅自建造。\n"
+            "    第 26 條\n丙。\n")
+    body = statute_text.slice_article(text, "25")
+    assert_true(body, "換頁符讓整條不見了")
+    assert_in("未經申請審查許可", body)
+    assert_true("第 26 條" not in body, f"切到下一條：{body!r}")
+    assert_true(not body.startswith("\x0c"), f"換頁符留在條文開頭：{body!r}")
+
+
+def test_an_inline_citation_is_never_a_heading_whatever_the_leading_class_is():
+    """內文中間的條號**永遠**不得被當成條次標題。
+
+    切出來會是「從某一條中間開始」的殘文，而它讀起來完全正常。
+
+    註（2026-09-13 更正）：這條守的是 `(?m)^` 這個錨點，**不是**前導字元的寬窄。
+    原本寫的是「放寬成 `\s` 就會讓內文引用進來」——**那句話是錯的**，
+    `^\s*第` 對下面這段實測一樣零命中。真正擋住內文引用的是行首錨點。
+    前導字元列舉與否是另一個取捨（可見度），理由寫在 `statute_text._LINE_LEAD`。
+    """
+    inline = "甲條文。依第 25 條規定辦理。\n乙條文。準用第 26 條。\n"
+    assert_eq(statute_text.article_headings(inline), [],
+              "內文中間的條號被當成行首標題了——前導字元類別放寬到吃掉換行了")
+
+
+def test_the_allowed_leading_characters_are_enumerated_not_guessed():
+    """允許的前導字元是**列舉**的：空白、tab、全形空白、換頁符。
+
+    這條釘的是「不要憑可能性放寬」：BOM／不換行空白**還沒掃到過**，
+    所以現在不認（那些行會切不出來並照實留空，不會端出錯的東西）。
+    掃到了再加——`scripts/check_statute_corpus.py` 會列出實際出現過的前導字元。
+    """
+    # 只列**同一行內**排在標題前面的字元。`\n` 不在這裡——它不是「前導字元」，
+    # 它本身就是換行，放進來測會永遠通過（見上一條測試才是 `\n` 的守門）。
+    for ch, want in ((" ", True), ("\t", True), ("\u3000", True), ("\x0c", True),
+                     ("\ufeff", False), ("\u00a0", False)):
+        heads = statute_text.article_headings(f"{ch}第 5 條\n甲。\n\n第 6 條\n乙。\n")
+        got = any(num == "5" for _s, _e, num, _sub in heads)
+        assert_eq(got, want, f"前導字元 U+{ord(ch):04X} 的處理跟宣告的不一致")
+
+
 def test_the_corpus_key_rule_is_declared_in_one_place():
     """檔名規則本機驗不到（無憑證），但它至少要只有一份、而且看得出長什麼樣。"""
     assert_eq(statute_text.corpus_key("行政程序法"),
