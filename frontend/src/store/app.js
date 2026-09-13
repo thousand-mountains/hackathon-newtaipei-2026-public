@@ -1029,7 +1029,7 @@ async function runExport(c, tool, id) {
     c.flags.out = true
     // 匯出的引用警示（交接文件第二件的匯出部分）：X-Unresolved-Cites 非 0 要警示；
     // X-Export-Warning 是後端做過編碼的中文，http.js 已 decode。
-    let msg = `<p>${isPdf ? 'PDF' : 'Word 檔'}已產出並歸檔至右側「答辯書與產出」。</p>`
+    let msg = `<p>${isPdf ? 'PDF' : 'Word 檔'}已產出並歸檔至右側「草稿文件產出」。</p>`
     if (res.unresolved > 0)
       msg += `<p style="color:var(--muted);font-size:12px;margin-top:6px">此檔含 ${res.unresolved} 處無法對應的引用，送簽前請先核對。</p>`
     if (res.warning)

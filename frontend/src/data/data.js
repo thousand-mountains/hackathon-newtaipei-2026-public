@@ -77,7 +77,7 @@ export const GROUPS = [
   {key:"evidence",name:"卷證檔案",abbr:"卷",empty:"以聊天室的「＋」上傳訴願書、原處分書、答辯書等卷證。"},
   {key:"cases",name:"相關案例",abbr:"例",empty:"執行「查找相似案例」後，案例卡片會自動歸檔於此。參考資料，不影響草稿生成。"},
   {key:"laws",name:"相關法規",abbr:"法",empty:"執行「搜尋相關法規」後，法條會自動歸檔於此，可自行增減。你挑的法規會成為檢索關鍵字，查得到才會進草稿。"},
-  {key:"out",name:"答辯書與產出",abbr:"稿",empty:"草稿與匯出檔案會存放於此。"}
+  {key:"out",name:"草稿文件產出",abbr:"稿",empty:"草稿與匯出檔案會存放於此。"}
 ];
 
 export const ACKS = {
