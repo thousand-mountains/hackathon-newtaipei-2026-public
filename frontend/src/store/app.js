@@ -1334,23 +1334,31 @@ function fullToHtml(text) {
     .join('')
   return paras
 }
+// 取全文失敗／端點回空時，顯示提示而不是空白 sheet（real 母庫需連 S3，取不到時尤其重要）。
+function unavailableFull(what) {
+  return `<p style="color:var(--muted);font-size:13px;line-height:1.8">目前無法取得${what}。母庫全文由後端即時載入，可能是連線或檔位（未接上母庫）問題，稍後再試。</p>`
+}
 export async function viewLawFull(libId) {
   try {
     const l = await api.getLaw(libId)
-    return `<div style="font-family:var(--serif);line-height:2">${fullToHtml(l.body)}</div>`
+    const body = (l && l.body) || ''
+    if (!body.trim()) return unavailableFull('條文全文') // 端點回了但沒內容
+    return `<div style="font-family:var(--serif);line-height:2">${fullToHtml(body)}</div>`
   } catch {
     toast('取法規全文失敗')
-    return ''
+    return unavailableFull('條文全文')
   }
 }
 export async function viewDecisionFull(libId) {
   try {
     const d = await api.getDecision(libId)
-    if (d.full) return `<div style="font-family:var(--serif);line-height:2">${fullToHtml(d.full)}</div>`
-    return `<p style="color:var(--muted)">${esc((d.verdict || '') + ' ' + (d.category || ''))}</p>`
+    if (d.full && String(d.full).trim()) return `<div style="font-family:var(--serif);line-height:2">${fullToHtml(d.full)}</div>`
+    // 沒有全文時，至少把拿得到的結果／案型顯示出來，仍取不到才給提示
+    const meta = (d.verdict || '') + ' ' + (d.category || '')
+    return meta.trim() ? `<p style="color:var(--muted)">${esc(meta)}</p>` : unavailableFull('決定書全文')
   } catch {
     toast('取決定書全文失敗')
-    return ''
+    return unavailableFull('決定書全文')
   }
 }
 // 產出（草稿）看全文：打 getArtifact #21 取草稿結構／HTML。
@@ -1359,11 +1367,13 @@ export async function viewArtifactFull(artifactId) {
     const a = await api.getArtifact(active().caseId, artifactId)
     // sections[] 結構 → HTML（契約 §4.4）。與工具卡共用 sectionsToHtml，
     // 兩處各寫一份轉換就會出現「同一份草稿在兩個地方長得不一樣」。
-    if (Array.isArray(a.sections)) return sectionsToHtml(a)
-    return ''
+    if (Array.isArray(a.sections) && a.sections.length) return sectionsToHtml(a)
+    // mock（或未回 sections 的後端）回 html：剝掉自帶最外層標題後直接用。
+    if (a.html) return String(a.html).replace(/<div class="sec-h">[\s\S]*?<\/div>/, '')
+    return unavailableFull('產出全文')
   } catch {
     toast('取產出全文失敗')
-    return ''
+    return unavailableFull('產出全文')
   }
 }
 
