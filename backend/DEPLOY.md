@@ -287,8 +287,8 @@ npm install
 | **EFS**（2026-09-13） | `OutputFs` ＋ access point `OutputAp`，掛在容器的 `/app/backend/output`。4 個 mount target（預設 VPC 每個 AZ 一個），專屬 SG 只放行**來自 service SG 的 2049**。`removalPolicy: DESTROY` |
 | ECR repository | CDK bootstrap 建的 `cdk-hackntpc-container-assets-…` |
 
-映像檔內容：`backend/`、`prototype/dist/`、以及 **`data/manifest.json`** 與
-**`data/kb-inventory.json`**（2026-09-13 起兩份都要）。
+映像檔內容：`backend/`、`prototype/dist/`、以及 **`data/manifest.json`**、
+**`data/kb-inventory.json`**、**`data/index-state.json`**（2026-09-13 起三份都要）。
 CDK 的 `exclude` 另外排掉整個 `infra/`：Dockerfile 從來沒 COPY 它，不排的話
 **改一行 CDK 程式就會讓映像檔的 asset hash 變掉**，於是「只改 ALB 設定」也要
 重建、重推、換 task definition。
@@ -301,12 +301,13 @@ CDK 的 `exclude` 另外排掉整個 `infra/`：Dockerfile 從來沒 COPY 它，
 > 這件事已經不靠人記得了——`infra/cdk/check_context.sh` 會把 Dockerfile 每一條
 > `COPY` 的來源拿去跟 staged context 比對，缺了或變成空目錄就中止部署。
 > `deploy.sh deploy` 會自動跑它；負向測試做過（故意把 `prototype/dist` 排掉 → 確實擋下）。
-這兩份是雲上語料具名揭露的來源（`/api/health` 的 `provenance.retrieval_note`），
+這三份是雲上語料具名揭露的來源（`/api/health` 的 `provenance.retrieval_note`），
 少了它們雲上只會說「讀不到清單，故不報各批筆數」。CDK 的 `exclude` 因此寫成
-`data/*` ＋ `!data/manifest.json` ＋ `!data/kb-inventory.json`——**只放這兩份進建置
-context**，賽方資料集若被放進 `data/` 也不會被帶進去（CONSTITUTION §5）。
+`data/*` ＋ `!data/manifest.json` ＋ `!data/kb-inventory.json` ＋ `!data/index-state.json`
+——**只放這三份進建置 context**，賽方資料集若被放進 `data/` 也不會被帶進去
+（CONSTITUTION §5）。
 
-兩份清單講的不是同一件事，**不能只帶一份**（2026-09-13 事故）：
+三份清單講的不是同一件事，**不能只帶一份**（2026-09-13 事故）：
 
 | 檔 | 內容 | 誰讀 |
 |---|---|---|
@@ -317,6 +318,15 @@ context**，賽方資料集若被放進 `data/` 也不會被帶進去（CONSTITU
 S3 上有四批第三方整理、從未經過本機 stage 目錄的語料，manifest 記不到它們
 （沒有本機檔可算 hash），所以 manifest 停在 2,488 筆而庫存是 19,475 筆。
 只帶 manifest 上雲，對外那句就會報成另一批語料的組成。
+
+而**庫存也不等於索引**：2026-09-13 那次 ingestion 之前，S3 有 19,475 筆、向量庫只
+索引了 16,970 筆（差 2,505 筆：舊爬蟲批 2,347 ＋ 相關法規 11 ＋ 法規英文版 147）。
+報「庫裡有 19,475 筆」而其中 2,505 筆檢索不到，同樣是失真——所以
+`retrieval_note` 的**主述**是 `index-state.json`，另外兩份是佐證。
+
+`index-state.json` 由 `scripts/ingest_kb.py` 在 ingestion job 完成後寫。**走
+`--no-ingest` ＋ 手動啟 job 的話它不會被寫**（2026-09-13 踩到），對外就會退回
+「本機沒有任何成功入庫的紀錄」。正常路徑（不加 `--no-ingest`）不會有這個問題。
 
 **換賽方帳號重建 KB 之後要重跑**（兩支，少跑哪一支都不會報錯）：
 

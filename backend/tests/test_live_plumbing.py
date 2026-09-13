@@ -3697,7 +3697,15 @@ def test_corpus_counts_are_withheld_when_the_manifest_describes_another_corpus()
         assert_in("故不報各批筆數", note)
         counts = settings.kb_corpus_counts() or {}
         for n in counts.values():
-            assert_true(str(n) not in note, f"對不上時不得把另一批語料的筆數（{n}）報出去")
+            # **比對 `"{n} 筆"` 而不是裸數字。** 裸數字會誤判：note 裡本來就有兩個
+            # 合法的數字——向量庫的**總**索引筆數（來自 index-state.json，是這句話的
+            # 主述）與入庫時間戳。`19`（司法院釋字及行政判解）是 `19475 筆` 的子字串，
+            # `2026-09-13` 裡也到處是數字。2026-09-13 補上 index-state.json 之後這條
+            # 就紅了，而行為完全正確——note 明寫「故不報各批筆數」，一批都沒印。
+            #
+            # 這條要守的是「**各批**筆數不得外洩」，而各批筆數在畫面上的形態就是
+            # `{label} {n} 筆`（見 settings 組這句話的地方）。比對那個形態才問對問題。
+            assert_true(f"{n} 筆" not in note, f"對不上時不得把另一批語料的筆數（{n} 筆）報出去")
 
 
 def test_a_case_is_never_its_own_similar_case():

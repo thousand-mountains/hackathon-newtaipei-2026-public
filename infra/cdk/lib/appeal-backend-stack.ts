@@ -265,6 +265,7 @@ export class AppealBackendStack extends cdk.Stack {
         'data/*',
         '!data/manifest.json',
         '!data/kb-inventory.json',
+        '!data/index-state.json',
         'docs',
         'knowledge',
         'design',
