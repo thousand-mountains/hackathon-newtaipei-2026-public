@@ -331,6 +331,23 @@ def _provenance(kind: str) -> str:
 CORPUS_FETCH_MULTIPLIER = 3
 
 
+def _dedupe_key(s3_key: str, metadata: dict[str, Any]) -> str:
+    """母庫查的去重鍵：**有案號就用案號，沒有才退回 S3 key**。
+
+    案號是「這是哪一件」的識別，S3 key 是「這份檔案放在哪」。同一件決定書在庫裡有
+    兩個 key（舊爬蟲批與第三方整理批並存），按 key 去重收不掉，清單上就會同一件出現兩次。
+
+    退回 key 的情況是**法規**：它們沒有案號，而兩部不同法規本來就該各佔一列。
+    判解有 `case_no`（裁判字號），同一份判決的重複收錄一樣該收成一筆。
+
+    空字串與 None 都當成「沒有案號」——側檔欄位推不出來時留空是常態（見
+    `scripts/build_kb_metadata_from_keys.attributes_for`），拿空字串當鍵會把所有
+    沒案號的文件併成一筆。
+    """
+    case_no = (metadata.get("case_no") or "").strip()
+    return f"case:{case_no}" if case_no else s3_key
+
+
 def search_corpus(client: Any, kb_id: str, query: str, doc_kinds: list[str], *,
                   limit: int = 10, min_score: float = 0.0) -> list[dict[str, Any]]:
     """母庫查：使用者在「搜尋並加入」對話框裡查法規／訴願決定（契約 v2 §4.2、§4.3）。
@@ -348,9 +365,21 @@ def search_corpus(client: Any, kb_id: str, query: str, doc_kinds: list[str], *,
        （寧可回相關性低的，也不要靜默 0 筆）。母庫查**不能**退：退了就會把法院裁判書
        當成法規端給承辦人。2026-09-12 實測「廢棄物」不篩抓 20 筆，法規佔 **0 筆**
        （15 筆裁判書 + 5 筆決定書）——filter 是必要條件，不是優化。查無就回空。
-    2. **去重一律開。** `dedupe_by_source` 在 `_retrieve` 預設 False 是為了不動已驗證的
-       相似案通道；這裡沒有那個包袱。2026-09-12 實測同一查詢 filter 後 10 筆
-       只有 **5 份**不同法規——不去重的話「命中 10 筆」會把讀的人騙成 10 部法律。
+    2. **去重一律開，而且是按「文件」去重不是按 key。** `dedupe_by_source` 在
+       `_retrieve` 預設 False 是為了不動已驗證的相似案通道；這裡沒有那個包袱。
+       2026-09-12 實測同一查詢 filter 後 10 筆只有 **5 份**不同法規——
+       不去重的話「命中 10 筆」會把讀的人騙成 10 部法律。
+
+       **2026-09-13：去重鍵從 S3 key 改成「案號優先」**（`_dedupe_key`）。原因是同一件
+       決定書在 S3 上有兩份：舊爬蟲批 `新北訴願決定書_全量/`（2,347）與第三方整理的
+       `新北訴願決定書_環保局全量/`（8,486），其中 **2,331 個案號是同一件**，兩批並存、
+       舊批沒刪。key 不同、案號相同，按 key 去重收不掉——承辦人會在同一張清單上看到
+       同一件決定書兩次，而那正是這段 docstring 上一句在防的事（「命中 10 筆」騙成
+       10 份不同文件），只是換了一個維度發生。
+
+       **只影響母庫查這一條通道。** N4 相似案走的是 `KBRetriever.search`，那裡刻意不
+       去重（`test_similar_case_channel_is_deliberately_left_undeduped` 釘著，改它要
+       重驗配額分布）。兩條通道的去重語意本來就不同，這裡改不會動到那邊。
 
     `id` 是**完整的 S3 key**（`kb/{official|public}/{rel}`），不是 `_relative_path` 的 `rel`：
     `rel` 分不出 official 與 public 兩批，而且沒辦法直接餵 `s3.get_object` 讀全文。
@@ -369,9 +398,11 @@ def search_corpus(client: Any, kb_id: str, query: str, doc_kinds: list[str], *,
         if not rel:
             continue
         key = f"kb/{kind}/{rel}" if kind in ("official", "public") else rel
-        if key in seen:          # 同一份文件的其他 chunk（結果已按分數遞減，留最高分那筆）
+        # 結果已按分數遞減，所以「留第一個看到的」＝留最高分那筆。
+        dedupe_key = _dedupe_key(key, md)
+        if dedupe_key in seen:   # 同一份文件的其他 chunk，或同一件決定書的另一批副本
             continue
-        seen.add(key)
+        seen.add(dedupe_key)
         fname = rel.rsplit("/", 1)[-1]
         out.append({
             "id": key,

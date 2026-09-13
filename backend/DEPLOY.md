@@ -148,7 +148,7 @@ aws --version   # 應該就回 aws-cli/2.36.44 了
 | `KB_MIN_SCORE` | 檢索命中分數下限，低於此值的命中丟棄。**預設依重排開關而異**：有設 `BEDROCK_RERANK_MODEL_ID` → `0.15`（放寬，只負責 recall，precision 交給重排）；沒設 → `0.25`（沒有重排接手時不能放寬）。**這個值跟 KB 的建法綁死**，換 KB 要重量（MANAGED 與 S3 Vectors 同一查詢分數差一倍以上） | 同上 |
 | `BEDROCK_RERANK_MODEL_ID` | 重排模型 arn。**留空＝不重排**，不報錯——這是安靜的品質下降（相似案會混進語意無關的命中），ECS 上漏設是看不出來的，所以 `/api/health` 會報這個開關的狀態，部署後去看一眼 | task definition 環境變數（非機密） |
 | `RERANK_MIN_SCORE` | 重排後的相關性門檻，預設 `0.5`。實測真實案件 0.809–1.000、語意無關 0.000–0.057 | 同上 |
-| `SIMILAR_CASE_QUOTA` | 相似案通道的 `前綴/:席次`，逗號分隔。**目錄名跟著 corpus 走，換 KB 必改**（`新北訴願決定書_全量/` vs `新北訴願決定書_環保局全量/`）——設錯不報錯，整條通道靜默回 0 筆。格式壞掉才會 raise | 同上 |
+| `SIMILAR_CASE_QUOTA` | 相似案通道的 `前綴/:席次`，逗號分隔。**目錄名跟著 corpus 走，換 KB 必改**（`新北訴願決定書_全量/` vs `新北訴願決定書_環保局全量/`）——設錯不報錯，整條通道靜默回 0 筆。格式壞掉才會 raise。預設值 2026-09-13 起指向 `新北訴願決定書_環保局全量/`（現役 corpus） | 同上 |
 | `REF_PREFIXES` | N5 可引用來源的前綴白名單（函釋／判解）。同樣**跟著 corpus 走**。放寬等於放寬「系統可以引用什麼」，**要 qa-legal 同意**（CONSTITUTION §2） | 同上 |
 | `REF_DOC_KINDS` | 引用通道在伺服器端先篩的 `doc_kind`。**留空＝不篩**（預設）；它依賴 KB 側檔，沒有側檔的 KB 一篩就全空 | 同上 |
 | `S3_KB_BUCKET` | 資料集所在的 S3 bucket 名稱，**入庫腳本用**（執行期服務不讀 S3） | 同上；bucket **必須非公開**（CONSTITUTION §6）。**2026-09-07 更名**：舊表寫作 `KB_DATA_BUCKET`，程式實際讀的是 `S3_KB_BUCKET` |
@@ -287,7 +287,8 @@ npm install
 | **EFS**（2026-09-13） | `OutputFs` ＋ access point `OutputAp`，掛在容器的 `/app/backend/output`。4 個 mount target（預設 VPC 每個 AZ 一個），專屬 SG 只放行**來自 service SG 的 2049**。`removalPolicy: DESTROY` |
 | ECR repository | CDK bootstrap 建的 `cdk-hackntpc-container-assets-…` |
 
-映像檔內容：`backend/`、`prototype/dist/`、以及 **`data/manifest.json`**。
+映像檔內容：`backend/`、`prototype/dist/`、以及 **`data/manifest.json`** 與
+**`data/kb-inventory.json`**（2026-09-13 起兩份都要）。
 CDK 的 `exclude` 另外排掉整個 `infra/`：Dockerfile 從來沒 COPY 它，不排的話
 **改一行 CDK 程式就會讓映像檔的 asset hash 變掉**，於是「只改 ALB 設定」也要
 重建、重推、換 task definition。
@@ -300,10 +301,61 @@ CDK 的 `exclude` 另外排掉整個 `infra/`：Dockerfile 從來沒 COPY 它，
 > 這件事已經不靠人記得了——`infra/cdk/check_context.sh` 會把 Dockerfile 每一條
 > `COPY` 的來源拿去跟 staged context 比對，缺了或變成空目錄就中止部署。
 > `deploy.sh deploy` 會自動跑它；負向測試做過（故意把 `prototype/dist` 排掉 → 確實擋下）。
-manifest 是雲上語料具名揭露的來源（`/api/health` 的 `provenance.retrieval_note`），
-少了它雲上只會說「讀不到入庫清單，故不報各批筆數」。CDK 的 `exclude` 因此寫成
-`data/*` ＋ `!data/manifest.json`——**只放這一份進建置 context**，賽方資料集若被放進
-`data/` 也不會被帶進去（CONSTITUTION §5）。
+這兩份是雲上語料具名揭露的來源（`/api/health` 的 `provenance.retrieval_note`），
+少了它們雲上只會說「讀不到清單，故不報各批筆數」。CDK 的 `exclude` 因此寫成
+`data/*` ＋ `!data/manifest.json` ＋ `!data/kb-inventory.json`——**只放這兩份進建置
+context**，賽方資料集若被放進 `data/` 也不會被帶進去（CONSTITUTION §5）。
+
+兩份清單講的不是同一件事，**不能只帶一份**（2026-09-13 事故）：
+
+| 檔 | 內容 | 誰讀 |
+|---|---|---|
+| `data/manifest.json` | 我們打算上傳什麼（本機檔＋sha256） | `scripts/ingest_kb.py` |
+| `data/kb-inventory.json` | S3 上實際有什麼（`scripts/build_kb_inventory.py` 列的） | `settings.corpus_listing_path()`，報筆數優先讀這份 |
+| `data/index-state.json` | 向量庫真的索引了幾筆 | `settings.index_state()`，是 `retrieval_note` 的主述 |
+
+S3 上有四批第三方整理、從未經過本機 stage 目錄的語料，manifest 記不到它們
+（沒有本機檔可算 hash），所以 manifest 停在 2,488 筆而庫存是 19,475 筆。
+只帶 manifest 上雲，對外那句就會報成另一批語料的組成。
+
+**換賽方帳號重建 KB 之後要重跑**（兩支，少跑哪一支都不會報錯）：
+
+```bash
+set -a; . ./.env; set +a
+# ① 庫存清單：S3 上實際有什麼
+uv run --with boto3 -- python3 scripts/build_kb_inventory.py \
+    --headers … --category-from data/manifest.json
+# ② 條文原文索引：理由段引條文要用（見下一小節）
+uv run --with boto3 -- python3 scripts/build_law_articles.py
+```
+
+①需要 `S3_KB_BUCKET`、`AWS_REGION`；不想打網路就 `--keys <既有 key 列表>`。
+
+### 條文原文索引：`backend/data/local/law-articles.json`
+
+決定書理由段的第一句是「按訴願法第 77 條第 2 款規定：『……』」，那段引文的原文
+來自這份索引（`backend/retrieval/law_articles.py` 查表，N4 填進 `laws[].q`）。
+它由 `scripts/build_law_articles.py` 從 **`s3://…/kb/official/相關法規/`** 下載、
+解析成「條 → 項 → 款」，約 1 MB、11 部法規。
+
+**三件跟部署有關的事**：
+
+1. **它進得了映像檔，但沒有自己的 `COPY`。** 走 `COPY backend/ /app/backend/`，
+   而 `.dockerignore` 與 CDK 的 `exclude` 都沒有擋 `backend/data/local/`（已實測）。
+   所以**不要**在 `exclude` 加 `backend/data/*` 這類規則——加了它就會靜靜消失。
+2. **它不在 git 裡**（賽方資料集衍生物，CONSTITUTION §6）。乾淨 checkout 的機器
+   要先跑一次上面的 ②，否則映像檔裡沒有這份索引。
+3. **缺了不會報錯，只會少一段文字。** 索引不存在時 `laws[].q` 一律留白、
+   `q_note` 寫「條文原文索引未建置」，理由段就**不產條文引述句**——草稿看起來
+   完全正常，只是少了決定書該有的那一句。留白是刻意的（不編造條文），但也代表
+   「忘了重跑」在畫面上沒有任何徵兆，只能靠這份文件記著。
+
+> **不能改用 `kb/public/相關法規_全量/` 建這份索引。** 那批（668 筆）**每一條都缺
+> 最後一項／款**（2026-09-13 實測：訴願法 §77 只有七款、§14 只有 3 項、§79 只有
+> 2 項；訴願法 101 條裡 57 條、行政程序法 176 條裡 107 條內容短少）。條號對得上、
+> 內容缺一截，引出來的法條會少一款——比不引還糟。`kb/official/相關法規/` 那 11 部
+> 是完整的官方列印版，索引只吃這一批（`settings.KB_CORPUS_LABELS` 對兩批的標籤
+> 也照這個差別寫）。
 
 這個帳號是共用的（已有多個 bucket 與 KB），所以所有資源都掛 `hackntpc-appeal` 前綴，
 CDK bootstrap 也用專屬 qualifier `hackntpc`，一眼認得出哪些是這個專案的。

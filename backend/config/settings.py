@@ -86,7 +86,11 @@ DEFAULT_RERANK_MIN_SCORE = 0.5
 # `新北訴願決定書_環保局全量/`（8,486 筆）——同樣是新北訴願決定書，只差三個字，
 # 但寫死的前綴一個都比不中，整條相似案通道**靜默回 0 筆**（不報錯，比報錯難查）。
 # KB id、門檻、前綴這三樣都跟著 corpus 綁在一起，所以一律由 .env 帶。
-DEFAULT_SIMILAR_CASE_QUOTA = "歷史訴願決定書/:2,新北訴願決定書_全量/:3"
+#
+# 預設值 2026-09-13 由 `新北訴願決定書_全量/` 改成 `新北訴願決定書_環保局全量/`：
+# 兩批都還在 S3（舊批 2,347 筆沒刪），但現役 `.env` 查的是後者，預設值再指向前者
+# 就是一顆「忘了設環境變數時靜默回 0 筆」的地雷。**預設值要指向現役 corpus。**
+DEFAULT_SIMILAR_CASE_QUOTA = "歷史訴願決定書/:2,新北訴願決定書_環保局全量/:3"
 
 
 def similar_case_quota() -> dict[str, int]:
@@ -293,22 +297,63 @@ UNKNOWN_DATA_NOTE = "本次案例的資料性質未標示（kind={kind}），本
 
 # 第三個維度：檢索來源（法規查表 vs Managed KB）。與執行模式、資料性質都無關——
 # fixture 也可能接 KB、bedrock 也可能只有查表，混在同一句講就會有一邊失真。
-# 筆數不寫死：一律從 `data/manifest.json`（入庫清單，只記路徑與 hash，不含內容）現算，
-# 換賽方帳號重建 KB 後數字會跟著動，不用回頭改字串。manifest 讀不到就不報數字。
+# 筆數不寫死：一律從清單檔（只記路徑與分類欄位，不含內容）現算，
+# 換賽方帳號重建 KB 後數字會跟著動，不用回頭改字串。清單讀不到就不報數字。
+#
+# **清單有兩份，講的是兩件事**（2026-09-13 分家，起因見下）：
+#
+#   data/kb-inventory.json   S3 上實際有什麼（`scripts/build_kb_inventory.py` 列出來的）
+#   data/manifest.json       我們打算上傳什麼（`scripts/build_manifest.py`，含 sha256，
+#                            `scripts/ingest_kb.py` 照著傳）
+#
+# 兩者在 2026-09-12 之後就不再等價：S3 上有四批第三方整理、**從未經過本機 stage
+# 目錄**的語料（環保局全量 8,486、行政函釋_全量 4,520、裁判書 3,166、法規全量 668），
+# 它們沒有本機檔可算 hash，塞進 manifest 只會讓 ingest 每次報一萬多個「缺本機檔」。
+# 於是 manifest 停在 2,488 筆，而對外報數字的地方讀的正是 manifest——
+# 印出來的「資料來源」表整張是**另一批語料**的組成（2026-09-13 Claire 抓到）。
+#
+# 所以報「庫裡有什麼」一律以 inventory 為準，manifest 只在 inventory 不存在時頂替
+# （乾淨 checkout、還沒列過 S3 的環境）。**不存在就明說不存在，不猜。**
+KB_INVENTORY_PATH = BACKEND_DIR.parent / "data" / "kb-inventory.json"
 MANIFEST_PATH = BACKEND_DIR.parent / "data" / "manifest.json"
-# KB 入庫清單的分類標籤：manifest 的 `path` 前三段（kb/{official|public}/{目錄}）→ 人話
+
+
+def corpus_listing_path() -> pathlib.Path:
+    """描述「庫裡有什麼」的那份清單。inventory 優先，退回 manifest。
+
+    回的是 `Path` 而不是內容，因為呼叫端還要把**檔名**報出去：
+    數字來自哪一份清單是讀的人判斷可信度的依據，藏起來等於少講一層。
+    """
+    return KB_INVENTORY_PATH if KB_INVENTORY_PATH.exists() else MANIFEST_PATH
+
+
+# KB 清單的分類標籤：`path` 前三段（kb/{official|public}/{目錄}）→ 人話
 # **兩批行政函釋必須分開具名**（2026-09-12）：`kb/official/行政函釋` 是賽方資料集裡的
 # 10 筆（內政部 3、法務部 7，都有 source_pdf）；`kb/public/行政函釋` 是後來另外匯入的
 # 4520 筆環境部（原環保署）函釋（字號全為 環署／環部／環化／環循，逐筆清點確認）。
 # 兩批共用同一個標籤名的話，這一行會寫成「行政函釋 10 筆、其餘 4520 筆」——
 # 讀的人會以為本系統只有 10 筆函釋，而那 4520 筆正是空污、廢棄物這些案型最相關的一批。
 # 少報自己有什麼跟多報一樣是失真。
+#
+# **目錄名要照抄 S3 上的**（2026-09-13）：舊的 `kb/public/行政函釋` 是憑印象寫的，
+# S3 上那批其實叫 `行政函釋_全量`——比不中就掉進「其餘 N 筆」，等於那 4,520 筆函釋
+# 從來沒被具名報出去過。標籤表比不中不會報錯，只會默默少講，所以加一批就要對一次 key。
 KB_CORPUS_LABELS = {
     "kb/official/歷史訴願決定書": "賽方資料集・歷史訴願決定書",
+    "kb/public/新北訴願決定書_環保局全量": "第三方整理・新北訴願決定書（環保局全量）",
     "kb/public/新北訴願決定書_全量": "市府公開全量爬蟲・新北訴願決定書",
     "kb/official/司法院釋字及行政判解": "司法院釋字及行政判解",
+    "kb/public/新北裁判書_環保局全量": "第三方整理・新北裁判書（環保局全量）",
     "kb/official/行政函釋": "賽方資料集・行政函釋（內政部、法務部）",
-    "kb/public/行政函釋": "環境部（原環保署）行政函釋",
+    "kb/public/行政函釋_全量": "環境部（原環保署）行政函釋",
+    # 2026-09-13 入庫（`build_manifest.OFFICIAL_DIRS` 由 False 翻成 True）。
+    # 標籤要講清楚它是**完整的官方版**：S3 上另有一批 `kb/public/相關法規_全量`，
+    # 名字幾乎一樣，但那批每條都缺最後一項／款。
+    "kb/official/相關法規": "賽方資料集・相關法規全文（11 部，官方列印版）",
+    "kb/public/相關法規_全量": "第三方整理・相關法規（每條缺末項／款，僅供檢索不供引條文）",
+    # 沒有側檔、doc_kind 推不出來（`build_kb_metadata_from_keys.DOC_KIND` 不收），
+    # 因此檢索得到但篩不到，也不該拿來引條文——標籤照實講，不粉飾成「法規」。
+    "kb/public/相關法規_英文版": "相關法規英譯本（無側檔，不參與條文引用）",
 }
 _manifest_cache: dict[str, Any] = {}
 
@@ -349,15 +394,20 @@ def manifest_corpus_mismatch() -> str | None:
 
 
 def kb_corpus_counts() -> dict[str, int] | None:
-    """入庫清單各類別的筆數。manifest 不存在或壞掉 → None（不猜、不報估計值）。"""
+    """清單各類別的筆數。清單不存在或壞掉 → None（不猜、不報估計值）。
+
+    來源是 `corpus_listing_path()`（inventory 優先），不是寫死的 manifest——
+    這一行就是 2026-09-13 那張「資料來源」表報錯數字的地方。
+    """
+    path = corpus_listing_path()
     try:
-        stat = MANIFEST_PATH.stat()
+        stat = path.stat()
     except OSError:
         return None
-    key = (str(MANIFEST_PATH), stat.st_mtime_ns, stat.st_size)
+    key = (str(path), stat.st_mtime_ns, stat.st_size)
     if _manifest_cache.get("key") != key:
         try:
-            entries = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))["entries"]
+            entries = json.loads(path.read_text(encoding="utf-8"))["entries"]
         except (OSError, ValueError, KeyError):
             return None
         counts: dict[str, int] = {}
@@ -400,6 +450,12 @@ def index_state() -> dict[str, Any] | None:
 #   賽方資料集（130 筆，挑選過的教學樣本）：違反廢清法事件 23.5%、違反建築法事件 26.7%
 # 混在一起算出來的 3.3% 兩邊都不代表。所以這裡**逐批分開回**，不給合併數字。
 #
+# 2026-09-13：清單改讀 `data/kb-inventory.json` 之後，公開那側變成兩批
+# （舊爬蟲 2,347 ＋ 第三方環保局全量 8,486），而**其中 2,331 個案號是同一件**
+# ——S3 上兩批並存，舊批沒刪。同一件決定書算兩次會讓分母虛胖三成，
+# 所以下面用 `case_no` 去重：**同一個案號只計一次**（先到的那筆）。
+# 去重不是為了好看，是因為「5,099 件中 320 件撤銷」裡的 5,099 必須是真的件數。
+#
 # **為什麼回 counts 不回 rate**：一個裸露的百分比在畫面上幾乎一定被讀成
 # 「本案有 X% 機率被撤銷」——那是系統對案件結果的預測，正是 CONSTITUTION 拒絕
 # 生成的法律判斷。給「17 件中 4 件撤銷」，承辦人自己看得到分母有多小；
@@ -412,27 +468,37 @@ OUTCOME_DISTRIBUTION_CAVEAT = (
 
 
 def outcome_counts(category: str | None = None) -> dict[str, Any] | None:
-    """知識庫的決定結果分布，依來源批次分開。manifest 讀不到 → None（不猜）。
+    """知識庫的決定結果分布，依來源批次分開。清單讀不到 → None（不猜）。
 
     `category` 給值時只計同案型的（比對前過 `normalize_case_type`，且雙向子字串——
     兩批的粒度不同：公開批的 `category` 是法規名「廢棄物清理法」，
     賽方批的檔名帶案由「違反廢棄物清理法事件」，前者是後者的子字串）。
+
+    **同一個案號只計一次**：S3 上兩批公開決定書有 2,331 件重疊（見上方註解）。
+    沒有案號的（賽方批、判解）不受影響——去重只在「認得出是同一件」時才做。
     """
+    path = corpus_listing_path()
     try:
-        stat = MANIFEST_PATH.stat()
+        stat = path.stat()
     except OSError:
         return None
-    key = (str(MANIFEST_PATH), stat.st_mtime_ns, stat.st_size, "outcomes")
+    key = (str(path), stat.st_mtime_ns, stat.st_size, "outcomes")
     if _manifest_cache.get("okey") != key:
         try:
-            entries = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))["entries"]
+            entries = json.loads(path.read_text(encoding="utf-8"))["entries"]
         except (OSError, ValueError, KeyError):
             return None
         rows = []
+        seen_cases: set[str] = set()
         for e in entries:
             outcome = e.get("outcome")
             if not outcome:
                 continue
+            case_no = str(e.get("case_no") or "").strip()
+            if case_no:
+                if case_no in seen_cases:
+                    continue            # 兩批公開決定書重疊的那 2,331 件，只計一次
+                seen_cases.add(case_no)
             cat = e.get("category")
             if not cat:
                 # 賽方批的案由在檔名：`NN.YYY年-案由-條款-…-結果.txt`
@@ -460,12 +526,45 @@ def outcome_counts(category: str | None = None) -> dict[str, Any] | None:
     return out
 
 
+def _unsearched_note() -> str:
+    """清單裡**沒有任何通道會查**的那幾批，要自己講出來。空的話回空字串。
+
+    2026-09-13：清單改報 S3 現況（19,475 筆）之後，裡面有四批不在
+    `similar_case_prefixes()` 也不在 `ref_prefixes()` 的目錄——舊的公開爬蟲批
+    （與現役那批重疊 2,331 件，留著沒刪）、裁判書、法規全量、法規英譯本。
+    它們真的在庫裡、也真的被索引，但**後過濾按前綴比對**（`retrieval.kb._retrieve`），
+    所以一筆都回不出來。
+
+    只報總筆數而不講這件事，「檢索範圍 19,475 筆」就是誇大——查得到的比這個少。
+    名單**現算**，不寫死：改 `SIMILAR_CASE_QUOTA`／`REF_PREFIXES` 這句會自己跟著變，
+    不會變成一句過期的話。
+    """
+    counts = kb_corpus_counts()
+    if not counts:
+        return ""
+    try:
+        searched = {p.rstrip("/") for p in similar_case_prefixes()} | {p.rstrip("/") for p in ref_prefixes()}
+    except ValueError:
+        return ""              # 設定壞掉由各自的讀取器 raise，這裡不搶著報
+    idle = {g: n for g, n in counts.items() if g.rsplit("/", 1)[-1] not in searched}
+    if not idle:
+        return ""
+    named = "、".join(f"{KB_CORPUS_LABELS.get(g, g)} {n} 筆" for g, n in
+                      sorted(idle.items(), key=lambda x: -x[1]))
+    return (f"另有 {sum(idle.values())} 筆在庫裡但**目前任何通道都查不到**"
+            f"（不在檢索前綴清單內）：{named}。")
+
+
 def retrieval_note(kind: str | None = None) -> str:
     """檢索來源那句。
 
-    **主述是「向量庫實際索引了幾筆」，入庫清單是次要資訊。**
-    兩者不一致時必須把差異講出來——清單只代表「我們打算讓它檢索什麼」，
+    **主述是「向量庫實際索引了幾筆」，清單是次要資訊。**
+    兩者不一致時必須把差異講出來——清單只代表「庫裡（或我們手上）有這些檔」，
     已索引才代表「現在真的檢索得到什麼」。把前者講成後者就是對能力說謊。
+
+    清單用哪一份由 `corpus_listing_path()` 決定，**檔名一起報出去**：
+    inventory 與 manifest 的數字可以差一個數量級（2026-09-13：19,475 vs 2,488），
+    不講是哪一份，數字本身就沒有意義。
     """
     k = kind or retriever_kind()
     if k != "kb":
@@ -478,11 +577,25 @@ def retrieval_note(kind: str | None = None) -> str:
 
     counts = kb_corpus_counts()
     state = index_state()
+    # 清單檔名照實報：inventory（S3 現況）與 manifest（打算上傳什麼）講的不是同一件事，
+    # 藏起用的是哪一份，讀的人就沒辦法判斷這些數字能代表什麼。
+    listing_path = corpus_listing_path()
+    listing = f"data/{listing_path.name}"
+    # 兩份清單連「它到底在描述什麼」都不一樣，那句解釋也得跟著換：
+    # inventory 是 S3 現況（東西真的在桶子裡，但不保證向量庫索引了它），
+    # manifest 是我們打算上傳什麼（連在不在桶子裡都不保證）。
+    listing_is = ("「S3 上實際有這些檔」，不是「向量庫索引得到」"
+                  if listing_path == KB_INVENTORY_PATH else
+                  "「打算讓它檢索什麼」，不是「現在檢索得到什麼」")
     # 清單跟這個庫根本不是同一批東西時，**筆數與分項一律不報**。
     # 報一個別的 corpus 的組成，比不報更糟：讀的人會拿它當本系統的檢索範圍。
     mismatch = manifest_corpus_mismatch()
     if mismatch:
         counts = None
+    else:
+        # 「哪幾批查不到」本身就是逐批筆數，清單跟這個庫對不上時同樣不能報
+        # ——那會用另一批語料的組成去描述本系統的檢索範圍，跟上面擋掉的是同一件事。
+        tail += _unsearched_note()
     manifest_total = sum(counts.values()) if counts else None
     indexed = state["documents_indexed"] if state else None
 
@@ -500,13 +613,13 @@ def retrieval_note(kind: str | None = None) -> str:
     if indexed is None:
         # 沒有入庫紀錄 → 說不出實際檢索得到幾筆。**這時絕不可拿 manifest 的數字當主述。**
         listed = (
-            f"入庫清單（data/manifest.json）列了 {manifest_total} 筆——{breakdown}；"
-            "但**清單不等於已索引**——清單是「打算讓它檢索什麼」，不是「現在檢索得到什麼」。"
+            f"清單（{listing}）列了 {manifest_total} 筆——{breakdown}；"
+            f"但**清單不等於已索引**——清單講的是{listing_is}。"
             if manifest_total is not None else
-            (f"入庫清單（data/manifest.json）與本服務要查的語料對不上"
+            (f"清單（{listing}）與本服務要查的語料對不上"
              f"（{mismatch}），故不報各批筆數——那份清單描述的是另一批語料。"
              if mismatch else
-             "入庫清單（data/manifest.json）本機也讀不到，故不報各批筆數。")
+             f"清單（{listing}）本機也讀不到，故不報各批筆數。")
         )
         return (
             f"{head}。本機沒有任何成功入庫的紀錄（找不到 data/index-state.json），"
@@ -519,13 +632,13 @@ def retrieval_note(kind: str | None = None) -> str:
                if mismatch else "本機讀不到，故不報各批筆數")
         return (
             f"{head}，向量庫已索引 {indexed} 筆（依 data/index-state.json，最近一次成功入庫於 {when}）。"
-            f"入庫清單（data/manifest.json）{why}。{tail}"
+            f"清單（{listing}）{why}。{tail}"
         )
 
     if indexed == manifest_total:
         return (
             f"{head}，向量庫已索引 {indexed} 筆（最近一次成功入庫於 {when}），"
-            f"與入庫清單一致——{breakdown}。{tail}"
+            f"與清單（{listing}）一致——{breakdown}。{tail}"
         )
     gap = manifest_total - indexed
     direction = (
@@ -535,7 +648,7 @@ def retrieval_note(kind: str | None = None) -> str:
     )
     return (
         f"{head}，**向量庫實際已索引 {indexed} 筆**（最近一次成功入庫於 {when}）。"
-        f"入庫清單（data/manifest.json）列了 {manifest_total} 筆——{breakdown}；"
+        f"清單（{listing}）列了 {manifest_total} 筆——{breakdown}；"
         f"兩者不一致：{direction}。能檢索到的是前者，清單數字不代表檢索範圍。{tail}"
     )
 
@@ -603,6 +716,91 @@ NODE_TO_AGENTS = {
     "n5": ["draft"],
     "n6": ["qc"],
 }
+
+# ── 訴願決定書的公文格式（origin=static）────────────────────────────
+# 這一區是**格式**，不是內容：抬頭怎麼排、段名叫什麼、教示條款怎麼寫。
+# 全部集中在這裡，是因為三個輸出（聊天室草稿、`.docx`、`.pdf`）共用同一份骨架，
+# 散在各自的 renderer 裡必然漂移——2026-09-13 的實際狀況就是段序與段名三處各一套，
+# 而「主文」排在最後一段，承辦人翻到第二頁才看得到它（而且常常是空的）。
+#
+# 參考格式：新北市政府訴願決定書（賽方資料集歷史決定書的通用結構）。
+
+
+def deciding_authority() -> str:
+    """受理訴願機關（決定機關）。**不是原處分機關**——`intake.org` 才是那個。
+
+    抬頭「○○○訴願決定書」寫的是決定機關。兩者在本專案的合成測資裡剛好都是
+    新北市政府，所以寫錯了不會有人發現，直到換一個原處分機關的案子進來。
+    """
+    return os.environ.get("DECIDING_AUTHORITY") or "新北市政府"
+
+
+def deciding_authority_self_ref() -> str:
+    """決定機關的自稱（「本府」）。抬頭引導句與綜上論結段的主詞。"""
+    return os.environ.get("DECIDING_AUTHORITY_SELF_REF") or "本府"
+
+
+def administrative_court() -> str:
+    """教示條款要指的行政法院。新北市轄區為臺北高等行政法院。
+
+    **這是一個會因轄區而錯的事實**，所以留一個環境變數，不寫死在模板字串裡。
+    """
+    return os.environ.get("ADMINISTRATIVE_COURT") or "臺北高等行政法院"
+
+
+#: 決定書段名。公文段名是**兩個字中間空一格**（「主　文」），不是「決定主文」。
+#: 這三個字串同時是 `.docx`／`.pdf`／聊天室三處的 section 標題，改這裡三處一起改。
+SECTION_MAIN_TEXT = "主　文"
+SECTION_FACTS = "事　實"
+SECTION_REASONING = "理　由"
+#: 期間引擎的逐步算式。**它不是決定書的一段**，是附錄——正式決定書沒有這一段，
+#: 但 CONSTITUTION §1 的可驗算層要它看得見，所以留在文件裡、標成附錄另排。
+SECTION_CALCULATION = "附錄：期間計算（規則引擎逐步驗算，非決定書正文）"
+
+#: 抬頭欄位標籤，以全形空白對齊，與公文抬頭一致。
+META_CASE_NO = "案　　號"
+META_APPELLANT = "訴 願 人"
+META_RESPONDENT = "原處分機關"
+
+#: 抬頭與主文之間那一句。`{...}` 由 `intake` 欄位填，缺欄位不猜（見 narrative）。
+PREAMBLE_TEMPLATE = (
+    "上列訴願人因{case_type}，不服原處分機關{disposition}所為之處分，"
+    "提起訴願一案，{self_ref}依法決定如下："
+)
+#: 原處分的指稱。有處分日期才寫得出來；沒有就整段省略，退成「所為之處分」。
+PREAMBLE_DISPOSITION = "民國 {date}"
+
+#: 理由段最後一句。**只有在程序結論由規則算得出來時才寫**（見 narrative 的說明）。
+CONCLUSION_SUMMARY_TEMPLATE = (
+    "綜上論結，本件訴願為程序不合，爰依訴願法第 77 條第 {clause} 款規定，決定如主文。"
+)
+#: 算不出來時的佔位。留白比猜一句「訴願為無理由」安全——後者是實體法律判斷。
+CONCLUSION_SUMMARY_PLACEHOLDER = (
+    "（綜上論結段由承辦人判斷後填寫：本件訴願有無理由屬實體法律判斷，本系統不代為認定。）"
+)
+
+#: 落款。委員名單與用印日期系統一概不知道，**一律留空格給人填**，不是猜。
+SIGNATURE_LINES = (
+    "訴願審議委員會主任委員　　　　　　（承辦人填載）",
+    "中　華　民　國　　　　年　　　月　　　日",
+)
+SIGNATURE_WHY = "本欄為決定書落款，委員名單與用印日期由承辦人填載，系統不代填，亦不猜測。"
+
+#: 教示條款（訴願法 §90 的法定記載）。法院地址不寫——那是會過期的事實，且不影響救濟。
+TEACHING_CLAUSE_TEMPLATE = "如不服本決定，得於決定書送達之次日起 2 個月內向{court}提起行政訴訟。"
+TEACHING_CLAUSE_WHY = (
+    "本句為訴願法第 90 條規定之教示條款固定文字，由設定檔模板帶出，非模型生成；"
+    "受理法院依轄區而定，請依本案實際情形核對。"
+)
+
+#: 理由段開頭的條文引述。`{law}`＝法規名，`{ref}`＝「第 77 條第 7 款」，`{text}`＝條文原文。
+ARTICLE_QUOTE_TEMPLATE = "按{law}{ref}規定：「{text}」。"
+#: 條文引述句的 why。**要說出原文是查表來的**，否則它在畫面上跟模型寫的句子沒兩樣。
+ARTICLE_QUOTE_WHY = (
+    "本句的條文原文取自賽方資料集『相關法規』（全國法規資料庫列印版）查表逐字帶出，"
+    "非模型生成；條號與內容請對照全國法規資料庫現行版本後採用。"
+)
+
 
 # ── §6.2 CASE payload 的頂層視圖常數（origin=static / rule）──────────
 # 「自動擷取」徽章的門檻。與 `nodes/n1_extract.CONF_THRESHOLD` 是同一個數字，

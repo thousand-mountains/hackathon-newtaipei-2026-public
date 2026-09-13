@@ -29,6 +29,7 @@ from backend.llm import client as llm_client
 from backend.nodes import n1_extract, n2_classify, n3_procedure, n4_retrieval, n5_draft, n6_gate
 from backend.orchestrator.state import CaseState, NodeCtx
 from backend.retrieval.base import UnavailableRetriever
+from backend.retrieval.law_articles import NOT_BUILT_NOTE, NOT_FOUND_NOTE, default_store
 from backend.retrieval.lawtable import (
     ANAPHORA_RE,
     ANAPHORA_WORDS,
@@ -337,13 +338,33 @@ def test_n4_similar_case_channel_returns_empty_and_labels_unverified():
 
 
 def test_n4_does_not_fabricate_article_text():
+    """`laws[].q` 的每一個字都必須來自條文索引，一個字都不准是系統補的。
+
+    **2026-09-13 契約改了，但紅線沒變。** 在那之前這條斷言 `q is None`——因為當時
+    唯一的法規資料是 `laws-snapshot.json`，而它只有條號。理由段因此只寫得出 `[L3]`，
+    寫不出「按訴願法第 77 條第 7 款規定：『……』」。現在條文原文由
+    `scripts/build_law_articles.py` 從 KB 建成索引（`retrieval/law_articles.py`），
+    N4 查表帶進 `q`。
+
+    所以這條改成釘住真正的紅線：**有值就必須逐字等於索引裡的原文，查不到就必須是
+    None**。斷言 `q is None` 擋不住編造（模型補寫出來的條文也不是 None）——
+    逐字比對才擋得住。
+    """
     state = CaseState(case_id="synthetic-unit-01")
     state.classification = {"class": {"case_type": "違反建築法事件", "law_hits": ["建築法"]}}
     state.screen = {"art77": {"clause": None}}
     r = n4_retrieval.run(state, _ctx(), cited_laws=["建築法第73條"])
+    store = default_store()
+    checked = 0
     for law in r.data["laws"]:
-        assert_eq(law["q"], None, "快照沒有條文原文，系統不得補寫")
-        assert_true(law["q_note"], "留白必須附說明")
+        assert_true(law["q_note"], "留白或帶原文都必須附說明")
+        expected = store.text(law.get("law"), law.get("article")) if law.get("article") else None
+        assert_eq(law["q"], expected, f"{law['t']}：q 與條文索引對不起來——系統補寫了條文？")
+        if law["q"] is None:
+            assert_in(law["q_note"], (NOT_BUILT_NOTE, NOT_FOUND_NOTE),
+                      "查不到條文時，說明要分得出是『索引沒建』還是『索引裡沒有這一條』")
+        checked += 1
+    assert_true(checked > 0, "前提不成立：這次檢索一條法規都沒回")
 
 
 def test_n4_dedupes_repeated_citations():

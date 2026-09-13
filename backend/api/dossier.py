@@ -447,8 +447,11 @@ def get_artifact(case_id: str, artifact_id: str) -> dict:
     # `title` 優先用 manifest 記的產出名稱（`hit["name"]`），不是 doc 裡的抬頭：
     # 那是承辦人在右欄看到的那個名字，換掉會讓清單與詳情對不起來。
     # manifest 還沒記到這筆（走 `run-…` 後備）時才退回 doc 的抬頭。
+    # `meta`（案號／訴願人／原處分機關）是**文件抬頭**，與 sections[] 平行（契約 §4.4）。
+    # 2026-09-13 補上：在那之前只回 sections[]，於是聊天室與右欄畫出來的草稿沒有抬頭，
+    # 承辦人看不出那是哪一案的決定書——而匯出的 .docx／.pdf 有。同一份草稿兩種樣子。
     return {"artifact_id": artifact_id, "title": (hit or {}).get("name") or view["title"],
-            "run_id": run_id,
+            "run_id": run_id, "meta": view["meta"],
             "sections": view["sections"], "cite_count": view["cite_count"]}
 
 

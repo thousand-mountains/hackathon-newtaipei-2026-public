@@ -966,7 +966,7 @@ def test_default_prefixes_take_both_batches_of_appeal_decisions():
     `payload.provenance`（official／public_crawl）標示，不靠丟掉 2347 筆真實決定書。
     """
     fake = _FakeBedrockAgentRuntime([
-        _kb_public_result("新北訴願決定書_全量/1121070551_不受理.txt", 0.9, "主文：訴願不受理。"),
+        _kb_public_result("新北訴願決定書_環保局全量/1121070551_不受理.txt", 0.9, "主文：訴願不受理。"),
         _kb_result("歷史訴願決定書/113年/16.113年-違反空氣污染防制法事件-駁回.txt", 0.8, "主文：訴願駁回。"),
     ])
     r = KBRetriever(kb_id="k", region="r", min_score=0.25, client=fake)
@@ -981,11 +981,11 @@ def test_default_prefixes_still_exclude_interpretations_and_court_rulings():
     fake = _FakeBedrockAgentRuntime([
         _kb_result("行政函釋/法務部93.txt", 0.95, "函釋"),
         _kb_result("司法院釋字及行政判解/釋字第684號.txt", 0.94, "釋字"),
-        _kb_public_result("新北訴願決定書_全量/1121070551_不受理.txt", 0.5, "主文：訴願不受理。"),
+        _kb_public_result("新北訴願決定書_環保局全量/1121070551_不受理.txt", 0.5, "主文：訴願不受理。"),
     ])
     r = KBRetriever(kb_id="k", region="r", min_score=0.25, client=fake)
     hits = r.search("q")
-    assert_eq([h.source for h in hits], ["新北訴願決定書_全量/1121070551_不受理.txt"],
+    assert_eq([h.source for h in hits], ["新北訴願決定書_環保局全量/1121070551_不受理.txt"],
               "函釋與釋字判解不得進相似案通道")
 
 
@@ -1021,7 +1021,7 @@ def _quota_retriever(batches, min_score=0.25):
 def test_similar_case_quota_queries_each_batch_separately():
     """配額是「兩批分開查再合併」，不是「先撈一大包再硬塞席次」。"""
     official = [_kb_result(f"歷史訴願決定書/113年/o{i}-駁回.txt", 0.90 - i / 100, "o") for i in range(4)]
-    public = [_kb_public_result(f"新北訴願決定書_全量/p{i}_駁回.txt", 0.95 - i / 100, "p") for i in range(6)]
+    public = [_kb_public_result(f"新北訴願決定書_環保局全量/p{i}_駁回.txt", 0.95 - i / 100, "p") for i in range(6)]
     r = _quota_retriever([official, public])
     with _no_retrieve_interval():
         hits = r.search("q", top_k=5)
@@ -1039,9 +1039,9 @@ def test_similar_case_quota_sorts_merged_results_by_score():
     """合併後按分數排序，C1 永遠是分數最高的那筆。"""
     official = [_kb_result("歷史訴願決定書/113年/高分-駁回.txt", 0.99, "o"),
                 _kb_result("歷史訴願決定書/113年/次高-撤銷.txt", 0.60, "o")]
-    public = [_kb_public_result("新北訴願決定書_全量/p1_駁回.txt", 0.80, "p"),
-              _kb_public_result("新北訴願決定書_全量/p2_駁回.txt", 0.70, "p"),
-              _kb_public_result("新北訴願決定書_全量/p3_駁回.txt", 0.50, "p")]
+    public = [_kb_public_result("新北訴願決定書_環保局全量/p1_駁回.txt", 0.80, "p"),
+              _kb_public_result("新北訴願決定書_環保局全量/p2_駁回.txt", 0.70, "p"),
+              _kb_public_result("新北訴願決定書_環保局全量/p3_駁回.txt", 0.50, "p")]
     with _no_retrieve_interval():
         hits = _quota_retriever([official, public]).search("q", top_k=5)
     assert_eq([h.score for h in hits], sorted([h.score for h in hits], reverse=True), "沒有按分數排序")
@@ -1053,7 +1053,7 @@ def test_similar_case_quota_sorts_merged_results_by_score():
 def test_similar_case_quota_backfills_when_one_batch_is_short():
     """official 只撈到 1 筆時，剩下的席次由 public 補滿，不留空位。"""
     official = [_kb_result("歷史訴願決定書/113年/唯一-駁回.txt", 0.88, "o")]
-    public = [_kb_public_result(f"新北訴願決定書_全量/p{i}_駁回.txt", 0.80 - i / 100, "p") for i in range(6)]
+    public = [_kb_public_result(f"新北訴願決定書_環保局全量/p{i}_駁回.txt", 0.80 - i / 100, "p") for i in range(6)]
     with _no_retrieve_interval():
         hits = _quota_retriever([official, public]).search("q", top_k=5)
     provs = [h.payload["provenance"] for h in hits]
@@ -1065,11 +1065,11 @@ def test_similar_case_quota_backfills_when_one_batch_is_short():
 def test_similar_case_quota_never_admits_hits_below_the_score_threshold():
     """配額不得讓低於 KB_MIN_SCORE 的東西進來——寧可少一筆。"""
     official = [_kb_result("歷史訴願決定書/113年/低分-駁回.txt", 0.10, "o")]
-    public = [_kb_public_result("新北訴願決定書_全量/p1_駁回.txt", 0.80, "p"),
-              _kb_public_result("新北訴願決定書_全量/低分_駁回.txt", 0.05, "p")]
+    public = [_kb_public_result("新北訴願決定書_環保局全量/p1_駁回.txt", 0.80, "p"),
+              _kb_public_result("新北訴願決定書_環保局全量/低分_駁回.txt", 0.05, "p")]
     with _no_retrieve_interval():
         hits = _quota_retriever([official, public], min_score=0.25).search("q", top_k=5)
-    assert_eq([h.source for h in hits], ["新北訴願決定書_全量/p1_駁回.txt"],
+    assert_eq([h.source for h in hits], ["新北訴願決定書_環保局全量/p1_駁回.txt"],
               "只有過門檻的那一筆能進，配額不是塞滿五席的理由")
 
 
@@ -1127,7 +1127,7 @@ def test_similar_case_channel_is_deliberately_left_undeduped():
     如果日後有人要讓相似案也去重，會在這裡看到這是一個需要重新驗證配額的決定，
     而不是順手改掉。
     """
-    dup = "新北訴願決定書_全量/1121070551_不受理.txt"
+    dup = "新北訴願決定書_環保局全量/1121070551_不受理.txt"
     with _no_retrieve_interval():
         hits = _quota_retriever([
             [],  # official 批沒有命中
@@ -2090,8 +2090,15 @@ def test_missing_conclusion_blocks_submit_on_a_non_blocked_case():
     finally:
         client.draft_sentences = orig
 
-    concl = [s for b in st.gate["doc"] for s in b.get("ss", []) if s.get("slot") == "conclusion"]
-    assert_eq(concl, [], "前提不成立：這個 fake 應該產不出結論句")
+    # 2026-09-13 起主文段**一定至少有一句**：模型沒寫時補一句佔位句，否則三個
+    # renderer 都只畫得出一個空標題，看起來像「這份決定書沒有主文」而不是「沒生出來」。
+    # 所以前提改成「沒有任何**實質**結論句」——佔位句不算，它正是 `conclusion_missing`
+    # 那條 blocker 的觸發條件（兩邊都以 `placeholder` 為準）。
+    concl = [
+        s for b in st.gate["doc"] for s in b.get("ss", [])
+        if s.get("slot") == "conclusion" and not s.get("placeholder")
+    ]
+    assert_eq(concl, [], "前提不成立：這個 fake 應該產不出實質結論句")
     hits = [b for b in st.gate["blockers"] if b["reason"] == "conclusion_missing"]
     assert_eq(len(hits), 1, "沒有主文的決定書必須有一條 conclusion_missing blocker")
     assert_eq(hits[0].get("severity"), "P0")
@@ -2226,6 +2233,10 @@ def test_fixture_doc_sentences_have_no_unsupported_key():
             n += 1
             assert_true("unsupported" not in s, f"{s['id']} 多了 unsupported 鍵")
             assert_true("dropped_cite_ids" not in s, f"{s['id']} 多了 dropped_cite_ids 鍵")
+            if s.get("quoted_statute"):
+                # 條文引述句的 cite_ids 由編排層查表對出來（見 test_e2e 同名那條的說明），
+                # 不是 fixture 手寫的。
+                continue
             assert_eq(s["cite_ids"], [], "fixture 的手寫 cite_ids 仍不得帶進 doc[]")
     assert_true(n > 0, "前提不成立：doc[] 沒有句子")
 
@@ -2293,24 +2304,31 @@ def test_retrieval_note_is_a_separate_dimension_from_run_mode_and_data_kind():
 
 
 def test_retrieval_note_counts_come_from_the_manifest_not_a_hardcoded_string():
-    """筆數現算自 data/manifest.json，兩批分開講；manifest 讀不到就不報數字。"""
-    counts = settings.kb_corpus_counts()
-    assert_true(counts, "前提不成立：data/manifest.json 讀不到")
-    note = settings.retrieval_note("kb")
-    assert_in(str(sum(counts.values())), note, "總筆數要跟 manifest 對得起來")
-    assert_in(str(counts["kb/official/歷史訴願決定書"]), note, "賽方資料集那批要單獨報筆數")
-    assert_in(str(counts["kb/public/新北訴願決定書_全量"]), note, "公開爬蟲那批要單獨報筆數")
-    assert_in("賽方資料集", note)
-    assert_in("公開全量爬蟲", note)
+    """筆數現算自清單檔，逐批分開講；清單讀不到就不報數字。
 
-    missing = settings.MANIFEST_PATH.parent / "manifest-does-not-exist.json"
-    orig = settings.MANIFEST_PATH
-    settings.MANIFEST_PATH = missing
+    2026-09-13：清單來源由 `data/manifest.json`（我們打算上傳什麼）改成
+    `data/kb-inventory.json`（S3 上實際有什麼）。這條測試守的是「數字現算、
+    不是寫死的字串」，所以它問的是 `corpus_listing_path()`，不是某個固定檔名。
+    """
+    counts = settings.kb_corpus_counts()
+    assert_true(counts, "前提不成立：清單讀不到")
+    note = settings.retrieval_note("kb")
+    assert_in(str(sum(counts.values())), note, "總筆數要跟清單對得起來")
+    assert_in(str(counts["kb/official/歷史訴願決定書"]), note, "賽方資料集那批要單獨報筆數")
+    assert_in("賽方資料集", note)
+    assert_in(f"data/{settings.corpus_listing_path().name}", note,
+              "數字來自哪一份清單要講出來——兩份清單差一個數量級")
+
+    # 兩份都指到不存在的路徑才算「讀不到」：inventory 缺席時會退回 manifest，
+    # 只搬走一份驗不到「不猜」那條防線。
+    orig_inv, orig_man = settings.KB_INVENTORY_PATH, settings.MANIFEST_PATH
+    settings.KB_INVENTORY_PATH = orig_inv.parent / "kb-inventory-does-not-exist.json"
+    settings.MANIFEST_PATH = orig_man.parent / "manifest-does-not-exist.json"
     try:
-        assert_true(settings.kb_corpus_counts() is None, "manifest 不存在不得回估計值")
+        assert_true(settings.kb_corpus_counts() is None, "清單不存在不得回估計值")
         assert_in("不報各批筆數", settings.retrieval_note("kb"), "讀不到就明說讀不到，不猜")
     finally:
-        settings.MANIFEST_PATH = orig
+        settings.KB_INVENTORY_PATH, settings.MANIFEST_PATH = orig_inv, orig_man
 
 
 @contextmanager
@@ -2370,11 +2388,12 @@ def test_retrieval_note_refuses_to_report_a_searchable_count_without_an_ingestio
 def test_retrieval_note_says_they_agree_when_the_ingestion_covered_the_whole_manifest():
     """兩者一致時就明說一致——不是靜默地只報一個數字，讓人分不出有沒有比對過。"""
     counts = settings.kb_corpus_counts()
-    assert_true(counts, "前提不成立：data/manifest.json 讀不到")
+    assert_true(counts, "前提不成立：清單讀不到")
     listed = sum(counts.values())
     with _index_state({"completed_at": "2026-09-12T06:00:00+00:00", "documents_indexed": listed}):
         note = settings.retrieval_note("kb")
-    assert_in("與入庫清單一致", note)
+    assert_in("與清單", note)
+    assert_in("一致", note)
     assert_true("檢索不到" not in note, "一致時不該出現落差的說法")
 
 
@@ -2882,7 +2901,7 @@ def test_similar_case_channel_never_sends_the_ref_doc_kind_filter():
     相似案要的是決定書，把它篩成函釋等於整條通道報廢。
     """
     with env(REF_DOC_KINDS="ref_letter", BEDROCK_RERANK_MODEL_ID=None,
-             SIMILAR_CASE_QUOTA="歷史訴願決定書/:2,新北訴願決定書_全量/:3"):
+             SIMILAR_CASE_QUOTA="歷史訴願決定書/:2,新北訴願決定書_環保局全量/:3"):
         fake = _FilterAwareRuntime([_kb_result("歷史訴願決定書/113年/x-駁回.txt", 0.9, "決定書")])
         r = KBRetriever(kb_id="k", region="r", min_score=0.15, client=fake)
         with _no_retrieve_interval():
@@ -2965,7 +2984,7 @@ def test_similar_case_quota_scales_seats_to_the_candidate_pool():
     """
     official = [_kb_result(f"歷史訴願決定書/113年/o{i}-駁回.txt", 0.50 - i / 1000, f"官方{i}")
                 for i in range(30)]
-    public = [_kb_public_result(f"新北訴願決定書_全量/p{i}_駁回.txt", 0.95 - i / 1000, f"公開{i}")
+    public = [_kb_public_result(f"新北訴願決定書_環保局全量/p{i}_駁回.txt", 0.95 - i / 1000, f"公開{i}")
               for i in range(30)]
     fake = _QuotaRerankRuntime([official, public])
     with env(BEDROCK_RERANK_MODEL_ID="arn:fake:rerank", RERANK_MIN_SCORE="0.0"):
@@ -2987,7 +3006,7 @@ def test_rerank_picks_the_final_five_purely_by_relevance_not_by_seats():
     """
     official = [_kb_result(f"歷史訴願決定書/113年/o{i}-駁回.txt", 0.90 - i / 1000, f"官方{i}")
                 for i in range(10)]
-    public = [_kb_public_result(f"新北訴願決定書_全量/p{i}_駁回.txt", 0.50 - i / 1000, f"公開{i}")
+    public = [_kb_public_result(f"新北訴願決定書_環保局全量/p{i}_駁回.txt", 0.50 - i / 1000, f"公開{i}")
               for i in range(10)]
     # 公開批全拿高分、官方批全拿低分（都過門檻）——前五名應該全是公開批
     fake = _QuotaRerankRuntime([official, public],
@@ -3011,9 +3030,9 @@ def test_rerank_keeps_five_different_cases_not_five_chunks_of_one():
     也釘住「遞補」：只跟 rerank 要 5 筆的話，去重後會剩 1 筆且沒有東西補上來
     ——那是把重複問題換成另一種靜默少筆。
     """
-    same = [_kb_public_result("新北訴願決定書_全量/同一件_駁回.txt", 0.90 - i / 1000, f"第{i}段")
+    same = [_kb_public_result("新北訴願決定書_環保局全量/同一件_駁回.txt", 0.90 - i / 1000, f"第{i}段")
             for i in range(5)]
-    others = [_kb_public_result(f"新北訴願決定書_全量/其他{i}_駁回.txt", 0.40 - i / 1000, f"其他{i}")
+    others = [_kb_public_result(f"新北訴願決定書_環保局全量/其他{i}_駁回.txt", 0.40 - i / 1000, f"其他{i}")
               for i in range(4)]
     fake = _QuotaRerankRuntime([[], same + others])
     with env(BEDROCK_RERANK_MODEL_ID="arn:fake:rerank", RERANK_MIN_SCORE="0.0"):
@@ -3023,7 +3042,7 @@ def test_rerank_keeps_five_different_cases_not_five_chunks_of_one():
     srcs = [h.source for h in hits]
     assert_eq(len(srcs), len(set(srcs)), f"同一份文件佔了不只一席：{srcs}")
     assert_eq(len(hits), 5, "去重之後席次要由別的文件補滿，不是剩一筆")
-    assert_eq(srcs[0], "新北訴願決定書_全量/同一件_駁回.txt", "重複的那份保留最高分的 chunk")
+    assert_eq(srcs[0], "新北訴願決定書_環保局全量/同一件_駁回.txt", "重複的那份保留最高分的 chunk")
 
 
 def test_kb_min_score_default_follows_the_rerank_switch():
@@ -3648,7 +3667,7 @@ def test_a_client_side_param_rejection_still_falls_through_to_the_other_key():
 
 
 def test_corpus_counts_are_withheld_when_the_manifest_describes_another_corpus():
-    """入庫清單跟這個庫不是同一批東西時，筆數與分項一律不報。
+    """清單跟這個庫不是同一批東西時，筆數與分項一律不報。
 
     2026-09-12 線上真的發生：換 KB 只換了環境變數（`BEDROCK_KB_ID` 與
     `SIMILAR_CASE_QUOTA`），而 `data/manifest.json` 是跟著映像檔走的靜態檔、沒換。
@@ -3656,22 +3675,29 @@ def test_corpus_counts_are_withheld_when_the_manifest_describes_another_corpus()
     清單寫 `新北訴願決定書_全量` 2347 筆，實際查的是 `新北訴願決定書_環保局全量/`。
 
     報一個別的語料的組成比不報更糟：讀的人會拿它當本系統的檢索範圍（CONSTITUTION §1）。
+
+    2026-09-13 補：清單來源改成 `data/kb-inventory.json`（S3 現況）之後，
+    上面那兩批**都**在清單裡了（舊批 2,347 筆沒從 S3 刪掉），所以這條測試的
+    「對不上」情境要拿一個**真的不在清單裡**的前綴來驗——換賽方帳號、
+    重建成別的目錄名時就是這個形態。測試要守的是判準，不是當時那兩個名字。
     """
     # 設定要查的兩批都在清單裡 → 正常，照報
     # `retrieval_note()` 只有在相似案通道真的接上時才會講到語料，所以檔位要擺對
-    with env(RETRIEVER="kb", SIMILAR_CASE_QUOTA="歷史訴願決定書/:2,新北訴願決定書_全量/:3"):
+    with env(RETRIEVER="kb", SIMILAR_CASE_QUOTA="歷史訴願決定書/:2,新北訴願決定書_環保局全量/:3"):
         assert_eq(settings.manifest_corpus_mismatch(), None, "對得上就不該報異常")
         assert_in("筆", settings.retrieval_note(), "對得上時分項要照報")
 
     # 其中一批不在清單裡 → 對不上（**交集不足以證明同一批**：歷史訴願決定書兩邊都有，
-    # 但佔 95% 的那批不是我們在查的）
-    with env(RETRIEVER="kb", SIMILAR_CASE_QUOTA="歷史訴願決定書/:2,新北訴願決定書_環保局全量/:3"):
+    # 但佔絕大多數的那批不是我們在查的）
+    with env(RETRIEVER="kb", SIMILAR_CASE_QUOTA="歷史訴願決定書/:2,賽方帳號新語料/:3"):
         mismatch = settings.manifest_corpus_mismatch()
         assert_true(mismatch is not None, "少一批就該算對不上")
-        assert_in("新北訴願決定書_環保局全量", mismatch, "要指名哪一批缺席，不是含糊帶過")
+        assert_in("賽方帳號新語料", mismatch, "要指名哪一批缺席，不是含糊帶過")
         note = settings.retrieval_note()
         assert_in("故不報各批筆數", note)
-        assert_true("2347" not in note, "對不上時不得把另一批語料的筆數報出去")
+        counts = settings.kb_corpus_counts() or {}
+        for n in counts.values():
+            assert_true(str(n) not in note, f"對不上時不得把另一批語料的筆數（{n}）報出去")
 
 
 def test_a_case_is_never_its_own_similar_case():

@@ -148,7 +148,17 @@ def build_sections(payload: dict[str, Any], artifact_id: str | None = None) -> d
                 meta.append(text)
             continue
         if ty == TY_HEADING:
+            # `role` 從 `doc[]` 一路帶到 `sections[]`，renderer 才分得出這一段是
+            # 主文／事實／理由，還是附錄、落款、教示條款。**沒有 role 就不放這個鍵**：
+            # 契約 §4.4 沒有它，多一個永遠是 None 的鍵等於改了回應形狀。
+            #
+            # `h` 是空字串的 section 是**刻意的**：公文的落款與教示條款各自成段、
+            # 但沒有標題。它們一定帶 `role`，所以「空標題」與「title／meta 被誤當成
+            # section」（那種既沒 role、blocks 也是空的）分得開。
             current = {"h": text, "blocks": []}
+            role = block.get("role")
+            if role:
+                current["role"] = role
             sections.append(current)
             continue
         blocks = _blocks_of(block, index, unresolved)

@@ -55,6 +55,13 @@ COPY frontend/dist/ /app/frontend/dist/
 #   不含任何內容或人名（見 scripts/build_manifest.py 的說明），可以進映像檔。
 COPY data/manifest.json /app/data/manifest.json
 
+# 庫存清單（2026-09-13 起）：S3 上**實際有什麼**，由 scripts/build_kb_inventory.py 產。
+#   settings.corpus_listing_path() 優先讀它，讀不到才退回 manifest。
+#   少了它雲上會退回 manifest，於是報出來的是**另一批語料**的組成
+#   （manifest 2,488 筆 vs 庫存 19,475 筆，差一個數量級）——那正是 2026-09-13 的事故。
+#   同樣只記路徑與分類欄位，不含內容、不含人名、不含 bucket 名。
+COPY data/kb-inventory.json /app/data/kb-inventory.json
+
 # 非 root 執行（ECS task 的最小權限原則）
 RUN useradd --create-home --uid 10001 appuser \
     && mkdir -p /app/backend/output \

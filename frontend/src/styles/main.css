@@ -254,11 +254,22 @@ button{font:inherit;color:inherit;cursor:pointer}
 .lawrow .lt{font-size:13px}
 .lawrow .lt em{font-style:normal;color:var(--muted);font-size:12px;display:block}
 
-.draft{font-family:var(--serif);font-size:14.5px;line-height:2.05;background:var(--panel);border:1px solid var(--line);border-radius:var(--r);padding:16px 18px}
-.draft h4{font-family:var(--sans);font-size:11px;letter-spacing:.16em;color:var(--muted);margin:16px 0 6px;font-weight:700}
+/* 訴願決定書草稿。版面與匯出的 .docx／.pdf 對齊（backend/api/export_render.py）：
+   抬頭置中、段名（「主　文」）置中粗體、正文首行縮排兩字。
+   段名原本是 11px 灰色字距很開的小標——那是側欄標籤的樣式，不是公文段名。 */
+.draft{font-family:var(--serif);font-size:14.5px;line-height:2.05;background:var(--panel);border:1px solid var(--line);border-radius:var(--r);padding:18px 20px}
+.draft .dtitle{font-family:var(--serif);font-size:17px;font-weight:700;text-align:center;margin:0 0 12px;letter-spacing:.04em}
+.draft .dmeta{font-size:13px;margin:0 0 2px;color:var(--fg);text-indent:0}
+.draft h4{font-family:var(--serif);font-size:15px;letter-spacing:.5em;text-indent:.5em;color:var(--fg);margin:20px 0 8px;font-weight:700;text-align:center}
 .draft h4:first-child{margin-top:0}
-.draft p{margin:0 0 .55em;text-align:justify}
+.draft p{margin:0 0 .55em}
 .draft .indent{text-indent:2em}
+/* 引導句、落款、教示條款：正文字級，但公文上頂格不縮排。 */
+.draft .flush{text-indent:0}
+/* 附錄（期間計算）、落款、教示條款：不是決定書正文，縮小另排。
+   跟正文同一個字級的話，承辦人會把「附錄：期間計算」讀成決定書的一段。 */
+.draft h4.aside{font-family:var(--sans);font-size:11px;letter-spacing:.12em;text-indent:0;color:var(--muted);text-align:left;margin:18px 0 6px}
+.draft p.aside{font-size:12.5px;line-height:1.75;color:var(--muted);text-indent:0;margin:0 0 .2em}
 .cite{font-family:var(--sans);font-size:10.5px;color:var(--acc-2);background:var(--acc-wash);border-radius:2px;padding:0 4px;margin-left:3px;white-space:nowrap;vertical-align:.08em}
 .nohallu{display:flex;gap:8px;align-items:flex-start;margin-top:10px;padding:8px 10px;border:1px dashed var(--line);border-radius:3px;font-size:12px;color:var(--muted)}
 

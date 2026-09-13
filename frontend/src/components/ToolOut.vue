@@ -8,7 +8,7 @@
 import RelationGraph from './RelationGraph.vue'
 import ProcedureCheck from './ProcedureCheck.vue'
 import { scoreCaption, scoreNote, rankerOf, showsPercent } from '../api/ranker.js'
-import { active, toolStatusText, inlineMd, downloadExport } from '../store/app.js'
+import { active, toolStatusText, inlineMd, downloadExport, sectionsToHtml } from '../store/app.js'
 
 // 解析卷證的四塊（案由／事實摘錄／爭點／程序審查）**不在 tool_result 裡**——
 // `tool_result` 只帶 run_id 與 state，內容要跑完之後打彙整版拿（契約 §3.3）。
@@ -205,16 +205,12 @@ const provLabel = (p) => PROV[p] || '出處未標示'
         {{ out.title || '訴願決定書草稿' }}
         <span v-if="out.citeCount != null" style="font-weight: 400; color: var(--muted); letter-spacing: 0">　引註 {{ out.citeCount }} 處</span>
       </div>
-      <!-- 後端回 sections[]（契約 §4.4）→ 逐段畫，引註掛在句尾 -->
-      <div v-if="out.sections" class="draft">
-        <template v-for="(s, i) in out.sections" :key="i">
-          <h4>{{ s.h }}</h4>
-          <p v-for="(b, j) in s.blocks" :key="j" class="indent">
-            {{ b.text }}
-            <span v-for="cc in b.cites || []" :key="cc.id" class="cite">{{ cc.label || cc.id }}</span>
-          </p>
-        </template>
-      </div>
+      <!-- 後端回 sections[]（契約 §4.4）→ 走 `sectionsToHtml`，**與右欄全文同一支**。
+           原本這裡自己用 v-for 逐段畫，與 store 那支各排各的：那邊的 `<p>` 沒有
+           `indent`、這邊有，同一份草稿兩處縮排不同。公文的段序、縮排、附錄另排
+           只能有一份實作，否則每加一種段別就要記得改兩個地方。 -->
+      <!-- 不傳 `title`：卡頭（.sec-h）已經印過一次，再畫一次會變兩個標題。 -->
+      <div v-if="out.sections" class="draft" v-html="sectionsToHtml({ meta: out.meta, sections: out.sections })"></div>
       <!-- 未回 sections、但有 html 全文（mock 或未回 sections 的後端）→ 直接在聊天室攤出完整草稿。
            不外套 .draft：html 內容本身已自帶版面結構（.draft／段落），重複套會雙層縮排。 -->
       <div v-else-if="out.html" v-html="out.html"></div>

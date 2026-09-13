@@ -39,6 +39,7 @@ import urllib.parse
 import zipfile
 
 from backend.orchestrator import chat_bridge
+from backend.config import settings
 from backend.orchestrator.artifact_sections import (
     UNRESOLVED_SUFFIX,
     build_sections,
@@ -132,7 +133,9 @@ def test_sections_have_headings_and_body() -> None:
     """
     v = _view()
     headings = [s["h"] for s in v["sections"]]
-    for expected in ("事實", "理由", "決定主文"):
+    # 段名走 `settings`（`主　文` 是全形空白，不是「決定主文」）。寫死字面量的話，
+    # 改一次段名就要記得改三個 renderer 加這裡，而漏掉的那個不會有人發現。
+    for expected in (settings.SECTION_MAIN_TEXT, settings.SECTION_FACTS, settings.SECTION_REASONING):
         if expected not in headings:
             _fail(f"section 標題少了 {expected!r}，實得 {headings}")
     body = [b["text"] for s in v["sections"] for b in s["blocks"]]

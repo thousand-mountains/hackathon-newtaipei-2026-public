@@ -355,11 +355,18 @@ def test_fixture_draft_cite_ids_are_not_carried_into_doc():
 
     那些 id 是在 N4 跑之前手填的，改成獨立檢索後只會靠序號巧合對上不相干的法條，
     或對不上而製造假 blocker。兩種都是假訊號。
+
+    **條文引述句（`quoted_statute`）不在此列**（2026-09-13）：那幾句的 cite_ids 是
+    `narrative.article_quotes()` 自己從 N4 的 `laws[]` 對出來的，指向的就是它引述的
+    那一條，不是 fixture 手寫的。這條擋的是「模型／fixture 說它引了什麼」，
+    不是「編排層查表查到了什麼」。
     """
     for case_id in (ORDINARY, BLOCKED):
         p = _payload(case_id)
         for block in p["doc"]:
             for s in block.get("ss", []):
+                if s.get("quoted_statute"):
+                    continue
                 assert_eq(
                     s.get("cite_ids"),
                     [],

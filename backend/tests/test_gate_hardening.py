@@ -23,6 +23,7 @@ from typing import Any
 from backend.config.settings import (
     CONFIRMABLE_INTAKE_FIELDS,
     SUBSTANTIVE_TYPES,
+    corpus_listing_path,
     load_snapshot,
     normalize_case_type,
     outcome_counts,
@@ -1302,17 +1303,37 @@ def test_official_cases_behaviour_unchanged():
         run_case(ORDINARY, mode="fixture", confirmed_intake=_confirmed_of(load_case(ORDINARY)))
     )
     assert_eq(o["submit_allowed"], True, "承辦人確認之後才回到可送出")
-    assert_eq(o["lamp_stats"], {"r": 0, "y": 0, "g": 13}, "ordinary 的燈號分布不得改變")
+    # **2026-09-13 基準改了：決定書骨架補上公文格式**（narrative.build_doc_skeleton）。
+    # ordinary 從 {r:0, y:0, g:13} 變成 {r:2, y:0, g:19}，每一盞都說得出是誰：
+    #
+    #   +2 紅　落款兩行（`origin=human_required`，主任委員與用印日期留給人填，
+    #          跟「卷證中未擷取到事實段」是同一種紅——真的要人動手，不是出了錯）
+    #   +1 綠　抬頭引導句（`record`，由卷證欄位套模板）
+    #   +3 綠　理由段開頭的條文引述（`retrieval`，條文原文查表帶出，引用可對回快照）
+    #   +1 綠　綜上論結（`engine`，款次由期間引擎算出）
+    #   +1 綠　教示條款（`static`，訴願法 §90 的法定固定文字）
+    #
+    # **紅燈數不是零這件事是刻意的**：一份還沒有人簽名的決定書草稿，落款本來就該是
+    # 空的。把它藏起來（不算進 lamp_stats）試過一次，被 `test_lamp_stats_match_the_
+    # actual_sentences` 擋下來——看板與逐句兩處數字必須一致，那個一致性比數字好看重要。
+    assert_eq(o["lamp_stats"], {"r": 2, "y": 0, "g": 19}, "ordinary 的燈號分布不得改變")
     assert_eq(o["blockers"], [])
-    assert_eq({k: len(v) for k, v in o["tiers"].items()}, {"可驗算": 6, "有出處": 7, "請人工判斷": 3})
+    assert_eq({k: len(v) for k, v in o["tiers"].items()}, {"可驗算": 8, "有出處": 11, "請人工判斷": 5})
 
     b = build_payload(run_case(BLOCKED, mode="fixture"))
     assert_eq(b["submit_allowed"], False)
-    assert_eq(b["lamp_stats"], {"r": 2, "y": 0, "g": 10}, "blocked 的燈號分布不得改變")
+    # blocked 從 {r:2, y:0, g:10} → {r:5, y:0, g:12}：
+    #   +2 紅　落款兩行（同上）
+    #   +1 紅　綜上論結的佔位句——**結論段封鎖時，綜上論結也必須封鎖**，
+    #          否則「本件訴願為程序不合……決定如主文」等於換一段把結論寫出來
+    #   +1 綠　抬頭引導句　+1 綠　教示條款
+    assert_eq(b["lamp_stats"], {"r": 5, "y": 0, "g": 12}, "blocked 的燈號分布不得改變")
     # 請人工判斷層 3 → 4：HACK-S-17 在期間輸入未經確認時多掛一條 caveat。
     # 對照組就在上面——`o` 是 confirmed_intake 跑出來的，那邊仍然是 3，
     # 證明這條警告只在該出現的時候出現。燈號分布刻意不動（見 n6_gate 的說明）。
-    assert_eq({k: len(v) for k, v in b["tiers"].items()}, {"可驗算": 6, "有出處": 4, "請人工判斷": 4})
+    # 同一批新增句子的分層：教示條款與綜上論結進可驗算、引導句進有出處、
+    # 落款兩行與被封鎖的綜上論結佔位進請人工判斷。
+    assert_eq({k: len(v) for k, v in b["tiers"].items()}, {"可驗算": 7, "有出處": 5, "請人工判斷": 7})
 
 
 # 允許在兩次執行之間變動的欄位。**這是白名單，不是遮罩**：
@@ -1492,6 +1513,31 @@ def test_outcome_distribution_never_reports_a_rate():
     for prov, counts in dist["by_provenance"].items():
         for k, v in counts.items():
             assert_true(isinstance(v, int), f"{prov}.{k} 必須是件數（int），實得 {type(v)}")
+
+
+def test_outcome_counts_never_counts_the_same_case_twice():
+    """同一個案號只能計一次——S3 上兩批公開決定書有一大半是同一批案件。
+
+    2026-09-13 清點：舊爬蟲批 2,347 個案號裡有 2,331 個也在第三方的
+    `新北訴願決定書_環保局全量/` 裡（兩批並存，舊批沒從 S3 刪）。清單來源改讀
+    `data/kb-inventory.json`（S3 現況）之後，不去重就會把同一件決定書算兩次，
+    分母虛胖三成——「X 件中 Y 件撤銷」那句話裡的 X 必須是真的件數，
+    否則承辦人看到的分母是假的，而分母正是這個功能唯一想保住的東西。
+    """
+    listing = corpus_listing_path()
+    if not listing.exists():
+        return                      # 乾淨 checkout：不硬性要求，也不假裝驗過
+    entries = json.loads(listing.read_text(encoding="utf-8"))["entries"]
+    dup = [e for e in entries if e.get("outcome") and e.get("case_no")]
+    distinct = {str(e["case_no"]) for e in dup}
+    if len(dup) == len(distinct):
+        return                      # 這份清單本來就沒有重複案號，這條測試無從施力
+    dist = outcome_counts()
+    assert_true(dist is not None, "前提不成立：清單讀得到卻算不出分布")
+    counted = sum(n for b in dist["by_provenance"].values() for n in b.values())
+    no_case = sum(1 for e in entries if e.get("outcome") and not e.get("case_no"))
+    assert_eq(counted, len(distinct) + no_case,
+              "帶案號的每件只能計一次，沒案號的（賽方批、判解）照計")
 
 
 def test_outcome_counts_category_filter_matches_both_granularities():

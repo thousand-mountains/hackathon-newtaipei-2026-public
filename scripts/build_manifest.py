@@ -5,6 +5,12 @@
         --out data/manifest.json --stage data/local/kb
 
 manifest 只記路徑、來源、sha256、案號、結果；**不含內容、不含人名**，可進 git。
+
+**這支產的是「我們要上傳什麼」，不是「庫裡有什麼」**（2026-09-13 標註）：
+它只認得賽方資料集與爬蟲那兩批（有本機檔、算得出 sha256），而 S3 上另有四批
+第三方整理、從未經過本機 stage 目錄的語料。要報「庫裡實際有什麼」請用
+`scripts/build_kb_inventory.py`（產 `data/kb-inventory.json`，settings 報筆數讀那份）。
+把 S3 那四批塞進本檔的輸出會讓 `ingest_kb.py` 每次報一萬多個「缺本機檔」。
 stage 目錄與賽方資料不進 git（CONSTITUTION §6，`.gitignore` 的 `data/local/`）。
 
 隱私（CONSTITUTION §6）：爬蟲那批的 `appellant`／`title`／`summary` 一律不寫進 manifest。
@@ -22,7 +28,21 @@ import re
 import subprocess
 import sys
 
-OFFICIAL_DIRS = {"歷史訴願決定書": True, "行政函釋": True, "司法院釋字及行政判解": True, "相關法規": False}  # False = 不入 KB（走查表）
+# True = 入 KB。`相關法規` **2026-09-13 由 False 改為 True**（Claire 拍板）。
+#
+# 原本標 False 的理由是「走查表」：法規只需要驗條號，而條號查表
+# （`backend/data/laws-snapshot.json` + `retrieval/lawtable.py`）純本機、deterministic，
+# 不需要 KB。那個理由在「只驗條號」的前提下是對的，而前提變了——決定書理由段要寫
+# 「按訴願法第 77 條第 7 款規定：『……』」，需要**條文原文**，而原文只能來自真的檔案
+# （叫模型背法條是 CONSTITUTION §3 的紅線）。
+#
+# **查表那條路不變**：N4 通道 A 仍然只讀本機快照、仍然不打網路。入 KB 是為了讓條文原文
+# 有一個可重建的來源（`scripts/build_law_articles.py` 從 `kb/official/相關法規/` 拉下來
+# 建「條→項→款」索引），順帶讓右欄的 `search_statutes()` 拿得到完整的官方版——
+# S3 上原有的 `kb/public/相關法規_全量/` 那批**每條都缺最後一項／款**
+# （2026-09-13 實測：訴願法 §77 只有七款、§14 只有 3 項、§79 只有 2 項；
+# 訴願法 101 條裡 57 條、行政程序法 176 條裡 107 條內容短少），拿它引條文會引出缺漏的法條。
+OFFICIAL_DIRS = {"歷史訴願決定書": True, "行政函釋": True, "司法院釋字及行政判解": True, "相關法規": True}
 CJK = re.compile(r"[一-鿿]")
 OUTCOME = re.compile(r"(駁回|撤銷|不受理)")
 
