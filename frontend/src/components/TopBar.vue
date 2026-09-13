@@ -29,7 +29,6 @@ const themeTitle = computed(() => (dark.value ? '切換為淺色' : '切換為�
         <circle class="disc" cx="12" cy="12" r="5.5" fill="currentColor" mask="url(#crescent)" />
       </svg>
     </button>
-    <span class="demo-badge">原型展示 · 示範資料</span>
     <button class="icon-btn" aria-label="案件卷宗" @click="state.rightOpen = !state.rightOpen">▤</button>
   </header>
 </template>
