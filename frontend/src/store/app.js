@@ -1308,10 +1308,27 @@ export function searchHave(groupKey) {
 
 // 看全文：打 getLaw #11 / getDecision #16 取母庫全文，組成顯示 HTML。
 // real 模式本案清單項目的 full 為空，靠這裡即時取；mock 也回，故兩邊一致。
+// 母庫全文兩種來源格式不同：真後端 getLaw/getDecision 回 S3 **純文字**（含 \n 斷行）；
+// mock 的示範資料是**已排好的 HTML**。純文字要 escape 後把換行還原成段落／<br>，
+// 否則塞進 v-html 會擠成一整段或把字面 \n 印出來；已是 HTML 的則原樣用。
+function isHtml(s) {
+  return /<(p|div|br|h[1-6]|ul|ol|li|table)\b/i.test(String(s || ''))
+}
+function fullToHtml(text) {
+  if (isHtml(text)) return String(text) // 已排版的 HTML（mock 示範資料）
+  const paras = String(text || '')
+    .replace(/\r\n/g, '\n')
+    .split(/\n{2,}/) // 空行分段
+    .map((p) => p.trim())
+    .filter(Boolean)
+    .map((p) => `<p>${esc(p).replace(/\n/g, '<br>')}</p>`) // 段內單換行 → <br>
+    .join('')
+  return paras
+}
 export async function viewLawFull(libId) {
   try {
     const l = await api.getLaw(libId)
-    return `<p style="font-family:var(--serif);line-height:2">${esc(l.body || '')}</p>`
+    return `<div style="font-family:var(--serif);line-height:2">${fullToHtml(l.body)}</div>`
   } catch {
     toast('取法規全文失敗')
     return ''
@@ -1320,7 +1337,8 @@ export async function viewLawFull(libId) {
 export async function viewDecisionFull(libId) {
   try {
     const d = await api.getDecision(libId)
-    return d.full || `<p style="color:var(--muted)">${esc((d.verdict || '') + ' ' + (d.category || ''))}</p>`
+    if (d.full) return `<div style="font-family:var(--serif);line-height:2">${fullToHtml(d.full)}</div>`
+    return `<p style="color:var(--muted)">${esc((d.verdict || '') + ' ' + (d.category || ''))}</p>`
   } catch {
     toast('取決定書全文失敗')
     return ''
