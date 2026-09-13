@@ -865,11 +865,11 @@ async function loadDraftSections(c, out) {
   if (!out.artifactId) return
   try {
     const a = await api.getArtifact(c.caseId, out.artifactId)
-    if (Array.isArray(a.sections)) {
+    const item = c.docs.out.find((x) => x._artifactId === out.artifactId)
+    if (Array.isArray(a.sections) && a.sections.length) {
       out.sections = a.sections
       out.title = a.title || ''
       if (typeof a.cite_count === 'number') out.citeCount = a.cite_count
-      const item = c.docs.out.find((x) => x._artifactId === out.artifactId)
       if (item) {
         item.full = sectionsToHtml(a)
         // 引註數以 #21 的 `cite_count` 為準，並回寫右欄。
@@ -879,11 +879,30 @@ async function loadDraftSections(c, out) {
         //  所以兩處都用 #21 的值——那也是匯出檔會帶出去的那個。後端不一致已回報。
         if (typeof a.cite_count === 'number') item.note = `AI 生成．引註 ${a.cite_count} 處．待承辦人審核`
       }
-      saveDraftText(c.caseId, sectionsToText(a.sections))
+      saveDraftText(c.caseId, sectionsToText(a.sections)) // 潤稿 diff 的基準
+    } else if (a.html) {
+      // mock（及未回 sections 的後端）回 html：聊天室的草稿卡直接畫這份全文，
+      // 並存純文字基準（否則潤稿沒得比對）。
+      // 剝掉 html 自帶的最外層標題（.sec-h），避免與工具卡外層標題重複顯示。
+      out.html = String(a.html).replace(/<div class="sec-h">[\s\S]*?<\/div>/, '')
+      out.title = a.title || out.title
+      if (item) item.full = a.html
+      saveDraftText(c.caseId, htmlToPlainText(a.html))
     }
   } catch {
     /* 取不到全文不影響工具卡其餘資訊；不要用假草稿補 */
   }
+}
+
+// 從草稿 HTML 抽純文字（去引註 chip、去標籤），供潤稿 diff 的基準用。
+function htmlToPlainText(html) {
+  return String(html || '')
+    .replace(/<span class="cite">[\s\S]*?<\/span>/g, '')
+    .replace(/<h4[^>]*>[\s\S]*?<\/h4>/g, '')
+    .replace(/<[^>]+>/g, '')
+    .replace(/[ \t]+/g, ' ')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
 }
 
 // sections[] → 顯示用 HTML。`title`／`meta` 是文件抬頭，與 sections[] 平行，不是 section（契約 §4.4）。

@@ -205,6 +205,7 @@ const provLabel = (p) => PROV[p] || '出處未標示'
         {{ out.title || '訴願決定書草稿' }}
         <span v-if="out.citeCount != null" style="font-weight: 400; color: var(--muted); letter-spacing: 0">　引註 {{ out.citeCount }} 處</span>
       </div>
+      <!-- 後端回 sections[]（契約 §4.4）→ 逐段畫，引註掛在句尾 -->
       <div v-if="out.sections" class="draft">
         <template v-for="(s, i) in out.sections" :key="i">
           <h4>{{ s.h }}</h4>
@@ -214,8 +215,11 @@ const provLabel = (p) => PROV[p] || '出處未標示'
           </p>
         </template>
       </div>
+      <!-- 未回 sections、但有 html 全文（mock 或未回 sections 的後端）→ 直接在聊天室攤出完整草稿。
+           不外套 .draft：html 內容本身已自帶版面結構（.draft／段落），重複套會雙層縮排。 -->
+      <div v-else-if="out.html" v-html="out.html"></div>
       <p v-else style="margin: 0; color: var(--muted); font-size: 12.5px">
-        草稿已產出（{{ out.artifactId || out.runId || '—' }}），全文載入中或載入失敗，可從右欄「答辯書與產出」開啟。
+        草稿已產出（{{ out.artifactId || out.runId || '—' }}），全文載入中或載入失敗，可從右欄「草稿文件產出」開啟。
       </p>
       <p style="margin: 10px 0 0; color: var(--muted); font-size: 12px">AI 生成，待承辦人審核。引註以草稿內標註為準。</p>
     </div>
