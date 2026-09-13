@@ -41,7 +41,7 @@ if [[ -z "$wanted" ]]; then
     echo "✗ 停：線上白名單是 ${current}，但這次沒帶 ALB_ALLOWED_CIDRS。"
     echo "  照這樣部署，白名單會被拿掉、回到任何人都連得進來，而且部署照樣印成功。"
     echo
-    echo "  維持白名單：ALB_ALLOWED_CIDRS=<四組 CIDR，逗號分隔> $0 ..."
+    echo "  維持白名單：ALB_ALLOWED_CIDRS=<四組 CIDR，逗號分隔> ./deploy.sh deploy"
     echo "    （四組 IP 在 team-brain「2026-09-12 決賽環境規範」的部署 IP allow list 段）"
     echo "  真的要打開：HACK_ALLOW_OPEN_INGRESS=1 ./deploy.sh deploy"
   } >&2
