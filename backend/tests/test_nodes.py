@@ -544,6 +544,90 @@ def test_anaphoric_law_reference_resolves_to_antecedent():
     ok = ck.check_text("按建築法第73條規定；又同法第99條亦有明文。")
     assert_eq([c.state for c in ok], [STATE_OK, STATE_OK], "回指到真實存在的條號要判在庫，不得誤攔")
 
+    # ⚠️ **上面餵的是一整段，但正式路徑是逐句餵的**（`n6_gate.py` 的
+    # `checker.check_text(f"{text}\n{basis}", context=...)`）。這條測試一直是綠的，
+    # 而雲上 16 份真 run 有 11 筆「同法第X條」照樣洩漏成法規名——因為先行詞在**前一句**。
+    # 所以同一組斷言要再用**單句＋視窗**的形狀跑一次，否則它守不住它宣稱要守的東西。
+    first, second = "按建築法第73條規定。", "又同法第999條、本法第888條亦有明文。"
+    r2 = ck.check_text(second, context=first)
+    states2 = {c.raw: c.state for c in r2}
+    assert_eq(states2.get("建築法第999條"), STATE_MISSING,
+              "逐句餵時「同法第999條」一樣要解析回建築法並判查無此號")
+    assert_eq(states2.get("建築法第888條"), STATE_MISSING, "「本法第888條」同樣要解析回建築法")
+    assert_true(
+        all("同法" not in c.raw and "本法" not in c.raw for c in r2),
+        "回指詞不得洩漏成法規名——**逐句餵時也不行**（這是正式路徑的形狀）",
+    )
+    assert_eq(len(r2), 2, "先行詞句的引用不得跟著被回傳：context 是背景，不是要檢查的東西")
+
+
+def test_anaphora_binds_to_the_nearest_reference_not_the_nearest_verifiable_one():
+    """**最近的那一筆引用是庫外法規時，不得跳過它往前綁一個驗得到的。**
+
+    「…建築法第25條…新北市建築管理自治條例第5條…同法第3條…」的「同法」指的是
+    自治條例。跳過它去綁建築法，會把一個誠實的「我驗不了」換成一個**看起來很確定
+    的錯答案**——那比黃燈糟得多。這條是跨句視窗（2026-09-13）的反向對照組：
+    視窗變大之後，中間夾一部庫外法規的機會也跟著變大。
+    """
+    ck = CitationChecker(SNAPSHOT)
+
+    # 同一句之內
+    r = ck.check_text("按建築法第25條、新北市建築管理自治條例第5條，又同法第3條亦有明文。")
+    states = {c.raw: c.state for c in r}
+    assert_eq(states.get("新北市建築管理自治條例第5條"), STATE_OUT_OF_SCOPE)
+    assert_true("建築法第3條" not in states,
+                f"「同法」被誤綁到建築法——最近的先行詞是自治條例：{sorted(states)}")
+    assert_eq(states.get("同法第3條"), STATE_OUT_OF_SCOPE, "綁不到就留黃，不冒充已驗證")
+
+    # 跨句：句內有一筆庫外法規時，不得再往前翻到上一句去綁一個能驗的
+    r = ck.check_text("另依新北市建築管理自治條例第5條，同法第3條亦有明文。",
+                      context="按建築法第25條規定。")
+    states = {c.raw: c.state for c in r}
+    assert_true("建築法第3條" not in states,
+                f"跨句視窗把「同法」綁到上一句的建築法了：{sorted(states)}")
+    assert_eq(states.get("同法第3條"), STATE_OUT_OF_SCOPE)
+
+
+def test_a_reference_after_the_anaphor_is_not_its_antecedent():
+    """先行詞要排在回指詞**前面**。後面那筆不算——「同」指的是前文。
+
+    這條不是理論潔癖：N6 檢查的是 `f"{text}\n{basis}"`，而 `basis`
+    （「建築法第86條」）就排在本文後面。把它當先行詞的話，判準會變成
+    「這一句有沒有引用」，於是正式路徑上每一句都有 basis，跨句視窗永遠不生效。
+    """
+    ck = CitationChecker(SNAPSHOT)
+    r = ck.check_text("又依同法第86條規定，……。\n建築法第86條", context="按建築法第25條規定。")
+    raws = [c.raw for c in r]
+    assert_true(all("同法" not in x for x in raws),
+                f"basis 排在回指詞後面，跨句視窗仍必須生效：{raws}")
+
+    # 反面：前文完全沒有先行詞時，後面的 basis 不得被拿來頂替
+    r = ck.check_text("又依同法第86條規定，……。\n建築法第86條")
+    assert_in("同法第86條", [c.raw for c in r],
+              "沒有前文可依時就該留黃——不得拿排在後面的 basis 當先行詞")
+
+
+def test_an_out_of_scope_law_stays_out_of_scope_with_a_window():
+    """視窗不得把「真的查不到的法規」變成查得到的。純粹的過度修正對照組。"""
+    ck = CitationChecker(SNAPSHOT)
+    r = ck.check_text("另依新北市建築管理自治條例第5條規定辦理。",
+                      context="按建築法第25條規定；又依訴願法第14條規定。")
+    assert_eq(len(r), 1)
+    assert_eq(r[0].raw, "新北市建築管理自治條例第5條")
+    assert_eq(r[0].state, STATE_OUT_OF_SCOPE,
+              "具名的庫外法規不得因為前文有別部法就被誤綁成在庫")
+
+
+def test_a_sentence_window_does_not_leak_the_context_citations():
+    """`context` 是背景不是受檢對象：它裡面的引用**不得**被回傳。
+
+    回傳的話同一筆引用會在每一句被重算一次，畫面上的引用清單會越往後越長，
+    而且 blockers 會把同一個問題列 N 次（第三輪覆核的教訓：重複條目會蓋掉真訊號）。
+    """
+    ck = CitationChecker(SNAPSHOT)
+    r = ck.check_text("本件應予駁回。", context="按建築法第25條、訴願法第14條規定。")
+    assert_eq(r, [], f"context 的引用洩漏進回傳值：{[c.raw for c in r]}")
+
 
 def test_anaphora_without_antecedent_is_visible_not_silent():
     """找不到前行詞時不猜是哪部法，但也不能靜靜放過——要留在畫面上是黃的。"""

@@ -108,6 +108,13 @@ def run(state: CaseState, ctx: NodeCtx) -> NodeResult:
     ]
 
     for block in doc:
+        # 同一個 block 裡已經檢查過的句子，接起來當下一句的回指視窗
+        # （「同法第86條」的先行詞「建築法第25條」通常在**前一句**）。
+        # **逐句檢查是刻意的**——燈號要逐句掛——所以修的是給解析器的視窗，
+        # 不是改成整段一次檢查（那會讓引用對不回是哪一句）。
+        # 視窗止於 block：`ty=="h"` 的標題自己是一個 block，所以跨不過
+        # 事實／理由／期間計算／主文的章節邊界。
+        block_context = ""
         for s in block.get("ss", []):
             origin = s.get("origin")
             text = s.get("t") or ""
@@ -119,7 +126,8 @@ def run(state: CaseState, ctx: NodeCtx) -> NodeResult:
             # 前導虛詞剝不乾淨時，同一筆函釋會以兩種 raw 出現而被算成兩筆。
             cites = []
             seen_keys: set[tuple] = set()
-            for c in checker.check_text(f"{text}\n{basis}"):
+            sentence = f"{text}\n{basis}"
+            for c in checker.check_text(sentence, context=block_context):
                 key = c.dedup_key
                 if key in seen_keys:
                     continue
@@ -265,6 +273,11 @@ def run(state: CaseState, ctx: NodeCtx) -> NodeResult:
                     # 這裡不接手也不會放寬。
                     s["tier"] = tier_of("human_required")
                     s["why"] = WHY_UNSOURCED_WHILE_BLOCKED
+
+            # 這一句檢查完了，併進視窗給**下一句**的回指用。
+            # **放在迴圈最後、用檢查時那一份 `sentence`**：放前面的話這一句會變成
+            # 自己的 context，句內解析與跨句解析就分不開了。
+            block_context = f"{block_context}\n{sentence}" if block_context else sentence
 
     # ── 模型引用了檢索結果之外的來源 ─────────────────────────────────
     # spec §5.3 的「結構層第二道」。文字層的 `CitationChecker` 抓的是「這個法條號碼
