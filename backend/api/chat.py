@@ -238,9 +238,12 @@ def _fetch_corpus_text(key: str) -> str:
     return corpus.fetch_text(key, dossier_api._s3_client())
 
 
-#: `ack` 的口白。**故意寫得像個承辦助理，而不是像一個進度條**——
-#: 它的用途是讓對話框立刻有東西，不是宣告工具已經開始跑（那是 `tool_call` 的事）。
-ACK_TEXT = "收到，我看一下卷內資料。"
+#: `ack` 的口白。**刻意留空**（2026-09-13）：開場那句改由模型依任務自己講
+#: （`chat_ask.md`「訴小願」語氣原則），走 `token`。`ack` 在模型開跑之前就送出，
+#: 那時還不知道承辦人要做什麼，寫死一句會跟模型的開場疊成兩句。
+#: `ack` 本身不能拿掉——它負責提前送 `session_id`（契約 v2 §2.3 ②）。
+#: 前端 `store/app.js` 的 ack 分支有 `if (data.text)`，空字串不會畫出空泡泡。
+ACK_TEXT = ""
 
 
 def _run_turn(case_id: str, body: ChatIn, emit: Any,

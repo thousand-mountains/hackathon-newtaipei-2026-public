@@ -299,7 +299,7 @@ wire 格式：`event: <名稱>\ndata: <一行 JSON>\n\n`。共通欄位：`seq`�
 
 | 事件 | payload | 前端拿去畫什麼 |
 |---|---|---|
-| `ack` | `{seq,turn_id,text,`**`session_id`**`}` | agent 的一句口白。對應 `store` 的 `ACKS` |
+| `ack` | `{seq,turn_id,text,`**`session_id`**`}` | 真實後端的 `text` 固定是空字串（2026-09-13 起），只用來提前送 `session_id`；開場口白由 agent 走 `token` 講。離線 mock 仍放 `ACKS` 的口白 |
 | `tool_call` | `{seq,turn_id,`**`call_id`**`,tool,label,args}` | 開一個**工具區塊**卡（`Chat.vue` 的 `kind:'tool'`）。`tool` ∈ §3.0 七種 |
 | `tool_step` | `{seq,turn_id,`**`call_id`**`,step,label,status,elapsed_ms,degraded}` | 工具卡裡逐行打勾的步驟（`toolBlock` 的 `steps[]`）。可多筆 |
 | `tool_result` | `{seq,turn_id,`**`call_id`**`,tool,`**`status`**`,note,hits[],…}` | 工具卡的結果（§3 各工具形狀）＋歸檔到右欄卷宗 |
