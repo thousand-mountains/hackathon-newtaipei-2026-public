@@ -315,8 +315,9 @@ CDK bootstrap 也用專屬 qualifier `hackntpc`，一眼認得出哪些是這個
    Fargate 會 exec format error 起不來——第一次部署最常見的失敗原因。
 
 2. **不放 NAT gateway，task 走公有子網 ＋ public IP。**
-   自建 VPC 就得配 NAT 才拉得到 ECR 映像檔，多花錢也多花時間。對外仍然只有 ALB
-   進得來：`SG-alb` 只開 80 給 `0.0.0.0/0`，`SG-task` 的 8080 **只允許來源 `SG-alb`**，
+   自建 VPC 就得配 NAT 才拉得到 ECR 映像檔，多花錢也多花時間。對外只有 CloudFront
+   進得來：`SG-alb` 的 80 **只開給 CloudFront origin-facing prefix list**（2026-09-13 起，見 §3.7），
+   `SG-task` 的 8080 **只允許來源 `SG-alb`**，
    沒有任何 CIDR 規則、沒開 22。（賽方規範：不得建立對外完全開放的 SG。）
 
 3. **ALB idle timeout 放寬到 900 秒。**
@@ -478,9 +479,14 @@ aws cloudformation describe-stacks --stack-name hackntpc-appeal-backend \
 - 前端換版後要重建映像檔：`./deploy.sh deploy` 會自己重建並推送（`fromAsset` 的 hash 變了）。
 - 換 KB 正本只要改 `.env` 的 `BEDROCK_KB_ID` 再 `./deploy.sh deploy`，**不需重建映像檔**。
 
-### 3.6 ALB 來源 IP 白名單（預設全開，交件前才收窄）
+### 3.6 來源 IP 白名單（預設全開，交件前才收窄）
 
-`ALB_ALLOWED_CIDRS` 控制誰連得到 ALB 的 80 port。**不設就是 `0.0.0.0/0`，任何人都點得開**——
+> **2026-09-13 起白名單不在 SG 上了。** ALB 前面擋了 CloudFront（§3.7），ALB 的 SG 只收 CloudFront，
+> 所以 `ALB_ALLOWED_CIDRS` 改成由 **CloudFront Function 比對 viewer IP**，不在清單內回 403。
+> 變數名不變，用法不變；**只收 IPv4 CIDR**，給了清單時 distribution 會關掉 IPv6。
+> 下面「查 SG 實況」那段改成查 function 實況。
+
+`ALB_ALLOWED_CIDRS` 控制誰連得到部署網址。**不設就是 `0.0.0.0/0`，任何人都點得開**——
 目前（2026-09-12）就是這個狀態，Ci 已拍板在交件前不收窄。
 
 ```bash
@@ -501,28 +507,52 @@ AWS_PROFILE=hack-ntpc AWS_REGION=us-west-2 aws cloudformation describe-stacks \
 
 全開時印 `0.0.0.0/0`；收窄後印那幾組 CIDR，以逗號相連。**部署完一定要看這行。**
 
-但它**不是 ground truth**：`AlbIngress` 的值是從 CDK props 推導的（`infra/cdk/lib/appeal-backend-stack.ts:232`），
-不是去讀 Security Group 實況。有人在 console 手改 SG、或踩到下面那個 `.env` 陷阱，
-它會照樣印出看起來正常的值。要確認實況再查一次 SG：
+但它**不是 ground truth**：`AlbIngress` 的值是從 CDK props 推導的（`infra/cdk/lib/appeal-backend-stack.ts` 搜 `'AlbIngress'`），
+不是去讀實況。有人在 console 手改、或踩到下面那個 `.env` 陷阱，
+它會照樣印出看起來正常的值。要確認實況查兩處：
 
 ```bash
+# ① 白名單函式實況：全開時這支 function 不存在（NoSuchFunctionExists）；收窄後印出的程式碼
+#    裡 RANGES 是 [起, 迄] 整數對，要跟四組 CIDR 對得上
+AWS_PROFILE=hack-ntpc aws cloudfront get-function \
+  --name hackntpc-appeal-viewer-ip-allowlist --stage LIVE /dev/stdout
+
+# ② ALB SG 實況：80 埠只該有一條 prefix list（CloudFront），不該有任何 CIDR
 AWS_PROFILE=hack-ntpc AWS_REGION=us-west-2 aws ec2 describe-security-groups \
   --filters "Name=group-name,Values=*ServiceLBSecurityGroup*" \
-  --query 'SecurityGroups[].IpPermissions[?ToPort==`80`][].IpRanges[].CidrIp' --output text
+  --query 'SecurityGroups[].IpPermissions[?ToPort==`80`][]' --output json
 ```
 
-> `[?ToPort==\`80\`]` 後面那個 **`[]` 不能省**。少了它，投影會多包一層、
-> 查詢**靜默回空**——而空輸出看起來就像「沒有任何人連得進來」，是最容易誤判的方向。
-> （這條實測過：少 `[]` 時對一份含 80 埠規則的樣本回 `[]`。）
->
-> 空輸出有兩種可能，要分得出來：真的沒有 80 埠規則，或 `--filters` 沒配到任何 SG。
-> 先拿掉 `--query` 跑一次看有沒有撈到 SG，再判斷。
+> 最直接的驗法是**從清單外的網路打一次**（例：手機關 Wi-Fi 走行動網路），要回 403。
 
 ⚠️ **`.env` 會覆蓋你在命令列給的值。** `deploy.sh:32-35` 的 `set -a; . "$env_file"; set +a`
 在命令列變數**之後**執行，所以 `.env` 裡若有 `ALB_ALLOWED_CIDRS`，
 `ALB_ALLOWED_CIDRS=... ./deploy.sh deploy` 會被**靜默覆蓋**——更糟的是下面 §6 的**回滾**
 （不帶該變數重跑）在那種情況下根本不會回滾，而 `AlbIngress` 會照著 `.env` 印，看起來一切正常。
 （實查 2026-09-12：`.env` 目前沒有這個變數，回滾可用。動手前再確認一次。）
+
+### 3.7 HTTPS：CloudFront 擋在 ALB 前面（2026-09-13）
+
+部署網址是 stack output `ServiceUrl`，形如 `https://xxxx.cloudfront.net`。ALB 自己的 http 網址**連不進去**
+（SG 只收 CloudFront）——之前若把 http 網址給過任何人，要換成新網址。
+
+**為什麼不是 ALB 443 ＋ ACM**：沒有自有網域。`*.elb.amazonaws.com` 不是我們的，ACM 不發；
+自簽憑證瀏覽器照樣紅字。賽方服務清單（`Supported AWS Services List 20260722.xlsx`）有 `cloudfront`、`acm`、`route53`，
+但**沒有 `route53domains`**，所以賽方帳號也買不了網域。
+
+| 設定 | 值 | 為什麼 |
+|---|---|---|
+| viewer protocol | http → 301 轉 https | |
+| 快取 | `CachingDisabled` | API ＋ SSE，不快取；也因此不壓縮，SSE 不會被攢成一塊 |
+| origin request | `AllViewerExceptHostHeader` | query／cookie／標頭照帶 |
+| CloudFront → ALB | HTTP 80 | ALB 沒憑證；瀏覽器到 CloudFront 這段是 HTTPS |
+| origin read timeout | **60 秒**（不申請配額時的上限） | 見下 |
+| price class | 200 | 100 沒有亞洲 edge |
+
+⚠️ **60 秒是新的天花板，ALB 的 900 秒救不了走 CloudFront 的請求。** origin 超過 60 秒沒回任何 byte → 504。
+- 聊天 SSE、`/runs`（202＋輪詢）：不受影響。
+- **`POST /api/cases/{id}/submit` 同步重跑六節點 51–78 秒 → 經 CloudFront 會 504**，`verify.sh` 的 submit 那條可能因此紅。
+  2026-09-13 前端（`frontend/src`）沒有呼叫這支。要讓它過：改 202＋輪詢，或向 AWS 申請 origin response timeout 配額（上限 180 秒）。
 
 ---
 
@@ -596,7 +626,7 @@ find backend/output/runs -maxdepth 1 -type f -name '*.json' -print0 \
 
 ## 6. 交件前檢查清單（2026-09-13，有時限、會被忘記的動作）
 
-### 6.1 ALB IP 白名單收窄
+### 6.1 IP 白名單收窄（2026-09-13 起在 CloudFront Function，不在 ALB SG）
 
 | 欄位 | 內容 |
 |---|---|
@@ -605,8 +635,8 @@ find backend/output/runs -maxdepth 1 -type f -name '*.json' -print0 \
 | 前置 0 | **回 Workshop Studio dashboard 重取 AWS 憑證**（臨時憑證，`~/.aws/credentials` 沒有 expiry 欄位查不出剩多久）。沒做這步，`deploy.sh:43` 的 `aws sts get-caller-identity` 會第一個擋下你，而錯誤訊息跟 ALB 毫無關係 |
 | 前置 0b | **確認 `.env` 裡沒有 `ALB_ALLOWED_CIDRS`**（`grep -c '^[[:space:]]*ALB_ALLOWED_CIDRS' .env` 要是 0）。有的話它會覆蓋命令列，**而且下面的回滾會失效**。理由見 §3.6 |
 | 指令 | `cd infra/cdk && ALB_ALLOWED_CIDRS=<四組CIDR> ./deploy.sh deploy` |
-| 驗證 | 兩個都查：①§3.6 的 `describe-stacks`，`AlbIngress` 要從 `0.0.0.0/0` 變成那四組，逐條核對沒有少打；②§3.6 的 `describe-security-groups` 查 SG 實況——`AlbIngress` 是推導值，會說謊 |
-| 收窄後 | **重跑完整 `./verify.sh`**。收窄動的是 SG，最容易壞的就是「自己也連不進去了」 |
+| 驗證 | 都查：①§3.6 的 `describe-stacks`，`AlbIngress` 要從 `0.0.0.0/0` 變成那四組，逐條核對沒有少打；②§3.6 的 `get-function` 查白名單函式實況——`AlbIngress` 是推導值，會說謊；③從清單外網路打一次要回 403 |
+| 收窄後 | **重跑完整 `./verify.sh`**。收窄動的是 CloudFront Function，最容易壞的就是「自己也連不進去了」 |
 | 回滾 | **不帶** `ALB_ALLOWED_CIDRS` 重跑一次 `./deploy.sh deploy`，`AlbIngress` 會回到 `0.0.0.0/0`（前提是前置 0b 成立） |
 
 > ⚠️ **收窄前必須先確認評審在哪裡看。** 那四組是**會場出口 IP**，收窄之後**從會場以外連進來的人會被擋掉**，

@@ -1,5 +1,7 @@
 import * as path from 'node:path';
 import * as cdk from 'aws-cdk-lib';
+import * as cloudfront from 'aws-cdk-lib/aws-cloudfront';
+import * as origins from 'aws-cdk-lib/aws-cloudfront-origins';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as ecr_assets from 'aws-cdk-lib/aws-ecr-assets';
 import * as ecs from 'aws-cdk-lib/aws-ecs';
@@ -49,9 +51,13 @@ export interface AppealBackendStackProps extends cdk.StackProps {
   /** 引用通道伺服器端先篩的 doc_kind。**留空＝不篩**，所以這一項可以不給。 */
   readonly refDocKinds?: string;
   /**
-   * ALB 對外開放的來源 CIDR 清單。
+   * 對外開放的來源 CIDR 清單（只收 IPv4）。
    *
-   * 留空（預設）＝ `0.0.0.0/0`，任何人都能點開部署網址。
+   * 2026-09-13 起 ALB 前面擋了 CloudFront，**ALB 的 SG 只放行 CloudFront**，
+   * 所以這份清單不再是 SG 規則，而是 CloudFront Function 比對 viewer IP。
+   * 名稱保留 `albAllowedCidrs` 是為了不動 `.env`／`deploy.sh` 的既有用法。
+   *
+   * 留空（預設）＝ 不篩，任何人都能點開部署網址。
    * 給了清單就**只有**這些來源進得來——賽方 2026-09-12 現場投影片要求
    * 「AWS 部署時，對外開放連線請 allow 以下四組 IP」時用這個。
    *
@@ -90,6 +96,40 @@ function invokeArnsFor(modelId: string, region: string, account: string): string
   return [`arn:aws:bedrock:${region}::foundation-model/${modelId}`];
 }
 
+/**
+ * 產生 CloudFront Function（viewer-request）原始碼：viewer IP 不在清單內就回 403。
+ *
+ * 只收 IPv4 CIDR——給了 IPv6 就在 synth 時停下，不要讓它部署上去才發現比不中。
+ */
+export function viewerIpAllowlistCode(cidrs: readonly string[]): string {
+  const ranges = cidrs.map((cidr) => {
+    const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})(?:\/(\d{1,2}))?$/.exec(cidr);
+    if (!m || m.slice(1, 5).some((o) => Number(o) > 255) || Number(m[5] ?? 32) > 32) {
+      throw new Error(`ALB_ALLOWED_CIDRS 只收 IPv4 CIDR，這一項不合法：${cidr}`);
+    }
+    const ip = m.slice(1, 5).reduce((acc, o) => acc * 256 + Number(o), 0);
+    const bits = Number(m[5] ?? 32);
+    const size = 2 ** (32 - bits);
+    const start = Math.floor(ip / size) * size;
+    return [start, start + size - 1];
+  });
+  return `
+var RANGES = ${JSON.stringify(ranges)};
+function toInt(ip) {
+  var p = ip.split('.');
+  if (p.length !== 4) return -1;
+  return ((+p[0]) * 16777216) + ((+p[1]) * 65536) + ((+p[2]) * 256) + (+p[3]);
+}
+function handler(event) {
+  var n = toInt(event.viewer.ip);
+  for (var i = 0; i < RANGES.length; i++) {
+    if (n >= RANGES[i][0] && n <= RANGES[i][1]) return event.request;
+  }
+  return { statusCode: 403, statusDescription: 'Forbidden' };
+}
+`;
+}
+
 export class AppealBackendStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props: AppealBackendStackProps) {
     super(scope, id, props);
@@ -103,7 +143,7 @@ export class AppealBackendStack extends cdk.Stack {
     //   而環境本來就是短命的（收回時間見 DEPLOY.md §3.5：開到黑客松結束，
     //   Ci 2026-09-12 口頭確認，非賽方書面）。
     //   task 放公有子網 + 指派 public IP 即可拉映像檔，
-    //   對外仍然只有 ALB 進得來（見下面 SG）。
+    //   對外只有 CloudFront 進得來（ALB 的 SG 只收 CloudFront prefix list，見下方 HTTPS 段）。
     const vpc = ec2.Vpc.fromLookup(this, 'DefaultVpc', { isDefault: true });
 
     // ── 記錄 ──────────────────────────────────────────────────────────────
@@ -296,8 +336,8 @@ export class AppealBackendStack extends cdk.Stack {
         desiredCount: 1,
         minHealthyPercent: 100,
         publicLoadBalancer: true,
-        // 有來源清單時不讓 pattern 自己加 0.0.0.0/0，改由下面逐條加。
-        openListener: !hasCidrAllowlist,
+        // 不讓 pattern 自己加 0.0.0.0/0：ALB 只收 CloudFront 來的流量（見下方 HTTPS 段）。
+        openListener: false,
         // task 在公有子網並指派 public IP：沒有 NAT 也拉得到 ECR 映像檔。
         assignPublicIp: true,
         taskSubnets: { subnetType: ec2.SubnetType.PUBLIC },
@@ -402,20 +442,74 @@ export class AppealBackendStack extends cdk.Stack {
       unhealthyThresholdCount: 3,
     });
 
-    if (hasCidrAllowlist) {
-      for (const cidr of albAllowedCidrs) {
-        service.loadBalancer.connections.allowFrom(
-          ec2.Peer.ipv4(cidr),
-          ec2.Port.tcp(80),
-          // SG 規則描述跟 IAM role description 一樣只吃 ASCII，CloudFormation 會擋中文
-          `organiser allow list ${cidr}`,
-        );
-      }
-    }
+    // ── HTTPS：CloudFront 擋在 ALB 前面 ─────────────────────────────────────
+    //
+    // **為什麼不是 ALB 443 ＋ ACM**：沒有自有網域。`*.elb.amazonaws.com` 不是我們的網域，
+    // ACM 不會發；自簽憑證掛得上去但瀏覽器照樣紅字。CloudFront 的預設網域
+    // `*.cloudfront.net` 自帶合法憑證，是「不買網域又要瀏覽器不警告」唯一的路。
+    // 服務清單核對（2026-09-13，附件 Supported AWS Services List 20260722.xlsx）：
+    // cloudfront CreateDistribution／CreateFunction、ec2 DescribeManagedPrefixLists 皆在內；
+    // route53domains 不在，所以賽方帳號也買不了網域。
+    //
+    // ⚠️ **代價：CloudFront 等 origin 回第一個 byte（以及封包間隔）最多 60 秒**，
+    // 超過就 504。ALB 那個 900 秒救不了走 CloudFront 的請求。
+    //   - 聊天 SSE、`/runs` 202＋輪詢：每個呼叫都短或持續吐 byte，不受影響。
+    //   - `POST /api/cases/{id}/submit` 同步重跑六節點 51–78 秒 → **經 CloudFront 會 504**。
+    //     2026-09-13 前端（frontend/src）沒有呼叫這支；要讓它過得了只能改 202＋輪詢，
+    //     或向 AWS 申請 origin response timeout 配額（上限 180 秒）。
+    //
+    // CloudFront → ALB 這一段走 HTTP（ALB 沒有憑證）。瀏覽器到 CloudFront 是 HTTPS。
+    const cfFunction = hasCidrAllowlist
+      ? new cloudfront.Function(this, 'ViewerIpAllowlist', {
+          functionName: `${PREFIX}-viewer-ip-allowlist`,
+          runtime: cloudfront.FunctionRuntime.JS_2_0,
+          comment: 'Organiser viewer IP allow list',
+          code: cloudfront.FunctionCode.fromInline(viewerIpAllowlistCode(albAllowedCidrs)),
+        })
+      : undefined;
+
+    const distribution = new cloudfront.Distribution(this, 'Cdn', {
+      comment: `${PREFIX} https front door`,
+      // 評審在台灣：PRICE_CLASS_100 只有北美歐洲 edge，台灣會繞遠路。
+      priceClass: cloudfront.PriceClass.PRICE_CLASS_200,
+      // 來源清單是 IPv4；開著 IPv6 的話，走 IPv6 的評審會被自己的 allow list 擋掉。
+      enableIpv6: !hasCidrAllowlist,
+      defaultBehavior: {
+        origin: new origins.LoadBalancerV2Origin(service.loadBalancer, {
+          protocolPolicy: cloudfront.OriginProtocolPolicy.HTTP_ONLY,
+          // 未申請配額時的上限就是 60。
+          readTimeout: cdk.Duration.seconds(60),
+          keepaliveTimeout: cdk.Duration.seconds(60),
+        }),
+        viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
+        allowedMethods: cloudfront.AllowedMethods.ALLOW_ALL,
+        // **一律不快取**：這是 API ＋ SSE，不是靜態站。快取 policy 關掉時 CloudFront
+        // 也不做壓縮，SSE 才不會被攢成一大塊才送出。
+        cachePolicy: cloudfront.CachePolicy.CACHING_DISABLED,
+        // 帶上 query string、cookie、標頭（Host 除外：ALB 不在乎 Host，
+        // 帶 cloudfront.net 過去反而沒意義）。
+        originRequestPolicy: cloudfront.OriginRequestPolicy.ALL_VIEWER_EXCEPT_HOST_HEADER,
+        functionAssociations: cfFunction
+          ? [{ function: cfFunction, eventType: cloudfront.FunctionEventType.VIEWER_REQUEST }]
+          : undefined,
+      },
+    });
+
+    // ALB 只收 CloudFront：否則 http 直連網址照樣能用，allow list 也被繞過。
+    // prefix list id 在 synth 時查（寫進 cdk.context.json），需要有效憑證。
+    const cloudFrontOriginFacing = ec2.PrefixList.fromLookup(this, 'CloudFrontOriginFacing', {
+      prefixListName: 'com.amazonaws.global.cloudfront.origin-facing',
+    });
+    service.loadBalancer.connections.allowFrom(
+      ec2.Peer.prefixList(cloudFrontOriginFacing.prefixListId),
+      ec2.Port.tcp(80),
+      // SG 規則描述跟 IAM role description 一樣只吃 ASCII，CloudFormation 會擋中文
+      'CloudFront origin-facing only',
+    );
 
     new cdk.CfnOutput(this, 'AlbIngress', {
       value: hasCidrAllowlist ? albAllowedCidrs.join(',') : '0.0.0.0/0',
-      description: 'Who can reach the ALB on port 80',
+      description: 'Viewer IPs allowed through CloudFront (ALB itself only accepts CloudFront)',
     });
 
     // 這是個短命的競賽環境，不必等連線排空。
@@ -439,9 +533,14 @@ export class AppealBackendStack extends cdk.Stack {
     // 不是部署層該偷偷替它決定的。
     service.loadBalancer.setAttribute('idle_timeout.timeout_seconds', '900');
 
+    // `verify.sh` 讀的是 ServiceUrl，所以它現在指向 https 的 CloudFront 網址。
     new cdk.CfnOutput(this, 'ServiceUrl', {
-      value: `http://${service.loadBalancer.loadBalancerDnsName}`,
+      value: `https://${distribution.distributionDomainName}`,
       description: 'Public URL for judges',
+    });
+    new cdk.CfnOutput(this, 'AlbDnsName', {
+      value: service.loadBalancer.loadBalancerDnsName,
+      description: 'CloudFront origin; not reachable directly (SG allows CloudFront only)',
     });
     new cdk.CfnOutput(this, 'LogGroupName', { value: logGroup.logGroupName });
     new cdk.CfnOutput(this, 'TaskRoleArn', { value: taskRole.roleArn });
