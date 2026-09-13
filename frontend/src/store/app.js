@@ -918,8 +918,11 @@ function lawItem(l) {
     // **留白的話 App.vue 會去打 §4.2 的全文端點，而 `lawtable:` 開頭的 id 打不到**，
     // 結果是一片空白加一句「取法規全文失敗」，而其實一點資料都沒掉。
     // 母庫那批 `body_cached` 空時仍然留白，維持即時取全文那條路。
+    // `body_cached` 是 S3 純文字（含 \n）。**要走 fullToHtml 轉成段落／<br>**——
+    // 直接 esc 後塞進一個 <p>，整份條文會擠成一行（\n 在 HTML 不換行）。
     full: l.body_cached
-      ? `<p style="font-family:var(--serif);line-height:2">${esc(l.body_cached)}</p><p style="color:var(--muted);font-size:12.5px;border-top:1px solid var(--line-soft);padding-top:10px">本案關聯：${esc(l.note || '')}</p>`
+      ? `<div style="font-family:var(--serif);line-height:2">${fullToHtml(l.body_cached)}</div>` +
+        (l.note ? `<p style="color:var(--muted);font-size:12.5px;border-top:1px solid var(--line-soft);padding-top:10px">本案關聯：${esc(l.note)}</p>` : '')
       : l.channel === 'lawtable'
         // 這裡取 `note` 而不是 `retrieval_note`：前者才是**解釋為什麼沒有全文**的那句
         // （「條號存在性驗證，非法條全文（快照只索引條號）」），後者講的是這一條
@@ -940,7 +943,9 @@ function decisionItem(d) {
     note: d.note || decisionNote({ category: d.category, verdict: d.verdict }),
     ext: '例',
     _libId: d.id,
-    full: d.full_cached || '',
+    // `full_cached` 是 S3 純文字（含 \n）。走 fullToHtml 轉段落／<br>，
+    // 直接當 HTML 用的話換行全部消失、擠成一整片（mock 的示範資料是 HTML，fullToHtml 會原樣放行）。
+    full: d.full_cached ? fullToHtml(d.full_cached) : '',
   }
 }
 
