@@ -131,7 +131,7 @@ const caseMeta = computed(() =>
                       v-if="m.out"
                       :out="m.out"
                       @view-case="emit('view-case', $event)"
-                      @view-graph="emit('view-graph')"
+                      @view-graph="emit('view-graph', $event)"
                       @preview-paper="emit('preview-paper', $event)"
                       @export-download="emit('export-download', $event)"
                     />
