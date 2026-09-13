@@ -8,6 +8,10 @@ const text = ref('')
 const ta = ref(null)
 const slashOpen = ref(false)
 const slashSel = ref(0)
+// 中文輸入法（IME）組字中：Enter 只是確認選字，不能當送出。
+// compositionend 後同一輪事件迴圈內的 Enter 也要放過（macOS 注音確認後緊接的 keydown）。
+const composing = ref(false)
+let justComposed = false
 
 const slashItems = computed(() => {
   if (!slashOpen.value) return []
@@ -39,7 +43,21 @@ function fillSlash(t) {
     autosize()
   })
 }
+function onCompositionStart() {
+  composing.value = true
+}
+function onCompositionEnd() {
+  composing.value = false
+  // 確認選字的那次 keydown（Enter）常和 compositionend 同一輪，設一個短暫旗標讓它跳過送出。
+  justComposed = true
+  setTimeout(() => (justComposed = false), 0)
+}
 function onKeydown(e) {
+  // IME 組字中／剛確認選字：這個 Enter 是輸入法的，不是送出。
+  // e.isComposing 是標準判斷；keyCode 229 是組字中的通用訊號；justComposed 補 macOS 注音時序。
+  if (e.key === 'Enter' && (e.isComposing || e.keyCode === 229 || composing.value || justComposed)) {
+    return
+  }
   if (slashOpen.value && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
     e.preventDefault()
     const len = slashItems.value.length
@@ -118,7 +136,7 @@ function onChip(chip) {
         </div>
         <div class="composer-row">
           <button class="cbtn" :class="{ hintme: !active().docs.evidence.length }" title="上傳卷證或相關檔案" aria-label="上傳卷證" @click="emit('sheet', { kind: 'attach' })">＋</button>
-          <textarea id="input" ref="ta" v-model="text" rows="1" placeholder="輸入指令，或以「/」呼叫工具⋯⋯" @input="onInput" @keydown="onKeydown"></textarea>
+          <textarea id="input" ref="ta" v-model="text" rows="1" placeholder="輸入指令，或以「/」呼叫工具⋯⋯" @input="onInput" @keydown="onKeydown" @compositionstart="onCompositionStart" @compositionend="onCompositionEnd"></textarea>
           <button class="cbtn send" aria-label="送出" :disabled="!canSend" @click="doSend">↑</button>
         </div>
       </div>
