@@ -196,8 +196,9 @@ def build_doc_skeleton(
     )
     # 抬頭**一欄一行**。原本三個欄位用「／」擠成一行，那不是公文抬頭的排法，
     # 而且案號一長就會折行折在奇怪的地方。
+    # **案號不放進 meta 行**：公文把它靠右排在標題那一行（見 `build_sections` 的
+    # `case_no`）。留在這裡的話它會跟訴願人、原處分機關一樣縮排排在左邊，那不是公文的樣子。
     for label, value in (
-        (settings.META_CASE_NO, intake.get("no")),
         (settings.META_APPELLANT, intake.get("person")),
         (settings.META_RESPONDENT, intake.get("org")),
     ):
@@ -212,13 +213,15 @@ def build_doc_skeleton(
     heading(settings.SECTION_MAIN_TEXT, role="main_text")
     conclusion: list[dict[str, Any]] = []
     if requires_human_conclusion:
+        text, why = _blocked_conclusion(art77, screen)
         conclusion.append(
             _sentence(
                 nid(),
-                PLACEHOLDER_CONCLUSION_TEXT,
+                text,
                 origin="human_required",
                 slot="conclusion",
                 placeholder=True,
+                why_fixed=why,
             )
         )
     else:
@@ -383,6 +386,52 @@ MISSING_CONCLUSION_WHY = (
 PREAMBLE_WHY = "本句為決定書抬頭引導句，由卷證抽取欄位（案由、處分日期）套模板組成，非模型生成。"
 
 
+#: 程序審查**算出不受理**、但所憑欄位還沒人確認時的主文。
+#: 結論寫出來（那是規則算的，不是猜的），但明說它還踩在未確認的輸入上。
+BLOCKED_PROCEDURAL_TEXT = (
+    "訴願不受理。（程序審查結果：{basis}；惟本結論所憑之送達日與提起日"
+    "尚未經承辦人確認，請至收文頁確認後再行定稿。）"
+)
+BLOCKED_PROCEDURAL_WHY = (
+    "逾期由期間引擎算出（純規則、零模型參與），結論本身可驗算；"
+    "但它吃的送達日與提起日來自模型抽取、尚未經承辦人確認，"
+    "所以這一格仍標為待確認，不是已定稿的主文。"
+)
+
+#: 程序審查**沒有算出不受理事由**時的主文。
+#: **不寫「應予受理」**：系統只自動判定訴願法 §77 第 2 款（逾期）這一種不受理事由，
+#: 其餘各款屬法律判斷（見 `n3_procedure.screen_art77` 的 `not_auto_screened_reason`）。
+#: 寫「應予受理」等於宣稱「其餘各款都不成立」，而那是系統查不到的事。
+SUBSTANTIVE_PENDING_TEXT = (
+    "（本件程序審查未發現逾期情事〔訴願法第 77 條第 2 款不成立〕；"
+    "是否受理，以及訴願有無理由〔駁回或撤銷〕，由承辦人自行判斷後填寫。）"
+)
+SUBSTANTIVE_PENDING_WHY = (
+    "期間引擎只自動判定訴願法 §77 第 2 款（逾期）一種不受理事由；"
+    "其餘各款與訴願有無理由屬實體法律判斷，本系統不代為認定——"
+    "此處留白不是失敗，是刻意不猜。"
+)
+
+
+def _blocked_conclusion(art77: dict[str, Any], screen: dict[str, Any]) -> tuple[str, str]:
+    """結論封鎖時，主文那一格要寫什麼。
+
+    **依程序審查的結果分兩種**（2026-09-13 Claire 指定）：
+
+    - 引擎算出不受理事由（`art77.clause` 有值）→ 結論寫出來（「訴願不受理。」），
+      但附上它還踩在未確認輸入上這件事。這是判斷卡 7 擋下來的那條路：
+      改一個模型抽的日期就能翻轉結論，所以不因為算得出來就當它定稿。
+    - 沒有算出不受理事由 → 受理與否、有無理由一律交人判斷，不寫「應予受理」。
+
+    兩種都是 `placeholder=True`，匯出檔會用紅字標（見 `export_render`）。
+    """
+    clause = (art77.get("clause") or "").strip()
+    if clause:
+        basis = (art77.get("basis") or "").split("。")[0] or f"訴願法 §{clause}"
+        return BLOCKED_PROCEDURAL_TEXT.format(basis=basis), BLOCKED_PROCEDURAL_WHY
+    return SUBSTANTIVE_PENDING_TEXT, SUBSTANTIVE_PENDING_WHY
+
+
 def _preamble_text(intake: dict[str, Any]) -> str:
     """「上列訴願人因○○事件，不服原處分機關民國 ○ 所為之處分，提起訴願一案，本府依法決定如下：」
 
@@ -483,6 +532,9 @@ def article_quotes(
             if law_name and article:
                 wanted.append((law_name, article, None))
 
+    # 模型自己寫的理由句（拿來比對「這一條它是不是已經引過原文了」）。
+    drafted = _squeeze("\n".join(s.get("t", "") for s in reasoning_slots))
+
     out: list[dict[str, Any]] = []
     seen: set[tuple[str, str]] = set()
     for law_name, article, numeral in wanted:
@@ -492,6 +544,8 @@ def article_quotes(
         law = index.get((law_name, article))
         body = _clause_of(law.get("q"), numeral) if law and law.get("q") else None
         if not body:
+            continue
+        if _already_quoted(body, drafted):
             continue
         # 顯示用**阿拉伯數字**（範本：「第 77 條第 7 款」），切條文用**國字**
         # （條文本文裡的款次記號是「七、」）。兩者不是同一個東西，別共用一個變數。
@@ -506,6 +560,36 @@ def article_quotes(
         if len(out) >= MAX_ARTICLE_QUOTES:
             break
     return out
+
+
+#: 判斷「模型是不是已經把這一條的原文抄出來了」要比對幾個字。
+#: 太短（例如 8 個字）會誤判——「行政機關就該管行政」是很多條文的共同開頭；
+#: 太長則會被一個異體字或全半形差異打掉。24 個字在本專案的 11 部法規上實測可分。
+_QUOTE_ECHO_CHARS = 24
+
+
+def _squeeze(text: str) -> str:
+    """去掉所有空白與常見的引號、全半形差異，只留可比對的字。
+
+    模型抄條文時常常換一種引號（「」vs『』）、把全形數字寫成半形、或在標點後多一個
+    空格。逐字比對會因為這些差異而判成「沒抄過」，然後我們就在它旁邊再貼一次原文。
+    """
+    table = str.maketrans("", "", " \u3000\t\n「」『』（）()，,、。．.；;：:")
+    return text.translate(table)
+
+
+def _already_quoted(article_body: str, drafted: str) -> bool:
+    """模型的理由句裡是不是已經有這一條的原文了。
+
+    **這是 2026-09-13 的迴歸修正。** 在那之前，條文引述句無條件插在理由段最前面，
+    而模型本來就會自己寫「按『……』○○法第 N 條定有明文」——於是同一條在同一段裡
+    出現兩次，實測真實卷證時三條法規全部重複（廢清法 §27、§50、行程法 §9）。
+
+    比對的是**條文原文的前 24 個字**在不在模型寫的句子裡（兩邊都先去空白與標點）。
+    比引用編號可靠：編號寫法有「第27條」「第 27 條第 1 款」好幾種，而原文只有一種。
+    """
+    head = _squeeze(article_body)[:_QUOTE_ECHO_CHARS]
+    return bool(head) and head in drafted
 
 
 def _clause_of(article_text: str, numeral: str | None) -> str:

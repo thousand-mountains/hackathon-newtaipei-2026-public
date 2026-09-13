@@ -97,14 +97,19 @@ def _blocks_of(
         text = (s.get("t") or "").strip()
         if not text:
             continue
-        out.append(
-            {
-                "text": text,
-                "cites": _cites_of(s, index, unresolved),
-                # 契約沒要求，但匯出檔要能指回系統裡的那一句，多這一鍵不傷前端。
-                "sentence_id": s.get("id"),
-            }
-        )
+        entry = {
+            "text": text,
+            "cites": _cites_of(s, index, unresolved),
+            # 契約沒要求，但匯出檔要能指回系統裡的那一句，多這一鍵不傷前端。
+            "sentence_id": s.get("id"),
+        }
+        if s.get("placeholder"):
+            # **匯出檔要看得出這一格是待填的。** 畫面上有紅燈，紙上沒有——
+            # 「（結論段由承辦人判斷後填寫）」與正文同字級同樣式印出來，
+            # 列印分發之後沒有人會注意到那是空的（2026-09-13 看實際 PDF 發現）。
+            # 只在為真時才放這個鍵，避免改變既有回應的形狀。
+            entry["placeholder"] = True
+        out.append(entry)
     if not out:
         # `ty=="p"` 實測 `text` 為空、句子在 `ss`；但別的 block 型別可能反過來。
         # 兩邊都讀，才不會因為某一種區塊改了寫法就靜默掉字。
@@ -181,6 +186,10 @@ def build_sections(payload: dict[str, Any], artifact_id: str | None = None) -> d
         "case_id": payload.get("case_id"),
         "state": payload.get("state"),
         "meta": meta,
+        # 案號另外給一份：公文的案號靠右排在標題那一行，其餘抬頭欄位（訴願人、
+        # 原處分機關）縮排排在下面。混在 `meta` 裡的話 renderer 只能靠「第幾行」
+        # 去猜哪一行是案號，而那會在多一個欄位時默默排錯。
+        "case_no": ((payload.get("intake") or {}).get("no") or "").strip(),
         "sections": sections,
         "cite_count": cite_count,
         "unresolved": sorted(set(unresolved)),
@@ -190,23 +199,47 @@ def build_sections(payload: dict[str, Any], artifact_id: str | None = None) -> d
         # 相異 id 數會讓同一個對不上的編號被引三次時只算 1，警示強度被稀釋。
         "unresolved_count": len(unresolved),
         "notices": _notices(payload),
+        # 語料揭露的細節。與 `notices` 分開是為了讓 renderer 擺在文末而不是抬頭
+        # （見 `_SOURCE_KEYS`）。兩者都是 `provenance` 的內容，一個字都沒有少。
+        "source_notes": source_notes(payload),
         "dataset_scope": dataset_scope(payload),
     }
 
 
-# 匯出檔抬頭要帶的揭露，依重要性排序。`provenance` 的鍵由 `settings.provenance()` 決定；
-# 缺鍵就跳過，不補寫（不編造是紅線，缺了就是缺了）。
-_NOTICE_KEYS: tuple[str, ...] = ("banner", "execution_note", "retrieval_note")
+# 匯出檔的揭露分兩段，**因為它們回答的是兩個不同的問題**（2026-09-13 拆開）：
+#
+#   _NOTICE_KEYS  「這份文件是什麼」——合成測資／AI 草稿／離線重播。
+#                 這是拿到紙本的人第一眼就必須知道的事，所以留在抬頭。
+#   _SOURCE_KEYS  「查了哪些語料」——各批筆數、涵蓋範圍、哪幾批查不到。
+#                 這是覆核時才會去看的細節，放文末。
+#
+# 拆開的理由是實測：`retrieval_note` 現在有十幾行（19,475 筆語料逐批列出），
+# 印在抬頭會把標題與主文推到第一頁的下半部，整份文件第一眼不像決定書。
+# **兩段都還在文件裡**，只是擺到各自該在的位置——分層誠實不因為排版而打折。
+_NOTICE_KEYS: tuple[str, ...] = ("banner", "execution_note")
+# ⚠️ **匯出檔不再印 `notices`**（2026-09-13）：揭露改走每頁頁尾的固定一句
+#（`export_render.DRAFT_FOOTER_NOTE`）。這兩段仍留在 view 裡給工作台畫面用。
+_SOURCE_KEYS: tuple[str, ...] = ("retrieval_note",)
 
 
-def _notices(payload: dict[str, Any]) -> list[str]:
+def _pick(payload: dict[str, Any], keys: tuple[str, ...]) -> list[str]:
+    """`provenance` 裡指定的那幾段，缺鍵就跳過（不編造是紅線，缺了就是缺了）。"""
     prov = payload.get("provenance") or {}
     out: list[str] = []
-    for key in _NOTICE_KEYS:
+    for key in keys:
         text = (prov.get(key) or "").strip()
         if text and text not in out:
             out.append(text)
     return out
+
+
+def _notices(payload: dict[str, Any]) -> list[str]:
+    return _pick(payload, _NOTICE_KEYS)
+
+
+def source_notes(payload: dict[str, Any]) -> list[str]:
+    """「查了哪些語料」。擺在匯出檔文末的引註對照旁邊（見 `_SOURCE_KEYS` 的說明）。"""
+    return _pick(payload, _SOURCE_KEYS)
 
 
 def dataset_scope(payload: dict[str, Any]) -> str:

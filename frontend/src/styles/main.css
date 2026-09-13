@@ -258,9 +258,10 @@ button{font:inherit;color:inherit;cursor:pointer}
    抬頭置中、段名（「主　文」）置中粗體、正文首行縮排兩字。
    段名原本是 11px 灰色字距很開的小標——那是側欄標籤的樣式，不是公文段名。 */
 .draft{font-family:var(--serif);font-size:14.5px;line-height:2.05;background:var(--panel);border:1px solid var(--line);border-radius:var(--r);padding:18px 20px}
-.draft .dtitle{font-family:var(--serif);font-size:17px;font-weight:700;text-align:center;margin:0 0 12px;letter-spacing:.04em}
+.draft .dtitle{font-family:var(--serif);font-size:17px;font-weight:700;margin:0 0 12px;letter-spacing:.04em}
 .draft .dmeta{font-size:13px;margin:0 0 2px;color:var(--fg);text-indent:0}
-.draft h4{font-family:var(--serif);font-size:15px;letter-spacing:.5em;text-indent:.5em;color:var(--fg);margin:20px 0 8px;font-weight:700;text-align:center}
+/* 標題與段名一律靠左（2026-09-13 Claire 指定），與匯出的 .docx／.pdf 一致。 */
+.draft h4{font-family:var(--serif);font-size:15px;letter-spacing:.5em;text-indent:.5em;color:var(--fg);margin:20px 0 8px;font-weight:700}
 .draft h4:first-child{margin-top:0}
 .draft p{margin:0 0 .55em}
 .draft .indent{text-indent:2em}
