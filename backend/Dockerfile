@@ -55,6 +55,26 @@ COPY frontend/dist/ /app/frontend/dist/
 #   不含任何內容或人名（見 scripts/build_manifest.py 的說明），可以進映像檔。
 COPY data/manifest.json /app/data/manifest.json
 
+# 庫存清單（2026-09-13 起）：S3 上**實際有什麼**，由 scripts/build_kb_inventory.py 產。
+#   settings.corpus_listing_path() 優先讀它，讀不到才退回 manifest。
+#   少了它雲上會退回 manifest，於是報出來的是**另一批語料**的組成
+#   （manifest 2,488 筆 vs 庫存 19,475 筆，差一個數量級）——那正是 2026-09-13 的事故。
+#   同樣只記路徑與分類欄位，不含內容、不含人名、不含 bucket 名。
+COPY data/kb-inventory.json /app/data/kb-inventory.json
+
+# 入庫結果（2026-09-13 起）：向量庫**真的索引了幾筆**，由 scripts/ingest_kb.py 在
+#   ingestion job 完成後寫。settings.index_state() 讀它，是 retrieval_note 的**主述**。
+#   前兩份講的是「S3 上有什麼」與「我們打算傳什麼」，都不等於「檢索得到什麼」：
+#   2026-09-13 這次 job 之前，S3 有 19,475 筆而向量庫只索引了 16,970 筆，差 2,505 筆。
+#   少了這份，雲上會說「本機沒有任何成功入庫的紀錄」——那句話是誠實的，但在我們
+#   明明有紀錄的時候說它，就是少報自己有什麼（CONSTITUTION §1）。
+#   不含 KB id 與 bucket 名（那兩個只活在 .env）。
+#
+#   ⚠️ 這個 COPY 會讓「沒跑過 ingest 的機器」建置失敗——**那是刻意的**，而且不會是
+#   一個看不懂的錯：deploy.sh 會先跑 infra/cdk/check_context.sh，缺檔在那裡就具名擋下。
+#   要部署就要先入庫，不能帶著一個過期或不存在的數字上雲。
+COPY data/index-state.json /app/data/index-state.json
+
 # 非 root 執行（ECS task 的最小權限原則）
 RUN useradd --create-home --uid 10001 appuser \
     && mkdir -p /app/backend/output \

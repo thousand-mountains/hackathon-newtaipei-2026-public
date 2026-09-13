@@ -65,6 +65,7 @@ from backend.nodes.n4_retrieval import (
     build_query,
     build_query_sources,
 )
+from backend.retrieval.law_articles import default_store as law_article_store
 from backend.orchestrator.chat_bridge import (
     PAYLOAD_SECTIONS,
     archive_adapter,
@@ -320,6 +321,7 @@ def _run_turn(case_id: str, body: ChatIn, emit: Any,
         # 契約 §3.0：兩支檢索工具查到的東西要歸檔進本案卷宗。全文由母庫抓
         # （`_fetch_corpus_text` 自己吞掉 boto3 缺席與 S3 失敗，見該函式）。
         archive=archive_adapter(case_id, fetch_text=_fetch_corpus_text,
+                                article_text=law_article_store().text,
                                 find_statute_key=_find_statute_key),
         law_query=(run_info or {}).get("law_query") or "",
         law_query_sources=(run_info or {}).get("law_query_sources") or [],

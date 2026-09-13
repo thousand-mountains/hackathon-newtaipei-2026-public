@@ -355,11 +355,18 @@ def test_fixture_draft_cite_ids_are_not_carried_into_doc():
 
     那些 id 是在 N4 跑之前手填的，改成獨立檢索後只會靠序號巧合對上不相干的法條，
     或對不上而製造假 blocker。兩種都是假訊號。
+
+    **條文引述句（`quoted_statute`）不在此列**（2026-09-13）：那幾句的 cite_ids 是
+    `narrative.article_quotes()` 自己從 N4 的 `laws[]` 對出來的，指向的就是它引述的
+    那一條，不是 fixture 手寫的。這條擋的是「模型／fixture 說它引了什麼」，
+    不是「編排層查表查到了什麼」。
     """
     for case_id in (ORDINARY, BLOCKED):
         p = _payload(case_id)
         for block in p["doc"]:
             for s in block.get("ss", []):
+                if s.get("quoted_statute"):
+                    continue
                 assert_eq(
                     s.get("cite_ids"),
                     [],
@@ -824,14 +831,49 @@ def _law_item() -> dict:
             chat_mod.ARCHIVE_LAWTABLE_META: {"law": "行政程序法", "article": "72"}}
 
 
-def _file_law(fetch_text=None, find_statute_key=None, item=None) -> dict:
+def _file_law(fetch_text=None, find_statute_key=None, item=None, article_text=None) -> dict:
     with tempfile.TemporaryDirectory() as tmp:
         cases_dir = pathlib.Path(tmp) / "cases"
         store.ensure(ORDINARY, cases_dir=cases_dir)
         chat_bridge.archive_adapter(
             ORDINARY, cases_dir, fetch_text=fetch_text, find_statute_key=find_statute_key,
+            article_text=article_text,
         )("laws", [item or _law_item()])
         return store.load(ORDINARY, cases_dir)["laws"][0]
+
+
+def test_the_article_index_wins_over_the_corpus_because_the_corpus_drops_the_last_clause():
+    """條文有索引就用索引，**不要用母庫全量那批**。
+
+    2026-09-13 逐條比對：`kb/public/相關法規_全量/` 每條都被截掉最後一項或一款。
+    訴願法 §77 從母庫切出來只有七款，缺的是第八款「對於非行政處分或其他依法不屬
+    訴願救濟範圍內之事項提起訴願者」——**不受理最常用的款次之一**。
+    條號對得上、內容缺一截，而缺掉的那一款看起來完全正常。
+
+    這條釘住兩件事：索引贏過母庫，而且 note 要說得出條文是哪一批來的。
+    母庫那條路徑本身不受影響（見下面兩支測試），它服務的是索引涵蓋不到的另外 657 部。
+    """
+    truncated = "第 77 條\n柱書。\n　　一、甲。\n　　七、庚。\n\n第 78 條\n乙。\n"
+    complete = "柱書。一、甲。七、庚。八、對於非行政處分或其他依法不屬訴願救濟範圍內之事項提起訴願者。"
+    item = _law_item()
+    item["t"] = "訴願法第77條"
+    item["id"] = "lawtable:訴願法-77"
+    # `law`／`article` 由歸檔層從這個 meta 鍵讀，不是頂層欄位。
+    item[chat_mod.ARCHIVE_LAWTABLE_META] = {"law": "訴願法", "article": "77"}
+
+    filed = _file_law(fetch_text=lambda _k: truncated,
+                      article_text=lambda law, art: complete if (law, art) == ("訴願法", "77") else None,
+                      item=item)
+    assert_in("八、對於非行政處分", filed["body_cached"], "母庫那份缺第八款，索引那份才完整")
+    assert_true("柱書。\n" not in filed["body_cached"], "拿到的是母庫那份被截斷的條文")
+    assert_in("條文原文索引", filed["note"], "沒說條文是哪一批來的")
+
+    # 索引沒有這一條 → 照舊落回母庫，而且 note 要標明它可能缺末項／款
+    filed = _file_law(fetch_text=lambda _k: truncated,
+                      article_text=lambda _law, _art: None, item=item)
+    assert_in("柱書", filed["body_cached"], "索引沒有時應該落回母庫")
+    assert_in("可能缺最後一項／款", filed["note"],
+              "用了母庫全量那批卻沒有警告——承辦人會照著它寫決定書")
 
 
 def test_a_lawtable_entry_carries_the_article_text_from_the_corpus():

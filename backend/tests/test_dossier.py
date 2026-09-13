@@ -24,6 +24,7 @@ import backend.llm.chat as chat_mod  # noqa: E402
 import backend.retrieval.kb as kb_module  # noqa: E402
 from backend.dossier import artifact_ref, corpus, runlink, statute_text, store  # noqa: E402
 from backend.orchestrator import case_view  # noqa: E402
+from backend.config import settings
 from backend.orchestrator.artifact_sections import build_sections  # noqa: E402
 from backend.orchestrator.graph import build_payload, run_case  # noqa: E402
 from backend.tests.harness import assert_eq, assert_in, assert_true  # noqa: E402
@@ -428,6 +429,45 @@ def test_corpus_search_honours_the_limit_after_deduping_not_before():
     assert_eq([x["t"] for x in got], ["A", "B"], "去重要在截斷之前，否則 B 會被 A 的重複 chunk 擠掉")
 
 
+def test_corpus_search_dedupes_the_same_case_across_both_crawl_batches():
+    """同一件決定書在庫裡有兩份（兩批並存），母庫查只能回一列。
+
+    S3 上 `新北訴願決定書_全量/`（舊爬蟲 2,347 筆）與 `新北訴願決定書_環保局全量/`
+    （第三方整理 8,486 筆）**有 2,331 個案號是同一件**，舊批沒刪。兩者 key 不同、
+    案號相同，所以按 S3 key 去重收不掉——承辦人會在「搜尋並加入」的清單上看到
+    同一件決定書兩次，以為找到兩個前例。
+
+    留分數高的那一筆（結果按分數遞減，留第一個看到的）。
+    """
+    kb_mod = _kb_module()
+    kb_mod.reset_search_key_cache()
+    chunks = [
+        _hit("新北訴願決定書_環保局全量/1121070551_不受理.txt", 0.90, "decision", case_no="1121070551"),
+        _hit("新北訴願決定書_全量/1121070551_不受理.txt", 0.80, "decision", case_no="1121070551"),
+        _hit("新北訴願決定書_全量/1131070496_駁回.txt", 0.70, "decision", case_no="1131070496"),
+    ]
+    got = kb_mod.search_corpus(FakeKB(chunks), "KB1", "q", ["decision"], limit=10)
+    assert_eq([x["id"] for x in got],
+              ["kb/public/新北訴願決定書_環保局全量/1121070551_不受理.txt",
+               "kb/public/新北訴願決定書_全量/1131070496_駁回.txt"],
+              "同一案號的兩批副本必須收成一列，且留分數高的那一筆")
+
+
+def test_corpus_search_still_separates_two_statutes_that_have_no_case_no():
+    """去重鍵退回 S3 key 的那一半：法規沒有案號，兩部不同法規不得被併成一筆。
+
+    這條與上一條是同一個機制的兩面。少了它，`_dedupe_key` 若哪天把「沒有案號」
+    誤算成同一個鍵，整個法規清單會塌成一列，而上一條測試照樣綠。
+    """
+    kb_mod = _kb_module()
+    kb_mod.reset_search_key_cache()
+    chunks = [_hit("相關法規_全量/廢棄物清理法.txt", 0.9, "statute"),
+              _hit("相關法規_全量/空氣污染防制法.txt", 0.8, "statute")]
+    got = kb_mod.search_corpus(FakeKB(chunks), "KB1", "q", ["statute"], limit=10)
+    assert_eq([x["t"] for x in got], ["廢棄物清理法", "空氣污染防制法"],
+              "沒有案號的文件要按 S3 key 各佔一列")
+
+
 def test_decision_search_drops_court_rulings_even_if_the_filter_let_one_through():
     """雙保險：filter 是第一道，這是第二道。filter 失效時不得靜默開始端裁判書。"""
     kb_mod = _kb_module()
@@ -743,8 +783,8 @@ def test_headings_come_from_h_blocks_and_title_meta_are_not_sections():
     payload = _payload_fixture()
     sections, _ = _sections(payload)
     heads = [s["h"] for s in sections]
-    assert_in("事實", heads)
-    assert_in("理由", heads)
+    assert_in(settings.SECTION_FACTS, heads)
+    assert_in(settings.SECTION_REASONING, heads)
     assert_true(all(isinstance(h, str) for h in heads))
     banned = [b.get("text") for b in payload["doc"] if b.get("ty") in ("title", "meta")]
     assert_true(banned, "測資裡沒有 title／meta 區塊，這條測試的前提不成立")
@@ -808,14 +848,22 @@ def test_a_synthetic_case_refuses_to_be_deleted_with_a_reason():
 
 
 def test_title_and_meta_are_document_header_not_sections():
-    """把抬頭當成 section 的話，畫面最上面會多出兩個 `h` 是空字串的區塊（契約 §4.4）。"""
+    """把抬頭當成 section 的話，畫面最上面會多出兩個 `h` 是空字串的區塊（契約 §4.4）。
+
+    **2026-09-13：空標題不再一律違規。** 決定書的引導句、落款與教示條款各自成段、
+    但公文上沒有標題，所以它們是 `h` 為空字串的 section——而且一定帶 `role`。
+    這條要擋的是**沒有 role 的空標題**，那種才是 title／meta 漏進 sections。
+    """
     view = build_sections(_payload_fixture(), "art-x")
     assert_true(view["title"], "抬頭要進 title，不是被丟掉")
-    assert_true(view["meta"], "案號／案由／訴願人那行要進 meta")
+    assert_true(view["meta"], "案號／訴願人／原處分機關要進 meta")
     for sec in view["sections"]:
-        assert_true(sec["h"].strip(), f"出現 h 是空字串的 section：{sec}")
-    assert_in("事實", [s["h"] for s in view["sections"]])
-    assert_in("理由", [s["h"] for s in view["sections"]])
+        assert_true(sec["h"].strip() or sec.get("role"),
+                    f"出現既沒有標題也沒有 role 的 section：{sec}")
+    heads = [s["h"] for s in view["sections"]]
+    assert_in(settings.SECTION_MAIN_TEXT, heads)
+    assert_in(settings.SECTION_FACTS, heads)
+    assert_in(settings.SECTION_REASONING, heads)
 
 
 def test_the_artifact_endpoint_keeps_the_name_shown_in_the_dossier():

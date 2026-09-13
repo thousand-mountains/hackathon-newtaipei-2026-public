@@ -835,6 +835,10 @@ async function loadDraftSections(c, out) {
     if (Array.isArray(a.sections) && a.sections.length) {
       out.sections = a.sections
       out.title = a.title || ''
+      // 抬頭（案號／訴願人／原處分機關）與 sections[] 平行，不是 section（契約 §4.4）。
+      // 聊天室的草稿卡也要畫它——少了它，承辦人看不出這是哪一案的草稿。
+      out.meta = Array.isArray(a.meta) ? a.meta : []
+      out.caseNo = a.case_no || ''
       if (typeof a.cite_count === 'number') out.citeCount = a.cite_count
       if (item) {
         item.full = sectionsToHtml(a)
@@ -871,22 +875,47 @@ function htmlToPlainText(html) {
     .trim()
 }
 
+// **兩個不同的概念，不要合成一個**（與 backend/api/export_render.py 同一組定義）。
+//   INDENT_ROLES：首行縮排兩字的段落。公文只有主文／事實／理由三段縮排；
+//                 抬頭引導句、落款、教示條款一律頂格。
+//   ASIDE_ROLES ：不是決定書正文、縮小另排的段落。目前只有期間計算附錄。
+const INDENT_ROLES = ['main_text', 'facts', 'reasoning']
+const ASIDE_ROLES = ['appendix']
+
 // sections[] → 顯示用 HTML。`title`／`meta` 是文件抬頭，與 sections[] 平行，不是 section（契約 §4.4）。
+//
+// **這支與 ToolOut.vue 的 sections 分支必須排得一樣。** 2026-09-13 之前這裡的 `<p>`
+// 沒有 `indent`、那邊有，於是同一份草稿在聊天室與右欄兩處縮排不同——承辦人會以為
+// 其中一份壞了。現在兩處共用這一份 HTML。
 export function sectionsToHtml(a) {
-  const head = a && a.title ? `<h4>${esc(a.title)}</h4>` : ''
+  const head = a && a.title ? `<h3 class="dtitle">${esc(a.title)}</h3>` : ''
+  // 案號排在標題底下、與其餘抬頭欄位分開（公文格式，與匯出的 .docx／.pdf 一致）。
+  const caseNo = a && a.case_no ? `<p class="dmeta">案　　號：${esc(a.case_no)}</p>` : ''
+  const meta = ((a && a.meta) || []).map((m) => `<p class="dmeta">${esc(m)}</p>`).join('')
   return (
     head +
+    caseNo +
+    meta +
     ((a && a.sections) || [])
-      .map(
-        (s) =>
-          `<h4>${esc(s.h || '')}</h4>` +
+      .map((s) => {
+        const role = s.role || 'reasoning'
+        const aside = ASIDE_ROLES.includes(role)
+        // `h` 是空字串的 section 是刻意的（落款、教示條款在公文上沒有標題）。
+        // 標題空就不畫 `<h4>`——畫出來是一條孤伶伶的橫線。
+        const h = s.h ? `<h4${aside ? ' class="aside"' : ''}>${esc(s.h)}</h4>` : ''
+        const pcls = aside ? 'aside' : INDENT_ROLES.includes(role) ? 'indent' : 'flush'
+        return (
+          h +
           (s.blocks || [])
             .map((b) => {
-              const cites = (b.cites || []).map((x) => `<span class="cite">${esc(x.label || x.id || '')}</span>`).join('')
-              return `<p>${esc(b.text || '')}${cites}</p>`
+              const cites = (b.cites || [])
+                .map((x) => `<span class="cite">${esc(x.label || x.id || '')}</span>`)
+                .join('')
+              return `<p class="${pcls}">${esc(b.text || '')}${cites}</p>`
             })
-            .join(''),
-      )
+            .join('')
+        )
+      })
       .join('')
   )
 }

@@ -156,6 +156,11 @@ def run(state: CaseState, ctx: NodeCtx, case_fixture: dict[str, Any] | None = No
         draft_slots=produced,
         requires_human_conclusion=needs_human,
         carry_draft_cite_ids=carry_cite_ids,
+        # `screen` 給綜上論結段用（`art77.clause` 是引擎算的款次）；
+        # `laws` 給理由段開頭的條文引述用（原文在 `laws[].q`，N4 查表帶進來的）。
+        # 兩者都是**唯讀**：骨架不改它們，只是照它們寫的組句子。
+        screen=state.screen,
+        laws=state.retrieval.get("laws") or [],
     )
 
     state.draft = {

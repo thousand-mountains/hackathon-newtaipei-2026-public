@@ -257,11 +257,15 @@ export class AppealBackendStack extends cdk.Stack {
         // 於是「只改 ALB 設定」也要重建、重推、換 task definition——純浪費。
         // 附帶好處：cdk.context.json（存帳號與 subnet id）不會被塞進建置 context。
         'infra',
-        // data/ 底下只放 manifest.json 進 context（Dockerfile 會 COPY 它，
-        // 雲上的語料具名揭露靠它；manifest 只記路徑、來源與 sha256，不含內容）。
+        // data/ 底下只放兩份清單進 context（Dockerfile 兩個都 COPY，雲上的語料具名
+        // 揭露靠它們；只記路徑、來源與分類欄位，不含內容、不含 bucket 名）：
+        //   manifest.json      我們打算上傳什麼（含 sha256）
+        //   kb-inventory.json  S3 上實際有什麼——settings 報數字優先讀這份
         // 其餘一律排除：賽方資料集若被放進 data/，不得進建置 context（CONSTITUTION §5）。
         'data/*',
         '!data/manifest.json',
+        '!data/kb-inventory.json',
+        '!data/index-state.json',
         'docs',
         'knowledge',
         'design',

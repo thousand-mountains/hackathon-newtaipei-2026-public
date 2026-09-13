@@ -22163,6 +22163,94 @@
    "outcome": "不受理",
    "year": "114",
    "category": "空氣污染防制法"
+  },
+  {
+   "path": "kb/official/相關法規/噪音管制法.txt",
+   "provenance": "official",
+   "sha256": "90c9e9f94184e4f01f6cce5b44a23f8c01ec1446fa6e6509217b41363a6ac33f",
+   "source_pdf": "噪音管制法.pdf",
+   "outcome": null,
+   "cjk_ratio": null
+  },
+  {
+   "path": "kb/official/相關法規/廢棄物清理法.txt",
+   "provenance": "official",
+   "sha256": "2b07bf48e0511d39ddd24c3b2be55cfe7a6f576333b3be0d68813ecf66225188",
+   "source_pdf": "廢棄物清理法.pdf",
+   "outcome": null,
+   "cjk_ratio": null
+  },
+  {
+   "path": "kb/official/相關法規/建築法.txt",
+   "provenance": "official",
+   "sha256": "ab30cab9c246d616e22dda18490f4bff5085c207477f843e5d8ddb3c47520f79",
+   "source_pdf": "建築法.pdf",
+   "outcome": null,
+   "cjk_ratio": null
+  },
+  {
+   "path": "kb/official/相關法規/民法.txt",
+   "provenance": "official",
+   "sha256": "cae6aafdcf601dd81832a78ec1fd53d46f554a36ae89799fb87a1598e14e94d4",
+   "source_pdf": "民法.pdf",
+   "outcome": null,
+   "cjk_ratio": null
+  },
+  {
+   "path": "kb/official/相關法規/洗錢防制法.txt",
+   "provenance": "official",
+   "sha256": "c03487c8b5bfd6fd30ac6c9f967f760ca19976368f4825259dd330d2321bbbf0",
+   "source_pdf": "洗錢防制法.pdf",
+   "outcome": null,
+   "cjk_ratio": null
+  },
+  {
+   "path": "kb/official/相關法規/空氣污染防制法.txt",
+   "provenance": "official",
+   "sha256": "58d3b1e217735a2db9aa9a63dde999e3592133fb7e50d584aad4a036aec32ea0",
+   "source_pdf": "空氣污染防制法.pdf",
+   "outcome": null,
+   "cjk_ratio": null
+  },
+  {
+   "path": "kb/official/相關法規/行政執行法.txt",
+   "provenance": "official",
+   "sha256": "613156705fddc53b98cdb03f1f398ac4bfca7d1c51e3e9db029406c85d6db01c",
+   "source_pdf": "行政執行法.pdf",
+   "outcome": null,
+   "cjk_ratio": null
+  },
+  {
+   "path": "kb/official/相關法規/行政程序法.txt",
+   "provenance": "official",
+   "sha256": "455673140eb18361345322639fb7e7c5bf34ee39d47eb5eac9350312b89fe021",
+   "source_pdf": "行政程序法.pdf",
+   "outcome": null,
+   "cjk_ratio": null
+  },
+  {
+   "path": "kb/official/相關法規/行政罰法.txt",
+   "provenance": "official",
+   "sha256": "bd67a8892a5f30342d5675db666f6107019651397bed3c3be73101954e99e9c7",
+   "source_pdf": "行政罰法.pdf",
+   "outcome": null,
+   "cjk_ratio": null
+  },
+  {
+   "path": "kb/official/相關法規/行政院及各級行政機關訴願審議委員會審議規則.txt",
+   "provenance": "official",
+   "sha256": "11d76c2e56a94f75d0ff7dbccc7b5bbc3ea65bb3cef2bf4efac3826088e2ba11",
+   "source_pdf": "行政院及各級行政機關訴願審議委員會審議規則.pdf",
+   "outcome": null,
+   "cjk_ratio": null
+  },
+  {
+   "path": "kb/official/相關法規/訴願法.txt",
+   "provenance": "official",
+   "sha256": "8dc02d1e6e9997685aa2634f32fd12926ceebfecbfbb14e38a8f92137269c61c",
+   "source_pdf": "訴願法.pdf",
+   "outcome": null,
+   "cjk_ratio": null
   }
  ]
 }

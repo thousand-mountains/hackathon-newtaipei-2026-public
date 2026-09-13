@@ -40,6 +40,14 @@ PAYLOAD_SECTIONS = ("intake", "facts_excerpt", "screen", "laws", "cases")
 #: 全文沒快取到的兩種原因。**分開講**：一個是這個檔位沒有 S3、一個是抓的時候失敗，
 #: 合成一句「全文未快取」會讓人分不出該去設定環境還是該去看 log。
 NOTE_NO_FULLTEXT_FETCHER = "全文未快取（這個檔位沒有母庫全文來源）"
+#: 條文取自本機的條文原文索引（賽方資料集官方列印版，11 部）。
+NOTE_FROM_ARTICLE_INDEX = "條文取自條文原文索引（賽方資料集官方版，已逐條校對）"
+#: 條文取自母庫全量那批。**要講明它可能缺末項／款**——實測那批每條都被截掉最後
+#: 一項或一款（訴願法 §77 只有七款、§14 只有 3 項；訴願法 101 條裡 57 條短少）。
+#: 承辦人會照著這段文字寫決定書，所以不能讓它看起來跟官方版一樣可靠。
+NOTE_FROM_CORPUS_MAY_BE_TRUNCATED = (
+    "條文取自母庫全量批，**該批實測每條可能缺最後一項／款**，引用前請對照全國法規資料庫"
+)
 NOTE_FULLTEXT_FAILED = "全文未快取（讀母庫失敗）"
 
 #: 歸檔層用完就丟的欄位前綴（`backend/llm/chat.py` 的 `ARCHIVE_LAWTABLE_META`）。
@@ -185,6 +193,7 @@ def _attach_statute_body(
     meta: dict[str, Any],
     fetch_text: Callable[[str], str] | None,
     find_statute_key: Callable[[str], str | None] | None,
+    article_text: Callable[[str, str], str | None] | None = None,
 ) -> None:
     """替一筆 `lawtable:` 卷宗項目補上條文（`body_cached`）。
 
@@ -201,6 +210,26 @@ def _attach_statute_body(
     article = str(meta.get("article") or "")
     if not law or not article:
         return
+    # ── 先查本機的條文原文索引（`scripts/build_law_articles.py` 從
+    #    `kb/official/相關法規/` 建的，11 部賽方法規、條→項→款）───────────
+    #
+    # **為什麼優先它，而不是母庫**（2026-09-13 實測）：母庫那批
+    # `kb/public/相關法規_全量/` **每條都缺最後一項／款**——訴願法 §77 從這裡切出來
+    # 只有七款，缺的正是第八款「對於非行政處分……提起訴願者」，而那是不受理最常用的
+    # 款次之一。本模組的檔頭寫著「承辦人會照著它寫決定書」，那就不能端一條少一款的法條。
+    #
+    # 索引還順帶解決版面：母庫官方那批是列印版固定欄寬，句子中間有硬折行
+    # （「補送訴願\n              書者。」），直接端出來不能看。索引是解析過的。
+    #
+    # 索引沒建（檔案不在，它不進 git）或這部法不在 11 部裡 → 照舊走母庫。
+    indexed = article_text(law, article) if article_text is not None else None
+    if indexed:
+        item["body_cached"] = indexed
+        item["note"] = _join_note(item.get("note"), NOTE_FROM_ARTICLE_INDEX)
+        return
+
+    # 索引沒有這一條才需要母庫，所以 `fetch_text` 的檢查在索引之後——
+    # 擺前面的話，沒有 S3 client 的檔位連本機索引都用不到。
     if fetch_text is None:
         item["note"] = _join_note(item.get("note"), NOTE_NO_FULLTEXT_FETCHER)
         return
@@ -232,6 +261,8 @@ def _attach_statute_body(
             item.get("note"), NOTE_ARTICLE_NOT_SLICED.format(key=key, article=article))
         return
     item["body_cached"] = body
+    if key.startswith(statute_text.CORPUS_STATUTE_PREFIX):
+        item["note"] = _join_note(item.get("note"), NOTE_FROM_CORPUS_MAY_BE_TRUNCATED)
     # **原本那句 note 留著，不覆蓋**（硬條件 2）：「條號存在性驗證」講的是
     # **驗證狀態**（快照查表），「這裡是條文」是另一件事。互相取代的話，
     # 承辦人會以為這段條文也經過了條號驗證，或反過來以為驗證沒做。
@@ -242,6 +273,7 @@ def _attach_statute_body(
 def archive_adapter(case_id: str, cases_dir: pathlib.Path | None = None,
                     fetch_text: Callable[[str], str] | None = None,
                     find_statute_key: Callable[[str], str | None] | None = None,
+                    article_text: Callable[[str, str], str | None] | None = None,
                     ) -> Callable[..., list[dict[str, Any]]]:
     """把「檢索結果寫進本案卷宗」包成聊天層看得懂的 callable。
 
@@ -272,7 +304,8 @@ def archive_adapter(case_id: str, cases_dir: pathlib.Path | None = None,
                 scratch = {k: item.pop(k) for k in [x for x in item if x.startswith(_SCRATCH_PREFIX)]}
                 meta = scratch.get(LAWTABLE_META_KEY)
                 if isinstance(meta, dict) and not item.get("body_cached"):
-                    _attach_statute_body(item, meta, fetch_text, find_statute_key)
+                    _attach_statute_body(item, meta, fetch_text, find_statute_key,
+                                         article_text=article_text)
         if group == "references":
             for item in prepared:
                 key = str(item.get("id") or "")
