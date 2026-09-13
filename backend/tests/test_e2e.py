@@ -796,6 +796,144 @@ def test_the_lawtable_id_never_goes_looking_for_an_s3_object():
     assert_eq(asked, [], f"拿 lawtable 的 id 去 S3 問了：{asked}")
 
 
+# ── 查表通道的法條要帶著條文（2026-09-13）───────────────────────────
+#
+# 查表通道只驗條號存在性，`laws-snapshot.json` 一個字的條文都沒有，
+# 所以 `lawtable:` 那批 `body_cached` 一直是空的、點開只有一句
+# 「條號存在性驗證，非法條全文」。條文在母庫（`kb/public/相關法規_全量/`）。
+
+_LAW_FULLTEXT = """行政程序法
+
+第 71 條
+行政機關之送達，應注意其期間。
+
+第 72 條
+送達，於應受送達人之住居所、事務所或營業所為之。
+
+第 73 條
+於應受送達處所不獲會晤應受送達人時。
+"""
+
+
+def _law_item() -> dict:
+    """`chat._law_items()` 產出的形狀（含歸檔層用完就丟的 `_lawtable`）。"""
+    return {"id": "lawtable:行政程序法-72", "t": "行政程序法第72條", "src": "",
+            "note": "條號存在性驗證，非法條全文（快照只索引條號）",
+            "verified": True, "relevance": "unknown", "body_cached": "",
+            "channel": "lawtable",
+            chat_mod.ARCHIVE_LAWTABLE_META: {"law": "行政程序法", "article": "72"}}
+
+
+def _file_law(fetch_text=None, find_statute_key=None, item=None) -> dict:
+    with tempfile.TemporaryDirectory() as tmp:
+        cases_dir = pathlib.Path(tmp) / "cases"
+        store.ensure(ORDINARY, cases_dir=cases_dir)
+        chat_bridge.archive_adapter(
+            ORDINARY, cases_dir, fetch_text=fetch_text, find_statute_key=find_statute_key,
+        )("laws", [item or _law_item()])
+        return store.load(ORDINARY, cases_dir)["laws"][0]
+
+
+def test_a_lawtable_entry_carries_the_article_text_from_the_corpus():
+    """點開查表通道的法條要看得到**那一條的條文**，不是只看到一句驗證說明。"""
+    asked: list[str] = []
+
+    def fetch(key):
+        asked.append(key)
+        return _LAW_FULLTEXT
+
+    filed = _file_law(fetch_text=fetch)
+    assert_eq(asked, ["kb/public/相關法規_全量/行政程序法.txt"],
+              f"抓的不是那部法的母庫全文：{asked}")
+    assert_in("送達，於應受送達人之住居所", filed["body_cached"])
+    assert_true("第 73 條" not in filed["body_cached"], "切到下一條去了")
+    # **來源與範圍要講出來**，而且**原本那句驗證說明要留著**：
+    # 「條號存在性驗證」講的是驗證狀態，「這裡是條文」是另一件事。
+    assert_in("條號存在性驗證", filed["note"], "原本的驗證說明被條文說明蓋掉了")
+    assert_in("kb/public/相關法規_全量/行政程序法.txt", filed["note"], "沒說條文出自哪一份檔")
+    assert_in("第72條", filed["note"], "沒說是那份檔的第幾條")
+    assert_in("未改寫", filed["note"], "沒說它是原文照錄")
+
+
+def test_the_two_reasons_for_having_no_article_text_are_told_apart():
+    """**硬條件**：「母庫沒有這部法」與「有這部法但切不出這一條」要分得出來。
+
+    下一步完全不同——前者要換個來源查，後者要去看那部法的條次寫法。
+    合成一句「沒有條文」的話，承辦人不知道往哪邊查。
+    """
+    def missing(_key):
+        raise FileNotFoundError("母庫沒有這份文件")
+
+    filed = _file_law(fetch_text=missing)
+    assert_eq(filed["body_cached"], "", "抓不到卻有條文？")
+    assert_in("母庫沒有這部法的全文", filed["note"])
+    assert_in("kb/public/相關法規_全量/行政程序法.txt", filed["note"],
+              "沒說查過哪一個 key——檔名規則猜錯時這句話是唯一的線索")
+
+    # 有全文、但那部法裡沒有第 72 條
+    filed = _file_law(fetch_text=lambda _k: "第 1 條\n甲。\n\n第 2 條\n乙。\n")
+    assert_eq(filed["body_cached"], "", "切不出來卻有條文？")
+    assert_in("母庫有這部法的全文", filed["note"])
+    assert_in("切不出第72條", filed["note"])
+    assert_true("母庫沒有這部法" not in filed["note"], "兩種原因混在一起了")
+
+
+def test_the_corpus_key_guess_falls_back_to_asking_the_corpus():
+    """檔名規則沒對著實際 bucket 驗過（本機無憑證）。猜錯時要有後備，
+    而且後備只在猜錯之後才動——正常路徑不多花一次檢索。"""
+    calls: list[str] = []
+
+    def fetch(key):
+        calls.append(key)
+        if key != "kb/public/相關法規_全量/行政程序法_112年修正.txt":
+            raise FileNotFoundError("沒有這份")
+        return _LAW_FULLTEXT
+
+    filed = _file_law(fetch_text=fetch,
+                      find_statute_key=lambda _n: "kb/public/相關法規_全量/行政程序法_112年修正.txt")
+    assert_in("送達，於應受送達人之住居所", filed["body_cached"])
+    assert_in("行政程序法_112年修正.txt", filed["note"], "note 要指向真正抓到的那一份")
+
+    # 直接組的 key 抓得到時，不得再問後備一次
+    asked_backup: list[str] = []
+    _file_law(fetch_text=lambda _k: _LAW_FULLTEXT,
+              find_statute_key=lambda n: asked_backup.append(n))
+    assert_eq(asked_backup, [], "直接抓到了還去問後備，白花一次檢索")
+
+
+def test_fetching_the_article_text_never_breaks_filing():
+    """抓條文失敗**不得讓歸檔失敗**（沿用 references 那條的判準）。"""
+    def boom(_key):
+        raise RuntimeError("S3 掛了")
+
+    filed = _file_law(fetch_text=boom)
+    assert_eq(filed["id"], "lawtable:行政程序法-72", "抓條文失敗把整筆歸檔帶走了")
+
+    # 沒注入抓取器（測試／還沒設好 S3 的檔位）也要說得出來
+    filed = _file_law()
+    assert_in(chat_bridge.NOTE_NO_FULLTEXT_FETCHER, filed["note"])
+
+
+def test_the_scratch_field_never_reaches_the_manifest():
+    """`_lawtable` 是歸檔層用完就丟的，**不得寫進 manifest**——
+    契約 §4.0 沒有這個鍵，留著就是多一個沒有人定義過的欄位。"""
+    filed = _file_law(fetch_text=lambda _k: _LAW_FULLTEXT)
+    leaked = [k for k in filed if k.startswith("_")]
+    assert_eq(leaked, [], f"歸檔層的暫用欄位漏進卷宗：{leaked}")
+
+
+def test_the_scratch_key_is_the_same_string_on_both_sides():
+    """`chat.py` 寫入、`chat_bridge.py` 讀出，兩邊各寫一份字串常數。
+
+    不一致的下場是**沒有症狀**：條文永遠是空的，而 note 會說「這個檔位沒有母庫
+    全文來源」——看起來像環境沒設好。所以釘住它們相等。
+    （不直接 import 對方的常數，理由見 `chat_bridge._SCRATCH_PREFIX` 上面那段。）
+    """
+    assert_eq(chat_bridge.LAWTABLE_META_KEY, chat_mod.ARCHIVE_LAWTABLE_META)
+    assert_true(chat_bridge.LAWTABLE_META_KEY.startswith(chat_bridge._SCRATCH_PREFIX),
+                "暫用欄位沒有底線前綴，就不會被 pop 掉")
+
+
 def test_the_chip_query_is_the_same_string_n4_actually_searched_with():
     """工具 chip 的查詢句必須是 **N4 真的送出去的那一串**，不是另外組的。
 

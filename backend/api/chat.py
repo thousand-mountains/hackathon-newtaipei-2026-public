@@ -58,7 +58,7 @@ from backend.api.events import BUS
 from backend.dossier import corpus
 from backend.config import settings
 from backend.config.settings import load_snapshot, run_mode
-from backend.llm.chat import RefBook, build_chat_agent, classify_answer
+from backend.llm.chat import RefBook, _statute_key, build_chat_agent, classify_answer
 from backend.nodes.n4_retrieval import (
     CASE_QUERY_SOURCES,
     build_case_query,
@@ -77,6 +77,10 @@ from backend.orchestrator.runstore import RunNotFound, load_run
 from backend.retrieval.kb import build_retriever
 
 router = APIRouter()
+
+#: 後備查母庫檔名時一次要幾筆。只是要在前幾名裡找**標題完全相等**的那一份，
+#: 不是要給使用者看，所以不必多。
+SEARCH_LIMIT_STATUTE = 10
 
 #: 進程內的對話記憶。**ECS 擴到多台就會失憶**（spec §8.2）——目前單台，不處理，
 #: 寫在這裡以免日後被當成新發現的 bug。
@@ -246,6 +250,37 @@ def _fetch_corpus_text(key: str) -> str:
 ACK_TEXT = ""
 
 
+def _find_statute_key(law_name: str) -> str | None:
+    """法規名 → 母庫那份全文的 S3 key。找不到（或認不準）回 `None`。
+
+    **檔名規則猜錯時的後備**：`statute_text.corpus_key()` 直接組
+    `kb/public/相關法規_全量/{法規名}.txt`，而那個規則沒有對著實際 bucket 驗過
+    （見該模組檔頭）。這裡改用母庫自己的答案——拿法規名去搜，
+    **標題完全相等**才認。
+
+    為什麼是完全相等而不是取第一名：語意檢索對「訴願法」一定會回
+    「訴願法施行細則」「行政院及各級行政機關訴願審議委員會審議規則」這類鄰居，
+    取第一名就會把**另一部法的條文**貼進卷宗——而那段文字看起來完全正常。
+    比對用 `_statute_key`（去空白、去副檔名），理由見 `backend/llm/chat.py` 的同名函式。
+
+    只在直接組出來的 key 抓不到時才會被呼叫，所以正常路徑不多花這一次檢索。
+    """
+    want = _statute_key(law_name)
+    if not want:
+        return None
+    hits = corpus.search_statutes(law_name, limit=SEARCH_LIMIT_STATUTE,
+                                  kb=dossier_api._kb_client())
+    for h in hits or []:
+        if _statute_key(h.get("t")) == want:
+            return str(h.get("id") or "") or None
+    return None
+
+
+#: `ack` 的口白。**故意寫得像個承辦助理，而不是像一個進度條**——
+#: 它的用途是讓對話框立刻有東西，不是宣告工具已經開始跑（那是 `tool_call` 的事）。
+ACK_TEXT = "收到，我看一下卷內資料。"
+
+
 def _run_turn(case_id: str, body: ChatIn, emit: Any,
               case_payload: dict[str, Any] | None = None,
               run_info: dict[str, Any] | None = None,
@@ -284,7 +319,8 @@ def _run_turn(case_id: str, body: ChatIn, emit: Any,
         build_graph=relation_graph_adapter(case_id),
         # 契約 §3.0：兩支檢索工具查到的東西要歸檔進本案卷宗。全文由母庫抓
         # （`_fetch_corpus_text` 自己吞掉 boto3 缺席與 S3 失敗，見該函式）。
-        archive=archive_adapter(case_id, fetch_text=_fetch_corpus_text),
+        archive=archive_adapter(case_id, fetch_text=_fetch_corpus_text,
+                                find_statute_key=_find_statute_key),
         law_query=(run_info or {}).get("law_query") or "",
         law_query_sources=(run_info or {}).get("law_query_sources") or [],
         case_query=(run_info or {}).get("case_query") or "",

@@ -22,7 +22,7 @@ if str(ROOT) not in sys.path:
 
 import backend.llm.chat as chat_mod  # noqa: E402
 import backend.retrieval.kb as kb_module  # noqa: E402
-from backend.dossier import artifact_ref, corpus, runlink, store  # noqa: E402
+from backend.dossier import artifact_ref, corpus, runlink, statute_text, store  # noqa: E402
 from backend.orchestrator import case_view  # noqa: E402
 from backend.orchestrator.artifact_sections import build_sections  # noqa: E402
 from backend.orchestrator.graph import build_payload, run_case  # noqa: E402
@@ -1400,3 +1400,96 @@ def test_the_validation_handler_is_actually_wired_to_the_app():
     handler = mod.app.exception_handlers.get(mod.RequestValidationError)
     assert_true(handler is mod._validation_error,
                 "RequestValidationError 沒有掛到 app 上，預設處理器還是會贏")
+
+
+# ── 母庫法規全文 → 某一條（`backend/dossier/statute_text.py`）──────────
+#
+# chat 的「搜尋相關法規」走查表通道，快照只有條號清單、一個字的條文都沒有，
+# 所以 `lawtable:` 那批 `body_cached` 一直是空的。條文在母庫
+# （`kb/public/相關法規_全量/`）。這一組釘的是「全文 → 第 N 條」那一步。
+#
+# **切錯比切不出來糟得多**：切錯的那一段是隔壁那條的文字，看起來完全正常，
+# 而承辦人會照著它寫決定書。所以下面每一條「回 None」的測試都跟成功的那條一樣重要。
+
+_STATUTE_TEXT = """行政程序法
+
+第 一 章 總則
+
+第 71 條
+行政機關之送達，應注意其期間。
+
+第 72 條
+送達，於應受送達人之住居所、事務所或營業所為之。但在行政機關辦公處所
+或他處會晤應受送達人時，得於會晤處所為之。
+對於機關、法人之送達，依第 71 條規定辦理。
+
+第 二 章 期日及期間
+
+第 73 條
+於應受送達處所不獲會晤應受送達人時，得將文書付與有辨別事理能力之同居人。
+"""
+
+
+def test_slicing_takes_the_whole_article_and_nothing_from_the_next_one():
+    body = statute_text.slice_article(_STATUTE_TEXT, "72")
+    assert_true(body, "切不出第 72 條")
+    assert_in("送達，於應受送達人之住居所", body)
+    assert_true("第 73 條" not in body, f"吃到下一條了：{body!r}")
+    assert_true("有辨別事理能力" not in body, f"吃到下一條的內文了：{body!r}")
+    assert_true("行政機關之送達，應注意" not in body, f"吃到上一條了：{body!r}")
+
+
+def test_slicing_stops_at_a_chapter_heading():
+    """章節標題夾在兩條之間時，條文到它為止——不把「第 二 章 期日及期間」算進第 72 條。"""
+    body = statute_text.slice_article(_STATUTE_TEXT, "72")
+    assert_true("第 二 章" not in body, f"章標題被算進條文：{body!r}")
+
+
+def test_an_in_text_reference_is_not_mistaken_for_an_article_heading():
+    """**這條是這組裡最重要的。**
+
+    「依第 71 條規定辦理」出現在第 72 條的**內文中間**。把它當成條次標題的話，
+    第 71 條會被切成「從第 72 條中間開始」的一段殘文——而那段文字讀起來完全正常。
+    只認行首的條次標題就擋掉了。
+    """
+    body = statute_text.slice_article(_STATUTE_TEXT, "71")
+    assert_true(body.startswith("第 71 條"), f"第 71 條的起點跑掉了：{body!r}")
+    assert_in("行政機關之送達，應注意其期間。", body)
+    assert_true("依第 71 條規定辦理" not in body,
+                f"從內文的引用切起，切出了一段殘文：{body!r}")
+
+
+def test_both_ways_of_writing_a_sub_article_are_recognised():
+    """母庫實際怎麼寫「第 15 條之 1」本機驗不到（無憑證），所以兩種寫法都認。"""
+    for text in ("第 15-1 條\n本條為之一。\n\n第 16 條\n下一條。\n",
+                 "第 15 條之 1\n本條為之一。\n\n第 16 條\n下一條。\n"):
+        body = statute_text.slice_article(text, "15之1")
+        assert_true(body and "本條為之一" in body, f"切不出之一：{text!r} → {body!r}")
+    # 而且不得跟主條號搞混
+    assert_eq(statute_text.slice_article("第 15-1 條\n之一。\n", "15"), None,
+              "第 15 條之 1 被當成第 15 條")
+
+
+def test_slicing_refuses_instead_of_guessing():
+    """四種切不出來的情形，一律回 None——**寧可空著也不端一段看起來正常的錯文字**。"""
+    assert_eq(statute_text.slice_article(_STATUTE_TEXT, "999"), None, "沒有的條號")
+    assert_eq(statute_text.slice_article(_STATUTE_TEXT, "abc"), None, "讀不懂的條號 key")
+    # **整部法壓成一行**：只有最前面那個條號在行首。第 72、73 條切不出來是對的，
+    # 但第 71 條原本會切出**整行**——三條的文字被當成第 71 條端出去，而且讀起來
+    # 完全正常。所以標題少於兩個時一條都不切（2026-09-13 寫這條測試時抓到）。
+    one_line = "第71條 前條之送達。第72條 送達於住居所為之。第73條 不獲會晤時。"
+    for art in ("71", "72", "73"):
+        assert_eq(statute_text.slice_article(one_line, art), None,
+                  f"整部法壓成一行時切了第 {art} 條——那不是以行分條的文件")
+    assert_eq(statute_text.slice_article("第 72 條\n甲。\n\n第 72 條\n乙。\n", "72"), None,
+              "同一條出現兩次時分不出哪個是本文，不得挑一個")
+    assert_eq(statute_text.slice_article("第 72 條\n\n第 73 條\n乙。\n", "72"), None,
+              "只有標題沒有內文，不得端一行「第 72 條」充數")
+
+
+def test_the_corpus_key_rule_is_declared_in_one_place():
+    """檔名規則本機驗不到（無憑證），但它至少要只有一份、而且看得出長什麼樣。"""
+    assert_eq(statute_text.corpus_key("行政程序法"),
+              "kb/public/相關法規_全量/行政程序法.txt")
+    assert_true(statute_text.corpus_key("訴願法").startswith(
+        statute_text.CORPUS_STATUTE_PREFIX))
