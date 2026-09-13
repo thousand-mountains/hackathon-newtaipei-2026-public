@@ -8,7 +8,7 @@
 import RelationGraph from './RelationGraph.vue'
 import ProcedureCheck from './ProcedureCheck.vue'
 import { scoreCaption, scoreNote, rankerOf, showsPercent } from '../api/ranker.js'
-import { active, toolStatusText, inlineMd } from '../store/app.js'
+import { active, toolStatusText, inlineMd, downloadExport } from '../store/app.js'
 
 // 解析卷證的四塊（案由／事實摘錄／爭點／程序審查）**不在 tool_result 裡**——
 // `tool_result` 只帶 run_id 與 state，內容要跑完之後打彙整版拿（契約 §3.3）。
@@ -274,7 +274,7 @@ const provLabel = (p) => PROV[p] || '出處未標示'
         此檔含 {{ out.unresolved }} 處無法對應的引用，送簽前請先核對。
       </p>
       <div style="display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap">
-        <button class="btn" @click="emit('export-download', out.isPdf)">重新下載</button>
+        <button class="btn pri" @click="downloadExport(out)">下載檔案</button>
       </div>
     </div>
   </template>

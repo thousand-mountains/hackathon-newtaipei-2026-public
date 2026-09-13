@@ -1045,14 +1045,16 @@ async function runExport(c, tool, id) {
       kb: res.blob && res.blob.size ? Math.max(1, Math.round(res.blob.size / 1024)) : null,
       citeCount: typeof res.citeCount === 'number' ? res.citeCount : null,
       unresolved: res.unresolved || 0,
+      // 把檔案 blob 暫存在卡上，讓「下載」按鈕點了才存檔——**不自動下載**。
+      // mock 沒有真檔（_mock），下載按鈕會走 reExport 重跑端點。
+      _blob: res._mock ? null : res.blob || null,
     }
-    if (res.blob && !res._mock) triggerDownload(res.blob, fname)
     if (!c.docs.out.some((x) => x.name === fname))
       addOne(c, 'out', { name: fname, note: (isPdf ? 'PDF' : 'Word') + '．訴願決定書版型', ext: isPdf ? 'pdf' : 'docx' })
     c.flags.out = true
     // 匯出的引用警示（交接文件第二件的匯出部分）：X-Unresolved-Cites 非 0 要警示；
     // X-Export-Warning 是後端做過編碼的中文，http.js 已 decode。
-    let msg = `<p>${isPdf ? 'PDF' : 'Word 檔'}已產出並歸檔至右側「草稿文件產出」。</p>`
+    let msg = `<p>${isPdf ? 'PDF' : 'Word 檔'}已產出並歸檔至右側「草稿文件產出」，點上方「下載檔案」即可存檔。</p>`
     if (res.unresolved > 0)
       msg += `<p style="color:var(--muted);font-size:12px;margin-top:6px">此檔含 ${res.unresolved} 處無法對應的引用，送簽前請先核對。</p>`
     if (res.warning)
@@ -1080,6 +1082,13 @@ function triggerDownload(blob, filename) {
   a.click()
   a.remove()
   setTimeout(() => URL.revokeObjectURL(url), 1000)
+}
+
+// 匯出卡「下載檔案」按鈕：不自動下載，按了才存檔。
+// 有暫存 blob（real）→ 直接存；沒有（mock 沒真檔）→ 重跑一次匯出端點。
+export function downloadExport(out) {
+  if (out && out._blob) triggerDownload(out._blob, out.fname || 'download')
+  else runTool(out && out.isPdf ? 'pdf' : 'doc', '', true)
 }
 
 // ── 訊息處理 ──
