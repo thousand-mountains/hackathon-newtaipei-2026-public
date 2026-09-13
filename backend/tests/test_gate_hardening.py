@@ -632,7 +632,9 @@ def test_draft_citation_without_stable_key_fails_loudly():
     state.retrieval = {"laws": [], "cases": [], "retrieval_meta": {}}
     # 直接注入一個抽得到、卻組不出鍵的法條引用（條號解析不出來的情形）
     orig = n6_gate.CitationChecker.check_text
-    n6_gate.CitationChecker.check_text = lambda self, text: (
+    # 簽名要跟真的那支一致（`context` 是 2026-09-13 加的回指視窗）。
+    # 假件的簽名落後於本尊時，錯的樣子是 TypeError ——看起來像環境壞掉、不像測試紅。
+    n6_gate.CitationChecker.check_text = lambda self, text, context="": (
         [Citation(raw="建築法", kind="law", state="out_of_scope", lamp="y",
                   note="條號無法解析", payload={"law": "建築法", "article": None})]
         if "建築法" in text else []
@@ -1525,3 +1527,136 @@ def test_expected_outcome_prior_reason_is_not_stale():
         "本機無資料集，不推估" not in src,
         "expected_outcome_prior 的理由仍寫著「本機無資料集」，但 manifest 已有 2,448 筆 outcome",
     )
+
+
+# ── 回指視窗：先行詞在前一句時，N6 逐句檢查要看得到（2026-09-13）──────────
+#
+# 雲上 16 份真 run 實測 11 筆（`同法第86條`×7、`同法第50條`×3、`同法第26條`×1，
+# 佔沒命中的 38%）：草稿寫「又依同法第86條第1款」，payload 回
+# `ref_key="同法|86"`、`state="out_of_scope"`、
+# note「同法不在快照涵蓋的 11 部法規內」。**承辦人讀到的是「有一部叫『同法』的
+# 法律」**，它其實是建築法。根因是 N6 一次只餵一句，而先行詞在前一句。
+#
+# 下面幾條全部走 `n6_gate.run()`，不是只測 `check_text`——原本那個洞正是
+# 「解析器單獨測是對的、正式路徑餵進去的形狀不對」。
+
+
+def _anaphora_state(blocks: list[dict[str, Any]]) -> CaseState:
+    state = CaseState(case_id="synthetic-unit-anaphora")
+    state.screen = {"requires_human_conclusion": False, "fact_issues": [],
+                    "human_conclusion_signals": [], "deadline": {"steps": [], "caveats": []}}
+    state.retrieval = {"laws": [], "cases": [], "retrieval_meta": {}}
+    state.draft = {"doc_skeleton": blocks}
+    return state
+
+
+def _cites_of(state: CaseState) -> list[tuple[str, str, str]]:
+    """(句 id, raw, state)，依 doc 順序。"""
+    return [(s["id"], c["raw"], c["state"])
+            for blk in state.gate["doc"] for s in blk.get("ss", [])
+            for c in s["citations"]]
+
+
+def _llm_sentence(sid: str, text: str, basis: str | None = None) -> dict[str, Any]:
+    s = _sentence(sid, text, "reasoning")
+    s["basis"] = basis
+    return s
+
+
+def test_anaphora_resolves_across_sentences_within_a_block() -> None:
+    """三個雲上實際出現的形狀：先行詞在前一句，回指必須綁得回去。
+
+    **並且「同法」這個假法規名要整個消失**，不是「多一筆對的、假的那筆留著」——
+    承辦人看的是引用清單，清單裡留著一筆「同法第86條／查不到」就還是那句假話。
+    """
+    for antecedent, anaphor, want in (
+        ("建築法第25條", "同法第86條", "建築法第86條"),
+        ("訴願法第14條", "同法第50條", "訴願法第50條"),
+        ("行政程序法第74條", "同法第26條", "行政程序法第26條"),
+    ):
+        # **回指句的 `basis` 三種形狀都要跑。** 只用 `basis=None` 構造會漏掉
+        # 正式路徑真正的樣子：fixture 裡 llm 句的 basis 一律有值，而 N6 檢查的是
+        # `f"{text}\n{basis}"`——basis 排在回指詞**後面**。2026-09-13 第一版修正
+        # 用「這一句有沒有引用」當判準，於是 basis 一有值跨句視窗就失效，
+        # 而 `basis=None` 的測試照樣全綠：**修了等於沒修，測試還說修好了。**
+        for basis in (None, want, "訴願法第14條"):
+            state = _anaphora_state([{"ty": "p", "text": "", "ind": 1, "ss": [
+                _llm_sentence("s1", f"按{antecedent}規定，……。", antecedent),
+                _llm_sentence("s2", f"又依{anaphor}第1款規定，……。", basis),
+            ]}])
+            n6_gate.run(state, _ctx())
+            cites = _cites_of(state)
+            raws = [r for _sid, r, _st in cites]
+            why = f"（{anaphor}／basis={basis!r}）"
+            assert_in(want, raws, f"{anaphor} 沒有綁回 {antecedent} 的法規{why}：實得 {raws}")
+            assert_true(
+                all("同法" not in r and "本法" not in r for r in raws),
+                f"回指詞仍以法規名的身分留在引用清單裡{why}：{raws}",
+            )
+            assert_eq([st for _sid, r, st in cites if r == want], [STATE_OK],
+                      f"{want} 在快照裡，應判在庫{why}")
+
+
+def test_the_anaphora_window_stops_at_the_block_boundary() -> None:
+    """視窗止於一個 block，跨不過章節標題。
+
+    `doc_skeleton` 裡 `ty=="h"` 的標題自己是一個 block，句子在後面**新的**
+    `ty=="p"` block 的 `ss[]` 裡。所以「同一個 block」＝「同一個標題底下的同一段」。
+    邊界是結構決定的，不是挑一個看起來差不多的句數。
+
+    跨段綁回去才是真正危險的那件事：事實段提到的法跟理由段講的常常不是同一部。
+    """
+    state = _anaphora_state([
+        {"ty": "p", "text": "", "ind": 1,
+         "ss": [_llm_sentence("a1", "按建築法第25條規定，……。", "建築法第25條")]},
+        {"ty": "h", "text": "理由", "ind": 0},
+        {"ty": "p", "text": "", "ind": 1,
+         "ss": [_llm_sentence("b1", "又依同法第86條規定，……。")]},
+    ])
+    n6_gate.run(state, _ctx())
+    cites = _cites_of(state)
+    assert_in(("b1", "同法第86條", STATE_OUT_OF_SCOPE), cites,
+              f"跨了章節標題還綁得回去——視窗沒有停在 block 邊界：{cites}")
+
+
+def test_the_window_does_not_recheck_the_previous_sentences_citations() -> None:
+    """前一句的引用不得在後一句被重算。
+
+    重算的話引用清單會越往後越長（同一筆法條出現 N 次），
+    而 blockers 會把同一個問題列 N 次——重複條目會蓋掉真訊號。
+    """
+    state = _anaphora_state([{"ty": "p", "text": "", "ind": 1, "ss": [
+        _llm_sentence("s1", "按建築法第25條規定，……。", "建築法第25條"),
+        _llm_sentence("s2", "本件事實已臻明確。"),
+        _llm_sentence("s3", "又依同法第86條規定，……。"),
+    ]}])
+    n6_gate.run(state, _ctx())
+    per_sentence = {sid: [r for s2, r, _st in _cites_of(state) if s2 == sid]
+                    for sid in ("s1", "s2", "s3")}
+    assert_eq(per_sentence["s2"], [], f"沒有引用的句子被塞進前一句的引用：{per_sentence['s2']}")
+    assert_eq(per_sentence["s3"], ["建築法第86條"],
+              f"s3 應只有自己那一筆（前句的引用不得重算）：{per_sentence['s3']}")
+
+
+def test_the_window_never_turns_a_real_out_of_scope_law_green() -> None:
+    """**最重要的反向對照組。**
+
+    視窗變大之後，「中間夾一部我們驗不了的法規」的機會也跟著變大。
+    此時「同法」指的是那部驗不了的法，跳過它去綁前一句驗得到的，
+    就是把一個誠實的「我不知道」換成一個自信的錯答案——那比現在糟得多。
+    """
+    state = _anaphora_state([{"ty": "p", "text": "", "ind": 1, "ss": [
+        _llm_sentence("s1", "按建築法第25條規定，……。", "建築法第25條"),
+        _llm_sentence("s2", "另依新北市建築管理自治條例第5條規定，……。"),
+        _llm_sentence("s3", "又依同法第3條規定，……。"),
+    ]}])
+    n6_gate.run(state, _ctx())
+    cites = _cites_of(state)
+    assert_in(("s2", "新北市建築管理自治條例第5條", STATE_OUT_OF_SCOPE), cites,
+              f"具名的庫外法規不得被視窗誤綁成在庫：{cites}")
+    assert_true(
+        not any(sid == "s3" and r == "建築法第3條" for sid, r, _st in cites),
+        f"「同法第3條」被綁到上上句的建築法了——最近的先行詞是自治條例：{cites}",
+    )
+    assert_in(("s3", "同法第3條", STATE_OUT_OF_SCOPE), cites,
+              f"綁不到就留黃，不冒充已驗證：{cites}")

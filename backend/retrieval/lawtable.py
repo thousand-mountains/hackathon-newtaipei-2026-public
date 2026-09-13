@@ -332,12 +332,69 @@ def _trim_law_name(name: str) -> str:
     return name
 
 
+def law_references(text: str, law_names: list[str]) -> list[tuple[int, str, bool]]:
+    """文中每一筆法規引用的 `(位置, 法規名, 是否為快照涵蓋的法規)`，依位置排序。
+
+    **庫外的也在清單裡，這是重點。** 它們不能當回指的先行詞（我們驗不了它），
+    但它們必須**擋住**排在更前面、那個本來可以當先行詞的法規：
+
+        「…建築法第25條…新北市建築管理自治條例第5條…同法第3條…」
+
+    這裡的「同法」指的是自治條例。跳過它去綁建築法，會把一個誠實的
+    「我驗不了」換成一個**看起來很確定的錯答案**——那比黃燈糟得多。
+
+    回指本身（「同法第X條」）不算候選：它的 `m.end()` 與 `ANAPHORA_RE` 的重合，
+    照 `end` 排除。用 `end` 不用 `start` 是因為泛用比對會把前導虛詞吃進去
+    （「又依同法」），start 對不齊而 end 一定對齊在「第X條」的尾巴。
+    """
+    anaphora_ends = {m.end() for m in ANAPHORA_RE.finditer(text)}
+    out: list[tuple[int, str, bool]] = []
+    if law_names:
+        for m in build_law_regex(law_names).finditer(text):
+            if m.end() in anaphora_ends:
+                continue
+            out.append((m.start(), m.group(1), True))
+    for m in GENERIC_LAW_RE.finditer(text):
+        if m.end() in anaphora_ends:
+            continue
+        name = _trim_law_name(m.group(1))
+        if name in law_names:
+            continue  # 同一筆引用已由上面的已知法規名比對收走
+        out.append((m.start(), name, False))
+    out.sort(key=lambda x: x[0])
+    return out
+
+
+def nearest_law_reference(
+    text: str,
+    law_names: list[str],
+    before: int | None = None,
+) -> tuple[str, bool] | None:
+    """`before` 位置之前**最近**的那一筆法規引用 `(法規名, 是否為快照涵蓋的法規)`。
+    一筆都沒有回 `None`。`before=None` ＝看整段（給跨句的 `context` 用）。
+
+    **「一筆都沒有」與「有一筆但驗不了」要分得開**，兩者的處置不一樣：
+    前者才可以往前一句去找，後者必須就地停住——那一筆就是先行詞，
+    它驗不了就該留黃，再往前翻會綁到一部根本不是它指的法。
+    """
+    nearest: tuple[str, bool] | None = None
+    for pos, name, known in law_references(text, law_names):
+        if before is not None and pos >= before:
+            break
+        nearest = (name, known)
+    return nearest
+
+
 def extract_law_refs(text: str, law_names: list[str]) -> list[tuple[str | None, str, str]]:
     """只抓快照涵蓋的法規（查表用）。回傳 [(法規名, 條號 key, 顯示字串)]。"""
     return [(law, key, disp) for law, key, disp, known in extract_all_law_refs(text, law_names) if known]
 
 
-def extract_all_law_refs(text: str, law_names: list[str]) -> list[tuple[str, str | None, str, bool]]:
+def extract_all_law_refs(
+    text: str,
+    law_names: list[str],
+    context: str = "",
+) -> list[tuple[str, str | None, str, bool]]:
     """抓全部法條引用，含快照範圍外的。
 
     回傳 [(法規名, 條號 key, 顯示字串, 是否為快照涵蓋的法規)]，**依在文中出現的位置排序**
@@ -345,6 +402,24 @@ def extract_all_law_refs(text: str, law_names: list[str]) -> list[tuple[str, str
 
     條號 key 為 `None` 代表「抓到一筆引用，但條號無法無歧義解析」——這一態必須傳下去，
     不能就地猜一個數字，也不能把整筆引用丟掉（丟掉＝系統回「本句未附引用」＝綠燈放行）。
+
+    `context`：**同一個 block 裡排在 `text` 前面的文字**，只用來替回指詞找先行詞
+    （2026-09-13 加）。**`context` 裡的引用不會被回傳**——它不是要檢查的東西，
+    是要拿來理解 `text` 的背景。
+
+    為什麼需要它：`n6_gate` 是**逐句**呼叫的（`n6_gate.py` 的
+    `checker.check_text(f"{text}\n{basis}")`），而「同法」的先行詞通常在**前一句**。
+    於是每一次回指都走進「找不到先行詞」的 fallback，
+    承辦人讀到的是「有一部叫『同法』的法律，我們的快照裡沒有」——
+    它其實是建築法。雲上 16 份真 run 實測 11 筆（`同法第86條`×7、`同法第50條`×3、
+    `同法第26條`×1），佔沒命中的 38%。**這是視窗大小的問題，不是解析器的問題**，
+    所以修的是呼叫端給的視窗，不是下面那個「找不到就不猜」的 fallback。
+
+    **視窗邊界是一個 block，這是結構決定的不是拍腦袋**：`doc_skeleton` 裡
+    `ty=="h"` 的標題自己是一個 block，標題之後的句子在**新的** `ty=="p"` block 的
+    `ss[]` 裡。所以「同一個 block」＝「同一個標題底下的同一段」，跨不過章節標題
+    （事實／理由／期間計算／主文）。「同法」在決定書裡指的就是同一段論證裡剛提過的法，
+    跨段落綁回去才是真正危險的那件事。
     """
     found: list[tuple[int, str, str | None, str, bool]] = []
     known_ends: set[int] = set()
@@ -372,10 +447,20 @@ def extract_all_law_refs(text: str, law_names: list[str]) -> list[tuple[str, str
     for m in ANAPHORA_RE.finditer(text):
         if m.end() in known_ends:
             continue
-        antecedent = None
-        for pos, law, _k, _d, known in sorted(found, key=lambda x: x[0]):
-            if pos < m.start() and known:
-                antecedent = law
+        # 先行詞＝**排在這個回指詞前面**、最近的那一筆法規引用。
+        cand = nearest_law_reference(text, law_names, before=m.start())
+        if cand is None and context:
+            # 回指詞前面一筆都沒有 → 退到同一個 block 的前文（見 docstring 的 `context`）。
+            #
+            # **判準是位置，不是「這一句有沒有引用」**（2026-09-13 實跑更正）：
+            # 同一句的 `basis`（「建築法第86條」）接在本文後面，它排在回指詞**之後**，
+            # 不是先行詞。拿「這一句有引用」當判準的話，正式路徑上每一句都有 basis，
+            # 跨句視窗就永遠不會生效——修了等於沒修，而且測試若用 `basis=None`
+            # 構造還會是綠的。
+            cand = nearest_law_reference(context, law_names)
+        # 最近的那一筆是庫外法規 → **不猜**。它就是先行詞，我們驗不了它，
+        # 跳過它去綁更前面那個驗得到的，是把誠實的「我不知道」換成自信的錯答案。
+        antecedent = cand[0] if cand and cand[1] else None
         key, display = _key_display(antecedent or m.group(1), m.group(2), m.group(3))
         if antecedent is None:
             # 找不到前行詞：不猜是哪部法，但也不能靜靜放過。標成未知法規讓它至少是黃的。
@@ -400,7 +485,12 @@ def extract_all_law_refs(text: str, law_names: list[str]) -> list[tuple[str, str
     squeezed = re.sub(r"\s+", "", text)
     if squeezed != text:
         seen = {(law, key) for _, law, key, _d, _k in found}
-        for law, key, display, known in extract_all_law_refs(squeezed, law_names):
+        # `context` 一起帶進來：不帶的話這一輪會把回指詞**再解析一次**、而且是在
+        # 沒有先行詞的情況下解析，於是同一筆引用會以「建築法第86條」與「同法第86條」
+        # 兩種身分各出現一次——承辦人看到的還是那句假話（2026-09-13 實跑抓到）。
+        for law, key, display, known in extract_all_law_refs(
+            squeezed, law_names, re.sub(r"\s+", "", context)
+        ):
             if (law, key) not in seen:
                 seen.add((law, key))
                 found.append((len(text), law, key, display, known))

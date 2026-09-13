@@ -428,10 +428,18 @@ class CitationChecker:
         )
 
     # ── 全文掃描 ────────────────────────────────────────────────────
-    def check_text(self, text: str) -> list[Citation]:
-        """抽出全部引用並逐一定狀態。同一段文字重複的引用不去重（逐句守門要逐筆對應）。"""
+    def check_text(self, text: str, context: str = "") -> list[Citation]:
+        """抽出全部引用並逐一定狀態。同一段文字重複的引用不去重（逐句守門要逐筆對應）。
+
+        `context`：同一個 block 裡排在 `text` 前面的文字，**只拿來替「同法／本法」
+        找先行詞**（2026-09-13 加）。`context` 裡的引用不會被檢查、不會回傳——
+        它已經在它自己那一句被檢查過了，重複回傳會讓同一筆引用被算兩次。
+
+        只有法條回指吃 `context`：函釋、判解、釋字沒有回指寫法，
+        所以底下三段掃描一律只看 `text`。
+        """
         out: list[Citation] = []
-        for law, key, display, _known in extract_all_law_refs(text, self._law_names):
+        for law, key, display, _known in extract_all_law_refs(text, self._law_names, context):
             out.append(self.check_law(law, key, display))
         # 函釋先掃，並記下佔用區間——「台內營字第1120801234號函」裡的
         # 「112年5月1日」會被判解 regex 誤讀成年度，不排除會產生幽靈判解引用。
