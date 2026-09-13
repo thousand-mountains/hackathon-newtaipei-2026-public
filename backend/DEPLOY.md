@@ -525,6 +525,9 @@ AWS_PROFILE=hack-ntpc AWS_REGION=us-west-2 aws ec2 describe-security-groups \
 
 > 最直接的驗法是**從清單外的網路打一次**（例：手機關 Wi-Fi 走行動網路），要回 403。
 
+🛑 **沒帶變數會被擋（2026-09-13 起）**：`deploy.sh deploy` 會先跑 `infra/cdk/check_ingress.sh`。線上 `AlbIngress` 是具名 CIDR、這次卻沒帶 `ALB_ALLOWED_CIDRS` 時，腳本直接停下。真的要打開白名單，就明確帶 `HACK_ALLOW_OPEN_INGRESS=1`。
+起因：收窄後不到一小時，就有一次部署沒帶這個變數，把白名單悄悄拿掉，部署照樣印成功。
+
 ⚠️ **`.env` 會覆蓋你在命令列給的值。** `deploy.sh:32-35` 的 `set -a; . "$env_file"; set +a`
 在命令列變數**之後**執行，所以 `.env` 裡若有 `ALB_ALLOWED_CIDRS`，
 `ALB_ALLOWED_CIDRS=... ./deploy.sh deploy` 會被**靜默覆蓋**——更糟的是下面 §6 的**回滾**

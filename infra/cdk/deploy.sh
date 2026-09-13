@@ -160,6 +160,8 @@ case "$cmd" in
       --toolkit-stack-name HackNtpcCDKToolkit "$@"
     ;;
   deploy)
+    # 白名單守衛放最前面：它只打一次 describe-stacks，擋下來的話不必白建前端與映像檔。
+    "$here/check_ingress.sh"
     # **順序有意義**：前端要在 `cdk synth` 之前建好。synth 會把建置 context staging
     # 到 cdk.out，那一刻 dist 不在，之後再建也來不及——check_context.sh 會照實報錯，
     # 但那時已經白跑一次 synth。
