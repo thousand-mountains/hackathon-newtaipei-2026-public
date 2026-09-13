@@ -25,6 +25,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from backend.config.origin_registry import ORIGIN_TO_TIER, registered_origin  # noqa: E402
+from backend.orchestrator import narrative  # noqa: E402
 from backend.config.settings import SUBSTANTIVE_TYPES  # noqa: E402
 from backend.orchestrator.graph import build_payload, list_synthetic_cases, run_case  # noqa: E402
 from backend.orchestrator.narrative import conclusion_block_criterion  # noqa: E402
@@ -467,6 +468,63 @@ def test_fact_issue_is_not_presented_as_the_blocking_reason_when_it_is_not() -> 
     still = conclusion_block_criterion(screen_without_issues, p["classification"], SUBSTANTIVE_TYPES)
     assert_eq(still["blocked"], True, "拿掉事實爭點後就不封鎖了——那本測試的前提要重寫")
     assert_eq(still["reason_id"], "procedurally_valid_needs_substantive_review", "反事實下的判準應不變")
+
+
+def test_the_blocked_main_text_says_which_of_the_two_procedural_outcomes_it_is() -> None:
+    """主文被封鎖時，**寫哪一句取決於程序審查算出什麼**（2026-09-13 Claire 指定）。
+
+    兩條路的文字不能對調，因為它們講的是相反的事：
+
+        art77.clause 有值 → 引擎算出不受理事由 → 「訴願不受理。」＋所憑欄位未確認
+        art77.clause 為空 → 沒有算出不受理事由 → 受理與否交人判斷
+
+    對調了 800 個測試照樣全綠——兩邊都是 `placeholder=True`、`origin=human_required`，
+    既有的契約測試只驗形狀不驗內容。這是決定書的主文，不該只靠人眼守。
+    """
+    def check(cid: str, p: dict) -> None:
+        clause = ((p["screen"] or {}).get("art77") or {}).get("clause")
+        main = [s for bk in p["doc"] for s in bk.get("ss", [])
+                if s.get("slot") == "conclusion" and s.get("placeholder")]
+        if not main:
+            return              # 這一案沒有被封鎖，不在本測試範圍
+        text = main[0]["t"]
+        if clause:
+            assert_true(text.startswith("訴願不受理。"),
+                        f"{cid}：引擎算出 {clause}，主文卻不是不受理——{text[:40]}")
+            assert_in("尚未經承辦人確認", text,
+                      f"{cid}：算得出來不等於定稿，必須講明所憑欄位還沒人確認")
+        else:
+            assert_eq(text, narrative.SUBSTANTIVE_PENDING_TEXT,
+                      f"{cid}：沒有算出不受理事由時，受理與否應交承辦人判斷")
+            assert_true("應予受理" not in text,
+                        f"{cid}：不得寫「應予受理」——引擎只判定 §77 第 2 款，"
+                        f"宣稱其餘各款都不成立是系統查不到的事")
+
+    _both(check)
+
+
+def test_a_conclusive_placeholder_still_cannot_be_submitted() -> None:
+    """主文佔位句現在**含實質結論**（「訴願不受理。」），而佔位句豁免於主文洩漏偵測。
+
+    `n6_gate.detect_conclusion_like` 對 `placeholder=True` 的句子一律跳過——那在
+    佔位句不含結論的年代是對的。2026-09-13 改成寫出結論之後，那道偵測就不再是
+    這條路上的守門。**擋住送出的只剩 `conclusion_requires_human` 這一條 blocker。**
+
+    所以這裡直接釘住最終效果，不釘中間機制：封鎖的案子，不論主文那一格寫了什麼，
+    `submit_allowed` 必須是 False 且 blocker 必須在。
+    """
+    def check(cid: str, p: dict) -> None:
+        blocked = [s for bk in p["doc"] for s in bk.get("ss", [])
+                   if s.get("slot") == "conclusion" and s.get("placeholder")]
+        if not blocked:
+            return
+        assert_eq(p["submit_allowed"], False,
+                  f"{cid}：主文是佔位句卻可送出——含結論的佔位句必須擋得住")
+        reasons = [b["reason"] for b in p["blockers"]]
+        assert_in("conclusion_requires_human", reasons,
+                  f"{cid}：缺 conclusion_requires_human，實得 {reasons}")
+
+    _both(check)
 
 
 def test_blocked_conclusion_is_a_placeholder_not_a_generated_sentence() -> None:

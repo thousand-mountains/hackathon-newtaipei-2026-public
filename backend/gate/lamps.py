@@ -390,6 +390,16 @@ def detect_conclusion_like(text: str) -> list[str]:
 
 
 def lamp_stats(doc: list[dict[str, Any]]) -> dict[str, int]:
+    """燈號分布。**逐句照算，一句都不排除。**
+
+    2026-09-13 曾想把公文格式句（落款、教示條款）排除掉，讓看板不要固定多出
+    幾盞燈。契約測試 `test_lamp_stats_match_the_actual_sentences` 當場擋下來，
+    而它擋得對：前端在兩個地方顯示這件事——看板的總數與逐句的燈號——
+    兩邊說法不一樣，承辦人數得出來。「看板好看」不值得換掉這個一致性。
+
+    落款是紅燈因為它**真的要人填**（跟「未擷取到事實段」同一種紅）；
+    教示條款是綠燈因為它是設定檔常數（`origin="static"`，見 `n6_gate`）。
+    """
     stats = {"r": 0, "y": 0, "g": 0}
     for block in doc:
         for s in block.get("ss", []):

@@ -23,6 +23,8 @@ from typing import Any
 from backend.config import settings
 from backend.orchestrator.state import CaseState, NodeCtx, NodeResult
 from backend.retrieval.base import UnavailableRetriever
+from backend.retrieval.law_articles import NOT_BUILT_NOTE, NOT_FOUND_NOTE
+from backend.retrieval.law_articles import default_store as law_article_store
 from backend.retrieval.lawtable import LawTableRetriever
 
 SIMILAR_CASE_UNAVAILABLE_REASON = (
@@ -44,6 +46,10 @@ SIMILAR_CASE_KB_FAILED_REASON = (
 )
 
 ARTICLE_TEXT_UNAVAILABLE = "條文原文不在快照內（快照只索引條號），本系統不代為補寫條文文字，請對照全國法規資料庫。"
+
+#: `q` 有值時的出處說明。**要指名它是查表來的、不是模型寫的**：`q` 會被 N5 原文引進
+#: 理由段（「按○○法第 N 條規定：『……』」），而畫面上那一段跟模型寫的句子長得一樣。
+ARTICLE_TEXT_SOURCE = "條文原文取自賽方資料集『相關法規』（全國法規資料庫列印版）查表，非模型生成。"
 
 
 SUBSTANTIVE_ARTICLE_UNKNOWN = (
@@ -301,14 +307,25 @@ def run(
         deduped.append(h)
 
     laws: list[dict[str, Any]] = []
+    articles = law_article_store()
     for i, h in enumerate(deduped, start=1):
+        # 條文原文查表。查不到就**留白**，不補寫（CONSTITUTION §3）——
+        # `q_note` 三種寫法要分得開：沒建索引／索引沒有這一條／查到了是誰給的。
+        # 三句話混成一句「無原文」的話，環境沒裝好會被讀成「這條法規沒有原文」。
+        law_name, article_no = h.payload.get("law"), h.payload.get("article")
+        article_text = articles.text(law_name, article_no) if (law_name and article_no) else None
+        if article_text:
+            q_note = ARTICLE_TEXT_SOURCE
+        elif articles.loaded:
+            q_note = NOT_FOUND_NOTE
+        else:
+            q_note = NOT_BUILT_NOTE
         laws.append(
             {
                 "id": f"L{i}",
                 "t": h.title,
-                # 條文原文留白，不補寫
-                "q": None,
-                "q_note": ARTICLE_TEXT_UNAVAILABLE,
+                "q": article_text,
+                "q_note": q_note,
                 "src": h.source,
                 "origin": "retrieval",
                 "verified": h.verified,

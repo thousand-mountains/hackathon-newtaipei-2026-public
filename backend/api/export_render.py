@@ -36,17 +36,75 @@ import pathlib
 from typing import Any
 
 from docx import Document
-from docx.shared import Pt
+from docx.enum.text import WD_LINE_SPACING
+from docx.shared import Pt, RGBColor
+
 from fpdf import FPDF
 
-from backend.orchestrator.artifact_sections import citation_lines, inline_marks
+from backend.config import settings
+# `citation_lines`／`inline_marks` 已不再使用——引註裝置不進匯出檔
+# （見下方 EXPORT_OMITS_CITATION_APPARATUS）。**不要為了「之後可能用得到」留著**：
+# 留著的 import 會讓下一個人以為這裡還在印引註。
 
 DOCX_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 PDF_MEDIA_TYPE = "application/pdf"
 
+#: 保留這個常數是因為**測試要拿它斷言「匯出檔裡不得出現這四個字」**
+#: （`test_docx_omits_the_citation_apparatus_but_keeps_the_disclosure`）。
+#: 它不再被任何 renderer 使用。
 CITATION_HEADING = "引註對照"
-NO_CITATION_NOTE = "本草稿沒有任何可回溯的引註。"
-SCOPE_PREFIX = "※ "
+
+#: 待填欄位的行首記號。**顏色之外一定要有文字**：這份文件會被印成黑白紙本，
+#: 紅字影印出來跟黑字沒兩樣。顏色給螢幕上看，記號給紙上看，兩個都要。
+PLACEHOLDER_MARK = "【待填】"
+#: 待填欄位的字色（紅）。與範本決定書用紅字標重點是同一個慣例。
+PLACEHOLDER_RGB = (0xC0, 0x00, 0x00)
+
+#: 每一頁頁尾都印的那一句。**這是揭露最後的落腳處**：查核裝置與語料清單都移出
+#: 匯出檔之後，「這是 AI 生成、未經承辦人確認」就只剩它。
+#:
+#: 放頁尾而不是文末，是因為 2026-09-13 實測：擺文末時它被換頁擠成第 3 頁的唯一一行，
+#: 整頁空白——列印出來只會被當成印壞的紙抽掉，等於沒有揭露。頁尾每頁都有、不佔版面。
+DRAFT_FOOTER_NOTE = "AI 輔助草稿・未經承辦人確認・不得逕行對外核發"
+
+# 正文首行縮排。中文公文縮排兩個字，用**全形空白**而不是版面屬性：
+# `.docx` 設得了 `first_line_indent`，`fpdf2` 的 `multi_cell` 設不了——
+# 兩邊各用各的做法，同一份草稿印出來會差兩個字。統一用字元，兩邊必然一致。
+BODY_INDENT = "　　"
+
+# ── 匯出檔**不印**什麼（2026-09-13 Claire 拍板）──────────────────
+#
+# 下面三樣東西從匯出檔移除，只留在工作台畫面上：
+#
+#   行內引註標記 `[L5]`   段尾掛一串編號，公文裡沒有這種東西
+#   文末「引註對照」清單   同上，那是系統的查核表不是決定書的一部分
+#   「期間計算」附錄       規則引擎的逐步算式，正式決定書沒有這一段
+#   檢索來源揭露           十幾行語料筆數，把標題與主文推到第一頁下半部
+#
+# **為什麼可以拿掉**：`.docx`／`.pdf` 是要送簽的公文，不是系統報告。查核痕跡
+# （燈號、引註、算式、語料範圍）在工作台上一樣都沒有少，承辦人是在畫面上覆核完
+# 才按匯出的。印在公文裡只會讓收文的人看不懂這份文件是什麼。
+#
+# **不能一起拿掉的是 `banner`**：一份抬頭寫著「訴願決定書」的檔案一旦離開系統，
+# 「這是 AI 生成、未經承辦人確認」這件事就只剩紙上那一行撐著（CONSTITUTION §1）。
+# 所以它保留，但縮成頁尾一行，不佔抬頭。
+EXPORT_OMITS_CITATION_APPARATUS = True
+#: 不印進匯出檔的 section role。
+SKIP_ROLES = ("appendix",)
+
+# **兩個不同的概念，不要合成一個。**
+#
+# `INDENT_ROLES`：首行縮排兩字的段落。公文只有主文／事實／理由三段縮排；
+#   抬頭引導句、落款、教示條款一律頂格（照參考決定書的排法）。
+# `ASIDE_ROLES`  ：不是決定書正文、要縮小另排的段落。目前只有期間計算附錄——
+#   它是我們加的可驗算層，正式決定書沒有這一段。
+#
+# 2026-09-13 第一版把兩者併成一個 `BODY_ROLES`，結果引導句、落款與教示條款
+# 全被當成附錄縮成灰色小字——那三段是決定書的一部分，只是不縮排而已。
+INDENT_ROLES = ("main_text", "facts", "reasoning")
+ASIDE_ROLES = ("appendix",)
+#: 沒有 role 的 section（舊 run 的 payload、或手工組的 view）當成正文處理。
+DEFAULT_ROLE = "reasoning"
 
 # 字型檔名寫死成常數：它同時出現在 README、Dockerfile 說明與測試斷言裡，
 # 散在字串字面量裡改一處漏三處。
@@ -116,18 +174,35 @@ def resolve_cjk_font() -> pathlib.Path:
 
 
 def _all_text(view: dict[str, Any]) -> str:
-    parts = [view.get("title") or ""]
+    """**這份文件實際會印出來的每一個字。**
+
+    只給 `missing_glyphs()` 用，所以它必須跟 renderer 印的東西**逐項對得上**：
+
+    - 多算了不印的東西 → 為沒人看得到的字報一個假警告
+    - 漏算了會印的東西 → 真的豆腐字**不報**，而那正是本檔開頭那段在防的事
+
+    2026-09-13 踩到後者：匯出檔拿掉引註對照與語料揭露之後，這支還在算它們，
+    卻沒算新加的頁尾揭露（`DRAFT_FOOTER_NOTE`）與待填記號（`PLACEHOLDER_MARK`）。
+    缺字警告因此指著一堆不存在的文字，而頁尾真的缺字時不會有人知道。
+
+    **改 renderer 印什麼，就要回來改這裡。** 兩邊漂掉不會有任何徵兆——
+    測試只驗得到「有沒有警告」，驗不到「警告的是不是對的字」。
+    """
+    parts = [
+        view.get("title") or "",
+        DRAFT_FOOTER_NOTE,          # 每頁頁尾
+        PLACEHOLDER_MARK,           # 待填欄位的行首記號
+        BODY_INDENT,                # 正文縮排用的全形空白
+        settings.META_CASE_NO,      # 案號那一行的標籤
+        view.get("case_no") or "",
+    ]
     parts.extend(view.get("meta") or [])
-    parts.extend(view.get("notices") or [])
     for sec in view.get("sections") or []:
+        if (sec.get("role") or DEFAULT_ROLE) in SKIP_ROLES:
+            continue            # 附錄不印，就不必算它的字
         parts.append(sec.get("h") or "")
         for b in sec.get("blocks") or []:
             parts.append(b.get("text") or "")
-            parts.append(inline_marks(b))
-    parts.append(CITATION_HEADING)
-    for rid, label in citation_lines(view):
-        parts.append(f"{rid} {label}")
-    parts.append(view.get("dataset_scope") or "")
     return "\n".join(parts)
 
 
@@ -148,53 +223,130 @@ def missing_glyphs(pdf: FPDF, text: str) -> list[str]:
 
 
 # ── .docx ────────────────────────────────────────────────────────
-def _docx_note(document: Any, text: str, size_pt: float = 9.0, italic: bool = False) -> None:
+#
+# **不用 `add_heading()`。** `python-docx` 的 `Title`／`Heading 1` 內建樣式在 Word 裡是
+# 藍色無襯線大字加底線——那是簡報樣式，不是公文。決定書的段名（「主　文」）是
+# **置中、與內文同級的粗體**，抬頭是置中粗體大字。所以這裡自己組段落，
+# 只用 `Normal` 樣式加明確的對齊與字級。
+#
+# 一樣不設字型名稱：承辦人機器上的 Word 會用系統預設中文字型，
+# 指定一個對方沒有的字型只會換來一次字型替換。
+
+_DOCX_BODY_PT = 12.0
+_DOCX_TITLE_PT = 18.0
+_DOCX_HEADING_PT = 13.0
+_DOCX_NOTE_PT = 9.0
+_DOCX_LINE_SPACING = 1.5
+
+
+def _docx_para(
+    document: Any,
+    text: str,
+    *,
+    size_pt: float = _DOCX_BODY_PT,
+    bold: bool = False,
+    italic: bool = False,
+    align: Any = None,
+    space_before: float = 0.0,
+    space_after: float = 4.0,
+    grey: bool = False,
+    rgb: tuple[int, int, int] | None = None,
+) -> Any:
+    """一個段落。**所有段落都走這支**——散在各處自己 `add_paragraph()` 再調屬性，
+    漏調一個就是那一段行距與其他段不一樣，而那種錯要印出來才看得見。"""
     p = document.add_paragraph()
+    fmt = p.paragraph_format
+    fmt.line_spacing_rule = WD_LINE_SPACING.MULTIPLE
+    fmt.line_spacing = _DOCX_LINE_SPACING
+    fmt.space_before = Pt(space_before)
+    fmt.space_after = Pt(space_after)
+    if align is not None:
+        p.alignment = align
     run = p.add_run(text)
     run.font.size = Pt(size_pt)
+    run.bold = bold
     run.italic = italic
+    if rgb is not None:
+        run.font.color.rgb = RGBColor(*rgb)
+    elif grey:
+        run.font.color.rgb = RGBColor(0x66, 0x66, 0x66)
+    return p
+
+
+def _docx_note(document: Any, text: str, size_pt: float = _DOCX_NOTE_PT, italic: bool = False) -> None:
+    _docx_para(document, text, size_pt=size_pt, italic=italic, grey=True, space_after=2.0)
 
 
 def render_docx(view: dict[str, Any]) -> bytes:
     """`sections[]` → OOXML bytes（REQ-EXPORT-001）。
 
-    只用 `python-docx` 的內建樣式。不設字型名稱：承辦人機器上的 Word 會自己
-    用系統預設中文字型，指定一個對方沒有的字型只會換來一次字型替換。
+    版面依 `sections[].role` 分三種（2026-09-13）：正文（主文／事實／理由）縮排兩字、
+    附錄縮小另排、落款與教示條款不縮排。沒有 role 的當正文——舊的 run 存下來的
+    payload 沒有這個鍵，不該因此排版壞掉。
     """
     document = Document()
+    # `Normal` 是所有段落的底。在這裡設一次字級，比每個 run 各設一次可靠：
+    # 承辦人在 Word 裡新增的段落也會沿用它，續編出來的字不會忽大忽小。
+    normal = document.styles["Normal"].font
+    normal.size = Pt(_DOCX_BODY_PT)
 
-    document.add_heading(view.get("title") or "訴願決定書草稿", level=0)
+    # 每一頁的頁尾都印揭露（理由見 `DRAFT_FOOTER_NOTE`）。用 Word 真正的頁尾，
+    # 不是文末一個段落——文末那種會被換頁擠成獨立一頁，而且承辦人續編時很容易刪掉。
+    footer_p = document.sections[0].footer.paragraphs[0]
+    footer_run = footer_p.add_run(DRAFT_FOOTER_NOTE)
+    footer_run.font.size = Pt(_DOCX_NOTE_PT)
+    footer_run.font.color.rgb = RGBColor(0x66, 0x66, 0x66)
+
+    # **一律靠左**（2026-09-13 Claire 指定）：標題、案號、段名全部不置中、不靠右。
+    _docx_para(
+        document,
+        view.get("title") or "訴願決定書草稿",
+        size_pt=_DOCX_TITLE_PT,
+        bold=True,
+        space_after=10.0,
+    )
+    case_no = view.get("case_no")
+    if case_no:
+        # 案號靠右，排在標題底下（公文格式）。
+        _docx_para(document, f"{settings.META_CASE_NO}：{case_no}",
+                   size_pt=_DOCX_BODY_PT, space_after=2.0)
     for line in view.get("meta") or []:
-        _docx_note(document, line, size_pt=10.0)
-
-    # 出處揭露擺在抬頭下方、正文之前——擺在文末的話，列印前兩頁的人看不到。
-    for notice in view.get("notices") or []:
-        _docx_note(document, notice, italic=True)
+        _docx_para(document, f"{BODY_INDENT}{line}", size_pt=_DOCX_BODY_PT, space_after=1.0)
 
     for sec in view.get("sections") or []:
+        role = sec.get("role") or DEFAULT_ROLE
+        if role in SKIP_ROLES:
+            continue
         heading = sec.get("h") or ""
         if heading:
-            document.add_heading(heading, level=1)
+            # 正文段名置中（「主　文」），附錄那種長標題靠左——置中的長標題會
+            # 斷在中間，看起來像排版壞了。
+            body = role not in ASIDE_ROLES
+            _docx_para(
+                document,
+                heading,
+                size_pt=_DOCX_HEADING_PT if body else _DOCX_NOTE_PT + 1,
+                bold=True,
+                space_before=10.0,
+                space_after=4.0,
+                grey=not body,
+            )
         for block in sec.get("blocks") or []:
-            paragraph = document.add_paragraph()
-            paragraph.add_run(block.get("text") or "")
-            marks = inline_marks(block)
-            if marks:
-                run = paragraph.add_run(f" {marks}")
-                run.font.size = Pt(9.0)
-
-    document.add_heading(CITATION_HEADING, level=1)
-    lines = citation_lines(view)
-    if lines:
-        for rid, label in lines:
-            p = document.add_paragraph(style="List Bullet")
-            p.add_run(f"{rid}　{label}")
-    else:
-        _docx_note(document, NO_CITATION_NOTE, size_pt=10.0)
-
-    scope = view.get("dataset_scope")
-    if scope:
-        _docx_note(document, f"{SCOPE_PREFIX}{scope}")
+            text = block.get("text") or ""
+            indent = BODY_INDENT if role in INDENT_ROLES else ""
+            aside = role in ASIDE_ROLES
+            # 待填欄位（主文佔位、落款空格）**要看得出是空的**：與正文同樣式印出來，
+            # 列印分發之後沒有人會發現那一格還沒填（2026-09-13 看實際 PDF 發現）。
+            # 畫面上有紅燈撐著，紙上沒有，所以紙上要自己講。
+            placeholder = bool(block.get("placeholder"))
+            _docx_para(
+                document,
+                f"{indent}{PLACEHOLDER_MARK if placeholder else ''}{text}",
+                size_pt=_DOCX_NOTE_PT + 1 if aside else _DOCX_BODY_PT,
+                grey=aside,
+                bold=placeholder,
+                rgb=PLACEHOLDER_RGB if placeholder else None,
+            )
 
     buf = io.BytesIO()
     document.save(buf)
@@ -203,15 +355,92 @@ def render_docx(view: dict[str, Any]) -> bytes:
 
 # ── .pdf ─────────────────────────────────────────────────────────
 def _para(pdf: FPDF, height: float, text: str, align: str = "L") -> None:
-    """一段文字，**寫完一定回到左邊界**。
+    """一段文字，**寫完一定回到左邊界**，而且**逐字斷行**。
 
-    fpdf2 的 `multi_cell` 預設 `new_x=RIGHT`：寫完游標停在該段右端。
-    下一個 `multi_cell(w=0, …)` 於是只剩幾 mm 可用，直接丟
-    `FPDFException: Not enough horizontal space to render a single character`。
-    2026-09-12 實測踩到（第二段 notice 就炸）。所有段落一律走這支，
-    不要在別處直接呼叫 `multi_cell`——漏一處就是整份匯出 500。
+    兩件實測踩過的事：
+
+    1. fpdf2 的 `multi_cell` 預設 `new_x=RIGHT`：寫完游標停在該段右端。
+       下一個 `multi_cell(w=0, …)` 於是只剩幾 mm 可用，直接丟
+       `FPDFException: Not enough horizontal space to render a single character`。
+       2026-09-12 實測踩到（第二段 notice 就炸）。
+
+    2. **`wrapmode="CHAR"` 不能拿掉。** 預設是 `WORD`——以空白為斷點，
+       那是英文的斷行規則。中文段落裡唯一的空白是「第 77 條第 2 款」這種
+       數字兩側的，於是 fpdf2 會在那裡斷，把整段排成
+
+           按訴願法第 77 條第 2
+           款規定：「訴願事件有左列各款情形之一者……
+
+       半行空白掛在右邊，而「第 2」與「款」被拆開（2026-09-13 實測）。
+       中文本來就是逐字斷行，`CHAR` 才是對的規則。
+
+    所有段落一律走這支，不要在別處直接呼叫 `multi_cell`——漏一處就是那一段
+    自己用另一套規則排版，而那種錯要印出來才看得見。
     """
-    pdf.multi_cell(0, height, text, align=align, new_x="LMARGIN", new_y="NEXT")
+    usable = pdf.w - pdf.l_margin - pdf.r_margin
+    for line in _wrap_cjk(pdf, text, usable):
+        # 用 `cell` 而不是 `multi_cell`：行已經自己斷好了，再讓 fpdf2 斷一次，
+        # 懸掛在邊界外的那個標點會被它當成超寬又折一行下去（只有一個標點的孤行）。
+        pdf.cell(0, height, line, align=align, new_x="LMARGIN", new_y="NEXT")
+
+
+#: 不得出現在行首的標點（避頭點）。中文公文裡逗號掉到行首非常刺眼，
+#: 而 fpdf2 的 `wrapmode="CHAR"` 只管寬度、不管禁則。
+_NO_LINE_START = "，。、；：？！）」』》】〉．·…‧％」’”]"
+#: 不得出現在行尾的標點（避尾點）。
+_NO_LINE_END = "（「『《【〈‘“["  # `[` 是行內引註標記 `[L1]` 的開頭，不能單獨掛在行尾
+#: 不拆開的字元：數字、拉丁字母與它們之間的連接符號。
+#: 「113」被拆成「11／3」兩行的話，日期就讀錯了。
+_ATOMIC = set("0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ.-/:_")
+
+
+def _tokens(text: str) -> list[str]:
+    """中文逐字、數字與拉丁字成串。斷行的最小單位。"""
+    out: list[str] = []
+    for ch in text:
+        if ch in _ATOMIC and out and out[-1][-1] in _ATOMIC:
+            out[-1] += ch
+        else:
+            out.append(ch)
+    return out
+
+
+def _wrap_cjk(pdf: FPDF, text: str, width: float) -> list[str]:
+    """中文斷行 ＋ 避頭尾。回傳每一行的字串。
+
+    為什麼不用 fpdf2 自己的斷行：
+
+    - 預設 `wrapmode="WORD"` 以空白為斷點，而中文段落裡唯一的空白是
+      「第 77 條第 2 款」這種數字兩側的，結果整段排成半行（2026-09-13 實測）。
+    - `wrapmode="CHAR"` 寬度對了，但**不管禁則**：逗號、句號會掉到行首。
+
+    這裡的作法是逐 token 填滿一行，然後把落在行首的標點**懸掛**回上一行
+    （標點懸掛是中文排版的標準作法，不是把版面撐破）。
+    """
+    lines: list[str] = []
+    cur = ""
+    for tok in _tokens(text):
+        if not cur:
+            cur = tok
+            continue
+        if pdf.get_string_width(cur + tok) <= width:
+            cur += tok
+            continue
+        # 這一行滿了。避頭點：標點不另起一行，掛在上一行尾巴。
+        if tok and tok[0] in _NO_LINE_START:
+            lines.append(cur + tok)
+            cur = ""
+            continue
+        # 避尾點：上一行以開引號結尾的話，把它帶到下一行去。
+        if cur and cur[-1] in _NO_LINE_END:
+            lines.append(cur[:-1])
+            cur = cur[-1] + tok
+            continue
+        lines.append(cur)
+        cur = tok
+    if cur:
+        lines.append(cur)
+    return lines or [""]
 
 
 class _DraftPDF(FPDF):
@@ -226,7 +455,10 @@ class _DraftPDF(FPDF):
     def footer(self) -> None:  # noqa: D102 — fpdf2 的 hook 名字，不是我取的
         self.set_y(-14)
         self.set_font(PDF_FONT_KEY, size=_PDF_SMALL_PT)
-        self.cell(0, 6, f"{self.footer_note}　第 {self.page_no()} 頁", align="C")
+        self.set_text_color(0x66, 0x66, 0x66)
+        self.cell(0, 5, DRAFT_FOOTER_NOTE, new_x="LMARGIN", new_y="NEXT")
+        self.cell(0, 5, f"{self.footer_note}　第 {self.page_no()} 頁")
+        self.set_text_color(0, 0, 0)
 
 
 def render_pdf(view: dict[str, Any]) -> tuple[bytes, list[str]]:
@@ -234,6 +466,10 @@ def render_pdf(view: dict[str, Any]) -> tuple[bytes, list[str]]:
 
     回傳兩個值而不是一個，是為了讓端點能把缺字放進 `X-Export-Warning`——
     把警告吞在函式裡就等於沒有警告。
+
+    版面與 `.docx` 那邊一一對應（2026-09-13）：抬頭置中、段名置中、正文縮排兩字、
+    附錄與落款另排。兩邊各排各的話，同一份草稿存成兩種格式會長得不一樣，
+    而承辦人通常兩種都會下載。
     """
     font_path = resolve_cjk_font()  # 找不到就 raise，絕不降級成拉丁字型
 
@@ -245,44 +481,48 @@ def render_pdf(view: dict[str, Any]) -> tuple[bytes, list[str]]:
     pdf.add_page()
 
     pdf.set_font(PDF_FONT_KEY, size=_PDF_TITLE_PT)
-    _para(pdf, 10, view.get("title") or "訴願決定書草稿", align="C")
-    pdf.ln(2)
+    _para(pdf, 10, view.get("title") or "訴願決定書草稿")
+    pdf.ln(3)
 
-    pdf.set_font(PDF_FONT_KEY, size=_PDF_SMALL_PT + 1)
+    pdf.set_font(PDF_FONT_KEY, size=_PDF_BODY_PT)
+    case_no = view.get("case_no")
+    if case_no:
+        _para(pdf, 6.5, f"{settings.META_CASE_NO}：{case_no}")
     for line in view.get("meta") or []:
-        _para(pdf, 6, line)
-    for notice in view.get("notices") or []:
-        _para(pdf, 5, notice)
+        _para(pdf, 6.5, f"{BODY_INDENT}{line}")
     pdf.ln(3)
 
     for sec in view.get("sections") or []:
+        role = sec.get("role") or DEFAULT_ROLE
+        if role in SKIP_ROLES:
+            continue
+        body = role not in ASIDE_ROLES
         heading = sec.get("h") or ""
         if heading:
-            pdf.set_font(PDF_FONT_KEY, size=_PDF_HEADING_PT)
+            # 正文段名置中且大一級（「主　文」）；附錄那種長標題靠左縮小，
+            # 置中的長標題會斷在中間，看起來像排版壞了。
+            pdf.ln(2)
+            pdf.set_font(PDF_FONT_KEY, size=_PDF_HEADING_PT if body else _PDF_SMALL_PT + 1)
             _para(pdf, 9, heading)
-        pdf.set_font(PDF_FONT_KEY, size=_PDF_BODY_PT)
-        for block in sec.get("blocks") or []:
-            marks = inline_marks(block)
-            text = block.get("text") or ""
-            _para(pdf, 7.5, f"{text} {marks}".rstrip())
             pdf.ln(1)
+        pdf.set_font(PDF_FONT_KEY, size=_PDF_BODY_PT if body else _PDF_SMALL_PT + 1)
+        for block in sec.get("blocks") or []:
+            text = block.get("text") or ""
+            placeholder = bool(block.get("placeholder"))
+            if placeholder:
+                text = f"{PLACEHOLDER_MARK}{text}"   # 理由同 `.docx` 那邊
+                pdf.set_text_color(*PLACEHOLDER_RGB)
+            indent = BODY_INDENT if role in INDENT_ROLES else ""
+            # `fpdf2` 的 `multi_cell` 沒有首行縮排屬性，所以縮排靠全形空白——
+            # 跟 `.docx` 那邊用同一個常數，兩種格式印出來才對得上。
+            # **一律靠左，不要 justify。** `fpdf2` 的 `align="J"` 在中文段落裡只找得到
+            # 數字與拉丁字旁邊的斷點，於是把那幾個空白撐到整行寬——
+            # 「按訴願法第　　　77　　　條第　　　2」就是這樣來的（2026-09-13 實測）。
+            # 中文本來就不需要兩端對齊，靠左是正確的排法，不是退讓。
+            _para(pdf, 8.0 if body else 6.0, f"{indent}{text}")
+            if placeholder:
+                pdf.set_text_color(0, 0, 0)   # 用完立刻收回，不要讓紅色漏到下一段
         pdf.ln(2)
-
-    pdf.set_font(PDF_FONT_KEY, size=_PDF_HEADING_PT)
-    _para(pdf, 9, CITATION_HEADING)
-    pdf.set_font(PDF_FONT_KEY, size=_PDF_SMALL_PT + 1)
-    lines = citation_lines(view)
-    if lines:
-        for rid, label in lines:
-            _para(pdf, 6, f"{rid}　{label}")
-    else:
-        _para(pdf, 6, NO_CITATION_NOTE)
-
-    scope = view.get("dataset_scope")
-    if scope:
-        pdf.ln(2)
-        pdf.set_font(PDF_FONT_KEY, size=_PDF_SMALL_PT)
-        _para(pdf, 5, f"{SCOPE_PREFIX}{scope}")
 
     missing = missing_glyphs(pdf, _all_text(view))
     return bytes(pdf.output()), missing

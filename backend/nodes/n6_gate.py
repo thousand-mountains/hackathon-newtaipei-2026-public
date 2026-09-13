@@ -146,8 +146,14 @@ def run(state: CaseState, ctx: NodeCtx) -> NodeResult:
             unsupported = bool(s.get("unsupported"))
             dropped = [str(c) for c in (s.get("dropped_cite_ids") or [])]
 
-            if origin in ("engine", "record", "human_required"):
-                # 可驗算層與卷證直錄層不吃引用燈號規則：引擎句本身就是算式，卷證句是原文
+            if origin in ("engine", "record", "static", "human_required"):
+                # 可驗算層與卷證直錄層不吃引用燈號規則：引擎句本身就是算式，卷證句是原文，
+                # `static` 是設定檔常數（教示條款那種法定固定文字）——三者的出處都是
+                # 結構性的，不靠引用字號（`lamps._STRUCTURAL_SOURCE_ORIGINS` 同一份名單）。
+                #
+                # `static` 是 2026-09-13 加的。在那之前 doc[] 裡沒有 static 句，
+                # 所以這不是放寬既有行為：不加的話，教示條款會走引用規則判成黃燈，
+                # why 寫「本句未附任何可查證的引用」——講的是訴願法第 90 條的法定文字。
                 lamp = "r" if origin == "human_required" else "g"
             else:
                 lamp = lamp_for_states(states)
@@ -159,10 +165,17 @@ def run(state: CaseState, ctx: NodeCtx) -> NodeResult:
                 lamp = "r"
 
             s["l"] = lamp
+            # `why_fixed` 是編排層對這一句寫定的說明（教示條款、落款、條文引述）。
+            # 那些句子的「為什麼可信」跟引用狀態無關，讓 `why_for()` 依引用去猜，
+            # 會在教示條款底下印出「本句未附任何可查證的引用」——技術上為真，
+            # 但它講的是一句法定固定文字，讀起來像系統在懷疑訴願法第 90 條。
+            # **`unsupported` 仍然優先**：那是模型引了白名單外來源被清掉，
+            # 不論編排層原本想說什麼，那件事都要講出來。
+            fixed_why = s.pop("why_fixed", None)
             s["why"] = (
                 WHY_UNSUPPORTED_CITATION.format(dropped="、".join(dropped) or "未記錄")
                 if unsupported
-                else why_for(lamp, origin, states, unresolved=bool(unresolved))
+                else (fixed_why or why_for(lamp, origin, states, unresolved=bool(unresolved)))
             )
             # HACK-S-17：期間算式的輸入若未經承辦人確認，由算式自己講出來。
             # 只掛在 origin=engine 的句子上——它們是畫面上最像「已驗證」的東西，
@@ -237,9 +250,18 @@ def run(state: CaseState, ctx: NodeCtx) -> NodeResult:
             # 「捏造的結論」——兩者長得一樣。這裡給的是提示，不是保證。
             # 第四輪覆核量到非 C 型下 26/26 捏造主文全綠，那個數字的根因是這件事，
             # 不是少了幾條規則。
+            # 逐字引述的條文**不進主文型偵測**（`quoted_statute`）。理由段第一句是
+            # 「按訴願法第 77 條第 2 款規定：『……應為不受理之決定：……』」，那段引文裡
+            # 必然出現「應為不受理之決定」——偵測器看到的是法條本文，不是這一案的結論。
+            # 2026-09-13 實測：不排除的話，每一份程序不受理案的條文引述句都被判紅並
+            # 掛上一條假的 P0 blocker，而真正的洩漏訊號就被那幾條淹掉了。
+            # 用具名旗標而不是 `origin == "retrieval"`：旗標由 `narrative.article_quotes()`
+            # 單點標記，語意不會隨著哪天有別的東西也標成 retrieval 而漂掉。
+            quoted_statute = bool(s.get("quoted_statute"))
             if (
                 not needs_human
                 and not s.get("placeholder")
+                and not quoted_statute
                 and origin not in ("engine", "rule", "static")
                 and s.get("slot") != "conclusion"
             ):
@@ -247,7 +269,12 @@ def run(state: CaseState, ctx: NodeCtx) -> NodeResult:
                 if rules:
                     s["conclusion_like"] = rules
 
-            if needs_human and not s.get("placeholder") and origin not in ("engine", "rule", "static"):
+            if (
+                needs_human
+                and not s.get("placeholder")
+                and not quoted_statute
+                and origin not in ("engine", "rule", "static")
+            ):
                 rules = detect_conclusion_like(text)
                 if rules:
                     s["l"] = "r"
@@ -306,12 +333,16 @@ def run(state: CaseState, ctx: NodeCtx) -> NodeResult:
     # 畫面上還同時掛著一句紅燈的「未擷取到事實段」佔位句。空文件不是通過，是沒東西可審。
     # 只算「實質內容」：期間引擎的算式句不算——它們是規則自動產生的，
     # 一份只有算式、沒有任何事實段與理由段的文件，等於沒有可審查的標的。
+    # `structural` 排除公文格式句（引導句、落款、教示條款）。它們的 origin 是
+    # `record`／`static`、不是 placeholder，不排除的話一份**整個空掉**的草稿會因為
+    # 「至少有一句『上列訴願人因……』」而通過這條 P0 blocker，被標成可送出。
     content_sentences = [
         s
         for block in doc
         for s in block.get("ss", [])
         if s.get("origin") in ("llm", "record")
         and not s.get("placeholder")
+        and not s.get("structural")
         and (s.get("t") or "").strip()
     ]
     if not content_sentences:

@@ -24,13 +24,20 @@ const REL_LABEL = { quote: '卷證引錄', trigger: '觸發爭點', address: '�
 const cols = computed(() => props.graph.cols || [])
 
 // 契約的 node 只有欄位 `c`（第幾欄），沒有列號——列號由前端在同一欄內依序排。
+//
+// **相似案例不進圖。** 後端把相似訴願決定也建成 `k:"law"` 節點放在法規欄，
+// 只用 `origin:"similar_case"` 區分（`backend/graph/relation.py`）。
+// 案例是給人參考的資料、不是本案的法規依據，混在同一欄會讓人以為草稿引了那些案號。
+// 連到被濾掉節點的邊會在下面 edges 的 `if (!A || !B)` 自動略過。
 const nodes = computed(() => {
   const perCol = {}
-  return (props.graph.nodes || []).map((n) => {
-    const c = n.c || 0
-    perCol[c] = (perCol[c] || 0) + 1
-    return { ...n, _r: perCol[c] - 1 }
-  })
+  return (props.graph.nodes || [])
+    .filter((n) => n.origin !== 'similar_case')
+    .map((n) => {
+      const c = n.c || 0
+      perCol[c] = (perCol[c] || 0) + 1
+      return { ...n, _r: perCol[c] - 1 }
+    })
 })
 const rows = computed(() => nodes.value.reduce((m, n) => Math.max(m, n._r + 1), 1))
 const GVW = computed(() => PADX * 2 + Math.max(cols.value.length, 1) * GW + Math.max(cols.value.length - 1, 0) * GAPX)
@@ -94,6 +101,27 @@ const detail = computed(() => {
   return { ...n, rel: linked.value.size - 1, bases: [...new Set(rels.map((r) => r.basis).filter(Boolean))] }
 })
 
+// SVG <text> 不會自動換行或裁切，長標題會直接畫到框外（爆版）。
+// 依框寬換算可容納的視覺寬度後截斷，完整文字放 <title>（hover 可見）與右下詳情面板。
+// 全形字寬約等於 font-size，半形約一半，用這個比例估。
+const VIS = (s) => [...String(s || '')].reduce((w, ch) => w + (/[\x00-\xff]/.test(ch) ? 0.55 : 1), 0)
+function clampText(s, maxVis) {
+  const str = String(s || '')
+  if (VIS(str) <= maxVis) return str
+  let out = ''
+  let w = 0
+  for (const ch of str) {
+    const cw = /[\x00-\xff]/.test(ch) ? 0.55 : 1
+    if (w + cw > maxVis - 1) break // 留 1 個字寬給省略號
+    out += ch
+    w += cw
+  }
+  return out + '…'
+}
+// 框寬 GW 扣掉左右內距（左 11 + 右 8），字級取自 main.css：.gnode text 11.5px、.gt2 10px
+const titleText = (s) => clampText(s, (GW - 19) / 11.5)
+const subText = (s) => clampText(s, (GW - 19) / 10)
+
 const unlinkedLaws = computed(() => (props.graph.unlinked && props.graph.unlinked.laws) || [])
 const unlinkedIssues = computed(() => (props.graph.unlinked && props.graph.unlinked.issues) || [])
 const flagged = computed(() => props.graph.flagged || [])
@@ -132,8 +160,10 @@ const flagged = computed(() => props.graph.flagged || [])
           @keydown.space.prevent="select(n.id)"
         >
           <rect :x="gx(n.c)" :y="gy(n._r)" :width="GW" :height="GH" rx="3" :fill="`var(--n-${n.k}-bg)`" :stroke="`var(--n-${n.k})`" />
-          <text :x="gx(n.c) + 11" :y="gy(n._r) + 17" fill="var(--ink)" font-weight="500">{{ n.t }}</text>
-          <text class="gt2" :x="gx(n.c) + 11" :y="gy(n._r) + 32" fill="var(--muted)">{{ n.s || '' }}</text>
+          <!-- 文字依框寬截斷（SVG 不會自己 wrap/clip），完整內容放 <title> 與詳情面板 -->
+          <title>{{ n.t }}{{ n.s ? '　' + n.s : '' }}</title>
+          <text :x="gx(n.c) + 11" :y="gy(n._r) + 17" fill="var(--ink)" font-weight="500">{{ titleText(n.t) }}</text>
+          <text class="gt2" :x="gx(n.c) + 11" :y="gy(n._r) + 32" fill="var(--muted)">{{ subText(n.s) }}</text>
         </g>
       </svg>
     </div>
@@ -149,7 +179,9 @@ const flagged = computed(() => props.graph.flagged || [])
         </div>
       </template>
       <div v-else class="gd-b" style="color: var(--muted)">
-        圖中共 {{ (graph.stats && graph.stats.nodes) ?? nodes.length }} 個節點、{{ (graph.stats && graph.stats.edges) ?? edges.length }} 條關聯。點選任一節點可追蹤其關聯路徑。
+        <!-- 用實際畫出的數量，不用 stats：相似案例節點已被濾掉（見 nodes computed），
+             沿用後端 stats 會出現「說 24 個節點卻只看到 20 個」。 -->
+        圖中共 {{ nodes.length }} 個節點、{{ edges.length }} 條關聯。點選任一節點可追蹤其關聯路徑。
       </div>
       <!-- 查到了但沒有被任何句子引用的法規／沒被回應的爭點 -->
       <div v-if="unlinkedLaws.length || unlinkedIssues.length" class="gd-s">

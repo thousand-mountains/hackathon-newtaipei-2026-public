@@ -559,6 +559,11 @@ async function driveChat(c, payload, uiTool) {
         }
       } else if (event === 'tool_call') {
         clearThinking()
+        // **工具卡之後的文字另開一個泡泡。** 模型會在呼叫工具前先講一句開場
+        //（`chat_ask.md` 訴小願語氣原則），不切開的話工具後的答案會接在開場那個泡泡後面，
+        // 整段排在工具卡**上面**——畫面變成先看到答案、才看到「讀卷內」。
+        // `done.answer` 只含最後一段文字，所以 done 的長度校正對的是最後這個泡泡。
+        tokenMsg = null
         // **一回合可能呼叫同一支工具兩次以上**（契約 §2.3 ②，實測「查建築法25條和訴願法14條」
         // 就會發 tc-1／tc-2 兩組）。以前這裡只有一張 toolMsg，第二組結果會把第一組蓋掉，
         // 使用者看到的命中數比實際少。改成依 call_id 一組一張卡。
@@ -830,6 +835,10 @@ async function loadDraftSections(c, out) {
     if (Array.isArray(a.sections) && a.sections.length) {
       out.sections = a.sections
       out.title = a.title || ''
+      // 抬頭（案號／訴願人／原處分機關）與 sections[] 平行，不是 section（契約 §4.4）。
+      // 聊天室的草稿卡也要畫它——少了它，承辦人看不出這是哪一案的草稿。
+      out.meta = Array.isArray(a.meta) ? a.meta : []
+      out.caseNo = a.case_no || ''
       if (typeof a.cite_count === 'number') out.citeCount = a.cite_count
       if (item) {
         item.full = sectionsToHtml(a)
@@ -866,22 +875,47 @@ function htmlToPlainText(html) {
     .trim()
 }
 
+// **兩個不同的概念，不要合成一個**（與 backend/api/export_render.py 同一組定義）。
+//   INDENT_ROLES：首行縮排兩字的段落。公文只有主文／事實／理由三段縮排；
+//                 抬頭引導句、落款、教示條款一律頂格。
+//   ASIDE_ROLES ：不是決定書正文、縮小另排的段落。目前只有期間計算附錄。
+const INDENT_ROLES = ['main_text', 'facts', 'reasoning']
+const ASIDE_ROLES = ['appendix']
+
 // sections[] → 顯示用 HTML。`title`／`meta` 是文件抬頭，與 sections[] 平行，不是 section（契約 §4.4）。
+//
+// **這支與 ToolOut.vue 的 sections 分支必須排得一樣。** 2026-09-13 之前這裡的 `<p>`
+// 沒有 `indent`、那邊有，於是同一份草稿在聊天室與右欄兩處縮排不同——承辦人會以為
+// 其中一份壞了。現在兩處共用這一份 HTML。
 export function sectionsToHtml(a) {
-  const head = a && a.title ? `<h4>${esc(a.title)}</h4>` : ''
+  const head = a && a.title ? `<h3 class="dtitle">${esc(a.title)}</h3>` : ''
+  // 案號排在標題底下、與其餘抬頭欄位分開（公文格式，與匯出的 .docx／.pdf 一致）。
+  const caseNo = a && a.case_no ? `<p class="dmeta">案　　號：${esc(a.case_no)}</p>` : ''
+  const meta = ((a && a.meta) || []).map((m) => `<p class="dmeta">${esc(m)}</p>`).join('')
   return (
     head +
+    caseNo +
+    meta +
     ((a && a.sections) || [])
-      .map(
-        (s) =>
-          `<h4>${esc(s.h || '')}</h4>` +
+      .map((s) => {
+        const role = s.role || 'reasoning'
+        const aside = ASIDE_ROLES.includes(role)
+        // `h` 是空字串的 section 是刻意的（落款、教示條款在公文上沒有標題）。
+        // 標題空就不畫 `<h4>`——畫出來是一條孤伶伶的橫線。
+        const h = s.h ? `<h4${aside ? ' class="aside"' : ''}>${esc(s.h)}</h4>` : ''
+        const pcls = aside ? 'aside' : INDENT_ROLES.includes(role) ? 'indent' : 'flush'
+        return (
+          h +
           (s.blocks || [])
             .map((b) => {
-              const cites = (b.cites || []).map((x) => `<span class="cite">${esc(x.label || x.id || '')}</span>`).join('')
-              return `<p>${esc(b.text || '')}${cites}</p>`
+              const cites = (b.cites || [])
+                .map((x) => `<span class="cite">${esc(x.label || x.id || '')}</span>`)
+                .join('')
+              return `<p class="${pcls}">${esc(b.text || '')}${cites}</p>`
             })
-            .join(''),
-      )
+            .join('')
+        )
+      })
       .join('')
   )
 }
@@ -918,8 +952,11 @@ function lawItem(l) {
     // **留白的話 App.vue 會去打 §4.2 的全文端點，而 `lawtable:` 開頭的 id 打不到**，
     // 結果是一片空白加一句「取法規全文失敗」，而其實一點資料都沒掉。
     // 母庫那批 `body_cached` 空時仍然留白，維持即時取全文那條路。
+    // `body_cached` 是 S3 純文字（含 \n）。**要走 fullToHtml 轉成段落／<br>**——
+    // 直接 esc 後塞進一個 <p>，整份條文會擠成一行（\n 在 HTML 不換行）。
     full: l.body_cached
-      ? `<p style="font-family:var(--serif);line-height:2">${esc(l.body_cached)}</p><p style="color:var(--muted);font-size:12.5px;border-top:1px solid var(--line-soft);padding-top:10px">本案關聯：${esc(l.note || '')}</p>`
+      ? `<div style="font-family:var(--serif);line-height:2">${fullToHtml(l.body_cached)}</div>` +
+        (l.note ? `<p style="color:var(--muted);font-size:12.5px;border-top:1px solid var(--line-soft);padding-top:10px">本案關聯：${esc(l.note)}</p>` : '')
       : l.channel === 'lawtable'
         // 這裡取 `note` 而不是 `retrieval_note`：前者才是**解釋為什麼沒有全文**的那句
         // （「條號存在性驗證，非法條全文（快照只索引條號）」），後者講的是這一條
@@ -940,7 +977,9 @@ function decisionItem(d) {
     note: d.note || decisionNote({ category: d.category, verdict: d.verdict }),
     ext: '例',
     _libId: d.id,
-    full: d.full_cached || '',
+    // `full_cached` 是 S3 純文字（含 \n）。走 fullToHtml 轉段落／<br>，
+    // 直接當 HTML 用的話換行全部消失、擠成一整片（mock 的示範資料是 HTML，fullToHtml 會原樣放行）。
+    full: d.full_cached ? fullToHtml(d.full_cached) : '',
   }
 }
 
@@ -1311,7 +1350,8 @@ async function ensureServerCase(c) {
 // 開對話框時取「本案已加入的名單」，避免重複加入。實際搜尋改走 searchLibrary（async，打後端）。
 export function searchHave(groupKey) {
   const c = active()
-  return new Set(c.docs[groupKey].map((x) => x.name))
+  // 用母庫 id（_libId）判「已加入」，不能用 name——同名不同條的法規會被誤判為已加入而從搜尋結果消失。
+  return new Set(c.docs[groupKey].map((x) => x._libId).filter(Boolean))
 }
 
 // 看全文：打 getLaw #11 / getDecision #16 取母庫全文，組成顯示 HTML。

@@ -39,6 +39,7 @@ import urllib.parse
 import zipfile
 
 from backend.orchestrator import chat_bridge
+from backend.config import settings
 from backend.orchestrator.artifact_sections import (
     UNRESOLVED_SUFFIX,
     build_sections,
@@ -47,6 +48,8 @@ from backend.orchestrator.artifact_sections import (
     has_body,
     inline_marks,
 )
+from backend.api.export_render import DRAFT_FOOTER_NOTE
+from backend.orchestrator.narrative import article_quotes
 from backend.orchestrator.graph import build_payload, run_case
 from backend.tests.harness import TestFailure, TestSkipped
 
@@ -132,7 +135,9 @@ def test_sections_have_headings_and_body() -> None:
     """
     v = _view()
     headings = [s["h"] for s in v["sections"]]
-    for expected in ("事實", "理由", "決定主文"):
+    # 段名走 `settings`（`主　文` 是全形空白，不是「決定主文」）。寫死字面量的話，
+    # 改一次段名就要記得改三個 renderer 加這裡，而漏掉的那個不會有人發現。
+    for expected in (settings.SECTION_MAIN_TEXT, settings.SECTION_FACTS, settings.SECTION_REASONING):
         if expected not in headings:
             _fail(f"section 標題少了 {expected!r}，實得 {headings}")
     body = [b["text"] for s in v["sections"] for b in s["blocks"]]
@@ -140,6 +145,45 @@ def test_sections_have_headings_and_body() -> None:
         _fail("sections 裡一句正文都沒有——句子在 block['ss'][*]['t']，不是 block['text']")
     if any(not t.strip() for t in body):
         _fail("有空白 block 混進來")
+
+
+def test_the_system_does_not_quote_an_article_the_model_already_quoted() -> None:
+    """同一條法規的原文不得在理由段出現兩次（2026-09-13 迴歸）。
+
+    條文引述句原本無條件插在理由段最前面，而模型本來就會自己寫
+    「按『……』○○法第 N 條定有明文」。真實卷證實測時三條法規全部重複
+    （廢清法 §27、§50、行程法 §9），讀起來像系統把同一段話講了兩遍。
+    """
+    body = "在指定清除地區內嚴禁有下列行為：一、隨地吐痰、檳榔汁、檳榔渣，拋棄紙屑、煙蒂。"
+    laws = [{"id": "L1", "law": "廢棄物清理法", "article": "27", "q": body}]
+
+    fresh = article_quotes([{"t": "卷查本案訴願人於現場丟棄煙蒂。", "basis": "廢棄物清理法第27條"}],
+                           laws, {})
+    if len(fresh) != 1:
+        _fail(f"模型沒抄原文時，系統該補一句條文引述，實得 {len(fresh)} 句")
+
+    echoed = article_quotes(
+        [{"t": f"按「{body}」廢棄物清理法第27條第1款定有明文。", "basis": "廢棄物清理法第27條"}],
+        laws, {})
+    if echoed:
+        _fail(f"模型已經抄過原文，系統不得再貼一次：{[q['text'][:30] for q in echoed]}")
+
+
+def test_placeholder_blocks_are_marked_so_paper_shows_them_too() -> None:
+    """待填欄位在**匯出檔**裡要看得出來。
+
+    畫面上有紅燈撐著，紙上沒有：「（結論段由承辦人判斷後填寫）」與正文同字級
+    印出來，列印分發之後沒有人會發現那一格還沒填。
+    """
+    v = _view()
+    placeholders = [b for sec in v["sections"] for b in sec["blocks"] if b.get("placeholder")]
+    if not placeholders:
+        _fail("測資裡沒有任何佔位句，這條測試的前提不成立（落款兩行本來就是佔位）")
+    render = _render()
+    text = "\n".join(p.text for p in render.Document(io.BytesIO(render.render_docx(v))).paragraphs)
+    for b in placeholders:
+        if f"{render.PLACEHOLDER_MARK}{b['text']}" not in text:
+            _fail(f"佔位句在 .docx 裡沒有標記：{b['text'][:30]}")
 
 
 def test_title_and_meta_are_not_sections() -> None:
@@ -287,20 +331,51 @@ def test_docx_is_editable() -> None:
         _fail("續編後存檔，改動不見了")
 
 
-def test_docx_carries_citations() -> None:
-    """REQ-EXPORT-003 AC1／AC2：行內 `[L3]` ＋ 文末引註對照，兩處都要有。"""
+def test_docx_omits_the_citation_apparatus_but_keeps_the_disclosure() -> None:
+    """匯出檔**不印**行內 `[L3]` 與文末「引註對照」，但**一定要印**出處揭露。
+
+    2026-09-13 Claire 拍板：`.docx`／`.pdf` 是要送簽的公文，不是系統報告。
+    行內編號與查核清單在公文裡沒有這種東西，查核痕跡留在工作台畫面上——
+    承辦人是在畫面上覆核完才按匯出的。
+
+    **揭露不在此列。** 一份抬頭寫著「訴願決定書」的檔案一旦離開系統流傳，
+    「這是 AI 生成、未經承辦人確認」這件事就只剩紙上那一行撐著。
+    這條同時釘住「拿掉什麼」與「不准拿掉什麼」——只釘前者的話，
+    下一個人為了版面乾淨會把揭露也一起清掉，而測試照樣綠。
+    """
     render = _render()
     v = _view()
     text = "\n".join(p.text for p in render.Document(io.BytesIO(render.render_docx(v))).paragraphs)
     rid, label = citation_lines(v)[0]
-    if f"[{rid}]" not in text:
-        _fail(f"文件裡找不到行內標註 [{rid}]——匯出成白文等於把出處丟了")
-    if render.CITATION_HEADING not in text:
-        _fail("文件裡沒有「引註對照」段落")
-    if label not in text:
-        _fail(f"引註對照沒有列出 {label}")
+    if f"[{rid}]" in text:
+        _fail(f"文件裡出現行內標註 [{rid}]")
+    if render.CITATION_HEADING in text:
+        _fail("文件裡出現「引註對照」段落")
+    if label in text:
+        _fail(f"文件裡出現引註對照的內容：{label}")
     if "合成測資" not in text:
-        _fail("出處揭露沒有進到 .docx")
+        _fail("出處揭露沒有進到 .docx——匯出檔可以不印查核裝置，但不能不講自己是什麼")
+
+
+def test_export_omits_the_calculation_appendix() -> None:
+    """期間計算附錄不進匯出檔：正式決定書沒有這一段，它是規則引擎的算式。
+
+    **`doc[]` 裡仍然保留**（工作台要畫它，CONSTITUTION §1 的可驗算層靠它），
+    只是 renderer 不印。這條釘住「兩邊不同步」——哪天有人把 role 改名，
+    附錄會默默重新出現在公文裡。
+    """
+    render = _render()
+    v = _view()
+    appendix = [sec for sec in v["sections"] if sec.get("role") in render.SKIP_ROLES]
+    if not appendix:
+        _fail("測資裡沒有附錄 section，這條測試的前提不成立")
+    heading = appendix[0]["h"]
+    text = "\n".join(p.text for p in render.Document(io.BytesIO(render.render_docx(v))).paragraphs)
+    if heading and heading in text:
+        _fail(f"附錄段標題印進 .docx 了：{heading}")
+    for b in appendix[0]["blocks"]:
+        if b["text"] in text:
+            _fail(f"附錄內容印進 .docx 了：{b['text'][:30]}")
 
 
 # ── 組檔層：.pdf（REQ-EXPORT-002）─────────────────────────────────
@@ -342,10 +417,20 @@ def test_pdf_text_layer_is_chinese_not_tofu() -> None:
     if "�" in text or "□" in text:
         _fail("PDF 文字層出現替代字元／豆腐字")
     rid, _label = citation_lines(v)[0]
-    if f"[{rid}]" not in text:
-        _fail(f"PDF 裡找不到行內標註 [{rid}]")
-    if render.CITATION_HEADING not in text.replace(" ", ""):
-        _fail("PDF 裡沒有「引註對照」")
+    if f"[{rid}]" in text:
+        _fail(f"PDF 裡出現行內標註 [{rid}]——匯出檔不印查核裝置（2026-09-13 拍板）")
+    if render.CITATION_HEADING in text.replace(" ", ""):
+        _fail("PDF 裡出現「引註對照」清單——匯出檔不印查核裝置")
+    # **但揭露不能一起消失。** 抬頭寫著「訴願決定書」的檔案離開系統之後，
+    # 「這是 AI 生成、未經承辦人確認」只剩紙上這一行撐著（CONSTITUTION §1）。
+    # 它在**每一頁的頁尾**（`DRAFT_FOOTER_NOTE`），不在文末——文末那種會被換頁
+    # 擠成獨立一頁的孤行，列印出來會被當成印壞的紙抽掉。
+    flat = text.replace(" ", "").replace("\n", "")
+    if DRAFT_FOOTER_NOTE.replace(" ", "") not in flat:
+        _fail("PDF 頁尾找不到草稿揭露")
+    pages = text.count("\f") or 1
+    if flat.count(DRAFT_FOOTER_NOTE.replace(" ", "")) < pages:
+        _fail(f"草稿揭露沒有出現在每一頁（{pages} 頁）")
 
 
 def test_pdf_without_font_is_hard_failure() -> None:

@@ -1,0 +1,16 @@
+{
+  "completed_at": "2026-09-13T03:01:33+00:00",
+  "documents_indexed": 19475,
+  "manifest_entries": 2488,
+  "manifest_path": "data/manifest.json",
+  "statistics": {
+    "numberOfDocumentsDeleted": 0,
+    "numberOfDocumentsFailed": 0,
+    "numberOfDocumentsScanned": 19475,
+    "numberOfMetadataDocumentsModified": 101,
+    "numberOfMetadataDocumentsScanned": 19328,
+    "numberOfModifiedDocumentsIndexed": 0,
+    "numberOfNewDocumentsIndexed": 2505
+  },
+  "note": "documents_indexed 取自 ingestion job 的 numberOfDocumentsScanned（本次 job 在 data source 掃到的文件總數）。本檔不含 KB id 與 bucket 名——那兩個只活在 .env。 本次 job 由 scripts/ingest_kb.py --no-ingest 上傳後手動啟動，故本檔由同格式補寫；數值全部取自 job 的 statistics，未經換算。"
+}

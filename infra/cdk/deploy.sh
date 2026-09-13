@@ -149,8 +149,75 @@ ensure_cdk_deps() {
   ( cd "$here" && npm ci )
 }
 
+# ── 同一時間只准一個 cdk 動作 ──────────────────────────────────────
+#
+# **失敗形狀是「印成功、事情沒發生」**（2026-09-13 實際踩到）：第一個 `cdk deploy`
+# 還在跑時又發一個，第二個只印 `Other CLIs (PID=…) are currently reading from cdk.out`
+# 就結束、**回 exit 0**，於是回報成「正在部署」。
+#
+# 兩道擋：
+#   1. **本機鎖**（`mkdir` 是原子動作，macOS 不用裝 flock）：擋同一棵工作樹搶 `cdk.out`。
+#      不是給每次執行獨立的 `--output` 目錄——`check_context.sh` 寫死讀 `$here/cdk.out`，
+#      而且 cdk.out 分開也擋不住下一條。
+#   2. **stack 狀態**（deploy／destroy）：兩棵工作樹各有 cdk.out，本機鎖管不到，
+#      但它們更新的是**同一個 stack**，CloudFormation 只准一個更新。在我們這邊先擋，
+#      錯誤訊息才講得出「誰在跑」。
+#
+# 鎖用 trap 清；持有者被 kill -9 留下的殘鎖，看 PID 已經不在就接手。
+lock_dir="$here/.deploy.lock"
+
+release_lock() { rm -rf "$lock_dir"; }
+
+acquire_lock() {
+  if mkdir "$lock_dir" 2>/dev/null; then
+    printf 'pid=%s\nstarted=%s\ncmd=%s\n' "$$" "$(date '+%Y-%m-%dT%H:%M:%S%z')" "$*" > "$lock_dir/owner"
+    trap release_lock EXIT
+    trap 'exit 130' INT TERM
+    return
+  fi
+  local owner_pid
+  owner_pid="$(sed -n 's/^pid=//p' "$lock_dir/owner" 2>/dev/null || true)"
+  # **只有「PID 寫了、而且那個 process 已經不在」才算殘鎖。** PID 讀不到不等於殘鎖：
+  # 對方可能剛 mkdir 完、還沒寫 owner——把那種當殘鎖清掉，等於搶走一把正在用的鎖。
+  if [[ -z "$owner_pid" ]] || kill -0 "$owner_pid" 2>/dev/null || [[ -n "${_lock_retried:-}" ]]; then
+    {
+      echo "✗ 停：這棵工作樹已經有一個 cdk 動作在跑，同時跑第二個會搶 cdk.out，而且可能回成功卻什麼都沒做。"
+      sed 's/^/    /' "$lock_dir/owner" 2>/dev/null || echo "    （持有者資訊還沒寫入）"
+      echo "  等它結束再跑。確定它已經不在了才手動清：rm -rf \"$lock_dir\""
+    } >&2
+    exit 1
+  fi
+  echo "⚠️  發現殘留的鎖（持有者 PID ${owner_pid} 已不在），接手。" >&2
+  rm -rf "$lock_dir"
+  _lock_retried=1
+  acquire_lock "$@"
+}
+
+ensure_stack_idle() {
+  local status
+  status="$(aws cloudformation describe-stacks --stack-name hackntpc-appeal-backend \
+    --query 'Stacks[0].StackStatus' --output text 2>/dev/null || true)"
+  case "$status" in
+    *_IN_PROGRESS)
+      {
+        echo "✗ 停：stack 目前是 ${status}——有別的部署（可能在另一棵工作樹或另一台機器）正在跑。"
+        echo "  CloudFormation 只准一個更新；現在發出去會有一邊失敗。等它結束再跑："
+        echo "  aws cloudformation describe-stacks --stack-name hackntpc-appeal-backend --query 'Stacks[0].StackStatus'"
+      } >&2
+      exit 1
+      ;;
+  esac
+}
+
 cmd="${1:-deploy}"
 shift || true
+
+case "$cmd" in
+  deploy|destroy|check|synth|diff|ls) acquire_lock "$cmd" "$@" ;;
+esac
+case "$cmd" in
+  deploy|destroy) ensure_stack_idle ;;
+esac
 
 case "$cmd" in
   bootstrap)
@@ -160,6 +227,8 @@ case "$cmd" in
       --toolkit-stack-name HackNtpcCDKToolkit "$@"
     ;;
   deploy)
+    # 白名單守衛放最前面：它只打一次 describe-stacks，擋下來的話不必白建前端與映像檔。
+    "$here/check_ingress.sh"
     # **順序有意義**：前端要在 `cdk synth` 之前建好。synth 會把建置 context staging
     # 到 cdk.out，那一刻 dist 不在，之後再建也來不及——check_context.sh 會照實報錯，
     # 但那時已經白跑一次 synth。
@@ -171,11 +240,12 @@ case "$cmd" in
     npx cdk synth >/dev/null
     "$here/check_context.sh"
     echo
-    exec npx cdk deploy --toolkit-stack-name HackNtpcCDKToolkit "$@"
+    # 不用 exec：exec 取代這個 shell，trap 就不會跑、鎖清不掉。
+    npx cdk deploy --toolkit-stack-name HackNtpcCDKToolkit "$@"
     ;;
   destroy)
     ensure_cdk_deps
-    exec npx cdk destroy --toolkit-stack-name HackNtpcCDKToolkit "$@"
+    npx cdk destroy --toolkit-stack-name HackNtpcCDKToolkit "$@"
     ;;
   check)
     # `check` 就是「把 deploy 的前置檢查跑一遍」，所以也要建前端——否則它會報
@@ -183,12 +253,12 @@ case "$cmd" in
     build_frontend "$@"
     ensure_cdk_deps
     npx cdk synth >/dev/null
-    exec "$here/check_context.sh"
+    "$here/check_context.sh"
     ;;
   synth|diff|ls)
     # 這幾個子命令不吃 --toolkit-stack-name
     ensure_cdk_deps
-    exec npx cdk "$cmd" "$@"
+    npx cdk "$cmd" "$@"
     ;;
   *)
     echo "未知指令：${cmd}（可用：bootstrap／synth／diff／check／deploy／destroy）" >&2

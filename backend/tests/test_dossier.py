@@ -22,8 +22,9 @@ if str(ROOT) not in sys.path:
 
 import backend.llm.chat as chat_mod  # noqa: E402
 import backend.retrieval.kb as kb_module  # noqa: E402
-from backend.dossier import artifact_ref, corpus, runlink, store  # noqa: E402
+from backend.dossier import artifact_ref, corpus, runlink, statute_text, store  # noqa: E402
 from backend.orchestrator import case_view  # noqa: E402
+from backend.config import settings
 from backend.orchestrator.artifact_sections import build_sections  # noqa: E402
 from backend.orchestrator.graph import build_payload, run_case  # noqa: E402
 from backend.tests.harness import assert_eq, assert_in, assert_true  # noqa: E402
@@ -428,6 +429,45 @@ def test_corpus_search_honours_the_limit_after_deduping_not_before():
     assert_eq([x["t"] for x in got], ["A", "B"], "去重要在截斷之前，否則 B 會被 A 的重複 chunk 擠掉")
 
 
+def test_corpus_search_dedupes_the_same_case_across_both_crawl_batches():
+    """同一件決定書在庫裡有兩份（兩批並存），母庫查只能回一列。
+
+    S3 上 `新北訴願決定書_全量/`（舊爬蟲 2,347 筆）與 `新北訴願決定書_環保局全量/`
+    （第三方整理 8,486 筆）**有 2,331 個案號是同一件**，舊批沒刪。兩者 key 不同、
+    案號相同，所以按 S3 key 去重收不掉——承辦人會在「搜尋並加入」的清單上看到
+    同一件決定書兩次，以為找到兩個前例。
+
+    留分數高的那一筆（結果按分數遞減，留第一個看到的）。
+    """
+    kb_mod = _kb_module()
+    kb_mod.reset_search_key_cache()
+    chunks = [
+        _hit("新北訴願決定書_環保局全量/1121070551_不受理.txt", 0.90, "decision", case_no="1121070551"),
+        _hit("新北訴願決定書_全量/1121070551_不受理.txt", 0.80, "decision", case_no="1121070551"),
+        _hit("新北訴願決定書_全量/1131070496_駁回.txt", 0.70, "decision", case_no="1131070496"),
+    ]
+    got = kb_mod.search_corpus(FakeKB(chunks), "KB1", "q", ["decision"], limit=10)
+    assert_eq([x["id"] for x in got],
+              ["kb/public/新北訴願決定書_環保局全量/1121070551_不受理.txt",
+               "kb/public/新北訴願決定書_全量/1131070496_駁回.txt"],
+              "同一案號的兩批副本必須收成一列，且留分數高的那一筆")
+
+
+def test_corpus_search_still_separates_two_statutes_that_have_no_case_no():
+    """去重鍵退回 S3 key 的那一半：法規沒有案號，兩部不同法規不得被併成一筆。
+
+    這條與上一條是同一個機制的兩面。少了它，`_dedupe_key` 若哪天把「沒有案號」
+    誤算成同一個鍵，整個法規清單會塌成一列，而上一條測試照樣綠。
+    """
+    kb_mod = _kb_module()
+    kb_mod.reset_search_key_cache()
+    chunks = [_hit("相關法規_全量/廢棄物清理法.txt", 0.9, "statute"),
+              _hit("相關法規_全量/空氣污染防制法.txt", 0.8, "statute")]
+    got = kb_mod.search_corpus(FakeKB(chunks), "KB1", "q", ["statute"], limit=10)
+    assert_eq([x["t"] for x in got], ["廢棄物清理法", "空氣污染防制法"],
+              "沒有案號的文件要按 S3 key 各佔一列")
+
+
 def test_decision_search_drops_court_rulings_even_if_the_filter_let_one_through():
     """雙保險：filter 是第一道，這是第二道。filter 失效時不得靜默開始端裁判書。"""
     kb_mod = _kb_module()
@@ -743,8 +783,8 @@ def test_headings_come_from_h_blocks_and_title_meta_are_not_sections():
     payload = _payload_fixture()
     sections, _ = _sections(payload)
     heads = [s["h"] for s in sections]
-    assert_in("事實", heads)
-    assert_in("理由", heads)
+    assert_in(settings.SECTION_FACTS, heads)
+    assert_in(settings.SECTION_REASONING, heads)
     assert_true(all(isinstance(h, str) for h in heads))
     banned = [b.get("text") for b in payload["doc"] if b.get("ty") in ("title", "meta")]
     assert_true(banned, "測資裡沒有 title／meta 區塊，這條測試的前提不成立")
@@ -808,14 +848,22 @@ def test_a_synthetic_case_refuses_to_be_deleted_with_a_reason():
 
 
 def test_title_and_meta_are_document_header_not_sections():
-    """把抬頭當成 section 的話，畫面最上面會多出兩個 `h` 是空字串的區塊（契約 §4.4）。"""
+    """把抬頭當成 section 的話，畫面最上面會多出兩個 `h` 是空字串的區塊（契約 §4.4）。
+
+    **2026-09-13：空標題不再一律違規。** 決定書的引導句、落款與教示條款各自成段、
+    但公文上沒有標題，所以它們是 `h` 為空字串的 section——而且一定帶 `role`。
+    這條要擋的是**沒有 role 的空標題**，那種才是 title／meta 漏進 sections。
+    """
     view = build_sections(_payload_fixture(), "art-x")
     assert_true(view["title"], "抬頭要進 title，不是被丟掉")
-    assert_true(view["meta"], "案號／案由／訴願人那行要進 meta")
+    assert_true(view["meta"], "案號／訴願人／原處分機關要進 meta")
     for sec in view["sections"]:
-        assert_true(sec["h"].strip(), f"出現 h 是空字串的 section：{sec}")
-    assert_in("事實", [s["h"] for s in view["sections"]])
-    assert_in("理由", [s["h"] for s in view["sections"]])
+        assert_true(sec["h"].strip() or sec.get("role"),
+                    f"出現既沒有標題也沒有 role 的 section：{sec}")
+    heads = [s["h"] for s in view["sections"]]
+    assert_in(settings.SECTION_MAIN_TEXT, heads)
+    assert_in(settings.SECTION_FACTS, heads)
+    assert_in(settings.SECTION_REASONING, heads)
 
 
 def test_the_artifact_endpoint_keeps_the_name_shown_in_the_dossier():
@@ -1400,3 +1448,147 @@ def test_the_validation_handler_is_actually_wired_to_the_app():
     handler = mod.app.exception_handlers.get(mod.RequestValidationError)
     assert_true(handler is mod._validation_error,
                 "RequestValidationError 沒有掛到 app 上，預設處理器還是會贏")
+
+
+# ── 母庫法規全文 → 某一條（`backend/dossier/statute_text.py`）──────────
+#
+# chat 的「搜尋相關法規」走查表通道，快照只有條號清單、一個字的條文都沒有，
+# 所以 `lawtable:` 那批 `body_cached` 一直是空的。條文在母庫
+# （`kb/public/相關法規_全量/`）。這一組釘的是「全文 → 第 N 條」那一步。
+#
+# **切錯比切不出來糟得多**：切錯的那一段是隔壁那條的文字，看起來完全正常，
+# 而承辦人會照著它寫決定書。所以下面每一條「回 None」的測試都跟成功的那條一樣重要。
+
+_STATUTE_TEXT = """行政程序法
+
+第 一 章 總則
+
+第 71 條
+行政機關之送達，應注意其期間。
+
+第 72 條
+送達，於應受送達人之住居所、事務所或營業所為之。但在行政機關辦公處所
+或他處會晤應受送達人時，得於會晤處所為之。
+對於機關、法人之送達，依第 71 條規定辦理。
+
+第 二 章 期日及期間
+
+第 73 條
+於應受送達處所不獲會晤應受送達人時，得將文書付與有辨別事理能力之同居人。
+"""
+
+
+def test_slicing_takes_the_whole_article_and_nothing_from_the_next_one():
+    body = statute_text.slice_article(_STATUTE_TEXT, "72")
+    assert_true(body, "切不出第 72 條")
+    assert_in("送達，於應受送達人之住居所", body)
+    assert_true("第 73 條" not in body, f"吃到下一條了：{body!r}")
+    assert_true("有辨別事理能力" not in body, f"吃到下一條的內文了：{body!r}")
+    assert_true("行政機關之送達，應注意" not in body, f"吃到上一條了：{body!r}")
+
+
+def test_slicing_stops_at_a_chapter_heading():
+    """章節標題夾在兩條之間時，條文到它為止——不把「第 二 章 期日及期間」算進第 72 條。"""
+    body = statute_text.slice_article(_STATUTE_TEXT, "72")
+    assert_true("第 二 章" not in body, f"章標題被算進條文：{body!r}")
+
+
+def test_an_in_text_reference_is_not_mistaken_for_an_article_heading():
+    """**這條是這組裡最重要的。**
+
+    「依第 71 條規定辦理」出現在第 72 條的**內文中間**。把它當成條次標題的話，
+    第 71 條會被切成「從第 72 條中間開始」的一段殘文——而那段文字讀起來完全正常。
+    只認行首的條次標題就擋掉了。
+    """
+    body = statute_text.slice_article(_STATUTE_TEXT, "71")
+    assert_true(body.startswith("第 71 條"), f"第 71 條的起點跑掉了：{body!r}")
+    assert_in("行政機關之送達，應注意其期間。", body)
+    assert_true("依第 71 條規定辦理" not in body,
+                f"從內文的引用切起，切出了一段殘文：{body!r}")
+
+
+def test_both_ways_of_writing_a_sub_article_are_recognised():
+    """母庫實際怎麼寫「第 15 條之 1」本機驗不到（無憑證），所以兩種寫法都認。"""
+    for text in ("第 15-1 條\n本條為之一。\n\n第 16 條\n下一條。\n",
+                 "第 15 條之 1\n本條為之一。\n\n第 16 條\n下一條。\n"):
+        body = statute_text.slice_article(text, "15之1")
+        assert_true(body and "本條為之一" in body, f"切不出之一：{text!r} → {body!r}")
+    # 而且不得跟主條號搞混
+    assert_eq(statute_text.slice_article("第 15-1 條\n之一。\n", "15"), None,
+              "第 15 條之 1 被當成第 15 條")
+
+
+def test_slicing_refuses_instead_of_guessing():
+    """四種切不出來的情形，一律回 None——**寧可空著也不端一段看起來正常的錯文字**。"""
+    assert_eq(statute_text.slice_article(_STATUTE_TEXT, "999"), None, "沒有的條號")
+    assert_eq(statute_text.slice_article(_STATUTE_TEXT, "abc"), None, "讀不懂的條號 key")
+    # **整部法壓成一行**：只有最前面那個條號在行首。第 72、73 條切不出來是對的，
+    # 但第 71 條原本會切出**整行**——三條的文字被當成第 71 條端出去，而且讀起來
+    # 完全正常。所以標題少於兩個時一條都不切（2026-09-13 寫這條測試時抓到）。
+    one_line = "第71條 前條之送達。第72條 送達於住居所為之。第73條 不獲會晤時。"
+    for art in ("71", "72", "73"):
+        assert_eq(statute_text.slice_article(one_line, art), None,
+                  f"整部法壓成一行時切了第 {art} 條——那不是以行分條的文件")
+    assert_eq(statute_text.slice_article("第 72 條\n甲。\n\n第 72 條\n乙。\n", "72"), None,
+              "同一條出現兩次時分不出哪個是本文，不得挑一個")
+    assert_eq(statute_text.slice_article("第 72 條\n\n第 73 條\n乙。\n", "72"), None,
+              "只有標題沒有內文，不得端一行「第 72 條」充數")
+
+
+def test_a_page_break_before_the_heading_does_not_hide_the_article():
+    """**PDF 轉文字留下的換頁符 `\x0c`**，2026-09-13 雲上實掃抓到。
+
+    母庫的法規檔是 PDF 轉來的，分頁處留一個換頁符，而它剛好落在
+    「建築法第25條」那一行的最前面——**demo 案子的核心法條**
+    （「未經申請審查許可擅自建造，違反建築法第25條」）。整條因此切不出來。
+
+    旁證：洗錢防制法有 13 個換頁符，收進去之後行首標題數 27 → 31，
+    與快照的 31 條完全相同。
+    """
+    text = ("    第 23 條\n甲。\n"
+            "\x0c    第 25 條\n未經申請審查許可，不得擅自建造。\n"
+            "    第 26 條\n丙。\n")
+    body = statute_text.slice_article(text, "25")
+    assert_true(body, "換頁符讓整條不見了")
+    assert_in("未經申請審查許可", body)
+    assert_true("第 26 條" not in body, f"切到下一條：{body!r}")
+    assert_true(not body.startswith("\x0c"), f"換頁符留在條文開頭：{body!r}")
+
+
+def test_an_inline_citation_is_never_a_heading_whatever_the_leading_class_is():
+    """內文中間的條號**永遠**不得被當成條次標題。
+
+    切出來會是「從某一條中間開始」的殘文，而它讀起來完全正常。
+
+    註（2026-09-13 更正）：這條守的是 `(?m)^` 這個錨點，**不是**前導字元的寬窄。
+    原本寫的是「放寬成 `\s` 就會讓內文引用進來」——**那句話是錯的**，
+    `^\s*第` 對下面這段實測一樣零命中。真正擋住內文引用的是行首錨點。
+    前導字元列舉與否是另一個取捨（可見度），理由寫在 `statute_text._LINE_LEAD`。
+    """
+    inline = "甲條文。依第 25 條規定辦理。\n乙條文。準用第 26 條。\n"
+    assert_eq(statute_text.article_headings(inline), [],
+              "內文中間的條號被當成行首標題了——前導字元類別放寬到吃掉換行了")
+
+
+def test_the_allowed_leading_characters_are_enumerated_not_guessed():
+    """允許的前導字元是**列舉**的：空白、tab、全形空白、換頁符。
+
+    這條釘的是「不要憑可能性放寬」：BOM／不換行空白**還沒掃到過**，
+    所以現在不認（那些行會切不出來並照實留空，不會端出錯的東西）。
+    掃到了再加——`scripts/check_statute_corpus.py` 會列出實際出現過的前導字元。
+    """
+    # 只列**同一行內**排在標題前面的字元。`\n` 不在這裡——它不是「前導字元」，
+    # 它本身就是換行，放進來測會永遠通過（見上一條測試才是 `\n` 的守門）。
+    for ch, want in ((" ", True), ("\t", True), ("\u3000", True), ("\x0c", True),
+                     ("\ufeff", False), ("\u00a0", False)):
+        heads = statute_text.article_headings(f"{ch}第 5 條\n甲。\n\n第 6 條\n乙。\n")
+        got = any(num == "5" for _s, _e, num, _sub in heads)
+        assert_eq(got, want, f"前導字元 U+{ord(ch):04X} 的處理跟宣告的不一致")
+
+
+def test_the_corpus_key_rule_is_declared_in_one_place():
+    """檔名規則本機驗不到（無憑證），但它至少要只有一份、而且看得出長什麼樣。"""
+    assert_eq(statute_text.corpus_key("行政程序法"),
+              "kb/public/相關法規_全量/行政程序法.txt")
+    assert_true(statute_text.corpus_key("訴願法").startswith(
+        statute_text.CORPUS_STATUTE_PREFIX))
